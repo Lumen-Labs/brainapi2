@@ -1,0 +1,22 @@
+[project]
+name = "brainapi2"
+version = "1.0.0"
+description = "Version 1.x.x of the BrainAPI memory layer."
+authors = [
+    {name = "Christian",email = "alch.infoemail@gmail.com"}
+]
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "milvus (>=2.3.9,<3.0.0)",
+    "redis (>=6.4.0,<7.0.0)",
+    "pymongo (>=4.15.3,<5.0.0)",
+    "cpp-chunker (>=0.1.4,<0.2.0)",
+    "openai (>=2.5.0,<3.0.0)",
+    "neo4j (>=6.0.2,<7.0.0)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
