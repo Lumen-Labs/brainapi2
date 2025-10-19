@@ -8,10 +8,25 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 -----
 """
 
+from src.adapters.graph import GraphAdapter
 from src.adapters.llm import LLMAdapter
+from src.core.agents.kg_agent import KGAgent
 from src.lib.llm.client_large import _llm_large_client
+
+from src.lib.redis.client import _redis_client
+from src.adapters.cache import CacheAdapter
+from src.lib.neo4j.client import _neo4j_client
 
 
 # Initialze the adapters
 llm_large_adapter = LLMAdapter()
 llm_large_adapter.add_client(_llm_large_client)
+
+cache_adapter = CacheAdapter()
+cache_adapter.add_client(_redis_client)
+
+graph_adapter = GraphAdapter()
+graph_adapter.add_client(_neo4j_client)
+
+# Initialize the knowledge graph agent
+kg_agent = KGAgent(llm_large_adapter, cache_adapter, kg=graph_adapter)

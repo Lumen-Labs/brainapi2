@@ -1,44 +1,43 @@
 """
-File: /cache.py
+File: /client.py
 Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Sunday October 19th 2025 9:00:36 am
+Last Modified: Sunday October 19th 2025 12:37:27 pm
 Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
 -----
 """
 
-from .interfaces.cache import CacheClient
+from redis import Redis
+from src.adapters.interfaces.cache import CacheClient
+from src.config import config
 
 
-class CacheAdapter:
+class RedisClient(CacheClient):
     """
-    Adapter for the cache client.
+    Redis client.
     """
 
     def __init__(self):
-        self.cache = None
-
-    def add_client(self, client: CacheClient) -> None:
-        """
-        Add a cache client to the adapter.
-        """
-        self.cache = client
+        self.client = Redis(host=config.redis.host, port=config.redis.port)
 
     def get(self, key: str) -> str:
         """
         Get a value from the cache.
         """
-        return self.cache.get(key)
+        return self.client.get(key)
 
     def set(self, key: str, value: str, expires_in: int) -> bool:
         """
         Set a value in the cache with an expiration time.
         """
-        return self.cache.set(key, value, expires_in)
+        return self.client.set(key, value, ex=expires_in)
 
     def delete(self, key: str) -> bool:
         """
         Delete a value from the cache.
         """
-        return self.cache.delete(key)
+        return self.client.delete(key)
+
+
+_redis_client = RedisClient()

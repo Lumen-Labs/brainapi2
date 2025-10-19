@@ -11,9 +11,9 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 from celery import Celery
 
 
-injection_app = Celery(
-    "injection_app",
+ingestion_app = Celery(
+    "ingestion_app",
     broker="amqp://kalo:kalo@localhost:5672//",
     backend="rpc://",
-    include=["src.workers.tasks.injestion"],
+    include=["src.workers.tasks.ingestion"],
 )

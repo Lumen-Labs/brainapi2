@@ -1,0 +1,16 @@
+services:
+  redis:
+    image: redis
+    container_name: redis
+    command: redis-server /usr/local/etc/redis/redis.conf
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+      - redis-conf:/usr/local/etc/redis/redis.conf
+
+volumes:
+  redis-data:
+    driver: local
+  redis-conf:
+    driver: local

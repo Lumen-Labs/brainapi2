@@ -33,6 +33,34 @@ class AzureConfig:
             raise ValueError("Azure configuration is not complete")
 
 
+class RedisConfig:
+    """
+    Configuration class for the Redis configuration.
+    """
+
+    def __init__(self):
+        self.host = os.getenv("REDIS_HOST")
+        self.port = os.getenv("REDIS_PORT")
+
+        if [self.host, self.port].count(None) > 0:
+            raise ValueError("Redis configuration is not complete")
+
+
+class Neo4jConfig:
+    """
+    Configuration class for the Neo4j configuration.
+    """
+
+    def __init__(self):
+        self.host = os.getenv("NEO4J_HOST")
+        self.port = os.getenv("NEO4J_PORT")
+        self.username = os.getenv("NEO4J_USERNAME")
+        self.password = os.getenv("NEO4J_PASSWORD")
+
+        if [self.host, self.port, self.username, self.password].count(None) > 0:
+            raise ValueError("Neo4j configuration is not complete")
+
+
 class Config:
     """
     Configuration class for the application.
@@ -40,6 +68,8 @@ class Config:
 
     def __init__(self):
         self.azure = AzureConfig()
+        self.redis = RedisConfig()
+        self.neo4j = Neo4jConfig()
 
 
 config = Config()

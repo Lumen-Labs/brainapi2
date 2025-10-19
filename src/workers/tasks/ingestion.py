@@ -1,5 +1,5 @@
 """
-File: /injestion.py
+File: /ingestion.py
 Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
@@ -10,10 +10,11 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 
 from celery import shared_task
 
+from src.constants.tasks.ingestion import IngestionTaskArgs
 
-@shared_task
-def inject_data(data: dict):
+
+@shared_task(bind=True)
+def ingest_data(self, args: IngestionTaskArgs):
     """
     Ingest data into the database.
     """
-    print(data)
