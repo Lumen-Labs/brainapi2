@@ -27,6 +27,14 @@ class GraphAdapter:
         """
         return self.graph.graphdb_type
 
+    @property
+    def graphdb_description(self) -> str:
+        """
+        This is the description of the graph database.
+        It is used to let the agent know which syntax to use.
+        """
+        return self.graph.graphdb_description
+
     def add_client(self, client: GraphClient) -> None:
         """
         Add a graph client to the adapter.
@@ -37,7 +45,11 @@ class GraphAdapter:
         """
         Execute a graph operation.
         """
-        return self.graph.execute_operation(operation)
+        try:
+            return self.graph.execute_operation(operation)
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            print(f"Error executing graph operation: {e} - {operation}")
+            return f"Error executing graph operation: {e}"
 
 
 _graph_adapter = GraphAdapter()

@@ -10,9 +10,10 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 
 import json
 from openai import AzureOpenAI
+from langchain_openai import AzureChatOpenAI
 
-from adapters.interfaces.llm import LLM
-from config import config
+from src.adapters.interfaces.llm import LLM
+from src.config import config
 
 
 class LLMClientLarge(LLM):
@@ -23,6 +24,13 @@ class LLMClientLarge(LLM):
     def __init__(self):
         self.model = config.azure.large_llm_model
         self.client = AzureOpenAI(
+            api_version=config.azure.large_llm_api_version,
+            azure_endpoint=config.azure.large_llm_endpoint,
+            api_key=config.azure.large_llm_subscription_key,
+        )
+
+        self.langchain_model = AzureChatOpenAI(
+            azure_deployment=config.azure.large_llm_model,
             api_version=config.azure.large_llm_api_version,
             azure_endpoint=config.azure.large_llm_endpoint,
             api_key=config.azure.large_llm_subscription_key,

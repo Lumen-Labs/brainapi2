@@ -10,11 +10,15 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 
 from abc import ABC, abstractmethod
 
+from langchain.chat_models.base import BaseChatModel
+
 
 class LLM(ABC):
     """
     Abstract base class for LLM clients.
     """
+
+    langchain_model: BaseChatModel
 
     @abstractmethod
     def generate_text(self, prompt: str, max_new_tokens: int = None) -> str:

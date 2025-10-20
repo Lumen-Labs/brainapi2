@@ -9,7 +9,7 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 """
 
 from enum import Enum
-from typing import List, Union, Annotated
+from typing import List, Union, Annotated, Literal
 from pydantic import BaseModel, Field, Discriminator
 
 
@@ -27,9 +27,7 @@ class IngestionTaskJsonArgs(BaseModel):
     Arguments for the ingestion task when the data type is JSON.
     """
 
-    data_type: IngestionTaskDataType = Field(
-        default=IngestionTaskDataType.JSON, discriminator=True
-    )
+    data_type: Literal["json"] = Field(default="json")
     json_data: dict
     meta_keys: List[str] = Field(
         default=[],
@@ -47,9 +45,7 @@ class IngestionTaskTextArgs(BaseModel):
     Arguments for the ingestion task when the data type is TEXT.
     """
 
-    data_type: IngestionTaskDataType = Field(
-        default=IngestionTaskDataType.TEXT, discriminator=True
-    )
+    data_type: Literal["text"] = Field(default="text")
     text_data: str
 
 

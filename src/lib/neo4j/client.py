@@ -31,6 +31,13 @@ class Neo4jClient(GraphClient):
         """
         return "neo4j"
 
+    @property
+    def graphdb_description(self) -> str:
+        """
+        Get the description of the graph database. It is used to let the agent know which syntax to use.
+        """
+        return "The graph database is Neo4j. Cyphter is the language used to operate with it."
+
     def execute_operation(self, operation: str) -> str:
         """
         Execute a Neo4j operation.

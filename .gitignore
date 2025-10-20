@@ -1,2 +1,4 @@
 .vscode
 .env
+volumes
+__pycache__

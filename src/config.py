@@ -11,6 +11,11 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 # pylint: disable=too-few-public-methods
 
 import os
+import dotenv
+
+dotenv.load_dotenv(
+    dotenv_path=f".env{'.' + os.getenv('ENV') if os.getenv('ENV') else ''}"
+)
 
 
 class AzureConfig:

@@ -18,6 +18,14 @@ class GraphClient(ABC):
 
     @property
     @abstractmethod
+    def graphdb_description(self) -> str:
+        """
+        Get the description of the graph database.
+        """
+        raise NotImplementedError("graphdb_description method not implemented")
+
+    @property
+    @abstractmethod
     def graphdb_type(self) -> str:
         """
         Get the type of graph database.

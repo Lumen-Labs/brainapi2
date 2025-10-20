@@ -13,7 +13,7 @@ from celery import Celery
 
 ingestion_app = Celery(
     "ingestion_app",
-    broker="amqp://kalo:kalo@localhost:5672//",
+    broker="amqp://kalo:kalo@localhost:5672/",
     backend="rpc://",
     include=["src.workers.tasks.ingestion"],
 )
