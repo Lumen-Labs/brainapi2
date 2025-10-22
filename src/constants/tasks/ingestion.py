@@ -9,7 +9,7 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 """
 
 from enum import Enum
-from typing import List, Union, Annotated, Literal
+from typing import List, Optional, Union, Annotated, Literal
 from pydantic import BaseModel, Field, Discriminator
 
 
@@ -29,15 +29,6 @@ class IngestionTaskJsonArgs(BaseModel):
 
     data_type: Literal["json"] = Field(default="json")
     json_data: dict
-    meta_keys: List[str] = Field(
-        default=[],
-        description=(
-            "The shared keys that shuld not be treated as nodes. "
-            "(eg: email becasue each person has an email). "
-            "The keys specified here will not be analyzed "
-            "but just added to the metadata."
-        ),
-    )
 
 
 class IngestionTaskTextArgs(BaseModel):
@@ -57,3 +48,23 @@ class IngestionTaskArgs(BaseModel):
     data: Annotated[
         Union[IngestionTaskJsonArgs, IngestionTaskTextArgs], Discriminator("data_type")
     ]
+    meta_keys: Optional[dict] = Field(
+        default=None,
+        description=(
+            "The shared keys that should not be treated as nodes. "
+            "(eg: email because each person has an email). "
+            "The keys specified here will not be analyzed "
+            "but just added to the metadata."
+        ),
+    )
+    identification_params: Optional[dict] = Field(
+        default=None,
+        description="The parameters used to identify the data.",
+    )
+    observate_for: Optional[List[str]] = Field(
+        default=[],
+        description=(
+            "What to look for and describe in the data during observation. "
+            "If not provided, the observations will be generic"
+        ),
+    )

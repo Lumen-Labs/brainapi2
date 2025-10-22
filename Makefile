@@ -43,6 +43,10 @@ stop-api:
 
 
 start-all:
+	if [ "$1" = "debug" ]; then \
+		export LANGCHAIN_DEBUG="true"; \
+		export LANGCHAIN_VERBOSE="true"; \
+	fi
 	export ENV=development
 	make start-milvus &
 	make start-rabbitmq &

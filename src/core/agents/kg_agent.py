@@ -19,7 +19,15 @@ from src.constants.prompts.kg_agent import (
     KG_AGENT_SYSTEM_PROMPT,
     KG_AGENT_UPDATE_PROMPT,
 )
-from src.core.agents.tools.kg_agent import KGAgentExecuteGraphOperationTool
+from src.core.agents.tools.kg_agent import (
+    KGAgentAddTripletsTool,
+    KGAgentExecuteGraphOperationTool,
+    KGAgentAddNodesTool,
+    KGAgentAddRelationshipsTool,
+    KGAgentUpdateNodesTool,
+    KGAgentDeleteNodesTool,
+    KGAgentDeleteRelationshipsTool,
+)
 
 
 class KGAgent:
@@ -48,21 +56,27 @@ class KGAgent:
                 "use the appropriate syntax."
             )
 
-    def _get_tools(self) -> List[BaseTool]:
+    def _get_tools(self, identification_params: dict, metadata: dict) -> List[BaseTool]:
         return [
-            KGAgentExecuteGraphOperationTool(self, self.kg, self.kg.graphdb_description)
+            KGAgentExecuteGraphOperationTool(
+                self, self.kg, self.kg.graphdb_description
+            ),
+            # KGAgentAddNodesTool(self, self.kg, identification_params, metadata),
+            KGAgentAddTripletsTool(self, self.kg, identification_params, metadata),
+            # KGAgentAddRelationshipsTool(self, self.kg, self.kg.graphdb_description),
+            # KGAgentUpdateNodesTool(self, self.kg, self.kg.graphdb_description),
+            # KGAgentDeleteNodesTool(self, self.kg, self.kg.graphdb_description),
+            # KGAgentDeleteRelationshipsTool(self, self.kg, self.kg.graphdb_description),
         ]
 
-    def _get_agent(self):
-        if self.agent is None:
-            system_prompt = KG_AGENT_SYSTEM_PROMPT
+    def _get_agent(self, identification_params: dict, metadata: dict):
+        system_prompt = KG_AGENT_SYSTEM_PROMPT
 
-            self.agent = create_agent(
-                model=self.llm_adapter.llm.langchain_model,
-                tools=self._get_tools(),
-                system_prompt=system_prompt,
-            )
-        return self.agent
+        self.agent = create_agent(
+            model=self.llm_adapter.llm.langchain_model,
+            tools=self._get_tools(identification_params, metadata),
+            system_prompt=system_prompt,
+        )
 
     def search_kg(self, query: str) -> str:
         """
@@ -70,12 +84,17 @@ class KGAgent:
         """
         # TODO vector search and retrieval
 
-    def update_kg(self, information: str, metadata: Optional[dict]) -> str:
+    def update_kg(
+        self,
+        information: str,
+        metadata: Optional[dict],
+        identification_params: Optional[dict],
+    ) -> str:
         """
         Update the knowledge graph with new information.
         """
 
-        self._get_agent()
+        self._get_agent(identification_params, metadata)
         response = self.agent.invoke(
             {
                 "messages": [
@@ -84,9 +103,12 @@ class KGAgent:
                         "content": KG_AGENT_UPDATE_PROMPT.format(
                             information=information,
                             metadata=metadata,
+                            identification_params=identification_params,
                         ),
                     }
                 ],
-            }
+            },
+            print_mode="debug",
+            config={"recursion_limit": 50},
         )
         return response

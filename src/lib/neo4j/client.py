@@ -11,6 +11,7 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 from neo4j import GraphDatabase
 from src.adapters.interfaces.graph import GraphClient
 from src.config import config
+from src.constants.kg import Node
 
 
 class Neo4jClient(GraphClient):
@@ -43,6 +44,60 @@ class Neo4jClient(GraphClient):
         Execute a Neo4j operation.
         """
         return self.driver.execute_query(operation)
+
+    def add_nodes(
+        self, nodes: list[Node], identification_params: dict, metadata: dict
+    ) -> list[Node] | str:
+        """
+        Add nodes to the graph.
+        """
+        results = []
+        for node in nodes:
+            identification_set = f"{{name: '{node.name}'}}"
+
+            all_properties = {
+                **(node.properties or {}),
+                **(metadata or {}),
+            }
+
+            if node.description is not None:
+                all_properties["description"] = node.description
+
+            property_assignments = []
+            for key, value in all_properties.items():
+                if isinstance(value, str):
+                    escaped_value = value.replace("'", "\\'")
+                    property_assignments.append(f"n.{key} = '{escaped_value}'")
+                elif isinstance(value, (int, float, bool)):
+                    property_assignments.append(f"n.{key} = {value}")
+                elif value is None:
+                    property_assignments.append(f"n.{key} = null")
+                else:
+                    escaped_value = str(value).replace("'", "\\'")
+                    property_assignments.append(f"n.{key} = '{escaped_value}'")
+
+            property_assignments.append(f"n.uuid = '{node.uuid}'")
+
+            properties_set = f"{', '.join(property_assignments)}"
+
+            cypher_query = f"""
+    MERGE (n:{node.label.replace(" ", "_")} {identification_set})
+    SET {properties_set}
+    RETURN n
+            """
+            result = self.driver.execute_query(cypher_query)
+            results.append(result)
+
+        return [
+            Node(
+                uuid=node.uuid,
+                label=node.label,
+                name=node.name,
+                description=node.description,
+                properties={**node.properties, **(metadata or {})},
+            )
+            for node in nodes
+        ]
 
 
 _neo4j_client = Neo4jClient()

@@ -8,10 +8,10 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 -----
 """
 
-from src.constants.tasks.ingestion import IngestionTaskTextArgs
+from src.constants.tasks.ingestion import IngestionTaskArgs
 
 
-class IngestionRequestBody(IngestionTaskTextArgs):
+class IngestionRequestBody(IngestionTaskArgs):
     """
     Request body for the ingestion endpoint.
     """

@@ -22,7 +22,9 @@ async def ingest_data(data: IngestionRequestBody):
     """
     Ingest data to the processing pipeline and save to the memory.
     """
-    task_id = ingest_data_task.delay(args=data.model_dump())
+
+    task = ingest_data_task.delay(data.model_dump())
+
     return JSONResponse(
-        content={"message": "Data ingested successfully", "task_id": task_id.id}
+        content={"message": "Data ingested successfully", "task_id": task.id}
     )

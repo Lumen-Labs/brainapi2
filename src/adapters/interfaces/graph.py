@@ -9,6 +9,9 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 """
 
 from abc import ABC, abstractmethod
+from typing import Optional
+
+from src.constants.kg import Node
 
 
 class GraphClient(ABC):
@@ -35,6 +38,18 @@ class GraphClient(ABC):
     @abstractmethod
     def execute_operation(self, operation: str) -> str:
         """
-        Execute a graph operation.
+        Execute a generic graph operation.
         """
         raise NotImplementedError("execute_operation method not implemented")
+
+    @abstractmethod
+    def add_nodes(
+        self,
+        nodes: list[Node],
+        identification_params: Optional[dict],
+        metadata: Optional[dict],
+    ) -> list[Node] | str:
+        """
+        Add nodes to the graph.
+        """
+        raise NotImplementedError("add_nodes method not implemented")

@@ -8,7 +8,9 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 -----
 """
 
+from typing import Optional
 from src.adapters.interfaces.graph import GraphClient
+from src.constants.kg import Node
 
 
 class GraphAdapter:
@@ -43,13 +45,24 @@ class GraphAdapter:
 
     def execute_operation(self, operation: str) -> str:
         """
-        Execute a graph operation.
+        Execute a generic graph operation.
         """
         try:
             return self.graph.execute_operation(operation)
         except Exception as e:  # pylint: disable=broad-exception-caught
             print(f"Error executing graph operation: {e} - {operation}")
             return f"Error executing graph operation: {e}"
+
+    def add_nodes(
+        self,
+        nodes: list[Node],
+        identification_params: Optional[dict],
+        metadata: Optional[dict],
+    ) -> list[Node] | str:
+        """
+        Add nodes to the graph.
+        """
+        return self.graph.add_nodes(nodes, identification_params, metadata)
 
 
 _graph_adapter = GraphAdapter()

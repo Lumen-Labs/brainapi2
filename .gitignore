@@ -2,3 +2,4 @@
 .env
 volumes
 __pycache__
+*.excalidraw

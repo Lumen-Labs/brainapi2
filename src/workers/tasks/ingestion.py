@@ -14,8 +14,6 @@ from src.workers.app import ingestion_app
 from src.constants.tasks.ingestion import (
     IngestionTaskArgs,
     IngestionTaskDataType,
-    IngestionTaskJsonArgs,
-    IngestionTaskTextArgs,
 )
 
 
@@ -24,26 +22,16 @@ def ingest_data(self, args: dict):
     """
     Ingest data into the database.
     """
-    payload: IngestionTaskArgs = None
+    payload = IngestionTaskArgs(**args)
 
-    if args.get("data_type") == IngestionTaskDataType.TEXT.value:
-        payload = IngestionTaskTextArgs(**args)
-    elif args.get("data_type") == IngestionTaskDataType.JSON.value:
-        payload = IngestionTaskJsonArgs(**args)
-    else:
-        raise ValueError(f"Invalid data type: {args.get('data_type')}")
-
-    response = kg_agent.update_kg(
-        (
-            payload.text_data
-            if payload.data_type == IngestionTaskDataType.TEXT.value
-            else json.dumps(payload.json_data)
+    kg_agent.update_kg(
+        information=(
+            payload.data.text_data
+            if payload.data.data_type == IngestionTaskDataType.TEXT.value
+            else json.dumps(payload.data.json_data)
         ),
-        (
-            payload.meta_keys
-            if payload.data_type == IngestionTaskDataType.JSON.value
-            else None
-        ),
+        metadata=payload.meta_keys,
+        identification_params=payload.identification_params,
     )
-    print(response)
+
     return self.request.id
