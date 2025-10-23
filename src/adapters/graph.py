@@ -64,5 +64,25 @@ class GraphAdapter:
         """
         return self.graph.add_nodes(nodes, identification_params, metadata)
 
+    def add_relationship(
+        self,
+        subject: Node,
+        predicate: str,
+        to_object: Node,
+    ) -> str:
+        """
+        Add a relationship between two nodes to the graph.
+        """
+        return self.graph.add_relationship(subject, predicate, to_object)
+
+    def search_graph(
+        self,
+        nodes: list[Node],
+    ) -> list[Node]:
+        """
+        Search the graph for nodes and 1 degree relationships.
+        """
+        return self.graph.search_graph(nodes)
+
 
 _graph_adapter = GraphAdapter()

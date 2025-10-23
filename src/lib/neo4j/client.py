@@ -35,7 +35,8 @@ class Neo4jClient(GraphClient):
     @property
     def graphdb_description(self) -> str:
         """
-        Get the description of the graph database. It is used to let the agent know which syntax to use.
+        Get the description of the graph database.
+        It is used to let the agent know which syntax to use.
         """
         return "The graph database is Neo4j. Cyphter is the language used to operate with it."
 
@@ -98,6 +99,42 @@ class Neo4jClient(GraphClient):
             )
             for node in nodes
         ]
+
+    def add_relationship(
+        self,
+        subject: Node,
+        predicate: str,
+        to_object: Node,
+    ) -> str:
+        """
+        Add a relationship between two nodes to the graph.
+        """
+        cypher_query = f"""
+        MATCH (a:{subject.label.replace(" ", "")}) WHERE a.name = '{subject.name}'
+        MATCH (b:{to_object.label.replace(" ", "")}) WHERE b.name = '{to_object.name}'
+        CREATE (a)-[:{predicate.replace(" ", "_").upper()}]->(b)
+        RETURN a, b
+        """
+        result = self.driver.execute_query(cypher_query)
+        return result
+
+    def search_graph(self, nodes: list[Node]) -> list[Node]:
+        """
+        Search the graph for nodes and 1 degree relationships.
+        """
+        if not nodes:
+            return []
+
+        queries = []
+        for node in nodes:
+            query = f"""MATCH (n:{node.label}) WHERE n.name = '{node.name}'
+    OPTIONAL MATCH (n)-[r*1]-(m)
+    RETURN n, r, m"""
+            queries.append(query)
+
+        cypher_query = " UNION ".join(queries)
+        result = self.driver.execute_query(cypher_query)
+        return result
 
 
 _neo4j_client = Neo4jClient()

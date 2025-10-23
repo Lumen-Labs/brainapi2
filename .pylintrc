@@ -13,3 +13,6 @@ good-names=i,j,k,ex,Run,_,id,db,ai,llm
 
 [IMPORTS]
 extension-pkg-allow-list=chunker_cpp
+
+[IGNORE]
+C0103

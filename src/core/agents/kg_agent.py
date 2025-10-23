@@ -21,12 +21,7 @@ from src.constants.prompts.kg_agent import (
 )
 from src.core.agents.tools.kg_agent import (
     KGAgentAddTripletsTool,
-    KGAgentExecuteGraphOperationTool,
-    KGAgentAddNodesTool,
-    KGAgentAddRelationshipsTool,
-    KGAgentUpdateNodesTool,
-    KGAgentDeleteNodesTool,
-    KGAgentDeleteRelationshipsTool,
+    KGAgentSearchGraphTool,
 )
 
 
@@ -58,15 +53,8 @@ class KGAgent:
 
     def _get_tools(self, identification_params: dict, metadata: dict) -> List[BaseTool]:
         return [
-            KGAgentExecuteGraphOperationTool(
-                self, self.kg, self.kg.graphdb_description
-            ),
-            # KGAgentAddNodesTool(self, self.kg, identification_params, metadata),
             KGAgentAddTripletsTool(self, self.kg, identification_params, metadata),
-            # KGAgentAddRelationshipsTool(self, self.kg, self.kg.graphdb_description),
-            # KGAgentUpdateNodesTool(self, self.kg, self.kg.graphdb_description),
-            # KGAgentDeleteNodesTool(self, self.kg, self.kg.graphdb_description),
-            # KGAgentDeleteRelationshipsTool(self, self.kg, self.kg.graphdb_description),
+            KGAgentSearchGraphTool(self, self.kg, identification_params, metadata),
         ]
 
     def _get_agent(self, identification_params: dict, metadata: dict):
@@ -82,7 +70,6 @@ class KGAgent:
         """
         Search the knowledge graph for information.
         """
-        # TODO vector search and retrieval
 
     def update_kg(
         self,

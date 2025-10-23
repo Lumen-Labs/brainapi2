@@ -53,3 +53,25 @@ class GraphClient(ABC):
         Add nodes to the graph.
         """
         raise NotImplementedError("add_nodes method not implemented")
+
+    @abstractmethod
+    def add_relationship(
+        self,
+        subject: Node,
+        predicate: str,
+        to_object: Node,
+    ) -> str:
+        """
+        Add a relationship between two nodes to the graph.
+        """
+        raise NotImplementedError("add_relationship method not implemented")
+
+    @abstractmethod
+    def search_graph(
+        self,
+        nodes: list[Node],
+    ) -> list[Node]:
+        """
+        Search the graph for nodes and 1 degree relationships.
+        """
+        raise NotImplementedError("search_graph method not implemented")
