@@ -103,7 +103,7 @@ class MongoConfig:
 
     def __init__(self):
         self.host = os.getenv("MONGO_HOST")
-        self.port = int(os.getenv("MONGO_PORT"))
+        self.port = int(os.getenv("MONGO_PORT")) if os.getenv("MONGO_PORT") else None
         self.username = os.getenv("MONGO_USERNAME")
         self.password = os.getenv("MONGO_PASSWORD")
 

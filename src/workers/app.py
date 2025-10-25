@@ -8,12 +8,21 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 -----
 """
 
+import os
 from celery import Celery
 
 
 ingestion_app = Celery(
     "ingestion_app",
-    broker="amqp://kalo:kalo@localhost:5672/",
-    backend="rpc://",
+    broker=(
+        "amqp://kalo:kalo@localhost:5672/"
+        if os.getenv("CELERY_BACKEND") == "rabbitmq"
+        else "redis://localhost:6379/0"
+    ),
+    backend=(
+        "rpc://"
+        if os.getenv("CELERY_BACKEND") == "rabbitmq"
+        else "redis://localhost:6379/0"
+    ),
     include=["src.workers.tasks.ingestion"],
 )
