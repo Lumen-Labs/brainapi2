@@ -114,7 +114,9 @@ class KGAgentSearchGraphTool(BaseTool):
                 with_relationships=True,
                 relationships_depth=1,
                 relationships_type=[
-                    v_result.metadata["predicate"] for v_result in v_results
+                    v_result.metadata.get("predicate")
+                    for v_result in v_results
+                    if v_result.metadata.get("predicate", None)
                 ],
             )
         )

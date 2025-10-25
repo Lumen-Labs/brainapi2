@@ -80,9 +80,9 @@ class KGAgentAddTripletsTool(BaseTool):
         for triplet in triplets:
             vector = self.embeddings.embed_text(triplet.predicate.description)
             vector.metadata = {
+                **(self.metadata or {}),
                 "node_ids": [triplet.subject.uuid, triplet.object.uuid],
                 "predicate": triplet.predicate.name,
-                **(self.metadata or {}),
             }
             self.vector_store.add_vectors([vector], "triplets")
             self.kg.add_nodes(

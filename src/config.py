@@ -93,6 +93,21 @@ class EmbeddingsConfig:
         self.key = os.getenv("EMBEDDINGS_KEY")
 
 
+class MongoConfig:
+    """
+    Configuration class for the Mongo configuration.
+    """
+
+    def __init__(self):
+        self.host = os.getenv("MONGO_HOST")
+        self.port = int(os.getenv("MONGO_PORT"))
+        self.username = os.getenv("MONGO_USERNAME")
+        self.password = os.getenv("MONGO_PASSWORD")
+
+        if [self.host, self.port, self.username, self.password].count(None) > 0:
+            raise ValueError("Mongo configuration is not complete")
+
+
 class Config:
     """
     Configuration class for the application.
@@ -104,6 +119,7 @@ class Config:
         self.neo4j = Neo4jConfig()
         self.milvus = MilvusConfig()
         self.embeddings = EmbeddingsConfig()
+        self.mongo = MongoConfig()
 
 
 config = Config()

@@ -35,6 +35,15 @@ stop-neo4j:
 delete-neo4j-volumes:
 	docker compose -f src/lib/neo4j/docker-compose.yaml down -v --remove-orphans
 
+start-mongo:
+	docker compose -f src/lib/mongo/docker-compose.yaml up -d
+
+stop-mongo:
+	docker compose -f src/lib/mongo/docker-compose.yaml down
+
+delete-mongo-volumes:
+	docker compose -f src/lib/mongo/docker-compose.yaml down -v --remove-orphans
+
 start-api:
 	poetry run uvicorn src.services.api.app:app --host 0.0.0.0 --port 8000
 
@@ -52,6 +61,7 @@ start-all:
 	make start-rabbitmq &
 	make start-redis &
 	make start-neo4j &
+	make start-mongo &
 	make start-api &
 	@bash -c "poetry run celery -A src.workers.app worker --loglevel=info"
 
@@ -60,6 +70,7 @@ stop-all:
 	make stop-rabbitmq
 	make stop-redis
 	make stop-neo4j
+	make stop-mongo
 	make stop-api
 	pkill -f celery
 
@@ -68,3 +79,4 @@ clear-all-volumes:
 	make delete-rabbitmq-volumes
 	make delete-redis-volumes
 	make delete-neo4j-volumes
+	make delete-mongo-volumes

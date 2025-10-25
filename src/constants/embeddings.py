@@ -30,7 +30,7 @@ class Vector(BaseModel):
     """
 
     id: str
-    embeddings: Optional[list[float]]
+    embeddings: Optional[list[float]] = None
     metadata: dict
 
     distance: Optional[float] = Field(

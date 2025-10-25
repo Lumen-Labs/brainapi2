@@ -90,8 +90,16 @@ class GraphClient(ABC):
         with_relationships: Optional[bool] = False,
         relationships_depth: Optional[int] = 1,
         relationships_type: Optional[list[str]] = None,
+        preferred_labels: Optional[list[str]] = None,
     ) -> list[Node]:
         """
-        Get nodes by their UUIDs with optional relationships.
+        Get nodes by their UUIDs with optional relationships and preferred labels.
         """
         raise NotImplementedError("get_nodes_by_uuid method not implemented")
+
+    @abstractmethod
+    def get_graph_entities(self) -> list[str]:
+        """
+        Get the entities of the graph.
+        """
+        raise NotImplementedError("get_graph_entities method not implemented")

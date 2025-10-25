@@ -96,13 +96,24 @@ class GraphAdapter:
         with_relationships: Optional[bool] = False,
         relationships_depth: Optional[int] = 1,
         relationships_type: Optional[list[str]] = None,
+        preferred_labels: Optional[list[str]] = None,
     ) -> list[Node]:
         """
-        Get nodes by their UUIDs.
+        Get nodes by their UUIDs with optional relationships and preferred labels.
         """
         return self.graph.get_nodes_by_uuid(
-            uuids, with_relationships, relationships_depth, relationships_type
+            uuids,
+            with_relationships,
+            relationships_depth,
+            relationships_type,
+            preferred_labels,
         )
+
+    def get_graph_entities(self) -> list[str]:
+        """
+        Get the entities of the graph.
+        """
+        return self.graph.get_graph_entities()
 
 
 _graph_adapter = GraphAdapter()

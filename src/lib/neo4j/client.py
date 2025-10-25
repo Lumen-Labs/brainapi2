@@ -151,7 +151,7 @@ class Neo4jClient(GraphClient):
             Node(
                 uuid=node["uuid"],
                 name=node["name"],
-                label=node["label"],
+                label=(node["labels"][0] if node["labels"] else None),
                 description=node["description"],
                 properties=node["properties"],
             )
@@ -164,6 +164,7 @@ class Neo4jClient(GraphClient):
         with_relationships: Optional[bool] = False,
         relationships_depth: Optional[int] = 1,
         relationships_type: Optional[list[str]] = None,
+        preferred_labels: Optional[list[str]] = None,
     ) -> list[Node]:
         """
         Get nodes by their UUIDs with optional relationships.
@@ -182,6 +183,14 @@ class Neo4jClient(GraphClient):
                 cypher_query += f"""
                 OPTIONAL MATCH (n)-[r*1..{relationships_depth}]-(m)
                 """
+            if preferred_labels and len(preferred_labels) > 0:
+                cypher_query += f"""
+                WHERE any(lbl IN labels(m) WHERE lbl IN {preferred_labels})
+                """
+            cypher_query += """
+            WITH n, r, m
+            WHERE r IS NOT NULL OR m IS NOT NULL
+            """
 
         cypher_query += """
         RETURN n.uuid as uuid, n.name as name, labels(n) as labels, n.description as description, properties(n) as properties
@@ -218,6 +227,17 @@ class Neo4jClient(GraphClient):
                 )
                 for record in result.records
             ]
+
+    def get_graph_entities(self) -> list[str]:
+        """
+        Get the entities of the graph.
+        """
+        cypher_query = """
+        MATCH (n)
+        RETURN DISTINCT labels(n) as labels
+        """
+        result = self.driver.execute_query(cypher_query)
+        return [label for record in result.records for label in record["labels"]]
 
 
 _neo4j_client = Neo4jClient()

@@ -58,6 +58,7 @@ class MilvusClient(VectorStoreClient):
         Add vectors to the vector store.
         """
         self._ensure_store(store)
+        print("adding vectors", vectors)
         self.client.insert(
             store,
             [
@@ -78,19 +79,17 @@ class MilvusClient(VectorStoreClient):
         """
         self._ensure_store(store)
         _results = self.client.search(
-            store,
-            data=[data_vector],
-            limit=k,
+            store, data=[data_vector], limit=k, output_fields=["$meta"]
         )
         results = []
         for query_results in _results:
             for result in query_results:
                 results.append(
                     Vector(
-                        id=result["id"],
+                        id=str(result["id"]),
                         metadata={
                             k: v
-                            for k, v in result.items()
+                            for k, v in result.get("entity").items()
                             if k not in ["id", "embeddings", "distance"]
                         },
                         distance=result["distance"],

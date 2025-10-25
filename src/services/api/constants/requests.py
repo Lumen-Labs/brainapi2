@@ -8,6 +8,9 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 -----
 """
 
+from typing import List, Any
+from pydantic import BaseModel, field_serializer
+from src.constants.data import Observation, TextChunk
 from src.constants.tasks.ingestion import IngestionTaskArgs
 
 
@@ -15,3 +18,64 @@ class IngestionRequestBody(IngestionTaskArgs):
     """
     Request body for the ingestion endpoint.
     """
+
+
+class RetrieveRequestResponse(BaseModel):
+    """
+    Response for the retrieve endpoint.
+    """
+
+    data: List[TextChunk]
+    observations: List[Observation]
+    relationships: List[dict]
+
+    @field_serializer("relationships", when_used="json")
+    def _serialize_relationships(self, value: List[Any]):
+        try:
+            from neo4j.graph import (
+                Node as NeoNode,
+                Relationship as NeoRel,
+                Path as NeoPath,
+            )
+        except Exception:
+            NeoNode = NeoRel = NeoPath = tuple()
+        from src.constants.kg import Node as KGNode
+
+        def _ser(obj):
+            if obj is None:
+                return None
+            if isinstance(obj, (str, int, float, bool)):
+                return obj
+            if isinstance(obj, KGNode):
+                return obj.model_dump(mode="json")
+            if isinstance(obj, dict):
+                return {k: _ser(v) for k, v in obj.items()}
+            if isinstance(obj, (list, tuple, set)):
+                return [_ser(v) for v in obj]
+            if NeoNode and isinstance(obj, NeoNode):
+                d = dict(obj)
+                labels = getattr(obj, "labels", None)
+                if labels is not None:
+                    d["_labels"] = list(labels)
+                return d
+            if NeoRel and isinstance(obj, NeoRel):
+                d = dict(obj)
+                rel_type = getattr(obj, "type", None)
+                if rel_type is not None:
+                    d["_type"] = rel_type
+                try:
+                    nodes_attr = getattr(obj, "nodes", None)
+                    if nodes_attr:
+                        d["_start_id"] = getattr(nodes_attr[0], "id", None)
+                        d["_end_id"] = getattr(nodes_attr[1], "id", None)
+                except Exception:
+                    pass
+                return d
+            if NeoPath and isinstance(obj, NeoPath):
+                return {
+                    "nodes": [_ser(n) for n in obj.nodes],
+                    "relationships": [_ser(r) for r in obj.relationships],
+                }
+            return str(obj)
+
+        return [_ser(v) for v in value] if value is not None else []

@@ -9,7 +9,13 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 """
 
 import json
-from src.services.kg_agent.main import kg_agent
+from src.constants.data import Observation, TextChunk
+from src.services.data.main import data_adapter
+from src.services.kg_agent.main import (
+    embeddings_adapter,
+    kg_agent,
+    vector_store_adapter,
+)
 from src.services.observations.main import observations_agent
 from src.workers.app import ingestion_app
 from src.constants.tasks.ingestion import (
@@ -28,7 +34,25 @@ def ingest_data(self, args: dict):
     # ================================================
     # --------------- Data Saving --------------------
     # ================================================
-    pass
+    text_chunk = data_adapter.save_text_chunk(
+        TextChunk(
+            text=(
+                payload.data.text_data
+                if payload.data.data_type == IngestionTaskDataType.TEXT.value
+                else json.dumps(payload.data.json_data)
+            ),
+            metadata=payload.meta_keys,
+        )
+    )
+    text_chunk_vector = embeddings_adapter.embed_text(text_chunk.text)
+    text_chunk_vector.metadata = {
+        **payload.meta_keys,
+        "resource_id": text_chunk.id,
+    }
+    vector_store_adapter.add_vectors(
+        [text_chunk_vector],
+        "data",
+    )
 
     # ================================================
     # --------------- Observations -------------------
@@ -40,6 +64,16 @@ def ingest_data(self, args: dict):
             else json.dumps(payload.data.json_data)
         ),
         observate_for=payload.observate_for,
+    )
+    data_adapter.save_observations(
+        [
+            Observation(
+                text=observation,
+                metadata=payload.meta_keys,
+                resource_id=text_chunk.id,
+            )
+            for observation in observations
+        ]
     )
 
     # ================================================
@@ -56,7 +90,7 @@ def ingest_data(self, args: dict):
 
     kg_agent.update_kg(
         information=information,
-        metadata=payload.meta_keys,
+        metadata={**payload.meta_keys, "resource_id": text_chunk.id},
         identification_params=payload.identification_params,
     )
 

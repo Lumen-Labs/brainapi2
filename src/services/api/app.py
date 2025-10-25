@@ -14,10 +14,12 @@ from fastapi import FastAPI
 from uvicorn import run
 
 from src.services.api.routes.ingest import ingest_router
+from src.services.api.routes.retrieve import retrieve_router
 
 app = FastAPI()
 
 app.include_router(ingest_router)
+app.include_router(retrieve_router)
 
 if __name__ == "__main__":
     run(app, host="0.0.0.0", port=8000, reload=os.getenv("ENV") == "development")
