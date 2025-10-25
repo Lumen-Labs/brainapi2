@@ -83,7 +83,16 @@ clear-all-volumes:
 
 VERSION := $(shell poetry version -s)
 container-build:
-	docker build -t ghcr.io/lumen-labs/brainapi:v$(VERSION) ./
+	docker build --platform linux/amd64 -t ghcr.io/lumen-labs/brainapi:v$(VERSION) ./
+	docker tag ghcr.io/lumen-labs/brainapi:v$(VERSION) ghcr.io/lumen-labs/brainapi:latest
 
 container-push:
 	docker push ghcr.io/lumen-labs/brainapi:v$(VERSION)
+	docker push ghcr.io/lumen-labs/brainapi:latest
+
+container-release:
+	VERSION=$$(poetry version -s)
+	docker build --platform linux/amd64 -t ghcr.io/lumen-labs/brainapi:v$$VERSION ./
+	docker tag ghcr.io/lumen-labs/brainapi:v$$VERSION ghcr.io/lumen-labs/brainapi:latest
+	docker push ghcr.io/lumen-labs/brainapi:v$$VERSION
+	docker push ghcr.io/lumen-labs/brainapi:latest

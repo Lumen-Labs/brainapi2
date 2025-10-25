@@ -104,7 +104,11 @@ class MongoConfig:
         self.username = os.getenv("MONGO_USERNAME")
         self.password = os.getenv("MONGO_PASSWORD")
 
-        if [self.host, self.port, self.username, self.password].count(None) > 0:
+        self.connection_string = os.getenv("MONGO_CONNECTION_STRING")
+
+        if [self.host, self.port, self.username, self.password].count(
+            None
+        ) > 0 and not self.connection_string:
             raise ValueError("Mongo configuration is not complete")
 
 

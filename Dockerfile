@@ -19,7 +19,8 @@ RUN pip install poetry==1.8.3
 # Configure Poetry
 ENV POETRY_NO_INTERACTION=1 \
     POETRY_VENV_IN_PROJECT=1 \
-    POETRY_CACHE_DIR=/tmp/poetry_cache
+    POETRY_CACHE_DIR=/tmp/poetry_cache \
+    POETRY_VENV_PATH=/app/.venv
 
 # Set work directory
 WORKDIR /app
@@ -28,7 +29,8 @@ WORKDIR /app
 COPY pyproject.toml poetry.lock ./
 
 # Install dependencies
-RUN poetry install --no-root && rm -rf $POETRY_CACHE_DIR
+RUN poetry config virtualenvs.in-project true && \
+    poetry lock && poetry install --no-root --sync && rm -rf $POETRY_CACHE_DIR
 
 # Production stage
 FROM python:3.11-slim AS production

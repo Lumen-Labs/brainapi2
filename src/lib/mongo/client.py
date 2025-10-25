@@ -23,13 +23,19 @@ class MongoClient(DataClient):
     """
 
     def __init__(self):
-        self.client = PyMongoClient(
-            config.mongo.host,
-            config.mongo.port,
-            username=config.mongo.username,
-            password=config.mongo.password,
-            authSource="admin",
-        )
+        if (
+            hasattr(config.mongo, "connection_string")
+            and config.mongo.connection_string
+        ):
+            self.client = PyMongoClient(config.mongo.connection_string)
+        else:
+            self.client = PyMongoClient(
+                config.mongo.host,
+                config.mongo.port,
+                username=config.mongo.username,
+                password=config.mongo.password,
+                authSource="admin",
+            )
 
     def get_database(self, database: str = "data") -> Database:
         return self.client[database]
