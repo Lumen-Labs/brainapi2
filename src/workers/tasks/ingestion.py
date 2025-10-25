@@ -92,6 +92,7 @@ def ingest_data(self, args: dict):
         information=information,
         metadata={**payload.meta_keys, "resource_id": text_chunk.id},
         identification_params=payload.identification_params,
+        preferred_entities=payload.preferred_extraction_entities,
     )
 
     return self.request.id

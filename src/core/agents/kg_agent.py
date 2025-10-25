@@ -98,12 +98,19 @@ class KGAgent:
         information: str,
         metadata: Optional[dict],
         identification_params: Optional[dict],
+        preferred_entities: Optional[list[str]],
     ) -> str:
         """
         Update the knowledge graph with new information.
         """
 
         self._get_agent(identification_params, metadata)
+
+        preferred_entities_prompt = f"""
+        You must prioritize the extraction of the following entities: {preferred_entities}, 
+        search and extract triplets including these entities first.
+        """
+
         response = self.agent.invoke(
             {
                 "messages": [
@@ -111,6 +118,9 @@ class KGAgent:
                         "role": "user",
                         "content": KG_AGENT_UPDATE_PROMPT.format(
                             information=information,
+                            preferred_entities=(
+                                preferred_entities_prompt if preferred_entities else ""
+                            ),
                             metadata=metadata,
                             identification_params=identification_params,
                         ),

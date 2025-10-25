@@ -43,6 +43,8 @@ This is the information to update the knowledge graph:
 {information}
 == END OF INFORMATION ==
 
+{preferred_entities} 
+
 This are the provided parameters and information used to distinguish the nodes from each other, use this to identify, search and update nodes.
 {identification_params}
 
