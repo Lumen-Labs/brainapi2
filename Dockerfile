@@ -1,6 +1,10 @@
 # Multi-stage build for brainapi2
 FROM python:3.11-slim AS builder
 
+ARG BUILD_DATE
+ARG BUILD_SHA
+ARG CACHE_BUST
+
 # Set environment variables
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -35,6 +39,14 @@ RUN poetry config virtualenvs.in-project true && \
 # Production stage
 FROM python:3.11-slim AS production
 
+ARG BUILD_DATE
+ARG BUILD_SHA
+ARG CACHE_BUST
+
+LABEL build_date="${BUILD_DATE}" \
+      build_sha="${BUILD_SHA}" \
+      cache_bust="${CACHE_BUST}"
+
 # Set environment variables
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -59,9 +71,10 @@ COPY src/ ./src/
 
 # Change ownership to non-root user
 RUN chown -R appuser:appuser /app
+USER appuser
 
 # Switch to non-root user
-USER appuser
+USER root
 
 # Expose port
 EXPOSE 8000
@@ -71,4 +84,4 @@ HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8000/docs || exit 1
 
 # Default command
-CMD ["python", "-m", "uvicorn", "src.services.api.app:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["/app/.venv/bin/python", "-m", "uvicorn", "src.services.api.app:app", "--host", "0.0.0.0", "--port", "8000"]

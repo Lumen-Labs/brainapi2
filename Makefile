@@ -83,7 +83,7 @@ clear-all-volumes:
 
 VERSION := $(shell poetry version -s)
 container-build:
-	docker build --platform linux/amd64 -t ghcr.io/lumen-labs/brainapi:v$(VERSION) ./
+	docker build --no-cache --platform linux/amd64 -t ghcr.io/lumen-labs/brainapi:v$(VERSION) ./
 	docker tag ghcr.io/lumen-labs/brainapi:v$(VERSION) ghcr.io/lumen-labs/brainapi:latest
 
 container-push:
@@ -92,7 +92,10 @@ container-push:
 
 container-release:
 	VERSION=$$(poetry version -s)
-	docker build --platform linux/amd64 -t ghcr.io/lumen-labs/brainapi:v$$VERSION ./
+	BUILD_DATE=$$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+	BUILD_SHA=$$(git rev-parse HEAD || echo "unknown")
+	CACHE_BUST=$$(date +%s)
+	docker build --no-cache --build-arg BUILD_DATE="$$BUILD_DATE" --build-arg BUILD_SHA="$$BUILD_SHA" --build-arg CACHE_BUST="$$CACHE_BUST" --platform linux/amd64 -t ghcr.io/lumen-labs/brainapi:v$$VERSION ./
 	docker tag ghcr.io/lumen-labs/brainapi:v$$VERSION ghcr.io/lumen-labs/brainapi:latest
 	docker push ghcr.io/lumen-labs/brainapi:v$$VERSION
 	docker push ghcr.io/lumen-labs/brainapi:latest

@@ -36,7 +36,12 @@ class MilvusClient(VectorStoreClient):
         Lazy initialization of the Milvus client.
         """
         if self._client is None:
-            self._client = Milvus(host=config.milvus.host, port=config.milvus.port)
+            self._client = Milvus(
+                host=config.milvus.host,
+                port=config.milvus.port,
+                uri=config.milvus.uri,
+                token=config.milvus.token,
+            )
         return self._client
 
     def _ensure_store(self, store: str) -> None:

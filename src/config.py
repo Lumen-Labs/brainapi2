@@ -78,8 +78,11 @@ class MilvusConfig:
     def __init__(self):
         self.host = os.getenv("MILVUS_HOST")
         self.port = os.getenv("MILVUS_PORT")
-
-        if [self.host, self.port].count(None) > 0:
+        self.uri = os.getenv("MILVUS_URI")
+        self.token = os.getenv("MILVUS_TOKEN")
+        if [self.host, self.port].count(None) > 0 and [self.uri, self.token].count(
+            None
+        ) > 0:
             raise ValueError("Milvus configuration is not complete")
 
 
