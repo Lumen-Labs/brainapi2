@@ -1,9 +1,9 @@
-name: development
+name: Staging
 
 on:
     push:
         branches:
-            - main
+            - staging
 
 jobs:
     build-and-release:
