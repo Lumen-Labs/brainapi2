@@ -80,3 +80,10 @@ clear-all-volumes:
 	make delete-redis-volumes
 	make delete-neo4j-volumes
 	make delete-mongo-volumes
+
+VERSION := $(shell poetry version -s)
+container-build:
+	docker build -t ghcr.io/lumen-labs/brainapi:v$(VERSION) ./
+
+container-push:
+	docker push ghcr.io/lumen-labs/brainapi:v$(VERSION)
