@@ -101,3 +101,12 @@ container-release:
 	docker push ghcr.io/lumen-labs/brainapi:v$$VERSION
 	docker push ghcr.io/lumen-labs/brainapi:latest
 	git push origin v$$VERSION
+
+v-patch:
+	poetry version patch
+
+v-minor:
+	poetry version minor
+
+v-major:
+	poetry version major
