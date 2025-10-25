@@ -1,0 +1,62 @@
+name: Deploy per-user on tag
+
+on:
+    push:
+        tags:
+            - "brainapi@*@*@*@v*"
+
+jobs:
+    deploy:
+        runs-on: ubuntu-latest
+        permissions:
+            id-token: write
+            contents: read
+        env:
+            TF_IN_AUTOMATION: "true"
+        steps:
+            - uses: actions/checkout@v4
+            - name: Extract tag parts
+              id: parts
+              run: |
+                  TAG="${GITHUB_REF_NAME}"
+                  # brainapi@alice@europe-west8@pro@v0.4.2
+                  IFS='@' read -r APP USER REGION PLAN VERSION <<< "$TAG"
+                  echo "user_slug=$USER"    >> $GITHUB_OUTPUT
+                  echo "region=$REGION"     >> $GITHUB_OUTPUT
+                  echo "plan=$PLAN"         >> $GITHUB_OUTPUT
+                  echo "version=$VERSION"   >> $GITHUB_OUTPUT
+            - name: Setup Terraform
+              uses: hashicorp/setup-terraform@v3
+              with:
+                  terraform_version: 1.8.5
+                  cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }} # if using Terraform Cloud
+            - name: GCP Auth (OIDC)
+              uses: google-github-actions/auth@v2
+              with:
+                  workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+                  service_account: ${{ secrets.GCP_SA_EMAIL }}
+            - name: Configure gcloud (for provider ADC)
+              uses: google-github-actions/setup-gcloud@v2
+            - name: Terraform init
+              working-directory: infra
+              run: terraform init
+            - name: Select/Create workspace
+              working-directory: infra
+              run: |
+                  WS="${{ steps.parts.outputs.user_slug }}-${{ steps.parts.outputs.region }}"
+                  terraform workspace select "$WS" || terraform workspace new "$WS"
+            - name: Terraform apply
+              working-directory: infra
+              env:
+                  TF_VAR_gcp_project: ${{ secrets.GCP_PROJECT }}
+                  TF_VAR_cloudflare_api_token: ${{ secrets.CF_API_TOKEN }}
+                  TF_VAR_ghcr_username: ${{ secrets.GHCR_USER }}
+                  TF_VAR_ghcr_token: ${{ secrets.GHCR_TOKEN }}
+                  TF_VAR_zone_id: ${{ secrets.CF_ZONE_ID }}
+              run: |
+                  terraform apply -auto-approve \
+                    -var "user_slug=${{ steps.parts.outputs.user_slug }}" \
+                    -var "region=${{ steps.parts.outputs.region }}" \
+                    -var "plan=${{ steps.parts.outputs.plan }}" \
+                    -var "version=${{ steps.parts.outputs.version }}" \
+                    -var-file="plans/${{ steps.parts.outputs.plan }}.tfvars"
