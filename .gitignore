@@ -3,3 +3,6 @@
 volumes
 __pycache__
 *.excalidraw
+dist
+common.egg-info
+.venv

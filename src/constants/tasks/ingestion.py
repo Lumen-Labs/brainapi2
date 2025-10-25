@@ -68,3 +68,10 @@ class IngestionTaskArgs(BaseModel):
             "If not provided, the observations will be generic"
         ),
     )
+    preferred_extraction_entities: Optional[List[str]] = Field(
+        default=[],
+        description=(
+            "The entities that are preferred to be extracted from the data. "
+            "If not provided, the extraction will be done on all the entities in the data."
+        ),
+    )

@@ -8,10 +8,13 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 -----
 """
 
+import json
 from typing import Optional
 from langchain.tools import BaseTool
 
 from src.adapters.graph import GraphAdapter
+from src.adapters.embeddings import EmbeddingsAdapter, VectorStoreAdapter
+from src.constants.embeddings import Vector
 from src.constants.kg import Node
 
 
@@ -23,6 +26,8 @@ class KGAgentSearchGraphTool(BaseTool):
     name: str = "kg_agent_search_graph"
     kg_agent: object
     kg: GraphAdapter
+    vector_store: VectorStoreAdapter
+    embeddings: EmbeddingsAdapter
     identification_params: Optional[dict] = None
     metadata: Optional[dict] = None
 
@@ -63,6 +68,8 @@ class KGAgentSearchGraphTool(BaseTool):
         self,
         kg_agent,
         kg: GraphAdapter,
+        vector_store: VectorStoreAdapter,
+        embeddings: EmbeddingsAdapter,
         identification_params: Optional[dict] = None,
         metadata: Optional[dict] = None,
     ):
@@ -78,6 +85,8 @@ class KGAgentSearchGraphTool(BaseTool):
         super().__init__(
             kg_agent=kg_agent,
             kg=kg,
+            vector_store=vector_store,
+            embeddings=embeddings,
             description=description,
             identification_params=identification_params or {},
             metadata=metadata or {},
@@ -85,6 +94,29 @@ class KGAgentSearchGraphTool(BaseTool):
 
     def _run(self, *args, **kwargs) -> str:
         query = kwargs.get("query", "")
+        nodes = []
+        v_results: list[Vector] = []
+
+        if query:
+            query_embedding = self.embeddings.embed_text(query)
+            v_results = self.vector_store.search_vectors(
+                query_embedding.embeddings, "triplets"
+            )
+            nodes.extend(self.kg.node_text_search(query))
+
         nodes = kwargs.get("nodes", [])
         _nodes = [Node(name=node["name"], label=node["label"]) for node in nodes]
-        return self.kg.search_graph(nodes)
+        nodes.extend(self.kg.search_graph(_nodes))
+
+        nodes.extend(
+            self.kg.get_nodes_by_uuid(
+                [v_result.id for v_result in v_results],
+                with_relationships=True,
+                relationships_depth=1,
+                relationships_type=[
+                    v_result.metadata["predicate"] for v_result in v_results
+                ],
+            )
+        )
+
+        return json.dumps([node.model_dump(mode="json") for node in nodes])

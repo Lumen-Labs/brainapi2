@@ -23,6 +23,7 @@ from src.core.agents.tools.kg_agent import (
     KGAgentAddTripletsTool,
     KGAgentSearchGraphTool,
 )
+from src.adapters.embeddings import EmbeddingsAdapter, VectorStoreAdapter
 
 
 class KGAgent:
@@ -32,11 +33,18 @@ class KGAgent:
     """
 
     def __init__(
-        self, llm_adapter: LLMAdapter, cache_adapter: CacheAdapter, kg: GraphAdapter
+        self,
+        llm_adapter: LLMAdapter,
+        cache_adapter: CacheAdapter,
+        kg: GraphAdapter,
+        vector_store: VectorStoreAdapter,
+        embeddings: EmbeddingsAdapter,
     ):
         self.llm_adapter = llm_adapter
         self.cache_adapter = cache_adapter
         self.kg = kg
+        self.vector_store = vector_store
+        self.embeddings = embeddings
         self.agent = None
 
     def _execute_graph_operation(self, operation: str) -> str:
@@ -53,8 +61,22 @@ class KGAgent:
 
     def _get_tools(self, identification_params: dict, metadata: dict) -> List[BaseTool]:
         return [
-            KGAgentAddTripletsTool(self, self.kg, identification_params, metadata),
-            KGAgentSearchGraphTool(self, self.kg, identification_params, metadata),
+            KGAgentAddTripletsTool(
+                self,
+                self.kg,
+                self.vector_store,
+                self.embeddings,
+                identification_params,
+                metadata,
+            ),
+            KGAgentSearchGraphTool(
+                self,
+                self.kg,
+                self.vector_store,
+                self.embeddings,
+                identification_params,
+                metadata,
+            ),
         ]
 
     def _get_agent(self, identification_params: dict, metadata: dict):

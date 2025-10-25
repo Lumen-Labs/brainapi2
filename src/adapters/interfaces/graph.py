@@ -11,7 +11,7 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 from abc import ABC, abstractmethod
 from typing import Optional
 
-from src.constants.kg import Node
+from src.constants.kg import Node, Predicate
 
 
 class GraphClient(ABC):
@@ -58,7 +58,7 @@ class GraphClient(ABC):
     def add_relationship(
         self,
         subject: Node,
-        predicate: str,
+        predicate: Predicate,
         to_object: Node,
     ) -> str:
         """
@@ -75,3 +75,23 @@ class GraphClient(ABC):
         Search the graph for nodes and 1 degree relationships.
         """
         raise NotImplementedError("search_graph method not implemented")
+
+    @abstractmethod
+    def node_text_search(self, text: str) -> list[Node]:
+        """
+        Search the graph for nodes by partial text match into the name of the nodes.
+        """
+        raise NotImplementedError("node_text_search method not implemented")
+
+    @abstractmethod
+    def get_nodes_by_uuid(
+        self,
+        uuids: list[str],
+        with_relationships: Optional[bool] = False,
+        relationships_depth: Optional[int] = 1,
+        relationships_type: Optional[list[str]] = None,
+    ) -> list[Node]:
+        """
+        Get nodes by their UUIDs with optional relationships.
+        """
+        raise NotImplementedError("get_nodes_by_uuid method not implemented")

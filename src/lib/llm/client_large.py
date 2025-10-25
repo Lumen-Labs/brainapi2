@@ -15,6 +15,8 @@ from langchain_openai import AzureChatOpenAI
 from src.adapters.interfaces.llm import LLM
 from src.config import config
 
+# https://console.cloud.google.com/vertex-ai/publishers/google/model-garden/gemini-2.5-pro?authuser=2&hl=en&project=virtual-assistant-2-474207
+
 
 class LLMClientLarge(LLM):
     """

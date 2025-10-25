@@ -10,6 +10,7 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 
 import json
 from src.services.kg_agent.main import kg_agent
+from src.services.observations.main import observations_agent
 from src.workers.app import ingestion_app
 from src.constants.tasks.ingestion import (
     IngestionTaskArgs,
@@ -24,12 +25,37 @@ def ingest_data(self, args: dict):
     """
     payload = IngestionTaskArgs(**args)
 
-    kg_agent.update_kg(
-        information=(
+    # ================================================
+    # --------------- Data Saving --------------------
+    # ================================================
+    pass
+
+    # ================================================
+    # --------------- Observations -------------------
+    # ================================================
+    observations = observations_agent.observe(
+        text=(
             payload.data.text_data
             if payload.data.data_type == IngestionTaskDataType.TEXT.value
             else json.dumps(payload.data.json_data)
         ),
+        observate_for=payload.observate_for,
+    )
+
+    # ================================================
+    # ------------ Triplet Extraction ----------------
+    # ================================================
+    information = f"""
+    {payload.data.text_data
+            if payload.data.data_type == IngestionTaskDataType.TEXT.value
+            else json.dumps(payload.data.json_data)}
+            
+    Annotations:
+    {observations}
+    """
+
+    kg_agent.update_kg(
+        information=information,
         metadata=payload.meta_keys,
         identification_params=payload.identification_params,
     )

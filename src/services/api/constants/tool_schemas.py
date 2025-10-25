@@ -53,11 +53,21 @@ TRIPLE_SCHEMA = {
     "properties": {
         "subject": NODE_SCHEMA,
         "predicate": {
-            "type": "string",
-            "description": (
-                "The description of the predicate of the triple. "
-                "(can be a portion of the text where the predicate is found)"
-            ),
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "The string that identifies the predicate. (eg: is, has, works for, used by, etc.)",
+                },
+                "description": {
+                    "type": "string",
+                    "description": (
+                        "The description of the predicate of the triple. "
+                        "(can be a portion of the text where the predicate is found)"
+                    ),
+                },
+            },
+            "required": ["name", "description"],
         },
         "object": NODE_SCHEMA,
     },

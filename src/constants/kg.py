@@ -32,11 +32,20 @@ class Node(BaseModel):
         extra = Extra.allow
 
 
+class Predicate(BaseModel):
+    """
+    Predicate model.
+    """
+
+    name: str
+    description: str
+
+
 class Triple(BaseModel):
     """
     Triple model.
     """
 
     subject: Node
-    predicate: str
+    predicate: Predicate
     object: Node

@@ -25,13 +25,13 @@ class LLMAdapter:
         """
         self.llm = client
 
-    async def generate_text(self, prompt: str, max_new_tokens: int = None) -> str:
+    def generate_text(self, prompt: str, max_new_tokens: int = None) -> str:
         """
         Generate a text response from the model and return it as a string.
         """
         return self.llm.generate_text(prompt, max_new_tokens)
 
-    async def generate_json(
+    def generate_json(
         self, prompt: str, max_new_tokens: int = None, max_retries: int = 3
     ) -> dict:
         """

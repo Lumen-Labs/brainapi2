@@ -8,11 +8,12 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 -----
 """
 
-from typing import Optional
+from typing import List, Optional
 from langchain.tools import BaseTool
 
 from src.adapters.graph import GraphAdapter
-from src.constants.kg import Node, Triple
+from src.adapters.embeddings import EmbeddingsAdapter, VectorStoreAdapter
+from src.constants.kg import Node, Predicate, Triple
 from src.services.api.constants.tool_schemas import TRIPLE_SCHEMA
 
 
@@ -24,6 +25,8 @@ class KGAgentAddTripletsTool(BaseTool):
     name: str = "kg_agent_add_triplets"
     kg_agent: object
     kg: GraphAdapter
+    vector_store: VectorStoreAdapter
+    embeddings: EmbeddingsAdapter
     identification_params: Optional[dict] = None
     metadata: Optional[dict] = None
 
@@ -42,6 +45,8 @@ class KGAgentAddTripletsTool(BaseTool):
         self,
         kg_agent,
         kg: GraphAdapter,
+        vector_store: VectorStoreAdapter,
+        embeddings: EmbeddingsAdapter,
         identification_params: Optional[dict] = None,
         metadata: Optional[dict] = None,
     ):
@@ -52,23 +57,34 @@ class KGAgentAddTripletsTool(BaseTool):
         super().__init__(
             kg_agent=kg_agent,
             kg=kg,
+            vector_store=vector_store,
+            embeddings=embeddings,
             description=description,
             identification_params=identification_params or {},
             metadata=metadata or {},
         )
 
     def _run(self, *args, **kwargs) -> str:
-        triplets = []
+        triplets: List[Triple] = []
         for triplet_data in kwargs.get("triplets", []):
             subject = Node(**triplet_data["subject"])
             object_node = Node(**triplet_data["object"])
-
-            triplet = Triple(
-                subject=subject, predicate=triplet_data["predicate"], object=object_node
+            predicate = Predicate(
+                name=triplet_data["predicate"]["name"].replace(" ", "_").upper(),
+                description=triplet_data["predicate"]["description"],
             )
+
+            triplet = Triple(subject=subject, predicate=predicate, object=object_node)
             triplets.append(triplet)
 
         for triplet in triplets:
+            vector = self.embeddings.embed_text(triplet.predicate.description)
+            vector.metadata = {
+                "node_ids": [triplet.subject.uuid, triplet.object.uuid],
+                "predicate": triplet.predicate.name,
+                **(self.metadata or {}),
+            }
+            self.vector_store.add_vectors([vector], "triplets")
             self.kg.add_nodes(
                 [triplet.subject, triplet.object],
                 self.identification_params,

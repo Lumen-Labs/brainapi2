@@ -8,10 +8,11 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 -----
 """
 
+from typing import Optional
 from neo4j import GraphDatabase
 from src.adapters.interfaces.graph import GraphClient
 from src.config import config
-from src.constants.kg import Node
+from src.constants.kg import Node, Predicate
 
 
 class Neo4jClient(GraphClient):
@@ -103,7 +104,7 @@ class Neo4jClient(GraphClient):
     def add_relationship(
         self,
         subject: Node,
-        predicate: str,
+        predicate: Predicate,
         to_object: Node,
     ) -> str:
         """
@@ -112,7 +113,7 @@ class Neo4jClient(GraphClient):
         cypher_query = f"""
         MATCH (a:{subject.label.replace(" ", "")}) WHERE a.name = '{subject.name}'
         MATCH (b:{to_object.label.replace(" ", "")}) WHERE b.name = '{to_object.name}'
-        CREATE (a)-[:{predicate.replace(" ", "_").upper()}]->(b)
+        CREATE (a)-[:{predicate.name.replace(" ", "_").upper()}]->(b)
         RETURN a, b
         """
         result = self.driver.execute_query(cypher_query)
@@ -135,6 +136,88 @@ class Neo4jClient(GraphClient):
         cypher_query = " UNION ".join(queries)
         result = self.driver.execute_query(cypher_query)
         return result
+
+    def node_text_search(self, text: str) -> list[Node]:
+        """
+        Search the graph for nodes by partial text match into the name of the nodes.
+        """
+        cypher_query = f"""
+        MATCH (n) 
+        WHERE toLower(n.name) CONTAINS toLower('{text}')
+        RETURN n.uuid as uuid, n.name as name, labels(n) as labels, n.description as description, properties(n) as properties
+        """
+        result = self.driver.execute_query(cypher_query)
+        return [
+            Node(
+                uuid=node["uuid"],
+                name=node["name"],
+                label=node["label"],
+                description=node["description"],
+                properties=node["properties"],
+            )
+            for node in result.records
+        ]
+
+    def get_nodes_by_uuid(
+        self,
+        uuids: list[str],
+        with_relationships: Optional[bool] = False,
+        relationships_depth: Optional[int] = 1,
+        relationships_type: Optional[list[str]] = None,
+    ) -> list[Node]:
+        """
+        Get nodes by their UUIDs with optional relationships.
+        """
+        cypher_query = f"""
+        MATCH (n) WHERE n.uuid IN {uuids}
+        """
+
+        if with_relationships:
+            if relationships_type and len(relationships_type) > 0:
+                rel_pattern = "|".join(relationships_type)
+                cypher_query += f"""
+                OPTIONAL MATCH (n)-[r:{rel_pattern}*1..{relationships_depth}]-(m)
+                """
+            else:
+                cypher_query += f"""
+                OPTIONAL MATCH (n)-[r*1..{relationships_depth}]-(m)
+                """
+
+        cypher_query += """
+        RETURN n.uuid as uuid, n.name as name, labels(n) as labels, n.description as description, properties(n) as properties
+        """
+
+        if with_relationships:
+            cypher_query += ", r, m"
+
+        result = self.driver.execute_query(cypher_query)
+
+        if with_relationships:
+            return [
+                {
+                    "node": Node(
+                        uuid=record["uuid"],
+                        name=record["name"],
+                        label=(record["labels"][0] if record["labels"] else None),
+                        description=record["description"],
+                        properties=record["properties"],
+                    ),
+                    "relationships": record["r"] if record["r"] else None,
+                    "related_nodes": record["m"] if record["m"] else None,
+                }
+                for record in result.records
+            ]
+        else:
+            return [
+                Node(
+                    uuid=record["uuid"],
+                    name=record["name"],
+                    label=(record["labels"][0] if record["labels"] else None),
+                    description=record["description"],
+                    properties=record["properties"],
+                )
+                for record in result.records
+            ]
 
 
 _neo4j_client = Neo4jClient()
