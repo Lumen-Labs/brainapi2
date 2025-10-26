@@ -36,12 +36,23 @@ class MilvusClient(VectorStoreClient):
         Lazy initialization of the Milvus client.
         """
         if self._client is None:
-            self._client = Milvus(
-                host=config.milvus.host,
-                port=config.milvus.port,
-                uri=config.milvus.uri,
-                token=config.milvus.token,
-            )
+            if config.milvus.uri and config.milvus.token:
+                if not config.milvus.uri.startswith(("http://", "https://")):
+                    uri = f"https://{config.milvus.uri}"
+                else:
+                    uri = config.milvus.uri
+                self._client = Milvus(
+                    uri=uri,
+                    token=config.milvus.token,
+                )
+            elif config.milvus.host and config.milvus.port:
+                self._client = Milvus(
+                    host=config.milvus.host,
+                    port=config.milvus.port,
+                    token=config.milvus.token if config.milvus.token else None,
+                )
+            else:
+                raise ValueError("Invalid Milvus configuration")
         return self._client
 
     def _ensure_store(self, store: str) -> None:
