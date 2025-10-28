@@ -14,7 +14,7 @@ from pymongo.database import Database
 from pymongo.collection import Collection
 from src.adapters.interfaces.data import DataClient, SearchResult
 from src.config import config
-from src.constants.data import Observation, TextChunk
+from src.constants.data import Observation, StructuredData, TextChunk
 
 
 class MongoClient(DataClient):
@@ -118,6 +118,11 @@ class MongoClient(DataClient):
                 else []
             ),
         )
+
+    def save_structured_data(self, structured_data: StructuredData) -> StructuredData:
+        collection = self.get_collection("structured_data")
+        collection.insert_one(structured_data.model_dump(mode="json"))
+        return structured_data
 
 
 _mongo_client = MongoClient()

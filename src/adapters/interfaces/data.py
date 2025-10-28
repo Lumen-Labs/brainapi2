@@ -13,7 +13,7 @@ from typing import List, Tuple
 
 from pydantic import BaseModel
 
-from src.constants.data import Observation, TextChunk
+from src.constants.data import Observation, StructuredData, TextChunk
 
 
 class SearchResult(BaseModel):
@@ -59,3 +59,10 @@ class DataClient(ABC):
         Get data by their IDs.
         """
         raise NotImplementedError("get_by_ids method not implemented")
+
+    @abstractmethod
+    def save_structured_data(self, structured_data: StructuredData) -> StructuredData:
+        """
+        Save a structured data to the data client.
+        """
+        raise NotImplementedError("save_structured_data method not implemented")

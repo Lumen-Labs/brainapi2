@@ -10,7 +10,7 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 
 from typing import List, Tuple
 from src.adapters.interfaces.data import DataClient, SearchResult
-from src.constants.data import Observation, TextChunk
+from src.constants.data import Observation, StructuredData, TextChunk
 
 
 class DataAdapter:
@@ -52,3 +52,9 @@ class DataAdapter:
         Get data by their IDs.
         """
         return self.data.get_text_chunks_by_ids(ids, with_observations)
+
+    def save_structured_data(self, structured_data: StructuredData) -> StructuredData:
+        """
+        Save a structured data to the data client.
+        """
+        return self.data.save_structured_data(structured_data)

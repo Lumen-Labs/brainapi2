@@ -58,11 +58,12 @@ class GraphAdapter:
         nodes: list[Node],
         identification_params: Optional[dict],
         metadata: Optional[dict],
+        database: Optional[str] = None,
     ) -> list[Node] | str:
         """
         Add nodes to the graph.
         """
-        return self.graph.add_nodes(nodes, identification_params, metadata)
+        return self.graph.add_nodes(nodes, identification_params, metadata, database)
 
     def add_relationship(
         self,
@@ -97,7 +98,7 @@ class GraphAdapter:
         relationships_depth: Optional[int] = 1,
         relationships_type: Optional[list[str]] = None,
         preferred_labels: Optional[list[str]] = None,
-    ) -> list[Node]:
+    ) -> list[dict]:
         """
         Get nodes by their UUIDs with optional relationships and preferred labels.
         """
@@ -114,6 +115,18 @@ class GraphAdapter:
         Get the entities of the graph.
         """
         return self.graph.get_graph_entities()
+
+    def get_by_uuid(self, uuid: str) -> Node:
+        """
+        Get a node by its UUID.
+        """
+        return self.graph.get_by_uuid(uuid)
+
+    def get_by_uuids(self, uuids: list[str]) -> list[Node]:
+        """
+        Get nodes by their UUIDs.
+        """
+        return self.graph.get_by_uuids(uuids)
 
 
 _graph_adapter = GraphAdapter()

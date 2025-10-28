@@ -55,6 +55,21 @@ identify nodes or be standalone nodes:
 Begin!
 """
 
+KG_AGENT_UPDATE_STRUCTURED_PROMPT = """
+You are given a main node and a textual information about the main node. 
+Your triplets must be related somehow to the main node, directly or indirectly.
+
+This is the main node who's information is about:
+{main_node}
+
+This is the information about the main node:
+== START OF INFORMATION ==
+{textual_data}
+== END OF INFORMATION ==
+
+Begin!
+"""
+
 KG_AGENT_SYSTEM_PROMPT = """
 You are a knowledge extraction model specialized in converting natural language into structured semantic triplets for use in knowledge graphs and memory-based AI systems.
 Your output must be precise, unambiguous, and complete, covering every meaningful relation in the text.

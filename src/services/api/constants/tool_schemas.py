@@ -11,14 +11,17 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 NODE_SCHEMA = {
     "type": "object",
     "properties": {
-        "label": {
-            "type": "string",
-            "description": (
-                "The category of the node, "
-                "identifying the type of node. "
-                "(eg: Person, Organization, "
-                "Location, Product, Service, Event, etc.)"
-            ),
+        "labels": {
+            "type": "array",
+            "items": {
+                "type": "string",
+                "description": (
+                    "The category of the node, "
+                    "identifying the type of node. "
+                    "(eg: Person, Organization, "
+                    "Location, Product, Service, Event, etc.)"
+                ),
+            },
         },
         "name": {
             "type": "string",
@@ -45,7 +48,7 @@ NODE_SCHEMA = {
             "additionalProperties": True,
         },
     },
-    "required": ["label", "name"],
+    "required": ["labels", "name"],
 }
 
 TRIPLE_SCHEMA = {

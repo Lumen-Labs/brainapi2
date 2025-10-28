@@ -15,9 +15,11 @@ from langchain.tools import BaseTool
 from src.adapters.cache import CacheAdapter
 from src.adapters.graph import GraphAdapter
 from src.adapters.llm import LLMAdapter
+from src.constants.kg import Node
 from src.constants.prompts.kg_agent import (
     KG_AGENT_SYSTEM_PROMPT,
     KG_AGENT_UPDATE_PROMPT,
+    KG_AGENT_UPDATE_STRUCTURED_PROMPT,
 )
 from src.core.agents.tools.kg_agent import (
     KGAgentAddTripletsTool,
@@ -123,6 +125,32 @@ class KGAgent:
                             ),
                             metadata=metadata,
                             identification_params=identification_params,
+                        ),
+                    }
+                ],
+            },
+            print_mode="debug",
+            config={"recursion_limit": 50},
+        )
+        return response
+
+    def structured_update_kg(
+        self, main_node: Node, textual_data: dict, identification_params: dict
+    ) -> str:
+        """
+        Update the knowledge graph with new structured information.
+        """
+
+        self._get_agent(identification_params, metadata={})
+
+        response = self.agent.invoke(
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": KG_AGENT_UPDATE_STRUCTURED_PROMPT.format(
+                            textual_data=textual_data,
+                            main_node=main_node,
                         ),
                     }
                 ],

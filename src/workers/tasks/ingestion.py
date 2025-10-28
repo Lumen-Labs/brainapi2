@@ -9,10 +9,14 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 """
 
 import json
-from src.constants.data import Observation, TextChunk
+from uuid import uuid4
+from src.constants.data import Observation, StructuredData, TextChunk
+from src.constants.kg import Node
+from src.services.api.constants.requests import IngestionStructuredRequestBody
 from src.services.data.main import data_adapter
 from src.services.kg_agent.main import (
     embeddings_adapter,
+    graph_adapter,
     kg_agent,
     vector_store_adapter,
 )
@@ -30,6 +34,26 @@ def ingest_data(self, args: dict):
     Ingest data into the database.
     """
     payload = IngestionTaskArgs(**args)
+
+    payload.meta_keys = (
+        {
+            f"{k.replace(' ', '_').lower()}": v
+            for k, v in payload.meta_keys.items()
+            if v is not None
+        }
+        if payload.meta_keys
+        else None
+    )
+
+    payload.identification_params = (
+        {
+            f"{k.replace(' ', '_').lower()}": v
+            for k, v in payload.identification_params.items()
+            if v is not None
+        }
+        if payload.identification_params
+        else None
+    )
 
     # ================================================
     # --------------- Data Saving --------------------
@@ -65,6 +89,7 @@ def ingest_data(self, args: dict):
         ),
         observate_for=payload.observate_for,
     )
+    print("[observations]", observations, type(observations))
     data_adapter.save_observations(
         [
             Observation(
@@ -94,5 +119,122 @@ def ingest_data(self, args: dict):
         identification_params=payload.identification_params,
         preferred_entities=payload.preferred_extraction_entities,
     )
+
+    return self.request.id
+
+
+@ingestion_app.task(bind=True)
+def ingest_structured_data(self, args: dict):
+    """
+    Ingest structured data into the database.
+    """
+    payload = IngestionStructuredRequestBody(**args)
+
+    for element in payload.data:
+        uuid = str(uuid4())
+        print("[uuid]", uuid)
+        node = graph_adapter.add_nodes(
+            [
+                Node(
+                    uuid=uuid,
+                    labels=element.types,
+                    name=element.identification_params.name,
+                    properties=element.json_data,
+                )
+            ],
+            identification_params=element.identification_params,
+            metadata=element.textual_data,
+        )[0]
+        vector = embeddings_adapter.embed_text(node.name)
+        vector.id = node.uuid
+        vector.metadata = {
+            "labels": node.labels,
+            "name": node.name,
+            "uuid": node.uuid,
+        }
+        vector_store_adapter.add_vectors(vectors=[vector], store="nodes")
+
+        data_adapter.save_structured_data(
+            StructuredData(
+                id=uuid,
+                data=element.json_data,
+                types=element.types,
+                metadata={
+                    "identification_params": element.identification_params,
+                    "textual_data": element.textual_data,
+                    "labels": element.types,
+                    "name": element.identification_params.name,
+                },
+            )
+        )
+        vector = embeddings_adapter.embed_text(
+            "\n".join(
+                [
+                    (
+                        v
+                        if isinstance(v, str)
+                        else (", ".join(v) if isinstance(v, list) else str(v))
+                    )
+                    for v in element.textual_data.values()
+                ]
+            )
+            + "\n"
+            + (", ".join(node.labels) if isinstance(node.labels, list) else node.labels)
+            + "\n"
+            + node.name
+        )
+        vector.id = node.uuid
+        vector.metadata = {
+            "labels": node.labels,
+            "name": node.name,
+            "uuid": node.uuid,
+        }
+        vector_store_adapter.add_vectors(vectors=[vector], store="data")
+
+        text_content = "\n".join(
+            [
+                (
+                    f"{k}: {v}"
+                    if isinstance(v, str)
+                    else (f"{k}: {', '.join(v) if isinstance(v, list) else str(v)}")
+                )
+                for k, v in element.textual_data.items()
+            ]
+        )
+        observations = observations_agent.observe(
+            text=text_content,
+            observate_for=payload.observate_for,
+        )
+        for obs in observations:
+            obs_vector = embeddings_adapter.embed_text(obs)
+            obs_vector.id = str(uuid4())
+            obs_vector.metadata = {
+                "resource_id": node.uuid,
+                "labels": node.labels,
+                "name": node.name,
+            }
+            vector_store_adapter.add_vectors(vectors=[obs_vector], store="observations")
+        if len(observations) > 0:
+            data_adapter.save_observations(
+                [
+                    Observation(
+                        id=node.uuid,
+                        text=obs,
+                        metadata={
+                            "labels": node.labels,
+                            "name": node.name,
+                        },
+                        resource_id=node.uuid,
+                    )
+                    for obs in observations
+                ]
+            )
+
+        # TODO: + vectorize the predicates and new nodes + save changelog&vectors
+        kg_agent.structured_update_kg(
+            main_node=node,
+            textual_data=element.textual_data,
+            identification_params=element.identification_params.model_dump(mode="json"),
+        )
 
     return self.request.id

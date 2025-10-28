@@ -8,14 +8,18 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 -----
 """
 
-import asyncio
-from typing import List
 from fastapi import APIRouter, Query
 
-from src.services.api.constants.requests import RetrieveRequestResponse
-from src.services.data.main import data_adapter
-from src.services.kg_agent.main import embeddings_adapter, vector_store_adapter
-from src.services.kg_agent.main import graph_adapter
+from src.services.api.constants.requests import (
+    RetrieveRequestResponse,
+    RetrieveNeighborsRequestResponse,
+)
+from src.services.api.controllers.retrieve import (
+    retrieve_neighbors as retrieve_neighbors_controller,
+)
+from src.services.api.controllers.retrieve import (
+    retrieve_data as retrieve_data_controller,
+)
 
 retrieve_router = APIRouter(prefix="/retrieve", tags=["retrieve"])
 
@@ -24,58 +28,32 @@ retrieve_router = APIRouter(prefix="/retrieve", tags=["retrieve"])
 async def retrieve(
     text: str = Query(..., description="The text to search for."),
     limit: int = Query(10, description="The number of results to return."),
-    preferred_entities: List[str] = Query(
-        ..., description="The entities to prioritize in the relationships."
+    preferred_entities: str = Query(
+        ...,
+        description="The entities to prioritize in the relationships, separated by commas.",
     ),
 ):
     """
     Retrieve data from the knowledge graph and data store.
     """
+    return await retrieve_data_controller(text, limit, preferred_entities)
 
-    def _get_data():
-        text_embeddings = embeddings_adapter.embed_text(text)
-        data_vectors = vector_store_adapter.search_vectors(
-            text_embeddings.embeddings, "data", limit
-        )
-        triple_vectors = vector_store_adapter.search_vectors(
-            text_embeddings.embeddings, "triplets", limit
-        )
 
-        search_result = data_adapter.search(text)
+@retrieve_router.get(
+    "/entities/neighbors", response_model=RetrieveNeighborsRequestResponse
+)
+async def get_neighbors(
+    uuid: str = Query(..., description="The UUID of the entity to get neighbors for."),
+    limit: int = Query(10, description="The number of neighbors to return."),
+):
+    """
+    Get the neighbors of an entity.
+    """
+    return await retrieve_neighbors_controller(uuid, limit)
 
-        ts_text_chunks = search_result.text_chunks
-        ts_observations = search_result.observations
 
-        v_text_chunks, v_observations = data_adapter.get_text_chunks_by_ids(
-            [dv.metadata.get("resource_id") for dv in data_vectors], True
-        )
-
-        node_ids = [
-            node_id
-            for tv in triple_vectors
-            for node_id in tv.metadata.get("node_ids", [])
-        ]
-
-        nodes = graph_adapter.get_nodes_by_uuid(
-            uuids=node_ids,
-            with_relationships=True,
-            relationships_depth=1,
-            relationships_type=[
-                tv.metadata.get("predicate")
-                for tv in triple_vectors
-                if tv.metadata.get("predicate", None)
-            ],
-            preferred_labels=preferred_entities or [],
-        )
-
-        return ts_text_chunks, ts_observations, v_text_chunks, v_observations, nodes
-
-    ts_text_chunks, ts_observations, v_text_chunks, v_observations, nodes = (
-        await asyncio.to_thread(_get_data)
-    )
-
-    return RetrieveRequestResponse(
-        data=[*ts_text_chunks, *v_text_chunks],
-        observations=[*ts_observations, *v_observations],
-        relationships=nodes,
-    )
+@retrieve_router.post("/context")
+async def get_context(request):
+    """
+    Get the context of an entity.
+    """

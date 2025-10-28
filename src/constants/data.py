@@ -9,7 +9,7 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 """
 
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 import uuid
 from pydantic import BaseModel, Field
 
@@ -28,6 +28,23 @@ class TextChunk(BaseModel):
     )
 
 
+class StructuredData(BaseModel):
+    """
+    Structured data model.
+    """
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    data: dict = Field(description="The json data rapresenting the structured element.")
+    types: List[str] = Field(
+        description="A list of types, used to categorize the data."
+    )
+    metadata: Optional[dict] = None
+    inserted_at: datetime = Field(
+        default_factory=datetime.now,
+        description="The date and time the structured data was inserted.",
+    )
+
+
 class Observation(BaseModel):
     """
     Observation model.
@@ -42,4 +59,25 @@ class Observation(BaseModel):
     inserted_at: datetime = Field(
         default_factory=datetime.now,
         description="The date and time the observation was inserted.",
+    )
+
+
+class KGChanges(BaseModel):
+    """
+    KG changes model.
+    """
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+
+    node_ids: Optional[List[str]] = Field(
+        default=None, description="The id of the node that was changed."
+    )
+    predicate_id: Optional[str] = Field(
+        default=None, description="The id of the predicate that was changed."
+    )
+
+    changelog: List[dict] = Field(description="The changelog of the changes.")
+    date: datetime = Field(
+        default_factory=datetime.now,
+        description="The date and time the changes were made.",
     )
