@@ -11,18 +11,22 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 from typing import List, Optional
 from langchain.agents import create_agent
 from langchain.tools import BaseTool
+from pydantic import BaseModel
 
 from src.adapters.cache import CacheAdapter
 from src.adapters.graph import GraphAdapter
 from src.adapters.llm import LLMAdapter
 from src.constants.kg import Node
+from src.constants.output_schemas import RetrieveNeighborsOutputSchema
 from src.constants.prompts.kg_agent import (
+    KG_AGENT_RETRIEVE_NEIGHBORS_PROMPT,
     KG_AGENT_SYSTEM_PROMPT,
     KG_AGENT_UPDATE_PROMPT,
     KG_AGENT_UPDATE_STRUCTURED_PROMPT,
 )
 from src.core.agents.tools.kg_agent import (
     KGAgentAddTripletsTool,
+    KGAgentExecuteGraphOperationTool,
     KGAgentSearchGraphTool,
 )
 from src.adapters.embeddings import EmbeddingsAdapter, VectorStoreAdapter
@@ -41,6 +45,7 @@ class KGAgent:
         kg: GraphAdapter,
         vector_store: VectorStoreAdapter,
         embeddings: EmbeddingsAdapter,
+        database_desc: str,
     ):
         self.llm_adapter = llm_adapter
         self.cache_adapter = cache_adapter
@@ -48,6 +53,7 @@ class KGAgent:
         self.vector_store = vector_store
         self.embeddings = embeddings
         self.agent = None
+        self.database_desc = database_desc
 
     def _execute_graph_operation(self, operation: str) -> str:
         try:
@@ -81,13 +87,23 @@ class KGAgent:
             ),
         ]
 
-    def _get_agent(self, identification_params: dict, metadata: dict):
-        system_prompt = KG_AGENT_SYSTEM_PROMPT
+    def _get_agent(
+        self,
+        identification_params: dict,
+        metadata: dict,
+        tools: Optional[List[BaseTool]] = None,
+        output_schema: Optional[BaseModel] = None,
+        extra_system_prompt: Optional[dict] = None,
+    ):
+        system_prompt = KG_AGENT_SYSTEM_PROMPT.format(
+            extra_system_prompt=extra_system_prompt if extra_system_prompt else ""
+        )
 
         self.agent = create_agent(
             model=self.llm_adapter.llm.langchain_model,
-            tools=self._get_tools(identification_params, metadata),
+            tools=tools if tools else self._get_tools(identification_params, metadata),
             system_prompt=system_prompt,
+            response_format=output_schema if output_schema else None,
         )
 
     def search_kg(self, query: str) -> str:
@@ -158,4 +174,66 @@ class KGAgent:
             print_mode="debug",
             config={"recursion_limit": 50},
         )
+        return response
+
+    def retrieve_neighbors(
+        self, node: Node, looking_for: Optional[str], limit: int
+    ) -> RetrieveNeighborsOutputSchema:
+        """
+        Retrieve the neighbors of a node.
+        """
+
+        graph_db_prop_keys = self.kg.get_graph_property_keys()
+        graph_db_relationships = self.kg.get_graph_relationships()
+        graph_db_entities = self.kg.get_graph_entities()
+
+        print("[graph_db_prop_keys]", graph_db_prop_keys)
+        print("[graph_db_relationships]", graph_db_relationships)
+        print("[graph_db_entities]", graph_db_entities)
+
+        extra_system_prompt_str = f"""
+        The following are the information and schemas about the db, you must only use the following information to operate with the db:
+        {{
+            "property_keys": {graph_db_prop_keys},
+            "relationships": {graph_db_relationships},
+            "entities": {graph_db_entities},
+        }}
+        """
+
+        self._get_agent(
+            identification_params={},
+            metadata={},
+            tools=[
+                KGAgentExecuteGraphOperationTool(
+                    self,
+                    self.kg,
+                    self.database_desc,
+                )
+            ],
+            output_schema=RetrieveNeighborsOutputSchema,
+            extra_system_prompt=extra_system_prompt_str,
+        )
+
+        looking_for_prompt = f"""
+        You must look for neighbors for the main node considering this reasons:
+        {" ".join([f"- {reason}" for reason in looking_for])}
+        """
+
+        _response = self.agent.invoke(
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": KG_AGENT_RETRIEVE_NEIGHBORS_PROMPT.format(
+                            main_node=node, looking_for=looking_for_prompt, limit=limit
+                        ),
+                    }
+                ],
+            },
+            config={"recursion_limit": 50},
+            print_mode="debug",
+        )
+
+        response = _response.get("structured_response")
+
         return response

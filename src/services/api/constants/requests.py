@@ -8,6 +8,7 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 -----
 """
 
+from turtle import st
 from typing import List, Any, Optional
 from pydantic import BaseModel, Field, field_serializer
 from src.constants.data import Observation, TextChunk
@@ -137,3 +138,31 @@ class RetrieveNeighborsRequestResponse(BaseModel):
     """
 
     neighbors: List[RetrievedNeighborNode]
+
+
+class RetrieveNeighborsAiModeRequestBody(BaseModel):
+    """
+    Request body for the retrieve neighbors AI mode endpoint.
+    """
+
+    identification_params: IdentificationParams = Field(
+        ...,
+        description="The identification parameters of the entity to get neighbors for.",
+    )
+    limit: int = Field(10, description="The number of neighbors to return.")
+    looking_for: Optional[list[str]] = Field(
+        ...,
+        description="The description of the neighbors to look for.",
+    )
+
+
+class RetrieveNeighborsWithIdentificationParamsRequestBody(BaseModel):
+    """
+    Request body for the retrieve neighbors with identification params endpoint.
+    """
+
+    identification_params: IdentificationParams = Field(
+        ...,
+        description="The identification parameters of the entity to get neighbors for.",
+    )
+    limit: int = Field(10, description="The number of neighbors to return.")

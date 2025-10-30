@@ -139,7 +139,14 @@ def ingest_structured_data(self, args: dict):
                     uuid=uuid,
                     labels=element.types,
                     name=element.identification_params.name,
-                    properties=element.json_data,
+                    properties={
+                        **(element.json_data if element.json_data else {}),
+                        **(
+                            element.identification_params.model_dump(mode="json")
+                            if element.identification_params
+                            else {}
+                        ),
+                    },
                 )
             ],
             identification_params=element.identification_params,

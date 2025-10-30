@@ -8,14 +8,18 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 -----
 """
 
-from fastapi import APIRouter, Query
+from typing import Optional
+from fastapi import APIRouter, Body, Query
 
 from src.services.api.constants.requests import (
+    RetrieveNeighborsAiModeRequestBody,
+    RetrieveNeighborsWithIdentificationParamsRequestBody,
     RetrieveRequestResponse,
     RetrieveNeighborsRequestResponse,
 )
 from src.services.api.controllers.retrieve import (
     retrieve_neighbors as retrieve_neighbors_controller,
+    retrieve_neighbors_ai_mode as retrieve_neighbors_ai_mode_controller,
 )
 from src.services.api.controllers.retrieve import (
     retrieve_data as retrieve_data_controller,
@@ -49,7 +53,36 @@ async def get_neighbors(
     """
     Get the neighbors of an entity.
     """
-    return await retrieve_neighbors_controller(uuid, limit)
+    return await retrieve_neighbors_controller(uuid=uuid, limit=limit)
+
+
+@retrieve_router.post(
+    "/entities/neighbors", response_model=RetrieveNeighborsRequestResponse
+)
+async def get_neighbors_with_identification_params(
+    request: RetrieveNeighborsWithIdentificationParamsRequestBody,
+):
+    """
+    Get the neighbors of an entity.
+    """
+    return await retrieve_neighbors_controller(
+        identification_params=request.identification_params, limit=request.limit
+    )
+
+
+@retrieve_router.post("/entities/neighbors/ai-mode")
+async def get_neighbors_ai_mode(
+    request: RetrieveNeighborsAiModeRequestBody = Body(
+        ...,
+        description="The request body for the retrieve neighbors AI mode endpoint.",
+    ),
+):
+    """
+    Get the neighbors of an entity in AI mode.
+    """
+    return await retrieve_neighbors_ai_mode_controller(
+        request.identification_params, request.looking_for, request.limit
+    )
 
 
 @retrieve_router.post("/context")

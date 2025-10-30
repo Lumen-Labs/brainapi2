@@ -43,4 +43,5 @@ kg_agent = KGAgent(
     kg=graph_adapter,
     vector_store=vector_store_adapter,
     embeddings=embeddings_adapter,
+    database_desc=_neo4j_client.graphdb_description,
 )

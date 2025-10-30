@@ -1,0 +1,19 @@
+version: "3.9"
+
+services:
+  nginx:
+    build:
+      context: ./nginx
+    image: local/nginx-8000:latest
+    container_name: nginx_8000
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./html:/usr/share/nginx/html:ro
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

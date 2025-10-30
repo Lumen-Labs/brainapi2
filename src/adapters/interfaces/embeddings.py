@@ -44,3 +44,19 @@ class VectorStoreClient(ABC):
         Search vectors in the vector store and return the top k vectors.
         """
         raise NotImplementedError("search_vectors method not implemented")
+
+    @abstractmethod
+    def get_by_ids(self, ids: list[str], store: str) -> list[Vector]:
+        """
+        Get vectors by their IDs.
+        """
+        raise NotImplementedError("get_by_ids method not implemented")
+
+    @abstractmethod
+    def search_similar_by_ids(
+        self, vector_ids: list[str], store: str, min_similarity: float, limit: int = 10
+    ) -> list[Vector]:
+        """
+        Search similar vectors by their IDs.
+        """
+        raise NotImplementedError("search_similar_by_ids method not implemented")

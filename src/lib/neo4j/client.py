@@ -8,11 +8,11 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 -----
 """
 
-from typing import Optional
+from typing import Optional, Tuple
 from neo4j import GraphDatabase
 from src.adapters.interfaces.graph import GraphClient
 from src.config import config
-from src.constants.kg import Node, Predicate
+from src.constants.kg import IdentificationParams, Node, Predicate
 
 
 class Neo4jClient(GraphClient):
@@ -67,6 +67,22 @@ class Neo4jClient(GraphClient):
         """
         return "The graph database is Neo4j. Cyphter is the language used to operate with it."
 
+    def _clean_labels(self, labels: list[str]) -> list[str]:
+        """
+        Clean a label to be used in a Cypher query.
+        """
+        return [
+            label.replace(" ", "_").upper().replace("-", "_").replace(".", "_")
+            for label in labels
+        ]
+
+    def _clean_property_key(self, property_key: str) -> str:
+        """
+        Clean a property key to be used in a Cypher query.
+        """
+        words = property_key.split()
+        return "".join(word.capitalize() for word in words)
+
     def add_nodes(
         self,
         nodes: list[Node],
@@ -96,7 +112,11 @@ class Neo4jClient(GraphClient):
                     char in sanitized_key
                     for char in ["-", " ", ".", "+", "*", "/", "%", ":", "@", "#", "$"]
                 )
-                cypher_key = f"`{sanitized_key}`" if needs_quoting else sanitized_key
+                cypher_key = (
+                    f"`{self._clean_property_key(sanitized_key)}`"
+                    if needs_quoting
+                    else self._clean_property_key(sanitized_key)
+                )
 
                 if isinstance(value, str):
                     escaped_value = value.replace("'", "\\'")
@@ -113,9 +133,7 @@ class Neo4jClient(GraphClient):
 
             properties_set = f"{', '.join(property_assignments)}"
 
-            labels_expression = ":".join(
-                label.replace(" ", "_") for label in node.labels
-            )
+            labels_expression = ":".join(self._clean_labels(node.labels))
             cypher_query = f"""
     MERGE (n:{labels_expression} {identification_set})
     SET {properties_set}
@@ -148,9 +166,9 @@ class Neo4jClient(GraphClient):
         safe_desc = predicate.description.replace("'", "\\'")
 
         cypher_query = f"""
-        MATCH (a:{":".join([lb.replace(" ", "") for lb in subject.labels])}) WHERE a.name = '{subject.name}'
-        MATCH (b:{":".join([lb.replace(" ", "") for lb in to_object.labels])}) WHERE b.name = '{to_object.name}'
-        CREATE (a)-[:{predicate.name.replace(" ", "_").replace("-", "_").upper()} {{ description: '{safe_desc}' }}]->(b)
+        MATCH (a:{":".join(self._clean_labels(subject.labels))}) WHERE a.name = '{subject.name}'
+        MATCH (b:{":".join(self._clean_labels(to_object.labels))}) WHERE b.name = '{to_object.name}'
+        CREATE (a)-[:{":".join(self._clean_labels([predicate.name]))} {{ description: '{safe_desc}' }}]->(b)
         RETURN a, b
         """
         result = self.driver.execute_query(cypher_query)
@@ -165,7 +183,7 @@ class Neo4jClient(GraphClient):
 
         queries = []
         for node in nodes:
-            query = f"""MATCH (n:{":".join(node.labels)}) WHERE n.name = '{node.name}'
+            query = f"""MATCH (n:{":".join(self._clean_labels(node.labels))}) WHERE n.name = '{node.name}'
     OPTIONAL MATCH (n)-[r*1]-(m)
     RETURN n, r, m"""
             queries.append(query)
@@ -222,7 +240,7 @@ class Neo4jClient(GraphClient):
                 """
             if preferred_labels and len(preferred_labels) > 0:
                 cypher_query += f"""
-                WHERE any(lbl IN labels(m) WHERE lbl IN ["{'","'.join(preferred_labels)}"])
+                WHERE any(lbl IN labels(m) WHERE lbl IN ["{'","'.join(self._clean_labels(preferred_labels))}"])
                 """
             cypher_query += """
             WITH n, r, m
@@ -276,6 +294,17 @@ class Neo4jClient(GraphClient):
         result = self.driver.execute_query(cypher_query)
         return [label for record in result.records for label in record["labels"]]
 
+    def get_graph_relationships(self) -> list[str]:
+        """
+        Get the relationships of the graph.
+        """
+        cypher_query = """
+        CALL db.relationshipTypes() YIELD relationshipType
+        RETURN relationshipType
+        """
+        result = self.driver.execute_query(cypher_query)
+        return [record["relationshipType"] for record in result.records]
+
     def get_by_uuid(self, uuid: str) -> Node:
         """
         Get a node by its UUID.
@@ -316,6 +345,107 @@ class Neo4jClient(GraphClient):
             )
             for record in result.records
         ]
+
+    def get_by_identification_params(
+        self,
+        identification_params: IdentificationParams,
+        entity_types: Optional[list[str]] = None,
+    ) -> Node:
+        """
+        Get a node by its identification params and entity types.
+        """
+
+        params_dict = identification_params.model_dump(
+            mode="json", exclude={"entity_types"}
+        )
+
+        where_clauses = []
+
+        for key, value in params_dict.items():
+            where_clauses.append(f"n.{key} = '{value}'")
+
+        cypher_query = f"""
+        MATCH (n{(":" + ":".join(self._clean_labels(entity_types))) if entity_types else ""}) {("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""}
+        RETURN n.uuid as uuid, n.name as name, labels(n) as labels, n.description as description, properties(n) as properties
+        """
+        result = self.driver.execute_query(cypher_query)
+        return (
+            Node(
+                uuid=result.records[0]["uuid"],
+                name=result.records[0]["name"],
+                labels=result.records[0]["labels"],
+                description=result.records[0]["description"],
+                properties=result.records[0]["properties"],
+            )
+            if result.records
+            else None
+        )
+
+    def get_graph_property_keys(self) -> list[str]:
+        """
+        Get the property keys of the graph.
+        """
+        cypher_query = """
+        CALL db.propertyKeys() YIELD propertyKey
+        RETURN propertyKey
+        """
+        result = self.driver.execute_query(cypher_query)
+        return [record["propertyKey"] for record in result.records]
+
+    def get_neighbors(self, node: Node, limit: int) -> list[Tuple[Node, Predicate]]:
+        """
+        Get the neighbors of a node.
+        """
+        print("[node]", node.uuid, node.labels)
+        cypher_query = f"""
+        MATCH (n {{uuid: '{node.uuid}'}})-[r]-(c)-[r2]-(m)
+        WHERE size([l IN labels(n) WHERE l IN labels(m)]) > 0
+        RETURN m.uuid AS uuid, m.name AS name, labels(m) AS labels, m.description AS description, properties(m) AS properties, r2 AS rel
+        """
+        result = self.driver.execute_query(cypher_query)
+
+        neighbors = []
+        for record in result.records:
+            rel = record["rel"]
+            rel_type = getattr(rel, "type", None)
+            rel_desc = ""
+            try:
+                rel_desc = rel.get("description", "")  # for mapping-like access
+            except Exception:
+                try:
+                    rel_desc = rel["description"]
+                except Exception:
+                    rel_desc = ""
+            direction = "out"
+            try:
+                start_node = rel.nodes[0]
+                start_uuid = None
+                try:
+                    start_uuid = start_node.get("uuid", None)
+                except Exception:
+                    start_uuid = start_node["uuid"]
+                if start_uuid != node.uuid:
+                    direction = "in"
+            except Exception:
+                direction = "out"
+
+            neighbors.append(
+                (
+                    Node(
+                        uuid=record["uuid"],
+                        name=record["name"],
+                        labels=record["labels"],
+                        description=record["description"],
+                        properties=record["properties"],
+                    ),
+                    Predicate(
+                        name=rel_type or "",
+                        description=rel_desc or "",
+                        direction=direction,
+                    ),
+                )
+            )
+        return neighbors
 
 
 _neo4j_client = Neo4jClient()

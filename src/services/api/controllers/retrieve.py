@@ -9,17 +9,17 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 """
 
 import asyncio
-import json
+from typing import Optional
 
 from fastapi import HTTPException
 
-from src.constants.kg import Node, Predicate, Relationship
+from src.constants.kg import IdentificationParams, Predicate, Relationship
 from src.services.api.constants.requests import (
     RetrieveRequestResponse,
     RetrieveNeighborsRequestResponse,
     RetrievedNeighborNode,
 )
-from src.services.kg_agent.main import graph_adapter
+from src.services.kg_agent.main import graph_adapter, kg_agent
 from src.services.data.main import data_adapter
 from src.services.kg_agent.main import embeddings_adapter, vector_store_adapter
 
@@ -85,52 +85,111 @@ async def retrieve_data(
     )
 
 
-async def retrieve_neighbors(uuid: str, limit: int) -> RetrieveNeighborsRequestResponse:
+async def retrieve_neighbors(
+    uuid: Optional[str] = None,
+    identification_params: Optional[IdentificationParams] = None,
+    limit: int = 10,
+) -> RetrieveNeighborsRequestResponse:
+    def _get_neighbors():
+        node = None
+        if uuid:
+            node = graph_adapter.get_by_uuid(uuid)
+        elif identification_params:
+            node = graph_adapter.get_by_identification_params(
+                identification_params, entity_types=identification_params.entity_types
+            )
+        if not node:
+            raise HTTPException(status_code=404, detail="Entity not found")
+
+        raw = graph_adapter.get_neighbors(node, limit)
+
+        normalized = []
+        for item in raw:
+            if isinstance(item, tuple) and len(item) >= 2:
+                n, pred = item[0], item[1]
+            else:
+                n, pred = item, None
+
+            if isinstance(pred, Predicate):
+                relation = Relationship(
+                    direction=pred.direction or "out", predicate=pred
+                )
+            else:
+                relation = Relationship(
+                    direction="out",
+                    predicate=Predicate(name="RELATED_TO", description=""),
+                )
+
+            if not n.uuid == node.uuid:
+                # TODO: provide the common node too and maybe also observations
+                normalized.append(
+                    RetrievedNeighborNode(
+                        **n.model_dump(),
+                        relation=relation,
+                        observations=[],
+                    )
+                )
+
+        if len(normalized) < limit:
+            neighbor_nodes = graph_adapter.get_nodes_by_uuid(
+                uuids=[n.uuid for n in normalized], with_relationships=True
+            )
+            v_neighbors = vector_store_adapter.search_similar_by_ids(
+                vector_ids=[n.get("node").uuid for n in neighbor_nodes],
+                store="nodes",
+                min_similarity=0.5,
+                limit=limit - len(normalized),
+            )
+            print("[v_neighbors]", v_neighbors)
+            # TODO: get v_neighbor nodes by ids and the k (the common)
+            # TODO + push to normalized
+            # TODO (directly the nodes with label same as main, the others search for neighbors with same label of main)
+
+        if len(normalized) < limit:
+            v_data = vector_store_adapter.search_similar_by_ids(
+                vector_ids=[n.uuid for n in normalized],
+                store="data",
+                min_similarity=0.5,
+                limit=limit - len(normalized),
+            )
+            print("[v_data]", v_data)
+            # TODO: get v_neighbor nodes by ids and the k (the common)
+            # TODO + push to normalized
+            # TODO (directly the nodes with label same as main, the others search for neighbors with same label of main)
+
+        return RetrieveNeighborsRequestResponse(neighbors=normalized)
+
+    return await asyncio.to_thread(_get_neighbors)
+
+
+async def retrieve_neighbors_ai_mode(
+    identification_params: IdentificationParams,
+    looking_for: Optional[list[str]],
+    limit: int,
+) -> RetrieveNeighborsRequestResponse:
     """
     Retrieve neighbors of an entity from the knowledge graph.
     """
-    node = graph_adapter.get_by_uuid(uuid)
-    if not node:
-        raise HTTPException(status_code=404, detail="Entity not found")
-    results = graph_adapter.get_nodes_by_uuid(
-        uuids=[node.uuid],
-        with_relationships=True,
-        relationships_depth=5,
-        # preferred_labels=[node.label],
-    )
 
-    neighbors = []
-
-    for result in results:
-        related_node = result.get("related_nodes")
-        relationships = result.get("relationships")
-
-        if not related_node or not relationships:
-            continue
-
-        relationship = relationships[0] if relationships else None
-
-        neighbor_node = RetrievedNeighborNode(
-            uuid=related_node.get("uuid"),
-            name=related_node.get("name"),
-            labels=related_node.get("labels") if related_node.get("labels") else [],
-            description=related_node.get("description"),
-            properties=(
-                related_node.get("properties") if related_node.get("properties") else {}
-            ),
-            observations=[],
-            relation=Relationship(
-                predicate=Predicate(
-                    name=(
-                        relationship.type
-                        if hasattr(relationship, "type")
-                        else str(relationship)
-                    ),
-                    description="",
-                ),
-                direction="in",
-            ),
+    def _get_neighbors():
+        node = graph_adapter.get_by_identification_params(
+            identification_params, entity_types=identification_params.entity_types
         )
-        neighbors.append(neighbor_node)
+        print("[node]", node)
+        if not node:
+            raise HTTPException(status_code=404, detail="Entity not found")
 
-    return RetrieveNeighborsRequestResponse(neighbors=neighbors)
+        result = kg_agent.retrieve_neighbors(node, looking_for, limit)
+        print("[result]", result)
+
+        ids = [neighbor.uuid for neighbor in result.neighbors]
+        descriptions = [neighbor.description for neighbor in result.neighbors]
+
+        nodes = graph_adapter.get_nodes_by_uuid(uuids=ids)
+        paired = list(zip(nodes, descriptions))
+
+        return RetrieveNeighborsRequestResponse(neighbors=paired)
+
+    result = await asyncio.to_thread(_get_neighbors)
+
+    return result

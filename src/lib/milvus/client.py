@@ -158,5 +158,86 @@ class MilvusClient(VectorStoreClient):
             Vector(id=result["id"], metadata=result["entity"]) for result in collection
         ]
 
+    def search_similar_by_ids(
+        self,
+        vector_ids: list[str],
+        store: str,
+        min_similarity: float,
+        limit: int = 10,
+    ) -> dict[str, list[Vector]]:
+        self._ensure_store(store)
+        try:
+            self.client.load_collection(store)
+        except Exception:
+            pass
+
+        if not vector_ids:
+            return {}
+
+        expr = "uuid in [" + ",".join(f"'{v}'" for v in vector_ids) + "]"
+        queried = self.client.query(
+            collection_name=store,
+            filter=expr,
+            output_fields=["embeddings", "$meta"],
+        )
+        id_to_emb: dict[str, list[float]] = {}
+
+        for item in queried or []:
+            emb = item.get("embeddings") or item.get("embeddings")
+            uuid = item.get("uuid")
+            if emb is not None and uuid:
+                id_to_emb[uuid] = emb
+
+        data_batch = [id_to_emb.get(v_id) for v_id in vector_ids]
+        if not any(data_batch):
+            return {v_id: [] for v_id in vector_ids}
+
+        batch_indices = [i for i, emb in enumerate(data_batch) if emb is not None]
+        batch_embeddings = [data_batch[i] for i in batch_indices]
+        batch_ids = [vector_ids[i] for i in batch_indices]
+
+        out: dict[str, list[Vector]] = {v_id: [] for v_id in vector_ids}
+        chunk_size = 10
+        for start in range(0, len(batch_embeddings), chunk_size):
+            end = start + chunk_size
+            chunk_embeddings = batch_embeddings[start:end]
+            chunk_ids = batch_ids[start:end]
+
+            raw_results = self.client.search(
+                collection_name=store,
+                data=chunk_embeddings,
+                limit=max(limit * 5, limit),
+                output_fields=["$meta"],
+            )
+
+            for idx, query_results in enumerate(raw_results or []):
+                origin_uuid = chunk_ids[idx]
+                if out.get(origin_uuid):
+                    continue
+
+                collected: list[Vector] = []
+                for r in query_results or []:
+                    r_entity = r.get("entity", {})
+                    if r_entity.get("uuid") == origin_uuid:
+                        continue
+                    sim = 1.0 - float(r.get("distance", 0.0))
+                    if sim >= min_similarity:
+                        collected.append(
+                            Vector(
+                                id=str(r["id"]),
+                                metadata={
+                                    k: v
+                                    for k, v in r.get("entity", {}).items()
+                                    if k not in ["id", "embeddings", "distance"]
+                                },
+                                distance=r["distance"],
+                            )
+                        )
+                        if len(collected) >= limit:
+                            break
+                out[origin_uuid] = collected
+
+        return out
+
 
 _milvus_client = MilvusClient()

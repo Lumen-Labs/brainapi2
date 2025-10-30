@@ -52,6 +52,11 @@ class Predicate(BaseModel):
         default=False, description="Whether the predicate is deprecated."
     )
 
+    direction: Optional[Literal["in", "out"]] = Field(
+        default="out",
+        description="The direction of the predicate.",
+    )
+
 
 class Triple(BaseModel):
     """
@@ -80,6 +85,10 @@ class IdentificationParams(BaseModel):
     """
 
     name: str
+    entity_types: List[str] = Field(
+        default=[],
+        description="The types of the entity to identify.",
+    )
 
     class Meta:
         """

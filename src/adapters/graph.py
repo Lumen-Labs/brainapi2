@@ -10,7 +10,7 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 
 from typing import Optional
 from src.adapters.interfaces.graph import GraphClient
-from src.constants.kg import Node, Predicate
+from src.constants.kg import IdentificationParams, Node, Predicate
 
 
 class GraphAdapter:
@@ -116,6 +116,18 @@ class GraphAdapter:
         """
         return self.graph.get_graph_entities()
 
+    def get_graph_relationships(self) -> list[str]:
+        """
+        Get the relationships of the graph.
+        """
+        return self.graph.get_graph_relationships()
+
+    def get_graph_property_keys(self) -> list[str]:
+        """
+        Get the property keys of the graph.
+        """
+        return self.graph.get_graph_property_keys()
+
     def get_by_uuid(self, uuid: str) -> Node:
         """
         Get a node by its UUID.
@@ -127,6 +139,24 @@ class GraphAdapter:
         Get nodes by their UUIDs.
         """
         return self.graph.get_by_uuids(uuids)
+
+    def get_by_identification_params(
+        self,
+        identification_params: IdentificationParams,
+        entity_types: Optional[list[str]] = None,
+    ) -> Node:
+        """
+        Get a node by its identification params and entity types.
+        """
+        return self.graph.get_by_identification_params(
+            identification_params, entity_types
+        )
+
+    def get_neighbors(self, node: Node, limit: int) -> list[Node]:
+        """
+        Get the neighbors of a node.
+        """
+        return self.graph.get_neighbors(node, limit)
 
 
 _graph_adapter = GraphAdapter()

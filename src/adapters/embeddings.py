@@ -53,6 +53,22 @@ class VectorStoreAdapter:
         """
         return self.vector_store.search_vectors(query, store, k)
 
+    def get_by_ids(self, ids: list[str], store: str) -> list[Vector]:
+        """
+        Get vectors by their IDs.
+        """
+        return self.vector_store.get_by_ids(ids, store)
+
+    def search_similar_by_ids(
+        self, vector_ids: list[str], store: str, min_similarity: float, limit: int = 10
+    ) -> list[Vector]:
+        """
+        Search similar vectors by their IDs.
+        """
+        return self.vector_store.search_similar_by_ids(
+            vector_ids, store, min_similarity, limit
+        )
+
 
 _embeddings_adapter = EmbeddingsAdapter()
 _vector_store_adapter = VectorStoreAdapter()

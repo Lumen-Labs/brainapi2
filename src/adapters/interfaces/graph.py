@@ -11,7 +11,7 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 from abc import ABC, abstractmethod
 from typing import Optional
 
-from src.constants.kg import Node, Predicate
+from src.constants.kg import IdentificationParams, Node, Predicate
 
 
 class GraphClient(ABC):
@@ -106,6 +106,20 @@ class GraphClient(ABC):
         raise NotImplementedError("get_graph_entities method not implemented")
 
     @abstractmethod
+    def get_graph_relationships(self) -> list[str]:
+        """
+        Get the relationships of the graph.
+        """
+        raise NotImplementedError("get_graph_relationships method not implemented")
+
+    @abstractmethod
+    def get_graph_property_keys(self) -> list[str]:
+        """
+        Get the property keys of the graph.
+        """
+        raise NotImplementedError("get_graph_property_keys method not implemented")
+
+    @abstractmethod
     def get_by_uuid(
         self,
         uuid: str,
@@ -124,3 +138,25 @@ class GraphClient(ABC):
         Get nodes by their UUIDs.
         """
         raise NotImplementedError("get_by_uuids method not implemented")
+
+    @abstractmethod
+    def get_by_identification_params(
+        self,
+        identification_params: IdentificationParams,
+        entity_types: Optional[list[str]] = None,
+    ) -> Node:
+        """
+        Get a node by its identification params.
+        """
+        raise NotImplementedError("get_by_identification_params method not implemented")
+
+    @abstractmethod
+    def get_neighbors(
+        self,
+        node: Node,
+        limit: int,
+    ) -> list[Node]:
+        """
+        Get the neighbors of a node.
+        """
+        raise NotImplementedError("get_neighbors method not implemented")
