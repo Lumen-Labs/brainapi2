@@ -13,6 +13,8 @@ from typing import List, Literal, Optional
 import uuid
 from pydantic import BaseModel, Extra, Field
 
+from src.constants.data import Observation
+
 
 class Node(BaseModel):
     """
@@ -27,6 +29,10 @@ class Node(BaseModel):
     last_updated: datetime = Field(
         default_factory=datetime.now,
         description="The date and time the node was last updated.",
+    )
+
+    observations: Optional[List[Observation]] = Field(
+        default=None, description="The observations of the node."
     )
 
     class Meta:
@@ -52,9 +58,23 @@ class Predicate(BaseModel):
         default=False, description="Whether the predicate is deprecated."
     )
 
-    direction: Optional[Literal["in", "out"]] = Field(
-        default="out",
+    direction: Optional[Literal["in", "out", "neutral"]] = Field(
+        default="neutral",
         description="The direction of the predicate.",
+    )
+
+    observations: Optional[List[Observation]] = Field(
+        default=None, description="The observations of the predicate."
+    )
+
+    level: Optional[Literal["1", "2", "3"]] = Field(
+        default=None,
+        description=(
+            "The level of the predicate. "
+            "1: directly connected to the main node. "
+            "2: connected to similar nodes of same label, not directly connected."
+            "3: connected to similar nodes of different label, not directly connected."
+        ),
     )
 
 
@@ -73,7 +93,7 @@ class Relationship(BaseModel):
     Relationship model.
     """
 
-    direction: Literal["in", "out"]
+    direction: Literal["in", "out", "neutral"]
     predicate: Predicate
 
 

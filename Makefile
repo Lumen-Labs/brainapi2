@@ -50,11 +50,12 @@ start-api:
 stop-api:
 	pkill -f uvicorn
 
+DEBUG_ENVS := LANGCHAIN_DEBUG="true" LANGCHAIN_VERBOSE="true" DEBUG="true"
 
 start-all:
-	if [ "$1" = "debug" ]; then \
-		export LANGCHAIN_DEBUG="true"; \
-		export LANGCHAIN_VERBOSE="true"; \
+	@if [ "$$DEBUG" = "true" ]; then \
+		echo "DEBUG mode enabled"; \
+		export $(DEBUG_ENVS); \
 	fi
 	export ENV=development
 	make start-milvus &
@@ -63,7 +64,10 @@ start-all:
 	make start-neo4j &
 	make start-mongo &
 	make start-api &
-	@bash -c "poetry run celery -A src.workers.app worker --loglevel=info"
+	@bash -c "if [ "$$DEBUG" = "true" ]; then export $(DEBUG_ENVS) && poetry run celery -A src.workers.app worker --loglevel=info; else poetry run celery -A src.workers.app worker --loglevel=info; fi"
+
+debug:
+	@:
 
 stop-all:
 	make stop-milvus

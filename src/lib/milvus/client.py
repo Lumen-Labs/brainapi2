@@ -55,7 +55,6 @@ class MilvusClient(VectorStoreClient):
             with self._get_lock():
                 if self._client is None:
                     if config.milvus.uri and config.milvus.token:
-                        print("using uri", config.milvus.uri)
                         self._client = Milvus(
                             uri=config.milvus.uri,
                             token=config.milvus.token,

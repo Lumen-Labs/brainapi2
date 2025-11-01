@@ -8,6 +8,7 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 -----
 """
 
+import os
 from typing import Optional, Tuple
 from neo4j import GraphDatabase
 from src.adapters.interfaces.graph import GraphClient
@@ -248,11 +249,12 @@ class Neo4jClient(GraphClient):
             """
 
         cypher_query += """
-        RETURN n.uuid as uuid, n.name as name, labels(n) as labels, n.description as description, properties(n) as properties
+        RETURN 
+            n.uuid as uuid, n.name as name, labels(n) as labels, n.description as description, properties(n) as properties
         """
 
         if with_relationships:
-            cypher_query += ", r, m"
+            cypher_query += ", r, m.uuid as m_uuid, m.name as m_name, labels(m) as m_labels, m.description as m_description, properties(m) as m_properties"
 
         result = self.driver.execute_query(cypher_query)
 
@@ -267,7 +269,17 @@ class Neo4jClient(GraphClient):
                         properties=record["properties"],
                     ),
                     "relationships": record["r"] if record["r"] else None,
-                    "related_nodes": record["m"] if record["m"] else None,
+                    "related_nodes": (
+                        Node(
+                            uuid=record["m_uuid"],
+                            name=record["m_name"],
+                            labels=record["m_labels"],
+                            description=record["m_description"],
+                            properties=record["m_properties"],
+                        )
+                        if record["m_uuid"]
+                        else None
+                    ),
                 }
                 for record in result.records
             ]
@@ -392,7 +404,9 @@ class Neo4jClient(GraphClient):
         result = self.driver.execute_query(cypher_query)
         return [record["propertyKey"] for record in result.records]
 
-    def get_neighbors(self, node: Node, limit: int) -> list[Tuple[Node, Predicate]]:
+    def get_neighbors(
+        self, node: Node, limit: int
+    ) -> list[Tuple[Node, Predicate, Node]]:
         """
         Get the neighbors of a node.
         """
@@ -400,7 +414,8 @@ class Neo4jClient(GraphClient):
         cypher_query = f"""
         MATCH (n {{uuid: '{node.uuid}'}})-[r]-(c)-[r2]-(m)
         WHERE size([l IN labels(n) WHERE l IN labels(m)]) > 0
-        RETURN m.uuid AS uuid, m.name AS name, labels(m) AS labels, m.description AS description, properties(m) AS properties, r2 AS rel
+        RETURN m.uuid AS uuid, m.name AS name, labels(m) AS labels, m.description AS description, properties(m) AS properties, r2 AS rel,
+               CASE WHEN startNode(r2) = c THEN 'out' ELSE 'in' END AS direction
         """
         result = self.driver.execute_query(cypher_query)
 
@@ -410,24 +425,13 @@ class Neo4jClient(GraphClient):
             rel_type = getattr(rel, "type", None)
             rel_desc = ""
             try:
-                rel_desc = rel.get("description", "")  # for mapping-like access
+                rel_desc = rel.get("description", "")
             except Exception:
                 try:
                     rel_desc = rel["description"]
                 except Exception:
                     rel_desc = ""
-            direction = "out"
-            try:
-                start_node = rel.nodes[0]
-                start_uuid = None
-                try:
-                    start_uuid = start_node.get("uuid", None)
-                except Exception:
-                    start_uuid = start_node["uuid"]
-                if start_uuid != node.uuid:
-                    direction = "in"
-            except Exception:
-                direction = "out"
+            direction = record.get("direction", "out")
 
             neighbors.append(
                 (
@@ -443,9 +447,158 @@ class Neo4jClient(GraphClient):
                         description=rel_desc or "",
                         direction=direction,
                     ),
+                    Node(
+                        uuid=node.uuid,
+                        name=node.name,
+                        labels=node.labels,
+                        description=node.description,
+                        properties=node.properties,
+                    ),
                 )
             )
-        return neighbors
+        return [(n, p, c) for n, p, c in neighbors]
+
+    def get_node_with_rel_by_uuid(
+        self, rel_ids_with_node_ids: list[tuple[str, str]]
+    ) -> list[dict]:
+        """
+        Get the node with the relationships by their UUIDs.
+        """
+
+    def get_neighbor_node_tuples(
+        self, a_uuid: str, b_uuids: list[str]
+    ) -> list[Tuple[Node, Predicate, Node]]:
+        """
+        Get the neighbor node tuples by their UUIDs.
+        """
+        b_uuids_str = ",".join([f'"{nid}"' for nid in b_uuids])
+        cypher_query = f"""
+        MATCH (n)-[r]-(m)
+        WHERE n.uuid = '{a_uuid}' AND m.uuid IN [{b_uuids_str}]
+        RETURN
+            n.uuid as n_uuid, n.name as n_name, labels(n) as n_labels,
+            n.description as n_description, properties(n) as n_properties,
+            m.uuid as m_uuid, m.name as m_name, labels(m) as m_labels,
+            m.description as m_description, properties(m) as m_properties, r as rel
+        """
+        result = self.driver.execute_query(cypher_query)
+
+        if not result.records:
+            if os.getenv("DEBUG") == "true":
+                raise ValueError(
+                    f"No neighbor nodes found for UUID: {a_uuid} and b_uuids: {b_uuids}"
+                )
+            else:
+                return []
+
+        tuples = []
+        for record in result.records:
+            rel = record["rel"]
+
+            rel_type = getattr(rel, "type", None) or ""
+            rel_desc = ""
+            try:
+                rel_desc = rel.get("description", "")
+            except Exception:
+                try:
+                    rel_desc = rel["description"]
+                except Exception:
+                    rel_desc = ""
+
+            direction = "out"
+            try:
+                start_node = rel.nodes[0]
+                start_uuid = None
+                try:
+                    start_uuid = start_node.get("uuid", None)
+                except Exception:
+                    start_uuid = start_node["uuid"]
+                if start_uuid != record["n_uuid"]:
+                    direction = "in"
+            except Exception:
+                direction = "out"
+
+            tuples.append(
+                (
+                    Node(
+                        uuid=record["n_uuid"],
+                        name=record["n_name"],
+                        labels=record["n_labels"],
+                        description=record["n_description"],
+                        properties=record["n_properties"],
+                    ),
+                    Predicate(
+                        name=rel_type,
+                        description=rel_desc,
+                        direction=direction,
+                    ),
+                    Node(
+                        uuid=record["m_uuid"],
+                        name=record["m_name"],
+                        labels=record["m_labels"],
+                        description=record["m_description"],
+                        properties=record["m_properties"],
+                    ),
+                )
+            )
+
+        return tuples
+
+    def get_connected_nodes(
+        self,
+        node: Optional[Node] = None,
+        uuids: Optional[list[str]] = None,
+        limit: Optional[int] = 10,
+        with_labels: Optional[list[str]] = None,
+    ) -> list[Tuple[Node, Predicate, Node]]:
+        """
+        Get the connected nodes by their UUIDs.
+        """
+        labels_str = ""
+        if with_labels:
+            labels_list = ",".join([f"'{label}'" for label in with_labels])
+            labels_str = f"AND ANY(l IN labels(m) WHERE l IN [{labels_list}])"
+        identification_str = ""
+        if node:
+            identification_str = f"WHERE n.uuid = '{node.uuid}'"
+        elif uuids:
+            uuids_str = ",".join([f'"{uuid}"' for uuid in uuids])
+            identification_str = f"WHERE n.uuid IN [{uuids_str}]"
+        cypher_query = f"""
+        MATCH (n)-[r]-(m)
+        {identification_str}
+        {labels_str}
+        RETURN
+            m.uuid as uuid, m.name as name, labels(m) as labels, m.description as description, properties(m) as properties,
+            r as rel, type(r) as rel_type, r.description as rel_description,
+            n.uuid as n_uuid, n.name as n_name, labels(n) as n_labels, n.description as n_description, properties(n) as n_properties,
+            CASE WHEN startNode(r) = n THEN 'out' ELSE 'in' END AS direction
+        """
+        result = self.driver.execute_query(cypher_query)
+        return [
+            (
+                Node(
+                    uuid=record["uuid"],
+                    name=record["name"],
+                    labels=record["labels"],
+                    description=record["description"],
+                    properties=record["properties"],
+                ),
+                Predicate(
+                    name=record["rel_type"] or "",
+                    description=record["rel_description"] or "",
+                    direction=record.get("direction", "neutral"),
+                ),
+                Node(
+                    uuid=record["n_uuid"],
+                    name=record["n_name"],
+                    labels=record["n_labels"],
+                    description=record["n_description"],
+                    properties=record["n_properties"],
+                ),
+            )
+            for record in result.records
+        ]
 
 
 _neo4j_client = Neo4jClient()

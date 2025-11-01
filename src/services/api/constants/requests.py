@@ -12,7 +12,7 @@ from turtle import st
 from typing import List, Any, Optional
 from pydantic import BaseModel, Field, field_serializer
 from src.constants.data import Observation, TextChunk
-from src.constants.kg import IdentificationParams, Node, Relationship
+from src.constants.kg import IdentificationParams, Node, Predicate, Relationship
 from src.constants.tasks.ingestion import IngestionTaskArgs
 
 
@@ -123,13 +123,14 @@ class RetrieveRequestResponse(BaseModel):
         return [_ser(v) for v in value] if value is not None else []
 
 
-class RetrievedNeighborNode(Node):
+class RetrievedNeighborNode(BaseModel):
     """
     Node model for the retrieve neighbors endpoint.
     """
 
-    relation: Relationship
-    observations: List[str]
+    neighbor: Node
+    relationship: Predicate
+    most_common: Node
 
 
 class RetrieveNeighborsRequestResponse(BaseModel):
@@ -137,6 +138,7 @@ class RetrieveNeighborsRequestResponse(BaseModel):
     Response for the retrieve neighbors endpoint.
     """
 
+    count: int = Field(0, description="The number of neighbors found.")
     neighbors: List[RetrievedNeighborNode]
 
 

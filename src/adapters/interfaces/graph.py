@@ -9,9 +9,9 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 """
 
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Optional, Tuple
 
-from src.constants.kg import IdentificationParams, Node, Predicate
+from src.constants.kg import IdentificationParams, Node, Predicate, Triple
 
 
 class GraphClient(ABC):
@@ -155,8 +155,42 @@ class GraphClient(ABC):
         self,
         node: Node,
         limit: int,
-    ) -> list[Node]:
+    ) -> list[Tuple[Node, Predicate, Node]]:
         """
         Get the neighbors of a node.
         """
         raise NotImplementedError("get_neighbors method not implemented")
+
+    @abstractmethod
+    def get_node_with_rel_by_uuid(
+        self,
+        rel_ids_with_node_ids: list[tuple[str, str]],
+    ) -> list[dict]:
+        """
+        Get the node with the relationships by their UUIDs.
+        """
+        raise NotImplementedError("get_node_with_rel_by_uuid method not implemented")
+
+    @abstractmethod
+    def get_neighbor_node_tuples(
+        self,
+        a_uuid: str,
+        b_uuids: list[str],
+    ) -> list[Tuple[Node, Predicate, Node]]:
+        """
+        Get the neighbor node tuples by their UUIDs.
+        """
+        raise NotImplementedError("get_neighbor_node_tuples method not implemented")
+
+    @abstractmethod
+    def get_connected_nodes(
+        self,
+        node: Optional[Node] = None,
+        uuids: Optional[list[str]] = None,
+        limit: Optional[int] = 10,
+        with_labels: Optional[list[str]] = None,
+    ) -> list[Tuple[Node, Predicate, Node]]:
+        """
+        Get the connected nodes by their UUIDs.
+        """
+        raise NotImplementedError("get_connected_nodes method not implemented")
