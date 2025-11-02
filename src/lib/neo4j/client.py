@@ -415,7 +415,8 @@ class Neo4jClient(GraphClient):
         MATCH (n {{uuid: '{node.uuid}'}})-[r]-(c)-[r2]-(m)
         WHERE size([l IN labels(n) WHERE l IN labels(m)]) > 0
         RETURN m.uuid AS uuid, m.name AS name, labels(m) AS labels, m.description AS description, properties(m) AS properties, r2 AS rel,
-               CASE WHEN startNode(r2) = c THEN 'out' ELSE 'in' END AS direction
+               CASE WHEN startNode(r2) = c THEN 'out' ELSE 'in' END AS direction,
+               c.uuid AS c_uuid, c.name AS c_name, labels(c) AS c_labels, c.description AS c_description, properties(c) AS c_properties
         """
         result = self.driver.execute_query(cypher_query)
 
@@ -448,11 +449,11 @@ class Neo4jClient(GraphClient):
                         direction=direction,
                     ),
                     Node(
-                        uuid=node.uuid,
-                        name=node.name,
-                        labels=node.labels,
-                        description=node.description,
-                        properties=node.properties,
+                        uuid=record["c_uuid"],
+                        name=record["c_name"],
+                        labels=record["c_labels"],
+                        description=record["c_description"],
+                        properties=record["c_properties"],
                     ),
                 )
             )

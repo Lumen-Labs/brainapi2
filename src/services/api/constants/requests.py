@@ -8,7 +8,6 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 -----
 """
 
-from turtle import st
 from typing import List, Any, Optional
 from pydantic import BaseModel, Field, field_serializer
 from src.constants.data import Observation, TextChunk

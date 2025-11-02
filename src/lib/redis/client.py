@@ -9,6 +9,7 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 """
 
 from redis import Redis
+from redis.connection import ConnectionPool
 from src.adapters.interfaces.cache import CacheClient
 from src.config import config
 
@@ -19,7 +20,16 @@ class RedisClient(CacheClient):
     """
 
     def __init__(self):
-        self.client = Redis(host=config.redis.host, port=config.redis.port)
+        pool = ConnectionPool(
+            host=config.redis.host,
+            port=config.redis.port,
+            socket_connect_timeout=5,
+            socket_timeout=5,
+            retry_on_timeout=True,
+            health_check_interval=30,
+            max_connections=50,
+        )
+        self.client = Redis(connection_pool=pool)
 
     def get(self, key: str) -> str:
         """

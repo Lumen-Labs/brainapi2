@@ -1,0 +1,123 @@
+services:
+  redis:
+    image: redis:latest
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    networks:
+      - appnet
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  neo4j:
+    image: neo4j:latest
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j-data:/data
+      - neo4j-logs:/logs
+      - neo4j-plugins:/plugins
+      - ./src/lib/neo4j/config:/var/lib/neo4j/conf
+    environment:
+      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-your_password}
+      - NEO4J_PLUGINS=["apoc"]
+    networks:
+      - appnet
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:7474 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+
+  brainapi:
+    image: ghcr.io/lumen-labs/brainapi:latest
+    ports:
+      - "8000:8000"
+    env_file:
+      - /root/.env
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - NEO4J_HOST=neo4j
+      - NEO4J_PORT=7687
+      - NEO4J_USERNAME=neo4j
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:-your_password}
+    depends_on:
+      redis:
+        condition: service_healthy
+      neo4j:
+        condition: service_started
+    networks:
+      - appnet
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/docs"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  brainapi-worker:
+    image: ghcr.io/lumen-labs/brainapi:latest
+    command: /app/.venv/bin/celery -A src.workers.app worker --loglevel=info
+    env_file:
+      - /root/.env
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - NEO4J_HOST=neo4j
+      - NEO4J_PORT=7687
+      - NEO4J_USERNAME=neo4j
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:-your_password}
+    depends_on:
+      redis:
+        condition: service_healthy
+      neo4j:
+        condition: service_started
+    networks:
+      - appnet
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:latest
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /srv/nginx/conf:/etc/nginx/conf.d:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - /srv/nginx/html:/usr/share/nginx/html:ro
+    depends_on:
+      brainapi:
+        condition: service_healthy
+    networks:
+      - appnet
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+networks:
+  appnet:
+    driver: bridge
+
+volumes:
+  redis-data:
+    driver: local
+  neo4j-data:
+    driver: local
+  neo4j-logs:
+    driver: local
+  neo4j-plugins:
+    driver: local

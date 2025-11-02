@@ -49,7 +49,8 @@ class RedisConfig:
 
     def __init__(self):
         self.host = os.getenv("REDIS_HOST")
-        self.port = os.getenv("REDIS_PORT")
+        port_str = os.getenv("REDIS_PORT")
+        self.port = int(port_str) if port_str else None
 
         if [self.host, self.port].count(None) > 0:
             raise ValueError("Redis configuration is not complete")

@@ -40,10 +40,8 @@ async def retrieve_data(
         preferred_entities = []
 
     def _get_data():
-        st1 = time.time()
         text_embeddings = embeddings_adapter.embed_text(text)
-        et1 = time.time()
-        print("[time1]", et1 - st1)
+
         data_vectors = vector_store_adapter.search_vectors(
             text_embeddings.embeddings, "data", limit
         )
@@ -65,7 +63,6 @@ async def retrieve_data(
             for tv in triple_vectors
             for node_id in tv.metadata.get("node_ids", [])
         ]
-        print("[preferred entities]", preferred_entities, type(preferred_entities))
         nodes = graph_adapter.get_nodes_by_uuid(
             uuids=node_ids,
             with_relationships=True,
@@ -116,7 +113,7 @@ async def retrieve_neighbors(
         raw = graph_adapter.get_neighbors(node, limit)
 
         normalized: List[RetrievedNeighborNode] = []
-        print("[found direct neighbors]", len(raw))
+
         for item in raw:
             if isinstance(item, tuple) and len(item) >= 2:
                 n, pred, common = item
@@ -216,27 +213,29 @@ async def retrieve_neighbors(
                 neighbor_nodes = graph_adapter.get_by_uuids(
                     uuids=[vector.metadata.get("uuid") for vector in v],
                 )
-                normalized.extend(
-                    RetrievedNeighborNode(
-                        neighbor=Node(**n.model_dump()),
-                        relationship=Predicate(
-                            name="<SIMILAR_TO>",
-                            description=f"<SYS_DESCRIPTION>The neighbor and the most common are similar. Most common is directly connected to {node.name}.</SYS_DESCRIPTION>",
-                            direction="neutral",
-                            level="2",
-                        ),
-                        most_common=related_nodes[k],
-                        observations=[],
-                    )
-                    for n in neighbor_nodes
+                for n in neighbor_nodes:
+                    if len(normalized) >= limit:
+                        break
                     if not any(
                         [
                             norm.neighbor.uuid == n.uuid
                             or norm.most_common.uuid == related_nodes[k].uuid
                             for norm in normalized
                         ]
-                    )
-                )
+                    ):
+                        normalized.append(
+                            RetrievedNeighborNode(
+                                neighbor=Node(**n.model_dump()),
+                                relationship=Predicate(
+                                    name="<SIMILAR_TO>",
+                                    description=f"<SYS_DESCRIPTION>The neighbor and the most common are similar. Most common is directly connected to {node.name}.</SYS_DESCRIPTION>",
+                                    direction="neutral",
+                                    level="2",
+                                ),
+                                most_common=related_nodes[k],
+                                observations=[],
+                            )
+                        )
 
             # Getting the connected nodes of the similar nodes and filtering
             # the ones the are with same label as the main node
@@ -246,20 +245,22 @@ async def retrieve_neighbors(
                     limit=limit - len(normalized),
                     with_labels=node.labels,
                 )
-                normalized.extend(
-                    RetrievedNeighborNode(
-                        neighbor=Node(**n.model_dump()),
-                        relationship=Predicate(
-                            name=pred.name,
-                            description=pred.description,
-                            direction=pred.direction,
-                            level="3",
-                        ),
-                        most_common=Node(**common.model_dump()),
-                    )
-                    for n, pred, common in neighbor_nodes
-                    if not any([norm.neighbor.uuid == n.uuid for norm in normalized])
-                )
+                for n, pred, common in neighbor_nodes:
+                    if len(normalized) >= limit:
+                        break
+                    if not any([norm.neighbor.uuid == n.uuid for norm in normalized]):
+                        normalized.append(
+                            RetrievedNeighborNode(
+                                neighbor=Node(**n.model_dump()),
+                                relationship=Predicate(
+                                    name=pred.name,
+                                    description=pred.description,
+                                    direction=pred.direction,
+                                    level="3",
+                                ),
+                                most_common=Node(**common.model_dump()),
+                            )
+                        )
 
         # if len(normalized) < limit:
         #     v_data = vector_store_adapter.search_similar_by_ids(
@@ -294,12 +295,10 @@ async def retrieve_neighbors_ai_mode(
         node = graph_adapter.get_by_identification_params(
             identification_params, entity_types=identification_params.entity_types
         )
-        print("[node]", node)
         if not node:
             raise HTTPException(status_code=404, detail="Entity not found")
 
         result = kg_agent.retrieve_neighbors(node, looking_for, limit)
-        print("[result]", result)
 
         ids = [neighbor.uuid for neighbor in result.neighbors]
         descriptions = [neighbor.description for neighbor in result.neighbors]
