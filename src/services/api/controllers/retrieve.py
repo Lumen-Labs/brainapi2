@@ -276,7 +276,7 @@ async def retrieve_neighbors(
 
         # Returning all the nodes found respecting the limit
         return RetrieveNeighborsRequestResponse(
-            count=len(normalized), neighbors=normalized
+            count=len(normalized), main_node=node, neighbors=normalized
         )
 
     return await asyncio.to_thread(_get_neighbors)

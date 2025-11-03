@@ -138,6 +138,7 @@ class RetrieveNeighborsRequestResponse(BaseModel):
     """
 
     count: int = Field(0, description="The number of neighbors found.")
+    main_node: Node = Field(..., description="The main node of the neighbors.")
     neighbors: List[RetrievedNeighborNode]
 
 
