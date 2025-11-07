@@ -11,6 +11,7 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 import os
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from uvicorn import run
 
 from src.services.api.routes.ingest import ingest_router
@@ -18,6 +19,14 @@ from src.services.api.routes.retrieve import retrieve_router
 from src.services.api.routes.meta import meta_router
 
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 app.include_router(ingest_router)
 app.include_router(retrieve_router)
