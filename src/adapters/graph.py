@@ -56,8 +56,8 @@ class GraphAdapter:
     def add_nodes(
         self,
         nodes: list[Node],
-        identification_params: Optional[dict],
-        metadata: Optional[dict],
+        identification_params: Optional[dict] = None,
+        metadata: Optional[dict] = None,
         database: Optional[str] = None,
     ) -> list[Node] | str:
         """
@@ -189,6 +189,18 @@ class GraphAdapter:
         return self.graph.get_connected_nodes(
             node=node, uuids=uuids, limit=limit, with_labels=with_labels
         )
+
+    def search_relationships(self, limit: int = 10, skip: int = 0) -> list[Triple]:
+        """
+        Search the relationships of the graph.
+        """
+        return self.graph.search_relationships(limit, skip)
+
+    def search_entities(self, limit: int = 10, skip: int = 0) -> list[Node]:
+        """
+        Search the entities of the graph.
+        """
+        return self.graph.search_entities(limit, skip)
 
 
 _graph_adapter = GraphAdapter()

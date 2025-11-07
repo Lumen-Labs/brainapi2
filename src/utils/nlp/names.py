@@ -63,9 +63,6 @@ def most_similar_name_with_labels_or_none(
     most_similar_name, max_similarity = find_most_similar_names(
         name, names, labels_a, labels_list
     )
-    print(
-        f"[SIMILARITY] {max_similarity} for {name} w/ labels {labels_a} and {most_similar_name} w/ labels {labels_list}"
-    )
     if max_similarity > 0.75:
         return most_similar_name
     return None

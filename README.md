@@ -1,3 +1,5 @@
+BEFORE OPEN SOURCING REMOVE PAT AND ALL SECRETS
+
 ## New deploy config
 
 ```

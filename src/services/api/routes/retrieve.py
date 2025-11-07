@@ -8,7 +8,6 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 -----
 """
 
-from typing import Optional
 from fastapi import APIRouter, Body, Query
 
 from src.services.api.constants.requests import (
@@ -20,6 +19,8 @@ from src.services.api.constants.requests import (
 from src.services.api.controllers.retrieve import (
     retrieve_neighbors as retrieve_neighbors_controller,
     retrieve_neighbors_ai_mode as retrieve_neighbors_ai_mode_controller,
+    get_relationships as retrieve_get_relationships_controller,
+    get_entities as retrieve_get_entities_controller,
 )
 from src.services.api.controllers.retrieve import (
     retrieve_data as retrieve_data_controller,
@@ -90,3 +91,19 @@ async def get_context(request):
     """
     Get the context of an entity.
     """
+
+
+@retrieve_router.get(path="/relationships")
+async def get_relationships(limit: int = 10, skip: int = 0):
+    """
+    Get the relationships of the graph.
+    """
+    return await retrieve_get_relationships_controller(limit, skip)
+
+
+@retrieve_router.get(path="/entities")
+async def get_entities(limit: int = 10, skip: int = 0):
+    """
+    Get the entities of the graph.
+    """
+    return await retrieve_get_entities_controller(limit, skip)

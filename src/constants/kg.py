@@ -11,7 +11,7 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 from datetime import datetime
 from typing import List, Literal, Optional
 import uuid
-from pydantic import BaseModel, Extra, Field
+from pydantic import BaseModel, ConfigDict, Extra, Field
 
 from src.constants.data import Observation
 
@@ -110,9 +110,4 @@ class IdentificationParams(BaseModel):
         description="The types of the entity to identify.",
     )
 
-    class Meta:
-        """
-        Allow extra properties to be added to the identification params.
-        """
-
-        extra = Extra.allow
+    model_config = ConfigDict(extra="allow")

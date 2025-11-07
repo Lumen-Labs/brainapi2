@@ -187,10 +187,6 @@ class KGAgent:
         graph_db_relationships = self.kg.get_graph_relationships()
         graph_db_entities = self.kg.get_graph_entities()
 
-        print("[graph_db_prop_keys]", graph_db_prop_keys)
-        print("[graph_db_relationships]", graph_db_relationships)
-        print("[graph_db_entities]", graph_db_entities)
-
         extra_system_prompt_str = f"""
         The following are the information and schemas about the db, you must only use the following information to operate with the db:
         {{

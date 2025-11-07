@@ -13,8 +13,11 @@ import time
 from typing import List, Optional
 
 from fastapi import HTTPException
+from starlette.responses import JSONResponse
 
 from src.constants.kg import IdentificationParams, Node, Predicate, Relationship
+from src.core.search.entities import search_entities
+from src.core.search.relationships import search_relationships
 from src.services.api.constants.requests import (
     RetrieveRequestResponse,
     RetrieveNeighborsRequestResponse,
@@ -311,3 +314,31 @@ async def retrieve_neighbors_ai_mode(
     result = await asyncio.to_thread(_get_neighbors)
 
     return result
+
+
+async def get_relationships(limit: int = 10, skip: int = 0):
+    """
+    Get the relationships of the graph.
+    """
+    relationships = await asyncio.to_thread(search_relationships, limit, skip)
+
+    return JSONResponse(
+        content={
+            "message": "Relationships retrieved successfully",
+            "relationships": [r.model_dump(mode="json") for r in relationships],
+        }
+    )
+
+
+async def get_entities(limit: int = 10, skip: int = 0):
+    """
+    Get the entities of the graph.
+    """
+    entities = await asyncio.to_thread(search_entities, limit, skip)
+
+    return JSONResponse(
+        content={
+            "message": "Entities retrieved successfully",
+            "entities": [e.model_dump(mode="json") for e in entities],
+        }
+    )

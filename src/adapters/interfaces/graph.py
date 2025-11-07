@@ -46,8 +46,8 @@ class GraphClient(ABC):
     def add_nodes(
         self,
         nodes: list[Node],
-        identification_params: Optional[dict],
-        metadata: Optional[dict],
+        identification_params: Optional[dict] = None,
+        metadata: Optional[dict] = None,
         database: Optional[str] = None,
     ) -> list[Node] | str:
         """
@@ -194,3 +194,16 @@ class GraphClient(ABC):
         Get the connected nodes by their UUIDs.
         """
         raise NotImplementedError("get_connected_nodes method not implemented")
+
+    @abstractmethod
+    def search_relationships(self, limit: int = 10, skip: int = 0) -> list[Triple]:
+        """
+        Search the relationships of the graph.
+        """
+        raise NotImplementedError("search_relationships method not implemented")
+
+    @abstractmethod
+    def search_entities(self, limit: int = 10, skip: int = 0) -> list[Node]:
+        """
+        Search the entities of the graph.
+        """

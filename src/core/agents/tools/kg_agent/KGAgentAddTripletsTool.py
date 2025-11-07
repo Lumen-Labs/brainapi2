@@ -81,7 +81,7 @@ class KGAgentAddTripletsTool(BaseTool):
 
             v_sim_sub = self.vector_store.search_vectors(v_sub.embeddings, "nodes", k=5)
             v_sim_obj = self.vector_store.search_vectors(v_obj.embeddings, "nodes", k=5)
-            print("[v_sim_x]", v_sim_sub, v_sim_obj)
+
             sim_sub = most_similar_name_with_labels_or_none(
                 subject.name,
                 [v.metadata.get("name", []) for v in v_sim_sub],
@@ -94,13 +94,11 @@ class KGAgentAddTripletsTool(BaseTool):
                 object_node.labels,
                 [v.metadata.get("labels", []) for v in v_sim_obj],
             )
-            print("[sim_x]", sim_sub, sim_obj)
             if sim_sub:
                 sim_sub_vector = next(
                     (v for v in v_sim_sub if v.metadata.get("name", []) == sim_sub),
                     None,
                 )
-                print("[sim_sub_vector]", sim_sub_vector)
                 subject = Node(
                     name=sim_sub_vector.metadata.get("name", []),
                     uuid=sim_sub_vector.metadata.get("uuid"),
@@ -121,7 +119,7 @@ class KGAgentAddTripletsTool(BaseTool):
                     (v for v in v_sim_obj if v.metadata.get("name", []) == sim_obj),
                     None,
                 )
-                print("[sim_obj_vector]", sim_obj_vector)
+
                 object_node = Node(
                     name=sim_obj_vector.metadata.get("name", []),
                     uuid=sim_obj_vector.metadata.get("uuid"),
@@ -156,8 +154,7 @@ class KGAgentAddTripletsTool(BaseTool):
 
             self.kg.add_nodes(
                 [triplet.subject, triplet.object],
-                self.identification_params,
-                self.metadata,
+                metadata=self.metadata,
             )
             self.kg.add_relationship(
                 triplet.subject,

@@ -89,7 +89,7 @@ def ingest_data(self, args: dict):
         ),
         observate_for=payload.observate_for,
     )
-    print("[observations]", observations, type(observations))
+
     data_adapter.save_observations(
         [
             Observation(
@@ -132,7 +132,6 @@ def ingest_structured_data(self, args: dict):
 
     for element in payload.data:
         uuid = str(uuid4())
-        print("[uuid]", uuid)
         node = graph_adapter.add_nodes(
             [
                 Node(
@@ -149,7 +148,7 @@ def ingest_structured_data(self, args: dict):
                     },
                 )
             ],
-            identification_params=element.identification_params,
+            identification_params=element.identification_params.model_dump(mode="json"),
             metadata=element.textual_data,
         )[0]
         vector = embeddings_adapter.embed_text(node.name)
