@@ -162,6 +162,8 @@ class KGAgentAddTripletsTool(BaseTool):
                 triplet.object,
             )
 
+            # TODO: save natural language relationship/predicate+s+o vector
+
             # TODO: add changelog relationship created
 
         return f"Triplets added successfully: {triplets}"

@@ -11,7 +11,13 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 from abc import ABC, abstractmethod
 from typing import Optional, Tuple
 
-from src.constants.kg import IdentificationParams, Node, Predicate, Triple
+from src.constants.kg import (
+    IdentificationParams,
+    Node,
+    Predicate,
+    SearchEntitiesResult,
+    SearchRelationshipsResult,
+)
 
 
 class GraphClient(ABC):
@@ -196,14 +202,34 @@ class GraphClient(ABC):
         raise NotImplementedError("get_connected_nodes method not implemented")
 
     @abstractmethod
-    def search_relationships(self, limit: int = 10, skip: int = 0) -> list[Triple]:
+    def search_relationships(
+        self,
+        limit: int = 10,
+        skip: int = 0,
+        relationship_types: Optional[list[str]] = None,
+        from_node_labels: Optional[list[str]] = None,
+        to_node_labels: Optional[list[str]] = None,
+        relationship_uuids: Optional[list[str]] = None,
+        query_text: Optional[str] = None,
+        query_search_target: Optional[
+            str
+        ] = "all",  # Search into the relationship desc or node names or relationship desc
+    ) -> SearchRelationshipsResult:
         """
         Search the relationships of the graph.
         """
         raise NotImplementedError("search_relationships method not implemented")
 
     @abstractmethod
-    def search_entities(self, limit: int = 10, skip: int = 0) -> list[Node]:
+    def search_entities(
+        self,
+        limit: int = 10,
+        skip: int = 0,
+        node_labels: Optional[list[str]] = None,
+        node_uuids: Optional[list[str]] = None,
+        query_text: Optional[str] = None,
+    ) -> SearchEntitiesResult:
         """
         Search the entities of the graph.
         """
+        raise NotImplementedError("search_entities method not implemented")

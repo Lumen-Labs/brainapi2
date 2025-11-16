@@ -111,3 +111,21 @@ class IdentificationParams(BaseModel):
     )
 
     model_config = ConfigDict(extra="allow")
+
+
+class SearchRelationshipsResult(BaseModel):
+    """
+    Search relationships result model.
+    """
+
+    results: List[Triple]
+    total: int
+
+
+class SearchEntitiesResult(BaseModel):
+    """
+    Search entities result model.
+    """
+
+    results: List[Node]
+    total: int

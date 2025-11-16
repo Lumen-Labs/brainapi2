@@ -8,6 +8,7 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 -----
 """
 
+from typing import Optional
 from fastapi import APIRouter, Body, Query
 
 from src.services.api.constants.requests import (
@@ -94,16 +95,45 @@ async def get_context(request):
 
 
 @retrieve_router.get(path="/relationships")
-async def get_relationships(limit: int = 10, skip: int = 0):
+async def get_relationships(
+    limit: int = 10,
+    skip: int = 0,
+    relationship_types: Optional[str] = None,
+    from_node_labels: Optional[str] = None,
+    to_node_labels: Optional[str] = None,
+    query_text: Optional[str] = None,
+    query_search_target: Optional[str] = "all",
+):
     """
     Get the relationships of the graph.
     """
-    return await retrieve_get_relationships_controller(limit, skip)
+    if relationship_types:
+        relationship_types = relationship_types.split(",")
+    if from_node_labels:
+        from_node_labels = from_node_labels.split(",")
+    if to_node_labels:
+        to_node_labels = to_node_labels.split(",")
+    return await retrieve_get_relationships_controller(
+        limit,
+        skip,
+        relationship_types,
+        from_node_labels,
+        to_node_labels,
+        query_text,
+        query_search_target,
+    )
 
 
 @retrieve_router.get(path="/entities")
-async def get_entities(limit: int = 10, skip: int = 0):
+async def get_entities(
+    limit: int = 10,
+    skip: int = 0,
+    node_labels: Optional[str] = None,
+    query_text: Optional[str] = None,
+):
     """
     Get the entities of the graph.
     """
-    return await retrieve_get_entities_controller(limit, skip)
+    if node_labels:
+        node_labels = node_labels.split(",")
+    return await retrieve_get_entities_controller(limit, skip, node_labels, query_text)

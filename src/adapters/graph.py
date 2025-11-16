@@ -10,7 +10,14 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 
 from typing import Optional, Tuple
 from src.adapters.interfaces.graph import GraphClient
-from src.constants.kg import IdentificationParams, Node, Predicate, Triple
+from src.constants.kg import (
+    IdentificationParams,
+    Node,
+    Predicate,
+    SearchEntitiesResult,
+    SearchRelationshipsResult,
+    Triple,
+)
 
 
 class GraphAdapter:
@@ -190,17 +197,47 @@ class GraphAdapter:
             node=node, uuids=uuids, limit=limit, with_labels=with_labels
         )
 
-    def search_relationships(self, limit: int = 10, skip: int = 0) -> list[Triple]:
+    def search_relationships(
+        self,
+        limit: int = 10,
+        skip: int = 0,
+        relationship_types: Optional[list[str]] = None,
+        from_node_labels: Optional[list[str]] = None,
+        to_node_labels: Optional[list[str]] = None,
+        query_text: Optional[str] = None,
+        query_search_target: Optional[str] = "all",
+    ) -> SearchRelationshipsResult:
         """
         Search the relationships of the graph.
         """
-        return self.graph.search_relationships(limit, skip)
+        relationship_uuids = []
+        # TODO: semantic search + src/core/agents/tools/kg_agent/KGAgentAddTripletsTool.py:165
+        return self.graph.search_relationships(
+            limit,
+            skip,
+            relationship_types,
+            from_node_labels,
+            to_node_labels,
+            relationship_uuids,
+            query_text,
+            query_search_target,
+        )
 
-    def search_entities(self, limit: int = 10, skip: int = 0) -> list[Node]:
+    def search_entities(
+        self,
+        limit: int = 10,
+        skip: int = 0,
+        node_labels: Optional[list[str]] = None,
+        query_text: Optional[str] = None,
+    ) -> SearchEntitiesResult:
         """
         Search the entities of the graph.
         """
-        return self.graph.search_entities(limit, skip)
+        node_uuids = []
+        # TODO: semantic search
+        return self.graph.search_entities(
+            limit, skip, node_labels, node_uuids, query_text
+        )
 
 
 _graph_adapter = GraphAdapter()

@@ -13,7 +13,14 @@ from typing import Any, Optional, Tuple
 from neo4j import GraphDatabase
 from src.adapters.interfaces.graph import GraphClient
 from src.config import config
-from src.constants.kg import IdentificationParams, Node, Predicate, Triple
+from src.constants.kg import (
+    IdentificationParams,
+    Node,
+    Predicate,
+    SearchEntitiesResult,
+    SearchRelationshipsResult,
+    Triple,
+)
 from src.utils.logging import log
 
 
@@ -650,19 +657,79 @@ class Neo4jClient(GraphClient):
             for record in result.records
         ]
 
-    def search_relationships(self, limit: int = 10, skip: int = 0) -> list[Triple]:
+    def search_relationships(
+        self,
+        limit: int = 10,
+        skip: int = 0,
+        relationship_types: Optional[list[str]] = None,
+        from_node_labels: Optional[list[str]] = None,
+        to_node_labels: Optional[list[str]] = None,
+        relationship_uuids: Optional[list[str]] = None,
+        query_text: Optional[str] = None,
+        query_search_target: Optional[str] = "all",
+    ) -> SearchRelationshipsResult:
         """
         Search the relationships of the graph.
         """
+        filters = []
+        if relationship_types:
+            filters.append(
+                "type(r) IN [" + ",".join(f"'{t}'" for t in relationship_types) + "]"
+            )
+        if from_node_labels:
+            filters.append(
+                "ANY(lbl IN labels(n) WHERE lbl IN ["
+                + ",".join(
+                    f"'{label}'" for label in self._clean_labels(from_node_labels)
+                )
+                + "])"
+            )
+        if to_node_labels:
+            filters.append(
+                "ANY(lbl IN labels(m) WHERE lbl IN ["
+                + ",".join(f"'{label}'" for label in self._clean_labels(to_node_labels))
+                + "])"
+            )
+        if relationship_uuids:
+            filters.append(
+                "r.uuid IN [" + ",".join(f"'{u}'" for u in relationship_uuids) + "]"
+            )
+        if query_text:
+            if query_search_target == "all":
+                filters.append(
+                    f"(toLower(coalesce(n.name, n.Name, '')) CONTAINS toLower('{query_text}') OR "
+                    f"toLower(coalesce(m.name, m.Name, '')) CONTAINS toLower('{query_text}') OR "
+                    f"toLower(coalesce(r.description, r.Description, '')) CONTAINS toLower('{query_text}'))"
+                )
+            elif query_search_target == "node_name":
+                filters.append(f"toLower(n.name) CONTAINS toLower('{query_text}')")
+            elif query_search_target == "relationship_description":
+                filters.append(
+                    f"toLower(r.description) CONTAINS toLower('{query_text}')"
+                )
+            elif query_search_target == "relationship_name":
+                filters.append(f"toLower(r.name) CONTAINS toLower('{query_text}')")
         cypher_query = f"""
-        MATCH (n)-[r]-(m)
-        RETURN n.uuid as n_uuid, n.name as n_name, labels(n) as n_labels, n.description as n_description, properties(n) as n_properties,
-               r as rel, type(r) as rel_type, r.description as rel_description,
-               m.uuid as m_uuid, m.name as m_name, labels(m) as m_labels, m.description as m_description, properties(m) as m_properties
+        MATCH (n)-[r]->(m)
+        {"WHERE " + " AND ".join(filters) if filters else ""}
+        RETURN n.uuid AS n_uuid, n.name AS n_name, labels(n) AS n_labels,
+            n.description AS n_description, properties(n) AS n_properties,
+            r AS rel, type(r) AS rel_type, r.description AS rel_description,
+            m.uuid AS m_uuid, m.name AS m_name, labels(m) AS m_labels,
+            m.description AS m_description, properties(m) AS m_properties
         SKIP {skip}
         LIMIT {limit}
         """
+        cypher_count = """
+        MATCH ()-[r]-()
+        RETURN count(r) AS total
+        """
         result = self.driver.execute_query(cypher_query)
+        count_result = self.driver.execute_query(cypher_count)
+        total = 0
+        if count_result and count_result.records:
+            total = count_result.records[0].get("total") or 0
+
         triples: list[Triple] = []
         for record in result.records:
             relationship = record.get("rel")
@@ -745,19 +812,49 @@ class Neo4jClient(GraphClient):
                     ),
                 )
             )
-        return triples
+        return SearchRelationshipsResult(results=triples, total=total)
 
-    def search_entities(self, limit: int = 10, skip: int = 0) -> list[Node]:
+    def search_entities(
+        self,
+        limit: int = 10,
+        skip: int = 0,
+        node_labels: Optional[list[str]] = None,
+        node_uuids: Optional[list[str]] = None,
+        query_text: Optional[str] = None,
+    ) -> SearchEntitiesResult:
         """
         Search the entities of the graph.
         """
+        filters = []
+        if node_labels:
+            filters.append(
+                "ANY(lbl IN labels(n) WHERE lbl IN ["
+                + ",".join(f"'{label}'" for label in self._clean_labels(node_labels))
+                + "])"
+            )
+        if node_uuids:
+            filters.append(f"n.uuid IN [{','.join(node_uuids)}]")
+        if query_text:
+            filters.append(
+                f"(toLower(coalesce(n.name, n.Name, '')) CONTAINS toLower('{query_text}'))"
+            )
         cypher_query = f"""
         MATCH (n)
+        {"WHERE " + " AND ".join(filters) if filters else ""}
         RETURN n.uuid as uuid, n.name as name, labels(n) as labels, n.description as description, properties(n) as properties
         SKIP {skip}
         LIMIT {limit}
         """
+        cypher_count = """
+        MATCH (n)
+        RETURN count(n) AS total
+        """
         result = self.driver.execute_query(cypher_query)
+        count_result = self.driver.execute_query(cypher_count)
+        total = 0
+        if count_result and count_result.records:
+            total = count_result.records[0].get("total") or 0
+
         nodes: list[Node] = []
         for record in result.records:
             properties_record = record.get("properties") or {}
@@ -784,7 +881,7 @@ class Neo4jClient(GraphClient):
                     properties=properties,
                 )
             )
-        return nodes
+        return SearchEntitiesResult(results=nodes, total=total)
 
 
 _neo4j_client = Neo4jClient()

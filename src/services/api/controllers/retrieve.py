@@ -316,29 +316,55 @@ async def retrieve_neighbors_ai_mode(
     return result
 
 
-async def get_relationships(limit: int = 10, skip: int = 0):
+async def get_relationships(
+    limit: int = 10,
+    skip: int = 0,
+    relationship_types: Optional[list[str]] = None,
+    from_node_labels: Optional[list[str]] = None,
+    to_node_labels: Optional[list[str]] = None,
+    query_text: Optional[str] = None,
+    query_search_target: Optional[str] = "all",
+):
     """
     Get the relationships of the graph.
     """
-    relationships = await asyncio.to_thread(search_relationships, limit, skip)
+    relationships = await asyncio.to_thread(
+        search_relationships,
+        limit,
+        skip,
+        relationship_types,
+        from_node_labels,
+        to_node_labels,
+        query_text,
+        query_search_target,
+    )
 
     return JSONResponse(
         content={
             "message": "Relationships retrieved successfully",
-            "relationships": [r.model_dump(mode="json") for r in relationships],
+            "relationships": [r.model_dump(mode="json") for r in relationships.results],
+            "total": relationships.total,
         }
     )
 
 
-async def get_entities(limit: int = 10, skip: int = 0):
+async def get_entities(
+    limit: int = 10,
+    skip: int = 0,
+    node_labels: Optional[list[str]] = None,
+    query_text: Optional[str] = None,
+):
     """
     Get the entities of the graph.
     """
-    entities = await asyncio.to_thread(search_entities, limit, skip)
+    entities = await asyncio.to_thread(
+        search_entities, limit, skip, node_labels, query_text
+    )
 
     return JSONResponse(
         content={
             "message": "Entities retrieved successfully",
-            "entities": [e.model_dump(mode="json") for e in entities],
+            "entities": [e.model_dump(mode="json") for e in entities.results],
+            "total": entities.total,
         }
     )

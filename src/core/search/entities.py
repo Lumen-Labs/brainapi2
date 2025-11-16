@@ -8,13 +8,19 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 -----
 """
 
-from src.constants.kg import Node
+from typing import Optional
+from src.constants.kg import SearchEntitiesResult
 from src.services.kg_agent.main import graph_adapter
 
 
-def search_entities(limit: int = 10, skip: int = 0) -> list[Node]:
+def search_entities(
+    limit: int = 10,
+    skip: int = 0,
+    node_labels: Optional[list[str]] = None,
+    query_text: Optional[str] = None,
+) -> SearchEntitiesResult:
     """
     Search the entities of the graph.
     """
-    result = graph_adapter.search_entities(limit, skip)
+    result = graph_adapter.search_entities(limit, skip, node_labels, query_text)
     return result
