@@ -721,7 +721,8 @@ class Neo4jClient(GraphClient):
         LIMIT {limit}
         """
         cypher_count = """
-        MATCH ()-[r]-()
+        MATCH (n)-[r]-(m)
+        {"WHERE " + " AND ".join(filters) if filters else ""}
         RETURN count(r) AS total
         """
         result = self.driver.execute_query(cypher_query)
@@ -847,6 +848,7 @@ class Neo4jClient(GraphClient):
         """
         cypher_count = """
         MATCH (n)
+        {"WHERE " + " AND ".join(filters) if filters else ""}
         RETURN count(n) AS total
         """
         result = self.driver.execute_query(cypher_query)
