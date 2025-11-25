@@ -720,7 +720,7 @@ class Neo4jClient(GraphClient):
         SKIP {skip}
         LIMIT {limit}
         """
-        cypher_count = """
+        cypher_count = f"""
         MATCH (n)-[r]-(m)
         {"WHERE " + " AND ".join(filters) if filters else ""}
         RETURN count(r) AS total
