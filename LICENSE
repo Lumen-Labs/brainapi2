@@ -1,0 +1,130 @@
+BRAINAPI2 ENGINE LICENSE
+Version 1.0 — © 2025 Lumen Platforms Inc.
+
+This software ("BrainAPI Engine" or "the Software") is provided under a combined
+license consisting of:
+
+  (1) The GNU Affero General Public License, Version 3 ("AGPLv3")
+  (2) The Commons Clause License Condition v1.0 ("Commons Clause")
+  (3) An Additional Use Grant clarifying permitted non-commercial usage
+  (4) A Dual Licensing Statement describing how commercial licenses may be obtained
+
+The intent of this license package is to:
+- Preserve the freedoms of open-source software for research, education, and 
+  community use.
+- Prevent third parties from selling, hosting, embedding, or repackaging the 
+  BrainAPI Engine as part of a competing commercial offering.
+- Allow commercial use only via a separate paid Enterprise License agreement 
+  with Lumen Platforms Inc.
+
+-------------------------------------------------------------------------------
+SECTION 1 — COMMONS CLAUSE LICENSE CONDITION v1.0
+-------------------------------------------------------------------------------
+The “Commons Clause” License Condition v1.0 is an addendum to the 
+AGPLv3 License granted below. It states:
+
+"Without limiting other conditions in the License, the license grant does not 
+include the right to Sell the Software.
+
+'Sell' means practicing any or all of the rights granted to you under the License 
+to provide the Software or Derivative Works to third parties, for a fee or other 
+consideration, including without limitation:
+  - Providing the Software or Derivative Works as a hosted or managed service;
+  - Embedding or incorporating the Software or Derivative Works in a commercial 
+    product or service;
+  - Distributing the Software or Derivative Works to third parties for any 
+    commercial purpose.
+
+Any commercial use of the Software requires a separate commercial license 
+from Lumen Platforms Inc."
+
+The Commons Clause overrides any conflicting provisions of the AGPLv3.
+
+-------------------------------------------------------------------------------
+SECTION 2 — ADDITIONAL USE GRANT (NON-COMMERCIAL USE ALLOWED)
+-------------------------------------------------------------------------------
+You are permitted to:
+- Use, modify, study, and run the Software for personal, research, academic, 
+  experimental, or non-commercial organizational use.
+- Self-host BrainAPI internally for non-commercial, non-revenue-generating 
+  purposes.
+- Publish modifications, forks, and contributions as long as they also comply 
+  with this license (including the Commons Clause).
+- Use the Software to build prototypes, internal tools, or demos, provided 
+  these are not sold, licensed, offered as a service, or incorporated into any 
+  commercial product.
+
+These permissions remain free of charge.
+
+-------------------------------------------------------------------------------
+SECTION 3 — PROHIBITED USES WITHOUT A COMMERCIAL LICENSE
+-------------------------------------------------------------------------------
+The following uses are NOT permitted under this Community License:
+
+(1) Offering BrainAPI (modified or unmodified) as a managed or hosted service.
+(2) Embedding or integrating any part of BrainAPI into a commercial SaaS,
+    product, or API.
+(3) Selling services that rely on BrainAPI as a core component.
+(4) Using BrainAPI to power commercial applications, LLM pipelines, AI agents,
+    enterprise search engines, or knowledge-graph infrastructure.
+(5) Creating a competing product or service based on the BrainAPI engine or 
+    significant portions of its architecture, algorithms, or modules.
+
+Any commercial use requires a separate Enterprise License from Lumen Platforms Inc.
+
+-------------------------------------------------------------------------------
+SECTION 4 — COMMERCIAL LICENSE
+-------------------------------------------------------------------------------
+Commercial usage, including SaaS hosting, embedding, redistribution, or 
+derivative commercial offerings, requires an Enterprise License obtained directly 
+from Lumen Platforms Inc.
+
+Contact:
+  Lumen Platforms Inc. — Licensing Department  
+  Email: hello@lumen-labs.ai  
+
+-------------------------------------------------------------------------------
+SECTION 5 — TRADEMARK POLICY
+-------------------------------------------------------------------------------
+The names "BrainAPI", “BrainAPI Engine”, “Lumen Platforms Inc.”, and associated logos are 
+trademarks of Lumen Platforms Inc.
+
+You may not:
+- Use these trademarks in commerce,
+- Portray forks or modified versions as official BrainAPI distributions,
+- Use the trademarks in product names or domain names without permission.
+
+Fair-use (e.g., citing or referring to BrainAPI) is allowed.
+
+-------------------------------------------------------------------------------
+SECTION 6 — FULL AGPLv3 LICENSE TEXT
+-------------------------------------------------------------------------------
+The full text of the GNU Affero General Public License v3 is included below 
+exactly as published by the Free Software Foundation. The AGPLv3 applies except 
+where modified or restricted by the Commons Clause and Additional Use Grant.
+
+---------------------------------------------------------------------------
+GNU AFFERO GENERAL PUBLIC LICENSE  
+Version 3, 19 November 2007  
+Copyright (C) 2007 Free Software Foundation
+---------------------------------------------------------------------------
+
+[ FULL ORIGINAL AGPLv3 TEXT HERE — UNMODIFIED ]  
+For brevity, the text is omitted in this preview.  
+In your final LICENSE.txt, paste the complete AGPLv3 text from:  
+https://www.gnu.org/licenses/agpl-3.0.txt
+
+-------------------------------------------------------------------------------
+SECTION 7 — EXPLANATORY NOTE (NON-LEGAL)
+-------------------------------------------------------------------------------
+This license is designed to:
+- Enable an open-source community ecosystem,
+- Allow free self-hosting for research and internal use,
+- Prevent competitors from extracting BrainAPI internals to build
+  competing services, AI agents, or infrastructure,
+- Ensure long-term commercial viability via dual licensing.
+
+If you need a different arrangement or custom enterprise terms, contact us.
+
+-------------------------------------------------------------------------------
+END OF LICENSE
