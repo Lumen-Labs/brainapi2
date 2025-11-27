@@ -17,12 +17,13 @@ from uvicorn import run
 from src.services.api.routes.ingest import ingest_router
 from src.services.api.routes.retrieve import retrieve_router
 from src.services.api.routes.meta import meta_router
+from src.config import config
 
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=config.cors.origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

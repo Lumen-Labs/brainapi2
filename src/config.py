@@ -130,4 +130,13 @@ class Config:
         self.mongo = MongoConfig()
 
 
+class CorsConfig:
+    """
+    Configuration class for the Cors configuration.
+    """
+
+    def __init__(self):
+        self.origins = os.getenv("CORS_ORIGINS", "*").split(",")
+
+
 config = Config()
