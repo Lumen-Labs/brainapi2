@@ -18,6 +18,8 @@ from src.config import config
 
 class BrainPATMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
+        if request.method == "OPTIONS":
+            return await call_next(request)
         brainpat = request.headers.get("BrainPAT")
         if brainpat != config.brainpat_token:
             return JSONResponse(
