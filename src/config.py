@@ -128,16 +128,11 @@ class Config:
         self.milvus = MilvusConfig()
         self.embeddings = EmbeddingsConfig()
         self.mongo = MongoConfig()
-        self.cors = CorsConfig()
 
+        self.brainpat_token = os.getenv("BRAINPAT_TOKEN")
 
-class CorsConfig:
-    """
-    Configuration class for the Cors configuration.
-    """
-
-    def __init__(self):
-        self.origins = os.getenv("CORS_ORIGINS", "*").split(",")
+        if not self.brainpat_token:
+            raise ValueError("BrainPAT token is not set")
 
 
 config = Config()
