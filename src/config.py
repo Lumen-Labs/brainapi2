@@ -128,6 +128,7 @@ class Config:
         self.milvus = MilvusConfig()
         self.embeddings = EmbeddingsConfig()
         self.mongo = MongoConfig()
+        self.cors = CorsConfig()
 
 
 class CorsConfig:
