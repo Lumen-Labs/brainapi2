@@ -382,16 +382,14 @@ class Neo4jClient(GraphClient):
         RETURN n.uuid as uuid, n.name as name, labels(n) as labels, n.description as description, properties(n) as properties
         """
         result = self.driver.execute_query(cypher_query)
-        return (
-            Node(
-                uuid=result.records[0]["uuid"],
-                name=result.records[0]["name"],
-                labels=result.records[0]["labels"],
-                description=result.records[0]["description"],
-                properties=result.records[0]["properties"],
-            )
-            if result.records
-            else None
+        if not result.records or len(result.records) == 0:
+            return None
+        return Node(
+            uuid=result.records[0].get("uuid", ""),
+            name=result.records[0].get("name", "") or "",
+            labels=result.records[0].get("labels", []) or [],
+            description=result.records[0].get("description", "") or "",
+            properties=result.records[0].get("properties", {}) or {},
         )
 
     def get_by_uuids(self, uuids: list[str]) -> list[Node]:
@@ -405,11 +403,11 @@ class Neo4jClient(GraphClient):
         result = self.driver.execute_query(cypher_query)
         return [
             Node(
-                uuid=record["uuid"],
-                name=record["name"],
-                labels=record["labels"],
-                description=record["description"],
-                properties=record["properties"],
+                uuid=record.get("uuid", ""),
+                name=record.get("name", "") or "",
+                labels=record.get("labels", []) or [],
+                description=record.get("description", "") or "",
+                properties=record.get("properties", {}) or {},
             )
             for record in result.records
         ]
@@ -437,16 +435,14 @@ class Neo4jClient(GraphClient):
         RETURN n.uuid as uuid, n.name as name, labels(n) as labels, n.description as description, properties(n) as properties
         """
         result = self.driver.execute_query(cypher_query)
-        return (
-            Node(
-                uuid=result.records[0]["uuid"],
-                name=result.records[0]["name"],
-                labels=result.records[0]["labels"],
-                description=result.records[0]["description"],
-                properties=result.records[0]["properties"],
-            )
-            if result.records
-            else None
+        if not result.records or len(result.records) == 0:
+            return None
+        return Node(
+            uuid=result.records[0].get("uuid", ""),
+            name=result.records[0].get("name", "") or "",
+            labels=result.records[0].get("labels", []) or [],
+            description=result.records[0].get("description", "") or "",
+            properties=result.records[0].get("properties", {}) or {},
         )
 
     def get_graph_property_keys(self) -> list[str]:
@@ -493,11 +489,11 @@ class Neo4jClient(GraphClient):
             neighbors.append(
                 (
                     Node(
-                        uuid=record["uuid"],
-                        name=record["name"],
-                        labels=record["labels"],
-                        description=record["description"],
-                        properties=record["properties"],
+                        uuid=record.get("uuid", ""),
+                        name=record.get("name", "") or "",
+                        labels=record.get("labels", []) or [],
+                        description=record.get("description", "") or "",
+                        properties=record.get("properties", {}) or {},
                     ),
                     Predicate(
                         name=rel_type or "",
@@ -505,11 +501,11 @@ class Neo4jClient(GraphClient):
                         direction=direction,
                     ),
                     Node(
-                        uuid=record["c_uuid"],
-                        name=record["c_name"],
-                        labels=record["c_labels"],
-                        description=record["c_description"],
-                        properties=record["c_properties"],
+                        uuid=record.get("c_uuid", ""),
+                        name=record.get("c_name", "") or "",
+                        labels=record.get("c_labels", []) or [],
+                        description=record.get("c_description", "") or "",
+                        properties=record.get("c_properties", {}) or {},
                     ),
                 )
             )
@@ -578,11 +574,11 @@ class Neo4jClient(GraphClient):
             tuples.append(
                 (
                     Node(
-                        uuid=record["n_uuid"],
-                        name=record["n_name"],
-                        labels=record["n_labels"],
-                        description=record["n_description"],
-                        properties=record["n_properties"],
+                        uuid=record.get("n_uuid", ""),
+                        name=record.get("n_name", "") or "",
+                        labels=record.get("n_labels", []) or [],
+                        description=record.get("n_description", "") or "",
+                        properties=record.get("n_properties", {}) or {},
                     ),
                     Predicate(
                         name=rel_type,
@@ -590,11 +586,11 @@ class Neo4jClient(GraphClient):
                         direction=direction,
                     ),
                     Node(
-                        uuid=record["m_uuid"],
-                        name=record["m_name"],
-                        labels=record["m_labels"],
-                        description=record["m_description"],
-                        properties=record["m_properties"],
+                        uuid=record.get("m_uuid", ""),
+                        name=record.get("m_name", "") or "",
+                        labels=record.get("m_labels", []) or [],
+                        description=record.get("m_description", "") or "",
+                        properties=record.get("m_properties", {}) or {},
                     ),
                 )
             )
@@ -635,23 +631,23 @@ class Neo4jClient(GraphClient):
         return [
             (
                 Node(
-                    uuid=record["uuid"],
-                    name=record["name"],
-                    labels=record["labels"],
-                    description=record["description"],
-                    properties=record["properties"],
+                    uuid=record.get("uuid", ""),
+                    name=record.get("name", "") or "",
+                    labels=record.get("labels", []) or [],
+                    description=record.get("description", "") or "",
+                    properties=record.get("properties", {}) or {},
                 ),
                 Predicate(
-                    name=record["rel_type"] or "",
-                    description=record["rel_description"] or "",
+                    name=record.get("rel_type", "") or "",
+                    description=record.get("rel_description", "") or "",
                     direction=record.get("direction", "neutral"),
                 ),
                 Node(
-                    uuid=record["n_uuid"],
-                    name=record["n_name"],
-                    labels=record["n_labels"],
-                    description=record["n_description"],
-                    properties=record["n_properties"],
+                    uuid=record.get("n_uuid", "") or "",
+                    name=record.get("n_name", "") or "",
+                    labels=record.get("n_labels", []) or [],
+                    description=record.get("n_description", "") or "",
+                    properties=record.get("n_properties", {}) or {},
                 ),
             )
             for record in result.records
