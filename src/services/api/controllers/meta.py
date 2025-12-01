@@ -16,5 +16,5 @@ async def get_entity_properties():
     """
     Get the entity properties of the graph.
     """
-    result = await asyncio.to_thread(graph_adapter.get_graph_property_keys)
+    result = await asyncio.to_thread(graph_adapter.get_graph_property_keys, brain_id)
     return result

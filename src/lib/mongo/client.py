@@ -14,7 +14,7 @@ from pymongo.database import Database
 from pymongo.collection import Collection
 from src.adapters.interfaces.data import DataClient, SearchResult
 from src.config import config
-from src.constants.data import Observation, StructuredData, TextChunk
+from src.constants.data import Brain, Observation, StructuredData, TextChunk
 
 
 class MongoClient(DataClient):
@@ -37,25 +37,29 @@ class MongoClient(DataClient):
                 authSource="admin",
             )
 
-    def get_database(self, database: str = "data") -> Database:
+    def get_database(self, database: str = "default") -> Database:
         return self.client[database]
 
-    def get_collection(self, collection: str, database: str = "data") -> Collection:
+    def get_collection(self, collection: str, database: str = "default") -> Collection:
         return self.get_database(database)[collection]
 
-    def save_text_chunk(self, text_chunk: TextChunk) -> TextChunk:
-        collection = self.get_collection("text_chunks")
+    def save_text_chunk(self, text_chunk: TextChunk, brain_id: str) -> TextChunk:
+        collection = self.get_collection("text_chunks", database=brain_id)
         collection.insert_one(text_chunk.model_dump(mode="json"))
         return text_chunk
 
-    def save_observations(self, observations: List[Observation]) -> Observation:
-        collection = self.get_collection("observations")
+    def save_observations(
+        self, observations: List[Observation], brain_id: str
+    ) -> Observation:
+        collection = self.get_collection("observations", database=brain_id)
         collection.insert_many([o.model_dump(mode="json") for o in observations])
         return observations
 
-    def search(self, text: str, collection: str = "*", limit: int = 10) -> SearchResult:
-        chunks_collection = self.get_collection(collection)
-        observations_collection = self.get_collection("observations")
+    def search(
+        self, text: str, brain_id: str, collection: str = "*", limit: int = 10
+    ) -> SearchResult:
+        chunks_collection = self.get_collection(collection, database=brain_id)
+        observations_collection = self.get_collection("observations", database=brain_id)
 
         text_chunks_results = chunks_collection.find(
             {"text": {"$regex": text, "$options": "i"}}
@@ -84,13 +88,15 @@ class MongoClient(DataClient):
         return SearchResult(text_chunks=text_chunks, observations=observations)
 
     def get_text_chunks_by_ids(
-        self, ids: List[str], with_observations: bool = False
+        self, ids: List[str], brain_id: str, with_observations: bool = False
     ) -> List[TextChunk]:
-        chunks_collection = self.get_collection("text_chunks")
+        chunks_collection = self.get_collection("text_chunks", database=brain_id)
         text_chunks = chunks_collection.find({"id": {"$in": ids}})
 
         if with_observations:
-            observations_collection = self.get_collection("observations")
+            observations_collection = self.get_collection(
+                "observations", database=brain_id
+            )
             observations = observations_collection.find({"resource_id": {"$in": ids}})
 
         return (
@@ -119,10 +125,24 @@ class MongoClient(DataClient):
             ),
         )
 
-    def save_structured_data(self, structured_data: StructuredData) -> StructuredData:
-        collection = self.get_collection("structured_data")
+    def save_structured_data(
+        self, structured_data: StructuredData, brain_id: str
+    ) -> StructuredData:
+        collection = self.get_collection("structured_data", database=brain_id)
         collection.insert_one(structured_data.model_dump(mode="json"))
         return structured_data
+
+    def create_brain(self, name_key: str) -> Brain:
+        collection = self.get_collection("brains", "system")
+        result = collection.insert_one({"name_key": name_key})
+        return Brain(id=str(result.inserted_id), name_key=name_key)
+
+    def get_brain(self, name_key: str) -> Brain:
+        collection = self.get_collection("brains", "system")
+        result = collection.find_one({"name_key": name_key})
+        if not result:
+            return None
+        return Brain(id=str(result["_id"]), name_key=result["name_key"])
 
 
 _mongo_client = MongoClient()

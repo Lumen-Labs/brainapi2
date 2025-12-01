@@ -32,21 +32,23 @@ class VectorStoreClient(ABC):
     """
 
     @abstractmethod
-    def add_vectors(self, vectors: list[Vector], store: str) -> None:
+    def add_vectors(self, vectors: list[Vector], store: str, brain_id: str) -> None:
         """
         Add vectors to the vector store.
         """
         raise NotImplementedError("add_vectors method not implemented")
 
     @abstractmethod
-    def search_vectors(self, query: str, store: str, k: int = 10) -> list[Vector]:
+    def search_vectors(
+        self, query: str, brain_id: str, store: str, k: int = 10
+    ) -> list[Vector]:
         """
         Search vectors in the vector store and return the top k vectors.
         """
         raise NotImplementedError("search_vectors method not implemented")
 
     @abstractmethod
-    def get_by_ids(self, ids: list[str], store: str) -> list[Vector]:
+    def get_by_ids(self, ids: list[str], store: str, brain_id: str) -> list[Vector]:
         """
         Get vectors by their IDs.
         """
@@ -54,7 +56,12 @@ class VectorStoreClient(ABC):
 
     @abstractmethod
     def search_similar_by_ids(
-        self, vector_ids: list[str], store: str, min_similarity: float, limit: int = 10
+        self,
+        vector_ids: list[str],
+        brain_id: str,
+        store: str,
+        min_similarity: float,
+        limit: int = 10,
     ) -> list[Vector]:
         """
         Search similar vectors by their IDs.

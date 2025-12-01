@@ -9,6 +9,7 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 """
 
 from abc import ABC, abstractmethod
+from typing import Optional
 
 
 class CacheClient(ABC):
@@ -17,14 +18,16 @@ class CacheClient(ABC):
     """
 
     @abstractmethod
-    def get(self, key: str) -> str:
+    def get(self, key: str, brain_id: str) -> str:
         """
         Get a value from the cache.
         """
         raise NotImplementedError("get method not implemented")
 
     @abstractmethod
-    def set(self, key: str, value: str, expires_in: int) -> bool:
+    def set(
+        self, key: str, value: str, brain_id: str, expires_in: Optional[int] = None
+    ) -> bool:
         """
         Set a value in the cache with an expiration time.
 
@@ -39,7 +42,7 @@ class CacheClient(ABC):
         raise NotImplementedError("set method not implemented")
 
     @abstractmethod
-    def delete(self, key: str) -> bool:
+    def delete(self, key: str, brain_id: str) -> bool:
         """
         Delete a value from the cache.
         """

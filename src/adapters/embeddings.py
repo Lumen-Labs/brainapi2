@@ -41,32 +41,43 @@ class VectorStoreAdapter:
         """
         self.vector_store = client
 
-    def add_vectors(self, vectors: list[Vector], store: str) -> None:
+    def add_vectors(
+        self, vectors: list[Vector], store: str, brain_id: str = "default"
+    ) -> None:
         """
         Add vectors to the vector store.
         """
-        return self.vector_store.add_vectors(vectors, store)
+        return self.vector_store.add_vectors(vectors, store, brain_id)
 
-    def search_vectors(self, query: str, store: str, k: int = 10) -> list[Vector]:
+    def search_vectors(
+        self, query: str, store: str, brain_id: str = "default", k: int = 10
+    ) -> list[Vector]:
         """
         Search vectors in the vector store and return the top k vectors.
         """
-        return self.vector_store.search_vectors(query, store, k)
+        return self.vector_store.search_vectors(query, store, brain_id, k)
 
-    def get_by_ids(self, ids: list[str], store: str) -> list[Vector]:
+    def get_by_ids(
+        self, ids: list[str], store: str, brain_id: str = "default"
+    ) -> list[Vector]:
         """
         Get vectors by their IDs.
         """
-        return self.vector_store.get_by_ids(ids, store)
+        return self.vector_store.get_by_ids(ids, store, brain_id)
 
     def search_similar_by_ids(
-        self, vector_ids: list[str], store: str, min_similarity: float, limit: int = 10
+        self,
+        vector_ids: list[str],
+        store: str,
+        min_similarity: float,
+        limit: int = 10,
+        brain_id: str = "default",
     ) -> list[Vector]:
         """
         Search similar vectors by their IDs.
         """
         return self.vector_store.search_similar_by_ids(
-            vector_ids, store, min_similarity, limit
+            vector_ids, store, min_similarity, limit, brain_id
         )
 
 

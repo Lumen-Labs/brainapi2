@@ -66,7 +66,8 @@ def ingest_data(self, args: dict):
                 else json.dumps(payload.data.json_data)
             ),
             metadata=payload.meta_keys,
-        )
+        ),
+        brain_id=payload.brain_id,
     )
     text_chunk_vector = embeddings_adapter.embed_text(text_chunk.text)
     text_chunk_vector.metadata = {
@@ -148,6 +149,7 @@ def ingest_structured_data(self, args: dict):
                     },
                 )
             ],
+            brain_id=payload.brain_id,
             identification_params=element.identification_params.model_dump(mode="json"),
             metadata=element.textual_data,
         )[0]
@@ -171,7 +173,8 @@ def ingest_structured_data(self, args: dict):
                     "labels": element.types,
                     "name": element.identification_params.name,
                 },
-            )
+            ),
+            brain_id=payload.brain_id,
         )
         vector = embeddings_adapter.embed_text(
             "\n".join(
@@ -187,7 +190,7 @@ def ingest_structured_data(self, args: dict):
             + "\n"
             + (", ".join(node.labels) if isinstance(node.labels, list) else node.labels)
             + "\n"
-            + node.name
+            + node.name,
         )
         vector.id = node.uuid
         vector.metadata = {
@@ -233,7 +236,8 @@ def ingest_structured_data(self, args: dict):
                         resource_id=node.uuid,
                     )
                     for obs in observations
-                ]
+                ],
+                brain_id=payload.brain_id,
             )
 
         # TODO: + vectorize the predicates and new nodes + save changelog&vectors

@@ -42,7 +42,7 @@ class GraphClient(ABC):
         raise NotImplementedError("graphdb_type method not implemented")
 
     @abstractmethod
-    def execute_operation(self, operation: str) -> str:
+    def execute_operation(self, operation: str, brain_id: str) -> str:
         """
         Execute a generic graph operation.
         """
@@ -52,9 +52,9 @@ class GraphClient(ABC):
     def add_nodes(
         self,
         nodes: list[Node],
+        brain_id: str,
         identification_params: Optional[dict] = None,
         metadata: Optional[dict] = None,
-        database: Optional[str] = None,
     ) -> list[Node] | str:
         """
         Add nodes to the graph.
@@ -67,6 +67,7 @@ class GraphClient(ABC):
         subject: Node,
         predicate: Predicate,
         to_object: Node,
+        brain_id: str,
     ) -> str:
         """
         Add a relationship between two nodes to the graph.
@@ -77,6 +78,7 @@ class GraphClient(ABC):
     def search_graph(
         self,
         nodes: list[Node],
+        brain_id: str,
     ) -> list[Node]:
         """
         Search the graph for nodes and 1 degree relationships.
@@ -84,7 +86,7 @@ class GraphClient(ABC):
         raise NotImplementedError("search_graph method not implemented")
 
     @abstractmethod
-    def node_text_search(self, text: str) -> list[Node]:
+    def node_text_search(self, text: str, brain_id: str) -> list[Node]:
         """
         Search the graph for nodes by partial text match into the name of the nodes.
         """
@@ -94,6 +96,7 @@ class GraphClient(ABC):
     def get_nodes_by_uuid(
         self,
         uuids: list[str],
+        brain_id: str,
         with_relationships: Optional[bool] = False,
         relationships_depth: Optional[int] = 1,
         relationships_type: Optional[list[str]] = None,
@@ -105,21 +108,21 @@ class GraphClient(ABC):
         raise NotImplementedError("get_nodes_by_uuid method not implemented")
 
     @abstractmethod
-    def get_graph_entities(self) -> list[str]:
+    def get_graph_entities(self, brain_id: str) -> list[str]:
         """
         Get the entities of the graph.
         """
         raise NotImplementedError("get_graph_entities method not implemented")
 
     @abstractmethod
-    def get_graph_relationships(self) -> list[str]:
+    def get_graph_relationships(self, brain_id: str) -> list[str]:
         """
         Get the relationships of the graph.
         """
         raise NotImplementedError("get_graph_relationships method not implemented")
 
     @abstractmethod
-    def get_graph_property_keys(self) -> list[str]:
+    def get_graph_property_keys(self, brain_id: str) -> list[str]:
         """
         Get the property keys of the graph.
         """
@@ -129,6 +132,7 @@ class GraphClient(ABC):
     def get_by_uuid(
         self,
         uuid: str,
+        brain_id: str,
     ) -> Node:
         """
         Get a node by its UUID.
@@ -139,6 +143,7 @@ class GraphClient(ABC):
     def get_by_uuids(
         self,
         uuids: list[str],
+        brain_id: str,
     ) -> list[Node]:
         """
         Get nodes by their UUIDs.
@@ -149,6 +154,7 @@ class GraphClient(ABC):
     def get_by_identification_params(
         self,
         identification_params: IdentificationParams,
+        brain_id: str,
         entity_types: Optional[list[str]] = None,
     ) -> Node:
         """
@@ -161,6 +167,7 @@ class GraphClient(ABC):
         self,
         node: Node,
         limit: int,
+        brain_id: str,
     ) -> list[Tuple[Node, Predicate, Node]]:
         """
         Get the neighbors of a node.
@@ -171,6 +178,7 @@ class GraphClient(ABC):
     def get_node_with_rel_by_uuid(
         self,
         rel_ids_with_node_ids: list[tuple[str, str]],
+        brain_id: str,
     ) -> list[dict]:
         """
         Get the node with the relationships by their UUIDs.
@@ -182,6 +190,7 @@ class GraphClient(ABC):
         self,
         a_uuid: str,
         b_uuids: list[str],
+        brain_id: str,
     ) -> list[Tuple[Node, Predicate, Node]]:
         """
         Get the neighbor node tuples by their UUIDs.
@@ -191,6 +200,7 @@ class GraphClient(ABC):
     @abstractmethod
     def get_connected_nodes(
         self,
+        brain_id: str,
         node: Optional[Node] = None,
         uuids: Optional[list[str]] = None,
         limit: Optional[int] = 10,
@@ -204,6 +214,7 @@ class GraphClient(ABC):
     @abstractmethod
     def search_relationships(
         self,
+        brain_id: str,
         limit: int = 10,
         skip: int = 0,
         relationship_types: Optional[list[str]] = None,
@@ -223,6 +234,7 @@ class GraphClient(ABC):
     @abstractmethod
     def search_entities(
         self,
+        brain_id: str,
         limit: int = 10,
         skip: int = 0,
         node_labels: Optional[list[str]] = None,

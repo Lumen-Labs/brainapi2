@@ -30,7 +30,7 @@ from src.utils.logging import log, logt
 
 
 async def retrieve_data(
-    text: str, limit: int, preferred_entities: str
+    text: str, limit: int, preferred_entities: str, brain_id: str = "default"
 ) -> RetrieveRequestResponse:
     """
     Retrieve data from the knowledge graph and data store.
@@ -43,7 +43,7 @@ async def retrieve_data(
         preferred_entities = []
 
     def _get_data():
-        text_embeddings = embeddings_adapter.embed_text(text)
+        text_embeddings = embeddings_adapter.embed_text(text, brain_id)
 
         data_vectors = vector_store_adapter.search_vectors(
             text_embeddings.embeddings, "data", limit
@@ -52,13 +52,13 @@ async def retrieve_data(
             text_embeddings.embeddings, "triplets", limit
         )
 
-        search_result = data_adapter.search(text)
+        search_result = data_adapter.search(text, brain_id)
 
         ts_text_chunks = search_result.text_chunks
         ts_observations = search_result.observations
 
         v_text_chunks, v_observations = data_adapter.get_text_chunks_by_ids(
-            [dv.metadata.get("resource_id") for dv in data_vectors], True
+            [dv.metadata.get("resource_id") for dv in data_vectors], True, brain_id
         )
 
         node_ids = [
@@ -68,6 +68,7 @@ async def retrieve_data(
         ]
         nodes = graph_adapter.get_nodes_by_uuid(
             uuids=node_ids,
+            brain_id=brain_id,
             with_relationships=True,
             relationships_depth=1,
             relationships_type=[
@@ -94,16 +95,19 @@ async def retrieve_neighbors(
     uuid: Optional[str] = None,
     identification_params: Optional[IdentificationParams] = None,
     limit: int = 10,
+    brain_id: str = "default",
 ) -> RetrieveNeighborsRequestResponse:
     def _get_neighbors():
 
         # ================= GETTING THE MAIN NODE =================
         node = None
         if uuid:
-            node = graph_adapter.get_by_uuid(uuid)
+            node = graph_adapter.get_by_uuid(uuid, brain_id)
         elif identification_params:
             node = graph_adapter.get_by_identification_params(
-                identification_params, entity_types=identification_params.entity_types
+                identification_params,
+                brain_id=brain_id,
+                entity_types=identification_params.entity_types,
             )
         if not node:
             raise HTTPException(status_code=404, detail="Entity not found")
@@ -113,7 +117,7 @@ async def retrieve_neighbors(
         # That share a common node with the main node
         # The neighbors are of the same type (share at least one label) of the
         # main node
-        raw = graph_adapter.get_neighbors(node, limit)
+        raw = graph_adapter.get_neighbors(node, limit, brain_id)
 
         normalized: List[RetrievedNeighborNode] = []
 
@@ -155,7 +159,7 @@ async def retrieve_neighbors(
         # at least one label with the main node
         if len(normalized) < limit:
             neighbor_nodes = graph_adapter.get_nodes_by_uuid(
-                uuids=[node.uuid], with_relationships=True
+                uuids=[node.uuid], brain_id=brain_id, with_relationships=True
             )
 
             # Mapping the ids and the nodes into a dictionary and ids array
@@ -215,6 +219,7 @@ async def retrieve_neighbors(
             for k, v in same_main_labels_v_neighbors.items():
                 neighbor_nodes = graph_adapter.get_by_uuids(
                     uuids=[vector.metadata.get("uuid") for vector in v],
+                    brain_id=brain_id,
                 )
                 for n in neighbor_nodes:
                     if len(normalized) >= limit:
@@ -244,6 +249,7 @@ async def retrieve_neighbors(
             # the ones the are with same label as the main node
             for k, v in others_v_neighbors.items():
                 neighbor_nodes = graph_adapter.get_connected_nodes(
+                    brain_id=brain_id,
                     uuids=[vector.metadata.get("uuid") for vector in v],
                     limit=limit - len(normalized),
                     with_labels=node.labels,
@@ -289,6 +295,7 @@ async def retrieve_neighbors_ai_mode(
     identification_params: IdentificationParams,
     looking_for: Optional[list[str]],
     limit: int,
+    brain_id: str = "default",
 ) -> RetrieveNeighborsRequestResponse:
     """
     Retrieve neighbors of an entity from the knowledge graph.
@@ -296,7 +303,9 @@ async def retrieve_neighbors_ai_mode(
 
     def _get_neighbors():
         node = graph_adapter.get_by_identification_params(
-            identification_params, entity_types=identification_params.entity_types
+            identification_params,
+            brain_id=brain_id,
+            entity_types=identification_params.entity_types,
         )
         if not node:
             raise HTTPException(status_code=404, detail="Entity not found")
@@ -306,7 +315,7 @@ async def retrieve_neighbors_ai_mode(
         ids = [neighbor.uuid for neighbor in result.neighbors]
         descriptions = [neighbor.description for neighbor in result.neighbors]
 
-        nodes = graph_adapter.get_nodes_by_uuid(uuids=ids)
+        nodes = graph_adapter.get_nodes_by_uuid(uuids=ids, brain_id=brain_id)
         paired = list(zip(nodes, descriptions))
 
         return RetrieveNeighborsRequestResponse(neighbors=paired)
@@ -324,6 +333,7 @@ async def get_relationships(
     to_node_labels: Optional[list[str]] = None,
     query_text: Optional[str] = None,
     query_search_target: Optional[str] = "all",
+    brain_id: str = "default",
 ):
     """
     Get the relationships of the graph.
@@ -337,6 +347,7 @@ async def get_relationships(
         to_node_labels,
         query_text,
         query_search_target,
+        brain_id,
     )
 
     return JSONResponse(
@@ -353,12 +364,13 @@ async def get_entities(
     skip: int = 0,
     node_labels: Optional[list[str]] = None,
     query_text: Optional[str] = None,
+    brain_id: str = "default",
 ):
     """
     Get the entities of the graph.
     """
     entities = await asyncio.to_thread(
-        search_entities, limit, skip, node_labels, query_text
+        search_entities, limit, skip, node_labels, query_text, brain_id
     )
 
     return JSONResponse(

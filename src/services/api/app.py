@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from uvicorn import run
 
 from src.services.api.middlewares.auth import BrainPATMiddleware
+from src.services.api.middlewares.brains import BrainMiddleware
 from src.services.api.routes.ingest import ingest_router
 from src.services.api.routes.retrieve import retrieve_router
 from src.services.api.routes.meta import meta_router
@@ -30,6 +31,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(BrainMiddleware)
 
 app.include_router(ingest_router)
 app.include_router(retrieve_router)

@@ -16,7 +16,6 @@ from src.constants.kg import (
     Predicate,
     SearchEntitiesResult,
     SearchRelationshipsResult,
-    Triple,
 )
 
 
@@ -50,12 +49,12 @@ class GraphAdapter:
         """
         self.graph = client
 
-    def execute_operation(self, operation: str) -> str:
+    def execute_operation(self, operation: str, brain_id: str = "default") -> str:
         """
         Execute a generic graph operation.
         """
         try:
-            return self.graph.execute_operation(operation)
+            return self.graph.execute_operation(operation, brain_id)
         except Exception as e:  # pylint: disable=broad-exception-caught
             print(f"Error executing graph operation: {e} - {operation}")
             return f"Error executing graph operation: {e}"
@@ -63,44 +62,47 @@ class GraphAdapter:
     def add_nodes(
         self,
         nodes: list[Node],
+        brain_id: str = "default",
         identification_params: Optional[dict] = None,
         metadata: Optional[dict] = None,
-        database: Optional[str] = None,
     ) -> list[Node] | str:
         """
         Add nodes to the graph.
         """
-        return self.graph.add_nodes(nodes, identification_params, metadata, database)
+        return self.graph.add_nodes(nodes, brain_id, identification_params, metadata)
 
     def add_relationship(
         self,
         subject: Node,
         predicate: Predicate,
         to_object: Node,
+        brain_id: str = "default",
     ) -> str:
         """
         Add a relationship between two nodes to the graph.
         """
-        return self.graph.add_relationship(subject, predicate, to_object)
+        return self.graph.add_relationship(subject, predicate, to_object, brain_id)
 
     def search_graph(
         self,
         nodes: list[Node],
+        brain_id: str = "default",
     ) -> list[Node]:
         """
         Search the graph for nodes and 1 degree relationships.
         """
-        return self.graph.search_graph(nodes)
+        return self.graph.search_graph(nodes, brain_id)
 
-    def node_text_search(self, text: str) -> list[Node]:
+    def node_text_search(self, text: str, brain_id: str = "default") -> list[Node]:
         """
         Search the graph for nodes by partial text match into the name of the nodes.
         """
-        return self.graph.node_text_search(text)
+        return self.graph.node_text_search(text, brain_id)
 
     def get_nodes_by_uuid(
         self,
         uuids: list[str],
+        brain_id: str = "default",
         with_relationships: Optional[bool] = False,
         relationships_depth: Optional[int] = 1,
         relationships_type: Optional[list[str]] = None,
@@ -111,80 +113,83 @@ class GraphAdapter:
         """
         return self.graph.get_nodes_by_uuid(
             uuids,
+            brain_id,
             with_relationships,
             relationships_depth,
             relationships_type,
             preferred_labels,
         )
 
-    def get_graph_entities(self) -> list[str]:
+    def get_graph_entities(self, brain_id: str = "default") -> list[str]:
         """
         Get the entities of the graph.
         """
-        return self.graph.get_graph_entities()
+        return self.graph.get_graph_entities(brain_id)
 
-    def get_graph_relationships(self) -> list[str]:
+    def get_graph_relationships(self, brain_id: str = "default") -> list[str]:
         """
         Get the relationships of the graph.
         """
-        return self.graph.get_graph_relationships()
+        return self.graph.get_graph_relationships(brain_id)
 
-    def get_graph_property_keys(self) -> list[str]:
+    def get_graph_property_keys(self, brain_id: str = "default") -> list[str]:
         """
         Get the property keys of the graph.
         """
-        return self.graph.get_graph_property_keys()
+        return self.graph.get_graph_property_keys(brain_id)
 
-    def get_by_uuid(self, uuid: str) -> Node:
+    def get_by_uuid(self, uuid: str, brain_id: str = "default") -> Node:
         """
         Get a node by its UUID.
         """
-        return self.graph.get_by_uuid(uuid)
+        return self.graph.get_by_uuid(uuid, brain_id)
 
-    def get_by_uuids(self, uuids: list[str]) -> list[Node]:
+    def get_by_uuids(self, uuids: list[str], brain_id: str = "default") -> list[Node]:
         """
         Get nodes by their UUIDs.
         """
-        return self.graph.get_by_uuids(uuids)
+        return self.graph.get_by_uuids(uuids, brain_id)
 
     def get_by_identification_params(
         self,
         identification_params: IdentificationParams,
+        brain_id: str = "default",
         entity_types: Optional[list[str]] = None,
     ) -> Node:
         """
         Get a node by its identification params and entity types.
         """
         return self.graph.get_by_identification_params(
-            identification_params, entity_types
+            identification_params, brain_id, entity_types
         )
 
     def get_neighbors(
-        self, node: Node, limit: int
+        self, node: Node, limit: int, brain_id: str = "default"
     ) -> list[Tuple[Node, Predicate, Node]]:
         """
         Get the neighbors of a node.
         """
-        return self.graph.get_neighbors(node, limit)
+        return self.graph.get_neighbors(node, limit, brain_id)
 
     def get_node_with_rel_by_uuid(
-        self, rel_ids_with_node_ids: list[tuple[str, str]]
+        self, rel_ids_with_node_ids: list[tuple[str, str]], brain_id: str = "default"
     ) -> list[dict]:
         """
         Get the node with the relationships by their UUIDs.
         """
-        return self.graph.get_node_with_rel_by_uuid(rel_ids_with_node_ids)
+        return self.graph.get_node_with_rel_by_uuid(rel_ids_with_node_ids, brain_id)
 
     def get_neighbor_node_tuples(
-        self, a_uuid: str, b_uuids: list[str]
+        self, a_uuid: str, b_uuids: list[str], brain_id: str = "default"
     ) -> list[Tuple[Node, Predicate, Node]]:
         """
         Get the neighbor node tuples by their UUIDs.
         """
-        return self.graph.get_neighbor_node_tuples(a_uuid, b_uuids)
+        return self.graph.get_neighbor_node_tuples(a_uuid, b_uuids, brain_id)
 
     def get_connected_nodes(
         self,
+        brain_id: str = "default",
         node: Optional[Node] = None,
         uuids: Optional[list[str]] = None,
         limit: Optional[int] = 10,
@@ -194,11 +199,12 @@ class GraphAdapter:
         Get the connected nodes by their UUIDs.
         """
         return self.graph.get_connected_nodes(
-            node=node, uuids=uuids, limit=limit, with_labels=with_labels
+            brain_id, node=node, uuids=uuids, limit=limit, with_labels=with_labels
         )
 
     def search_relationships(
         self,
+        brain_id: str = "default",
         limit: int = 10,
         skip: int = 0,
         relationship_types: Optional[list[str]] = None,
@@ -213,6 +219,7 @@ class GraphAdapter:
         relationship_uuids = []
         # TODO: semantic search + src/core/agents/tools/kg_agent/KGAgentAddTripletsTool.py:165
         return self.graph.search_relationships(
+            brain_id,
             limit,
             skip,
             relationship_types,
@@ -225,6 +232,7 @@ class GraphAdapter:
 
     def search_entities(
         self,
+        brain_id: str = "default",
         limit: int = 10,
         skip: int = 0,
         node_labels: Optional[list[str]] = None,
@@ -236,7 +244,7 @@ class GraphAdapter:
         node_uuids = []
         # TODO: semantic search
         return self.graph.search_entities(
-            limit, skip, node_labels, node_uuids, query_text
+            brain_id, limit, skip, node_labels, node_uuids, query_text
         )
 
 

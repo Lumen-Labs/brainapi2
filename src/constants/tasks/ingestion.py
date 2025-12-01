@@ -75,3 +75,6 @@ class IngestionTaskArgs(BaseModel):
             "If not provided, the extraction will be done on all the entities in the data."
         ),
     )
+    brain_id: str = Field(
+        default="default", description="The brain identifier to store the data in."
+    )

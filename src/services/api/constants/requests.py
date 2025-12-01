@@ -50,14 +50,13 @@ class IngestionStructuredRequestBody(BaseModel):
     """
 
     data: List[IngestionStructuredDataElement]
-    store: Optional[str] = Field(
-        default="default",
-        description="The store where the data will be stored, if not provided, the data will be stored in the default store.",
-    )
     observate_for: Optional[List[str]] = Field(
         default=[],
         description="What to look for and describe in the data during observation. "
         "If not provided, the observations will be generic",
+    )
+    brain_id: str = Field(
+        default="default", description="The brain identifier to store the data in."
     )
 
 

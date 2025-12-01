@@ -8,6 +8,7 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 -----
 """
 
+from typing import Optional
 from redis import Redis
 from redis.connection import ConnectionPool
 from src.adapters.interfaces.cache import CacheClient
@@ -31,23 +32,36 @@ class RedisClient(CacheClient):
         )
         self.client = Redis(connection_pool=pool)
 
-    def get(self, key: str) -> str:
+    def _get_key(self, key: str, brain_id: str) -> str:
+        """
+        Get the prefixed key for a given brain_id.
+        """
+        return f"{brain_id}:{key}"
+
+    def get(self, key: str, brain_id: str) -> str:
         """
         Get a value from the cache.
         """
-        return self.client.get(key)
+        prefixed_key = self._get_key(key, brain_id)
+        return self.client.get(prefixed_key)
 
-    def set(self, key: str, value: str, expires_in: int) -> bool:
+    def set(
+        self, key: str, value: str, brain_id: str, expires_in: Optional[int] = None
+    ) -> bool:
         """
         Set a value in the cache with an expiration time.
         """
-        return self.client.set(key, value, ex=expires_in)
+        prefixed_key = self._get_key(key, brain_id)
+        return self.client.set(
+            prefixed_key, value, **({"ex": expires_in} if expires_in else {})
+        )
 
-    def delete(self, key: str) -> bool:
+    def delete(self, key: str, brain_id: str) -> bool:
         """
         Delete a value from the cache.
         """
-        return self.client.delete(key)
+        prefixed_key = self._get_key(key, brain_id)
+        return self.client.delete(prefixed_key)
 
 
 _redis_client = RedisClient()

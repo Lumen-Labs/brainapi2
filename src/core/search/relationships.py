@@ -21,11 +21,13 @@ def search_relationships(
     to_node_labels: Optional[list[str]] = None,
     query_text: Optional[str] = None,
     query_search_target: Optional[str] = "all",
+    brain_id: str = "default",
 ) -> SearchRelationshipsResult:
     """
     Search the relationships of the graph.
     """
     result = graph_adapter.search_relationships(
+        brain_id,
         limit,
         skip,
         relationship_types,

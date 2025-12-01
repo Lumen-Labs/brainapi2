@@ -8,6 +8,7 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 -----
 """
 
+from typing import Optional
 from .interfaces.cache import CacheClient
 
 
@@ -25,20 +26,26 @@ class CacheAdapter:
         """
         self.cache = client
 
-    def get(self, key: str) -> str:
+    def get(self, key: str, brain_id: str = "default") -> str:
         """
         Get a value from the cache.
         """
-        return self.cache.get(key)
+        return self.cache.get(key, brain_id)
 
-    def set(self, key: str, value: str, expires_in: int) -> bool:
+    def set(
+        self,
+        key: str,
+        value: str,
+        brain_id: str = "default",
+        expires_in: Optional[int] = None,
+    ) -> bool:
         """
         Set a value in the cache with an expiration time.
         """
-        return self.cache.set(key, value, expires_in)
+        return self.cache.set(key, value, brain_id, expires_in)
 
-    def delete(self, key: str) -> bool:
+    def delete(self, key: str, brain_id: str = "default") -> bool:
         """
         Delete a value from the cache.
         """
-        return self.cache.delete(key)
+        return self.cache.delete(key, brain_id)

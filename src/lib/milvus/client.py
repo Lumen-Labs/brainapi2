@@ -69,7 +69,7 @@ class MilvusClient(VectorStoreClient):
                         raise ValueError("Invalid Milvus configuration")
         return self._client
 
-    def _ensure_store(self, store: str) -> None:
+    def _ensure_store(self, store: str, brain_id: str) -> None:
         """
         Ensure the store exists and is loaded.
         """
@@ -84,7 +84,7 @@ class MilvusClient(VectorStoreClient):
             )
 
         try:
-            has_partition = self.client.has_partition(store, "_default")
+            has_partition = self.client.has_partition(store, brain_id)
             if not has_partition:
                 self.client.load_collection(store)
         except Exception:
@@ -93,11 +93,11 @@ class MilvusClient(VectorStoreClient):
             except Exception:
                 pass
 
-    def add_vectors(self, vectors: list[Vector], store: str) -> None:
+    def add_vectors(self, vectors: list[Vector], store: str, brain_id: str) -> None:
         """
         Add vectors to the vector store.
         """
-        self._ensure_store(store)
+        self._ensure_store(store, brain_id)
         self.client.insert(
             store,
             [
@@ -112,12 +112,12 @@ class MilvusClient(VectorStoreClient):
         )
 
     def search_vectors(
-        self, data_vector: list[float], store: str, k: int = 10
+        self, data_vector: list[float], store: str, brain_id: str, k: int = 10
     ) -> list[Vector]:
         """
         Search vectors in the vector store and return the top k vectors.
         """
-        self._ensure_store(store)
+        self._ensure_store(store, brain_id)
 
         try:
             self.client.load_collection(store)
@@ -143,11 +143,11 @@ class MilvusClient(VectorStoreClient):
                 )
         return results
 
-    def get_by_ids(self, ids: list[str], store: str) -> list[Vector]:
+    def get_by_ids(self, ids: list[str], store: str, brain_id: str) -> list[Vector]:
         """
         Get vectors by their IDs.
         """
-        self._ensure_store(store)
+        self._ensure_store(store, brain_id)
         collection = self.client.query(
             collection_name=store,
             ids=[hash(id) % (2**63) for id in ids],
@@ -160,11 +160,12 @@ class MilvusClient(VectorStoreClient):
     def search_similar_by_ids(
         self,
         vector_ids: list[str],
+        brain_id: str,
         store: str,
         min_similarity: float,
         limit: int = 10,
     ) -> dict[str, list[Vector]]:
-        self._ensure_store(store)
+        self._ensure_store(store, brain_id)
         try:
             self.client.load_collection(store)
         except Exception:

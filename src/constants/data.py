@@ -81,3 +81,12 @@ class KGChanges(BaseModel):
         default_factory=datetime.now,
         description="The date and time the changes were made.",
     )
+
+
+class Brain(BaseModel):
+    """
+    Model for a single brain, stored into data db
+    """
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    name_key: str = Field(description="The key used to identify the brain.")

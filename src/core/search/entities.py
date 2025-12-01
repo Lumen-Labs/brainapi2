@@ -18,9 +18,12 @@ def search_entities(
     skip: int = 0,
     node_labels: Optional[list[str]] = None,
     query_text: Optional[str] = None,
+    brain_id: str = "default",
 ) -> SearchEntitiesResult:
     """
     Search the entities of the graph.
     """
-    result = graph_adapter.search_entities(limit, skip, node_labels, query_text)
+    result = graph_adapter.search_entities(
+        brain_id, limit, skip, node_labels, query_text
+    )
     return result

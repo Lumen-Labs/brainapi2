@@ -29,18 +29,17 @@ class Neo4jClient(GraphClient):
     Neo4j client with support for multiple databases.
     """
 
-    def __init__(self, database: Optional[str] = None):
+    def __init__(self):
         self.driver = GraphDatabase.driver(
             f"bolt://{config.neo4j.host}:{config.neo4j.port}",
             auth=(config.neo4j.username, config.neo4j.password),
         )
-        self.database = database or "neo4j"
 
-    def execute_operation(self, operation: str, database: Optional[str] = None) -> str:
+    def execute_operation(self, operation: str, brain_id: str) -> str:
         """
         Execute a Neo4j operation with database override.
         """
-        db = database or self.database
+        db = brain_id
         return self.driver.execute_query(operation, database_=db)
 
     def ensure_database(self, database: str) -> None:
@@ -49,13 +48,15 @@ class Neo4jClient(GraphClient):
         """
         try:
             cypher_query = f"CREATE DATABASE {database}"
-            self.execute_operation(cypher_query, database="neo4j")
+            self.driver.execute_query(cypher_query, database_="system")
         except Exception as e:
             error_msg = str(e).lower()
             if (
                 "already exists" in error_msg
                 or "not supported in community edition" in error_msg
                 or "unsupported administration command" in error_msg
+                or "database not found" in error_msg
+                or "graph not found" in error_msg
             ):
                 pass
             else:
@@ -122,9 +123,9 @@ class Neo4jClient(GraphClient):
     def add_nodes(
         self,
         nodes: list[Node],
+        brain_id: str,
         identification_params: Optional[dict] = None,
         metadata: Optional[dict] = None,
-        database: Optional[str] = None,
     ) -> list[Node] | str:
         """
         Add nodes to the graph.
@@ -191,9 +192,9 @@ class Neo4jClient(GraphClient):
     SET {properties_set}
     RETURN n
             """
-            self.ensure_database(database)
+            self.ensure_database(brain_id)
             try:
-                result = self.driver.execute_query(cypher_query, database_=database)
+                result = self.driver.execute_query(cypher_query, database_=brain_id)
                 results.append(result)
                 log("Nodes added: ", results)
             except Exception as e:
@@ -216,6 +217,7 @@ class Neo4jClient(GraphClient):
         subject: Node,
         predicate: Predicate,
         to_object: Node,
+        brain_id: str,
     ) -> str:
         """
         Add a relationship between two nodes to the graph.
@@ -228,10 +230,10 @@ class Neo4jClient(GraphClient):
         CREATE (a)-[:{":".join(self._clean_labels([predicate.name]))} {{ Description: '{safe_desc}' }}]->(b)
         RETURN a, b
         """
-        result = self.driver.execute_query(cypher_query)
+        result = self.driver.execute_query(cypher_query, database_=brain_id)
         return result
 
-    def search_graph(self, nodes: list[Node]) -> list[Node]:
+    def search_graph(self, nodes: list[Node], brain_id: str) -> list[Node]:
         """
         Search the graph for nodes and 1 degree relationships.
         """
@@ -246,10 +248,10 @@ class Neo4jClient(GraphClient):
             queries.append(query)
 
         cypher_query = " UNION ".join(queries)
-        result = self.driver.execute_query(cypher_query)
+        result = self.driver.execute_query(cypher_query, database_=brain_id)
         return result
 
-    def node_text_search(self, text: str) -> list[Node]:
+    def node_text_search(self, text: str, brain_id: str) -> list[Node]:
         """
         Search the graph for nodes by partial text match into the name of the nodes.
         """
@@ -258,14 +260,14 @@ class Neo4jClient(GraphClient):
         WHERE toLower(n.Name) CONTAINS toLower('{text}')
         RETURN n
         """
-        result = self.driver.execute_query(cypher_query)
+        result = self.driver.execute_query(cypher_query, database_=brain_id)
         return [
             Node(
-                uuid=node["uuid"],
-                name=node["name"],
-                labels=node["labels"],
-                description=node["description"],
-                properties=node["properties"],
+                uuid=node.get("uuid", "") or "",
+                name=node.get("name", "") or "",
+                labels=node.get("labels", []) or [],
+                description=node.get("description", "") or "",
+                properties=node.get("properties", {}) or {},
             )
             for node in result.records
         ]
@@ -273,6 +275,7 @@ class Neo4jClient(GraphClient):
     def get_nodes_by_uuid(
         self,
         uuids: list[str],
+        brain_id: str,
         with_relationships: Optional[bool] = False,
         relationships_depth: Optional[int] = 1,
         relationships_type: Optional[list[str]] = None,
@@ -312,7 +315,7 @@ class Neo4jClient(GraphClient):
         if with_relationships:
             cypher_query += ", r, m.uuid as m_uuid, m.name as m_name, labels(m) as m_labels, m.description as m_description, properties(m) as m_properties"
 
-        result = self.driver.execute_query(cypher_query)
+        result = self.driver.execute_query(cypher_query, database_=brain_id)
 
         if with_relationships:
             return [
@@ -351,7 +354,7 @@ class Neo4jClient(GraphClient):
                 for record in result.records
             ]
 
-    def get_graph_entities(self) -> list[str]:
+    def get_graph_entities(self, brain_id: str) -> list[str]:
         """
         Get the entities of the graph.
         """
@@ -359,10 +362,10 @@ class Neo4jClient(GraphClient):
         MATCH (n)
         RETURN DISTINCT labels(n) as labels
         """
-        result = self.driver.execute_query(cypher_query)
+        result = self.driver.execute_query(cypher_query, database_=brain_id)
         return [label for record in result.records for label in record["labels"]]
 
-    def get_graph_relationships(self) -> list[str]:
+    def get_graph_relationships(self, brain_id: str) -> list[str]:
         """
         Get the relationships of the graph.
         """
@@ -370,10 +373,10 @@ class Neo4jClient(GraphClient):
         CALL db.relationshipTypes() YIELD relationshipType
         RETURN relationshipType
         """
-        result = self.driver.execute_query(cypher_query)
+        result = self.driver.execute_query(cypher_query, database_=brain_id)
         return [record["relationshipType"] for record in result.records]
 
-    def get_by_uuid(self, uuid: str) -> Node:
+    def get_by_uuid(self, uuid: str, brain_id: str) -> Node:
         """
         Get a node by its UUID.
         """
@@ -381,7 +384,7 @@ class Neo4jClient(GraphClient):
         MATCH (n) WHERE n.uuid = '{uuid}'
         RETURN n.uuid as uuid, n.name as name, labels(n) as labels, n.description as description, properties(n) as properties
         """
-        result = self.driver.execute_query(cypher_query)
+        result = self.driver.execute_query(cypher_query, database_=brain_id)
         if not result.records or len(result.records) == 0:
             return None
         return Node(
@@ -392,7 +395,7 @@ class Neo4jClient(GraphClient):
             properties=result.records[0].get("properties", {}) or {},
         )
 
-    def get_by_uuids(self, uuids: list[str]) -> list[Node]:
+    def get_by_uuids(self, uuids: list[str], brain_id: str) -> list[Node]:
         """
         Get nodes by their UUIDs.
         """
@@ -400,14 +403,14 @@ class Neo4jClient(GraphClient):
         MATCH (n) WHERE n.uuid IN ["{'","'.join(uuids)}"]
         RETURN n.uuid as uuid, n.name as name, labels(n) as labels, n.description as description, properties(n) as properties
         """
-        result = self.driver.execute_query(cypher_query)
+        result = self.driver.execute_query(cypher_query, database_=brain_id)
         return [
             Node(
-                uuid=record.get("uuid", ""),
-                name=record.get("name", "") or "",
-                labels=record.get("labels", []) or [],
-                description=record.get("description", "") or "",
-                properties=record.get("properties", {}) or {},
+                uuid=record["uuid"],
+                name=record["name"],
+                labels=record["labels"],
+                description=record["description"],
+                properties=record["properties"],
             )
             for record in result.records
         ]
@@ -415,6 +418,7 @@ class Neo4jClient(GraphClient):
     def get_by_identification_params(
         self,
         identification_params: IdentificationParams,
+        brain_id: str,
         entity_types: Optional[list[str]] = None,
     ) -> Node:
         """
@@ -434,7 +438,7 @@ class Neo4jClient(GraphClient):
         MATCH (n{(":" + ":".join(self._clean_labels(entity_types))) if entity_types else ""}) {("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""}
         RETURN n.uuid as uuid, n.name as name, labels(n) as labels, n.description as description, properties(n) as properties
         """
-        result = self.driver.execute_query(cypher_query)
+        result = self.driver.execute_query(cypher_query, database_=brain_id)
         if not result.records or len(result.records) == 0:
             return None
         return Node(
@@ -445,7 +449,7 @@ class Neo4jClient(GraphClient):
             properties=result.records[0].get("properties", {}) or {},
         )
 
-    def get_graph_property_keys(self) -> list[str]:
+    def get_graph_property_keys(self, brain_id: str) -> list[str]:
         """
         Get the property keys of the graph.
         """
@@ -453,11 +457,11 @@ class Neo4jClient(GraphClient):
         CALL db.propertyKeys() YIELD propertyKey
         RETURN propertyKey
         """
-        result = self.driver.execute_query(cypher_query)
+        result = self.driver.execute_query(cypher_query, database_=brain_id)
         return [record["propertyKey"] for record in result.records]
 
     def get_neighbors(
-        self, node: Node, limit: int
+        self, node: Node, limit: int, brain_id: str
     ) -> list[Tuple[Node, Predicate, Node]]:
         """
         Get the neighbors of a node.
@@ -470,7 +474,7 @@ class Neo4jClient(GraphClient):
                CASE WHEN startNode(r2) = c THEN 'out' ELSE 'in' END AS direction,
                c.uuid AS c_uuid, c.name AS c_name, labels(c) AS c_labels, c.description AS c_description, properties(c) AS c_properties
         """
-        result = self.driver.execute_query(cypher_query)
+        result = self.driver.execute_query(cypher_query, database_=brain_id)
 
         neighbors = []
         for record in result.records:
@@ -512,14 +516,14 @@ class Neo4jClient(GraphClient):
         return [(n, p, c) for n, p, c in neighbors]
 
     def get_node_with_rel_by_uuid(
-        self, rel_ids_with_node_ids: list[tuple[str, str]]
+        self, rel_ids_with_node_ids: list[tuple[str, str]], brain_id: str
     ) -> list[dict]:
         """
         Get the node with the relationships by their UUIDs.
         """
 
     def get_neighbor_node_tuples(
-        self, a_uuid: str, b_uuids: list[str]
+        self, a_uuid: str, b_uuids: list[str], brain_id: str
     ) -> list[Tuple[Node, Predicate, Node]]:
         """
         Get the neighbor node tuples by their UUIDs.
@@ -534,7 +538,7 @@ class Neo4jClient(GraphClient):
             m.uuid as m_uuid, m.name as m_name, labels(m) as m_labels,
             m.description as m_description, properties(m) as m_properties, r as rel
         """
-        result = self.driver.execute_query(cypher_query)
+        result = self.driver.execute_query(cypher_query, database_=brain_id)
 
         if not result.records:
             if os.getenv("DEBUG") == "true":
@@ -599,6 +603,7 @@ class Neo4jClient(GraphClient):
 
     def get_connected_nodes(
         self,
+        brain_id: str,
         node: Optional[Node] = None,
         uuids: Optional[list[str]] = None,
         limit: Optional[int] = 10,
@@ -627,7 +632,7 @@ class Neo4jClient(GraphClient):
             n.uuid as n_uuid, n.name as n_name, labels(n) as n_labels, n.description as n_description, properties(n) as n_properties,
             CASE WHEN startNode(r) = n THEN 'out' ELSE 'in' END AS direction
         """
-        result = self.driver.execute_query(cypher_query)
+        result = self.driver.execute_query(cypher_query, database_=brain_id)
         return [
             (
                 Node(
@@ -655,6 +660,7 @@ class Neo4jClient(GraphClient):
 
     def search_relationships(
         self,
+        brain_id: str,
         limit: int = 10,
         skip: int = 0,
         relationship_types: Optional[list[str]] = None,
@@ -721,8 +727,8 @@ class Neo4jClient(GraphClient):
         {"WHERE " + " AND ".join(filters) if filters else ""}
         RETURN count(r) AS total
         """
-        result = self.driver.execute_query(cypher_query)
-        count_result = self.driver.execute_query(cypher_count)
+        result = self.driver.execute_query(cypher_query, database_=brain_id)
+        count_result = self.driver.execute_query(cypher_count, database_=brain_id)
         total = 0
         if count_result and count_result.records:
             total = count_result.records[0].get("total") or 0
@@ -813,6 +819,7 @@ class Neo4jClient(GraphClient):
 
     def search_entities(
         self,
+        brain_id: str,
         limit: int = 10,
         skip: int = 0,
         node_labels: Optional[list[str]] = None,
@@ -847,8 +854,8 @@ class Neo4jClient(GraphClient):
         {"WHERE " + " AND ".join(filters) if filters else ""}
         RETURN count(n) AS total
         """
-        result = self.driver.execute_query(cypher_query)
-        count_result = self.driver.execute_query(cypher_count)
+        result = self.driver.execute_query(cypher_query, database_=brain_id)
+        count_result = self.driver.execute_query(cypher_count, database_=brain_id)
         total = 0
         if count_result and count_result.records:
             total = count_result.records[0].get("total") or 0

@@ -13,7 +13,7 @@ from typing import List, Tuple
 
 from pydantic import BaseModel
 
-from src.constants.data import Observation, StructuredData, TextChunk
+from src.constants.data import Brain, Observation, StructuredData, TextChunk
 
 
 class SearchResult(BaseModel):
@@ -31,21 +31,23 @@ class DataClient(ABC):
     """
 
     @abstractmethod
-    def save_text_chunk(self, text_chunk: TextChunk) -> TextChunk:
+    def save_text_chunk(self, text_chunk: TextChunk, brain_id: str) -> TextChunk:
         """
         Save data to the data client.
         """
         raise NotImplementedError("save method not implemented")
 
     @abstractmethod
-    def save_observations(self, observations: List[Observation]) -> Observation:
+    def save_observations(
+        self, observations: List[Observation], brain_id: str
+    ) -> Observation:
         """
         Save a list of observations to the data client.
         """
         raise NotImplementedError("save_observations method not implemented")
 
     @abstractmethod
-    def search(self, text: str) -> SearchResult:
+    def search(self, text: str, brain_id: str) -> SearchResult:
         """
         Search data by text and return a list of text chunks and observations.
         """
@@ -53,7 +55,7 @@ class DataClient(ABC):
 
     @abstractmethod
     def get_text_chunks_by_ids(
-        self, ids: List[str], with_observations: bool
+        self, ids: List[str], with_observations: bool, brain_id: str
     ) -> Tuple[List[TextChunk], List[Observation]]:
         """
         Get data by their IDs.
@@ -61,8 +63,24 @@ class DataClient(ABC):
         raise NotImplementedError("get_by_ids method not implemented")
 
     @abstractmethod
-    def save_structured_data(self, structured_data: StructuredData) -> StructuredData:
+    def save_structured_data(
+        self, structured_data: StructuredData, brain_id: str
+    ) -> StructuredData:
         """
         Save a structured data to the data client.
         """
         raise NotImplementedError("save_structured_data method not implemented")
+
+    @abstractmethod
+    def create_brain(self, name_key: str) -> Brain:
+        """
+        Create a new brain in the data client.
+        """
+        raise NotImplementedError("create_brain method not implemented")
+
+    @abstractmethod
+    def get_brain(self, name_key: str) -> Brain:
+        """
+        Get a brain from the data client.
+        """
+        raise NotImplementedError("get_brain method not implemented")
