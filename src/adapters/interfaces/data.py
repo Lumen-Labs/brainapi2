@@ -84,3 +84,10 @@ class DataClient(ABC):
         Get a brain from the data client.
         """
         raise NotImplementedError("get_brain method not implemented")
+
+    @abstractmethod
+    def get_brains_list(self) -> List[Brain]:
+        """
+        Get the list of brains from the data client.
+        """
+        raise NotImplementedError("get_brains_list method not implemented")

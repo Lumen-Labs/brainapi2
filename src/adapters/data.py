@@ -76,3 +76,9 @@ class DataAdapter:
         Get a brain from the data client.
         """
         return self.data.get_brain(name_key)
+
+    def get_brains_list(self) -> List[Brain]:
+        """
+        Get the list of brains from the data client.
+        """
+        return self.data.get_brains_list()

@@ -51,7 +51,7 @@ class BrainMiddleware(BaseHTTPMiddleware):
                 status_code=status.HTTP_400_BAD_REQUEST,
                 content={"detail": "System brain is not allowed to be used."},
             )
-        if not brain_id.isalnum():
+        if brain_id and not brain_id.isalnum():
             return JSONResponse(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 content={"detail": "Brain ID must be alphanumeric."},

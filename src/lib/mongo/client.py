@@ -144,5 +144,13 @@ class MongoClient(DataClient):
             return None
         return Brain(id=str(result["_id"]), name_key=result["name_key"])
 
+    def get_brains_list(self) -> List[Brain]:
+        collection = self.get_collection("brains", "system")
+        result = collection.find()
+        return [
+            Brain(id=str(result["_id"]), name_key=result["name_key"])
+            for result in result
+        ]
+
 
 _mongo_client = MongoClient()

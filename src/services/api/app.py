@@ -19,6 +19,7 @@ from src.services.api.middlewares.brains import BrainMiddleware
 from src.services.api.routes.ingest import ingest_router
 from src.services.api.routes.retrieve import retrieve_router
 from src.services.api.routes.meta import meta_router
+from src.services.api.routes.system import system_router
 
 
 app = FastAPI()
@@ -36,6 +37,7 @@ app.add_middleware(BrainMiddleware)
 app.include_router(ingest_router)
 app.include_router(retrieve_router)
 app.include_router(meta_router)
+app.include_router(system_router)
 
 if __name__ == "__main__":
     run(app, host="0.0.0.0", port=8000, reload=os.getenv("ENV") == "development")
