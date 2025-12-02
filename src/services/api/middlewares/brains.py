@@ -8,6 +8,7 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 -----
 """
 
+import os
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -62,9 +63,11 @@ class BrainMiddleware(BaseHTTPMiddleware):
                 key=f"brain:{brain_id}", brain_id="system"
             )
 
-            if not cached_brain_id:
-                stored_brain = data_adapter.get_brain(name_key=brain_id)
+            brain_creation_allowed = os.getenv("BRAIN_CREATION_ALLOWED") == "true"
 
+            if not cached_brain_id and brain_creation_allowed:
+                stored_brain = data_adapter.get_brain(name_key=brain_id)
+                new_brain = None
                 if not stored_brain:
                     new_brain = data_adapter.create_brain(name_key=brain_id)
                     cache_adapter.set(
@@ -78,6 +81,18 @@ class BrainMiddleware(BaseHTTPMiddleware):
                         value=stored_brain.id,
                         brain_id="system",
                     )
+
+                cached_brain_id = new_brain.id if new_brain else stored_brain.id
+
+                use_only_system_pat = os.getenv("USE_ONLY_SYSTEM_PAT") == "true"
+                if not use_only_system_pat:
+                    request.state.pat = new_brain.pat if new_brain else stored_brain.pat
+
+            if not cached_brain_id:
+                return JSONResponse(
+                    status_code=status.HTTP_406_NOT_ACCEPTABLE,
+                    content={"detail": "Brain not found or creation is not allowed."},
+                )
 
         request.state.brain_id = brain_id
 

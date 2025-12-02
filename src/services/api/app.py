@@ -25,6 +25,7 @@ from src.services.api.routes.system import system_router
 app = FastAPI()
 
 app.add_middleware(BrainPATMiddleware)
+app.add_middleware(BrainMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -32,7 +33,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app.add_middleware(BrainMiddleware)
+
 
 app.include_router(ingest_router)
 app.include_router(retrieve_router)

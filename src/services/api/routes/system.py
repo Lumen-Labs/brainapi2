@@ -11,6 +11,7 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 from fastapi import APIRouter
 from src.services.api.controllers.system import (
     get_brains_list as get_brains_list_controller,
+    create_new_brain as create_new_brain_controller,
 )
 
 system_router = APIRouter(prefix="/system", tags=["system"])
@@ -22,3 +23,11 @@ async def get_brains_list():
     Get the list of brains.
     """
     return await get_brains_list_controller()
+
+
+@system_router.post(path="/brains")
+async def create_brain():
+    """
+    Create a new brain
+    """
+    return await create_new_brain_controller()

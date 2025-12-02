@@ -90,3 +90,17 @@ class Brain(BaseModel):
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name_key: str = Field(description="The key used to identify the brain.")
+
+    @staticmethod
+    def _random_pat() -> str:
+        import random
+
+        chars = []
+        for _ in range(48):
+            chars.append(random.choice("abcdefghijklmnopqrstuvwxyz0123456789"))
+        return "".join(chars)
+
+    pat: str = Field(
+        description="The personal access token for the brain.",
+        default_factory=_random_pat,
+    )

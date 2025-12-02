@@ -134,21 +134,32 @@ class MongoClient(DataClient):
 
     def create_brain(self, name_key: str) -> Brain:
         collection = self.get_collection("brains", "system")
-        result = collection.insert_one({"name_key": name_key})
-        return Brain(id=str(result.inserted_id), name_key=name_key)
+        brain = Brain(name_key=name_key)
+        brain_dict = brain.model_dump(mode="json", exclude={"id"})
+        result = collection.insert_one(brain_dict)
+        brain.id = str(result.inserted_id)
+        return brain
 
     def get_brain(self, name_key: str) -> Brain:
         collection = self.get_collection("brains", "system")
         result = collection.find_one({"name_key": name_key})
         if not result:
             return None
-        return Brain(id=str(result["_id"]), name_key=result["name_key"])
+        return Brain(
+            id=str(result["_id"]),
+            name_key=result["name_key"],
+            pat=result.get("pat"),
+        )
 
     def get_brains_list(self) -> List[Brain]:
         collection = self.get_collection("brains", "system")
         result = collection.find()
         return [
-            Brain(id=str(result["_id"]), name_key=result["name_key"])
+            Brain(
+                id=str(result["_id"]),
+                name_key=result["name_key"],
+                pat=result.get("pat"),
+            )
             for result in result
         ]
 

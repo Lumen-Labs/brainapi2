@@ -18,3 +18,11 @@ async def get_brains_list():
     """
     result = await asyncio.to_thread(data_adapter.get_brains_list)
     return result
+
+
+async def create_new_brain(brain_id: str):
+    """
+    Create a new brain
+    """
+    result = await asyncio.to_thread(data_adapter.create_brain, brain_id)
+    return result

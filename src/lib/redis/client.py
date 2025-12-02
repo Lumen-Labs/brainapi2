@@ -43,7 +43,12 @@ class RedisClient(CacheClient):
         Get a value from the cache.
         """
         prefixed_key = self._get_key(key, brain_id)
-        return self.client.get(prefixed_key)
+        result = self.client.get(prefixed_key)
+        if result is None:
+            return None
+        if isinstance(result, bytes):
+            return result.decode("utf-8")
+        return result
 
     def set(
         self, key: str, value: str, brain_id: str, expires_in: Optional[int] = None
