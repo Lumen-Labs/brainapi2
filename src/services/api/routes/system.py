@@ -26,8 +26,8 @@ async def get_brains_list():
 
 
 @system_router.post(path="/brains")
-async def create_brain():
+async def create_brain(brain_id: str):
     """
     Create a new brain
     """
-    return await create_new_brain_controller()
+    return await create_new_brain_controller(brain_id)

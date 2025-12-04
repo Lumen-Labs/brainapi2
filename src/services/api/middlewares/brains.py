@@ -22,9 +22,14 @@ class BrainMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         brain_id = None
 
-        brain_id = request.query_params.get("brain_id")
+        brain_id = request.headers.get("X-Brain-ID")
         if brain_id:
             brain_id = brain_id.rstrip()
+
+        if brain_id is None:
+            brain_id = request.query_params.get("brain_id")
+            if brain_id:
+                brain_id = brain_id.rstrip()
 
         if brain_id is None and request.method in ("POST", "PUT", "PATCH"):
             body = await request.body()
