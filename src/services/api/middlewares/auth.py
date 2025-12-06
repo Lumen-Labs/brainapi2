@@ -40,18 +40,20 @@ class BrainPATMiddleware(BaseHTTPMiddleware):
         if not cached_brainpat and not use_only_system_pat:
             stored_brain = data_adapter.get_brain(name_key=brain_id)
             system_pat = os.getenv("BRAINPAT_TOKEN")
-            if not stored_brain and brainpat != system_pat:
-                return JSONResponse(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    content={"detail": "Invalid or missing BrainPAT header"},
+            if not stored_brain:
+                if brainpat != system_pat:
+                    return JSONResponse(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        content={"detail": "Invalid or missing BrainPAT header"},
+                    )
+                cached_brainpat = system_pat
+            else:
+                cached_brainpat = stored_brain.pat
+                cache_adapter.set(
+                    key=cachepat_key,
+                    value=stored_brain.pat,
+                    brain_id="system",
                 )
-
-            cached_brainpat = stored_brain.pat
-            cache_adapter.set(
-                key=cachepat_key,
-                value=stored_brain.pat,
-                brain_id="system",
-            )
         if not cached_brainpat and use_only_system_pat:
             system_pat = os.getenv("BRAINPAT_TOKEN")
             cached_brainpat = system_pat

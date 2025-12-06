@@ -20,6 +20,9 @@ from src.services.kg_agent.main import cache_adapter
 
 class BrainMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
+        if request.method == "POST" and request.url.path == "/system/brains":
+            return await call_next(request)
+
         brain_id = None
 
         brain_id = request.headers.get("X-Brain-ID")

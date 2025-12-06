@@ -10,7 +10,7 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 
 import os
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from uvicorn import run
 
@@ -21,8 +21,7 @@ from src.services.api.routes.retrieve import retrieve_router
 from src.services.api.routes.meta import meta_router
 from src.services.api.routes.system import system_router
 
-
-app = FastAPI()
+app = FastAPI(debug=os.getenv("ENV") == "development")
 
 app.add_middleware(BrainPATMiddleware)
 app.add_middleware(BrainMiddleware)
@@ -39,6 +38,12 @@ app.include_router(ingest_router)
 app.include_router(retrieve_router)
 app.include_router(meta_router)
 app.include_router(system_router)
+
+
+@app.get("/")
+async def root():
+    return Response(content="ok", status_code=200)
+
 
 if __name__ == "__main__":
     run(app, host="0.0.0.0", port=8000, reload=os.getenv("ENV") == "development")

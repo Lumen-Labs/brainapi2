@@ -6,3 +6,4 @@ __pycache__
 dist
 common.egg-info
 .venv
+.env.development

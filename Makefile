@@ -45,7 +45,7 @@ delete-mongo-volumes:
 	docker compose -f src/lib/mongo/docker-compose.yaml down -v --remove-orphans
 
 start-api:
-	poetry run uvicorn src.services.api.app:app --host 0.0.0.0 --port 8000
+	ENV=development poetry run uvicorn src.services.api.app:app --host 0.0.0.0 --port 8000 --access-log --log-level info --reload
 
 stop-api:
 	pkill -f uvicorn
