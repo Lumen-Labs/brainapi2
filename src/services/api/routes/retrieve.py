@@ -26,6 +26,16 @@ from src.services.api.controllers.retrieve import (
 from src.services.api.controllers.retrieve import (
     retrieve_data as retrieve_data_controller,
 )
+from src.services.api.controllers.structured_data import (
+    get_structured_data_by_id as get_structured_data_by_id_controller,
+    get_structured_data_list as get_structured_data_list_controller,
+    get_structured_data_types as get_structured_data_types_controller,
+)
+from src.services.api.controllers.observations import (
+    get_observation_by_id as get_observation_by_id_controller,
+    get_observations_list as get_observations_list_controller,
+    get_observation_labels as get_observation_labels_controller,
+)
 
 retrieve_router = APIRouter(prefix="/retrieve", tags=["retrieve"])
 
@@ -137,3 +147,65 @@ async def get_entities(
     if node_labels:
         node_labels = node_labels.split(",")
     return await retrieve_get_entities_controller(limit, skip, node_labels, query_text)
+
+@retrieve_router.get(path="/structured-data/types")
+async def get_structured_data_types():
+    """
+    Get all unique types from structured data.
+    """
+    return await get_structured_data_types_controller()
+
+@retrieve_router.get(path="/structured-data/{id}")
+async def get_structured_data_by_id(
+    id: str,
+):
+    """
+    Get structured data by ID.
+    """
+    return await get_structured_data_by_id_controller(id)
+
+@retrieve_router.get(path="/structured-data")
+async def get_structured_data_list(
+    limit: int = 10,
+    skip: int = 0,
+    types: Optional[str] = None,
+    query_text: Optional[str] = None,
+):
+    """
+    Get a list of structured data.
+    """
+    if types:
+        types = types.split(",")
+    return await get_structured_data_list_controller(limit, skip, types, query_text)
+
+@retrieve_router.get(path="/observations/labels")
+async def get_observation_labels():
+    """
+    Get all unique labels from observations.
+    """
+    return await get_observation_labels_controller()
+
+@retrieve_router.get(path="/observations/{id}")
+async def get_observation_by_id(
+    id: str,
+):
+    """
+    Get observation by ID.
+    """
+    return await get_observation_by_id_controller(id)
+
+
+@retrieve_router.get(path="/observations")
+async def get_observations_list(
+    limit: int = 10,
+    skip: int = 0,
+    resource_id: Optional[str] = None,
+    labels: Optional[str] = None,
+    query_text: Optional[str] = None,
+):
+    """
+    Get a list of observations.
+    """
+    if labels:
+        labels = labels.split(",")
+    return await get_observations_list_controller(limit, skip, resource_id, labels, query_text)

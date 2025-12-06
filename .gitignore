@@ -7,3 +7,4 @@ dist
 common.egg-info
 .venv
 .env.development
+venv/

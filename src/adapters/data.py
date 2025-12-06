@@ -82,3 +82,53 @@ class DataAdapter:
         Get the list of brains from the data client.
         """
         return self.data.get_brains_list()
+
+    def get_structured_data_by_id(
+        self, id: str, brain_id: str = "default"
+    ) -> StructuredData:
+        """
+        Get structured data by ID.
+        """
+        return self.data.get_structured_data_by_id(id, brain_id)
+
+    def get_structured_data_list(
+        self, brain_id: str = "default", limit: int = 10, skip: int = 0, types: list[str] = None, query_text: str = None
+    ) -> list[StructuredData]:
+        """
+        Get a list of structured data.
+        """
+        return self.data.get_structured_data_list(brain_id, limit, skip, types, query_text)
+
+    def get_structured_data_types(self, brain_id: str = "default") -> list[str]:
+        """
+        Get all unique types from structured data.
+        """
+        return self.data.get_structured_data_types(brain_id)
+
+    def get_observation_by_id(
+        self, id: str, brain_id: str = "default"
+    ) -> Observation:
+        """
+        Get observation by ID.
+        """
+        return self.data.get_observation_by_id(id, brain_id)
+
+    def get_observations_list(
+        self, 
+        brain_id: str = "default", 
+        limit: int = 10, 
+        skip: int = 0, 
+        resource_id: str = None,
+        labels: list[str] = None,
+        query_text: str = None
+    ) -> list[Observation]:
+        """
+        Get a list of observations.
+        """
+        return self.data.get_observations_list(brain_id, limit, skip, resource_id, labels, query_text)
+    
+    def get_observation_labels(self, brain_id: str = "default") -> list[str]:
+        """
+        Get all unique labels from observations.
+        """
+        return self.data.get_observation_labels(brain_id)

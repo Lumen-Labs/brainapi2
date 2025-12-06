@@ -91,3 +91,55 @@ class DataClient(ABC):
         Get the list of brains from the data client.
         """
         raise NotImplementedError("get_brains_list method not implemented")
+
+    @abstractmethod
+    def get_structured_data_by_id(self, id: str, brain_id: str) -> StructuredData:
+        """
+        Get structured data by ID.
+        """
+        raise NotImplementedError("get_structured_data_by_id method not implemented")
+
+    @abstractmethod
+    def get_structured_data_list(
+        self, brain_id: str, limit: int = 10, skip: int = 0, types: list[str] = None, query_text: str = None
+    ) -> list[StructuredData]:
+        """
+        Get a list of structured data.
+        """
+        raise NotImplementedError("get_structured_data_list method not implemented")
+
+    @abstractmethod
+    def get_structured_data_types(self, brain_id: str) -> list[str]:
+        """
+        Get all unique types from structured data.
+        """
+        raise NotImplementedError("get_structured_data_types method not implemented")
+
+    @abstractmethod
+    def get_observation_by_id(self, id: str, brain_id: str) -> Observation:
+        """
+        Get observation by ID.
+        """
+        raise NotImplementedError("get_observation_by_id method not implemented")
+
+    @abstractmethod
+    def get_observations_list(
+        self, 
+        brain_id: str, 
+        limit: int = 10, 
+        skip: int = 0, 
+        resource_id: str = None,
+        labels: list[str] = None,
+        query_text: str = None
+    ) -> list[Observation]:
+        """
+        Get a list of observations.
+        """
+        raise NotImplementedError("get_observations_list method not implemented")
+    
+    @abstractmethod
+    def get_observation_labels(self, brain_id: str) -> list[str]:
+        """
+        Get all unique labels from observations.
+        """
+        raise NotImplementedError("get_observation_labels method not implemented")

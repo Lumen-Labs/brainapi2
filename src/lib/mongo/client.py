@@ -163,5 +163,117 @@ class MongoClient(DataClient):
             for result in result
         ]
 
+    def get_structured_data_by_id(
+        self, id: str, brain_id: str
+    ) -> StructuredData:
+        collection = self.get_collection("structured_data", database=brain_id)
+        result = collection.find_one({"id": id})
+        if not result:
+            return None
+        return StructuredData(
+            id=result["id"],
+            data=result["data"],
+            types=result["types"],
+            metadata=result.get("metadata", None),
+            inserted_at=result.get("inserted_at", None),
+        )
+
+    def get_structured_data_list(
+        self, brain_id: str, limit: int = 10, skip: int = 0, types: list[str] = None, query_text: str = None
+    ) -> list[StructuredData]:
+        collection = self.get_collection("structured_data", database=brain_id)
+        query = {}
+        if types:
+            query["types"] = {"$in": types}
+        
+        if query_text:
+            query["$or"] = [
+                {"data": {"$regex": query_text, "$options": "i"}},
+                {"types": {"$regex": query_text, "$options": "i"}},
+                {"metadata": {"$regex": query_text, "$options": "i"}}
+            ]
+        
+        results = collection.find(query).skip(skip).limit(limit)
+        return [
+            StructuredData(
+                id=result["id"],
+                data=result["data"],
+                types=result["types"],
+                metadata=result.get("metadata", None),
+                inserted_at=result.get("inserted_at", None),
+            )
+            for result in results
+        ]
+    
+    def get_structured_data_types(self, brain_id: str) -> list[str]:
+        collection = self.get_collection("structured_data", database=brain_id)
+        pipeline = [
+            {"$unwind": "$types"},
+            {"$group": {"_id": "$types"}},
+            {"$sort": {"_id": 1}}
+        ]
+        results = collection.aggregate(pipeline)
+        return [result["_id"] for result in results]
+
+    def get_observation_by_id(
+        self, id: str, brain_id: str
+    ) -> Observation:
+        collection = self.get_collection("observations", database=brain_id)
+        result = collection.find_one({"id": id})
+        if not result:
+            return None
+        return Observation(
+            id=result["id"],
+            text=result["text"],
+            metadata=result.get("metadata", None),
+            resource_id=result["resource_id"],
+            inserted_at=result.get("inserted_at", None),
+        )
+
+    def get_observations_list(
+        self, 
+        brain_id: str, 
+        limit: int = 10, 
+        skip: int = 0, 
+        resource_id: str = None,
+        labels: list[str] = None,
+        query_text: str = None
+    ) -> list[Observation]:
+        collection = self.get_collection("observations", database=brain_id)
+        query = {}
+        if resource_id:
+            query["resource_id"] = resource_id
+        if labels:
+            query["metadata.labels"] = {"$in": labels}
+        
+        if query_text:
+            query["$or"] = [
+                {"text": {"$regex": query_text, "$options": "i"}},
+                {"resource_id": {"$regex": query_text, "$options": "i"}},
+                {"metadata": {"$regex": query_text, "$options": "i"}}
+            ]
+        
+        results = collection.find(query).skip(skip).limit(limit)
+        return [
+            Observation(
+                id=result["id"],
+                text=result["text"],
+                metadata=result.get("metadata", None),
+                resource_id=result["resource_id"],
+                inserted_at=result.get("inserted_at", None),
+            )
+            for result in results
+        ]
+    
+    def get_observation_labels(self, brain_id: str) -> list[str]:
+        collection = self.get_collection("observations", database=brain_id)
+        pipeline = [
+            {"$match": {"metadata.labels": {"$exists": True}}},
+            {"$unwind": "$metadata.labels"},
+            {"$group": {"_id": "$metadata.labels"}},
+            {"$sort": {"_id": 1}}
+        ]
+        results = collection.aggregate(pipeline)
+        return [result["_id"] for result in results]
 
 _mongo_client = MongoClient()
