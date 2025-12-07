@@ -38,6 +38,7 @@ class MilvusClient(VectorStoreClient):
     def __init__(self):
         self._client = None
         self._lock = None
+        self._pid = None
 
     def _get_lock(self):
         if self._lock is None:
@@ -46,13 +47,28 @@ class MilvusClient(VectorStoreClient):
             self._lock = threading.Lock()
         return self._lock
 
+    def _reset_client_if_forked(self):
+        import os as os_module
+
+        current_pid = os_module.getpid()
+        if self._pid is not None and self._pid != current_pid:
+            if self._client is not None:
+                try:
+                    self._client.close()
+                except Exception:
+                    pass
+            self._client = None
+        self._pid = current_pid
+
     @property
     def client(self):
         """
         Lazy initialization of the Milvus client.
         """
+        self._reset_client_if_forked()
         if self._client is None:
             with self._get_lock():
+                self._reset_client_if_forked()
                 if self._client is None:
                     if config.milvus.uri and config.milvus.token:
                         self._client = Milvus(
@@ -60,9 +76,9 @@ class MilvusClient(VectorStoreClient):
                             token=config.milvus.token,
                         )
                     elif config.milvus.host and config.milvus.port:
+                        uri = f"http://{config.milvus.host}:{config.milvus.port}"
                         self._client = Milvus(
-                            host=config.milvus.host,
-                            port=config.milvus.port,
+                            uri=uri,
                             token=config.milvus.token if config.milvus.token else None,
                         )
                     else:

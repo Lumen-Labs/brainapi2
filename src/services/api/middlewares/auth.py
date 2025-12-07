@@ -23,51 +23,50 @@ class BrainPATMiddleware(BaseHTTPMiddleware):
         if request.method == "OPTIONS":
             return await call_next(request)
 
+        # Variables ----------------------------------------------
         brainpat = request.headers.get("BrainPAT") or getattr(
             request.state, "pat", None
         )
-        brain_id = getattr(request.state, "brain_id", None)
+        system_pat = os.getenv("BRAINPAT_TOKEN")
 
-        cachepat_key = f"brainpat:{brain_id or 'default'}"
-
-        use_only_system_pat = os.getenv("USE_ONLY_SYSTEM_PAT") == "true"
-
-        if use_only_system_pat:
-            cachepat_key = "brainpat:system"
-
-        cached_brainpat = cache_adapter.get(key=cachepat_key, brain_id="system")
-
-        if not cached_brainpat and not use_only_system_pat:
-            stored_brain = data_adapter.get_brain(name_key=brain_id)
-            system_pat = os.getenv("BRAINPAT_TOKEN")
-            if not stored_brain:
-                if brainpat != system_pat:
-                    return JSONResponse(
-                        status_code=status.HTTP_401_UNAUTHORIZED,
-                        content={"detail": "Invalid or missing BrainPAT header"},
-                    )
-                cached_brainpat = system_pat
-            else:
-                cached_brainpat = stored_brain.pat
-                cache_adapter.set(
-                    key=cachepat_key,
-                    value=stored_brain.pat,
-                    brain_id="system",
-                )
-        if not cached_brainpat and use_only_system_pat:
-            system_pat = os.getenv("BRAINPAT_TOKEN")
-            cached_brainpat = system_pat
-            cache_adapter.set(
-                key="brainpat:system",
-                value=system_pat,
-                brain_id="system",
-            )
-
-        if cached_brainpat != brainpat:
+        if request.url.path.startswith("/system") or request.url.path == "/":
+            if brainpat == system_pat:
+                return await call_next(request)
             return JSONResponse(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 content={"detail": "Invalid or missing BrainPAT header"},
             )
+
+        brain_id = getattr(request.state, "brain_id", None)
+        if not brain_id:
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"detail": "Brain ID is required."},
+            )
+        cachepat_key = f"brainpat:{brain_id}"
+        cached_brainpat = cache_adapter.get(key=cachepat_key, brain_id="system")
+
+        # Logic --------------------------------------------------
+        if brainpat == system_pat:
+            return await call_next(request)
+
+        if not cached_brainpat:
+            stored_brain = data_adapter.get_brain(name_key=brain_id)
+            if not stored_brain or stored_brain.pat != brainpat:
+                return JSONResponse(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    content={"detail": "Invalid or missing BrainPAT header"},
+                )
+            cached_brainpat = stored_brain.pat
+            cache_adapter.set(
+                key=cachepat_key, value=stored_brain.pat, brain_id="system"
+            )
+        elif cached_brainpat != brainpat:
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content={"detail": "Invalid or missing BrainPAT header"},
+            )
+
         response = await call_next(request)
 
         return response

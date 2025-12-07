@@ -11,6 +11,7 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 import asyncio
 
 from pydantic import BaseModel
+from src.services.api.constants.requests import CreateBrainRequest
 from src.services.data.main import data_adapter
 
 
@@ -20,14 +21,6 @@ async def get_brains_list():
     """
     result = await asyncio.to_thread(data_adapter.get_brains_list)
     return result
-
-
-class CreateBrainRequest(BaseModel):
-    """
-    Request body for the create brain endpoint.
-    """
-
-    brain_id: str
 
 
 async def create_new_brain(request: CreateBrainRequest):

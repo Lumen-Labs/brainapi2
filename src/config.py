@@ -78,7 +78,8 @@ class MilvusConfig:
 
     def __init__(self):
         self.host = os.getenv("MILVUS_HOST")
-        self.port = os.getenv("MILVUS_PORT")
+        port_str = os.getenv("MILVUS_PORT")
+        self.port = int(port_str) if port_str else None
         self.uri = os.getenv("MILVUS_URI")
         self.token = os.getenv("MILVUS_TOKEN")
         if [self.host, self.port].count(None) > 0 and [self.uri, self.token].count(

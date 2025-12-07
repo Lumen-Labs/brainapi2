@@ -38,11 +38,12 @@ async def retrieve(
         ...,
         description="The entities to prioritize in the relationships, separated by commas.",
     ),
+    brain_id: str = "default",
 ):
     """
     Retrieve data from the knowledge graph and data store.
     """
-    return await retrieve_data_controller(text, limit, preferred_entities)
+    return await retrieve_data_controller(text, limit, preferred_entities, brain_id)
 
 
 @retrieve_router.get(
@@ -51,11 +52,14 @@ async def retrieve(
 async def get_neighbors(
     uuid: str = Query(..., description="The UUID of the entity to get neighbors for."),
     limit: int = Query(10, description="The number of neighbors to return."),
+    brain_id: str = "default",
 ):
     """
     Get the neighbors of an entity.
     """
-    return await retrieve_neighbors_controller(uuid=uuid, limit=limit)
+    return await retrieve_neighbors_controller(
+        uuid=uuid, limit=limit, brain_id=brain_id
+    )
 
 
 @retrieve_router.post(
@@ -103,6 +107,7 @@ async def get_relationships(
     to_node_labels: Optional[str] = None,
     query_text: Optional[str] = None,
     query_search_target: Optional[str] = "all",
+    brain_id: str = "default",
 ):
     """
     Get the relationships of the graph.
@@ -130,10 +135,13 @@ async def get_entities(
     skip: int = 0,
     node_labels: Optional[str] = None,
     query_text: Optional[str] = None,
+    brain_id: str = "default",
 ):
     """
     Get the entities of the graph.
     """
     if node_labels:
         node_labels = node_labels.split(",")
-    return await retrieve_get_entities_controller(limit, skip, node_labels, query_text)
+    return await retrieve_get_entities_controller(
+        limit, skip, node_labels, query_text, brain_id
+    )

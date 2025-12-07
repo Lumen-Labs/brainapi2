@@ -155,6 +155,9 @@ class RetrieveNeighborsAiModeRequestBody(BaseModel):
         ...,
         description="The description of the neighbors to look for.",
     )
+    brain_id: str = Field(
+        default="default", description="The brain identifier to store the data in."
+    )
 
 
 class RetrieveNeighborsWithIdentificationParamsRequestBody(BaseModel):
@@ -167,3 +170,14 @@ class RetrieveNeighborsWithIdentificationParamsRequestBody(BaseModel):
         description="The identification parameters of the entity to get neighbors for.",
     )
     limit: int = Field(10, description="The number of neighbors to return.")
+    brain_id: str = Field(
+        default="default", description="The brain identifier to store the data in."
+    )
+
+
+class CreateBrainRequest(BaseModel):
+    """
+    Request body for the create brain endpoint.
+    """
+
+    brain_id: str

@@ -9,6 +9,7 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 """
 
 from fastapi import APIRouter
+from src.services.api.constants.requests import CreateBrainRequest
 from src.services.api.controllers.system import (
     get_brains_list as get_brains_list_controller,
     create_new_brain as create_new_brain_controller,
@@ -26,8 +27,8 @@ async def get_brains_list():
 
 
 @system_router.post(path="/brains")
-async def create_brain(brain_id: str):
+async def create_brain(request: CreateBrainRequest):
     """
     Create a new brain
     """
-    return await create_new_brain_controller(brain_id)
+    return await create_new_brain_controller(request)
