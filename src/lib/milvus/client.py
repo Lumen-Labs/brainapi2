@@ -92,12 +92,28 @@ class MilvusClient(VectorStoreClient):
         if store not in EMBEDDING_STORES_SIZES:
             raise ValueError(f"Store {store} not available")
 
+        collection_created = False
         if not self.client.has_collection(store):
             self.client.create_collection(
                 store,
                 dimension=EMBEDDING_STORES_SIZES[store],
                 vector_field_name="embeddings",
             )
+            collection_created = True
+
+        if collection_created:
+            try:
+                index_params = {
+                    "metric_type": "COSINE",
+                    "index_type": "AUTOINDEX",
+                }
+                self.client.create_index(
+                    collection_name=store,
+                    field_name="embeddings",
+                    index_params=index_params,
+                )
+            except Exception as e:
+                pass
 
         try:
             has_partition = self.client.has_partition(store, brain_id)

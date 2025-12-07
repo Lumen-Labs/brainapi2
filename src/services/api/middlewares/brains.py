@@ -82,6 +82,8 @@ class BrainMiddleware(BaseHTTPMiddleware):
         if brain_id and not cached_brain_id:
             stored_brain = data_adapter.get_brain(name_key=brain_id)
 
+            request.state.brain_id = brain_id
+
             if not stored_brain and brain_creation_allowed:
                 new_brain = data_adapter.create_brain(name_key=brain_id)
                 cache_adapter.set(
@@ -89,14 +91,12 @@ class BrainMiddleware(BaseHTTPMiddleware):
                     value=new_brain.id,
                     brain_id="system",
                 )
-                request.state.brain_id = new_brain.id
             elif stored_brain:
                 cache_adapter.set(
                     key=f"brain:{brain_id}",
                     value=stored_brain.id,
                     brain_id="system",
                 )
-                request.state.brain_id = stored_brain.id
         elif not brain_id and default_brain_fallback:
             default_brain = data_adapter.get_brain(name_key="default")
             if not default_brain:
