@@ -30,6 +30,7 @@ class KGAgentSearchGraphTool(BaseTool):
     embeddings: EmbeddingsAdapter
     identification_params: Optional[dict] = None
     metadata: Optional[dict] = None
+    brain_id: str = "default"
 
     args_schema: dict = {
         "type": "object",
@@ -80,6 +81,7 @@ class KGAgentSearchGraphTool(BaseTool):
         embeddings: EmbeddingsAdapter,
         identification_params: Optional[dict] = None,
         metadata: Optional[dict] = None,
+        brain_id: str = "default",
     ):
         description: str = (
             "Tool for searching the knowledge graph. "
@@ -98,6 +100,7 @@ class KGAgentSearchGraphTool(BaseTool):
             description=description,
             identification_params=identification_params or {},
             metadata=metadata or {},
+            brain_id=brain_id,
         )
 
     def _run(self, *args, **kwargs) -> str:
@@ -108,12 +111,12 @@ class KGAgentSearchGraphTool(BaseTool):
         if query:
             query_embedding = self.embeddings.embed_text(query)
             v_triplets_results = self.vector_store.search_vectors(
-                query_embedding.embeddings, "triplets", k=5
+                query_embedding.embeddings, "triplets", k=5, brain_id=self.brain_id
             )
             v_nodes_results = self.vector_store.search_vectors(
-                query_embedding.embeddings, "nodes"
+                query_embedding.embeddings, "nodes", brain_id=self.brain_id
             )
-            nodes.extend(self.kg.node_text_search(query))
+            nodes.extend(self.kg.node_text_search(query, brain_id=self.brain_id))
             nodes.extend(
                 self.kg.get_by_uuids(
                     [
@@ -128,7 +131,8 @@ class KGAgentSearchGraphTool(BaseTool):
                             for node_id in v_triplet_result.metadata.get("node_ids", [])
                             if node_id is not None
                         ],
-                    ]
+                    ],
+                    brain_id=self.brain_id,
                 )
             )
 
@@ -136,7 +140,7 @@ class KGAgentSearchGraphTool(BaseTool):
             Node(name=node["name"], labels=node["labels"])
             for node in kwargs.get("nodes", [])
         ]
-        nodes.extend(self.kg.search_graph(_nodes))
+        nodes.extend(self.kg.search_graph(_nodes, brain_id=self.brain_id))
 
         nodes.extend(
             self.kg.get_nodes_by_uuid(
@@ -148,6 +152,7 @@ class KGAgentSearchGraphTool(BaseTool):
                     for v_result in v_results
                     if v_result.metadata.get("predicate", None)
                 ],
+                brain_id=self.brain_id,
             )
         )
 

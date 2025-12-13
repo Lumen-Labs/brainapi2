@@ -113,7 +113,7 @@ class MilvusClient(VectorStoreClient):
                     index_params=index_params,
                 )
             except Exception as e:
-                pass
+                print(f"[Milvus] Error creating index for collection {store}: {e}")
 
         try:
             has_partition = self.client.has_partition(store, brain_id)

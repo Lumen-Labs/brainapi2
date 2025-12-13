@@ -8,7 +8,7 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 -----
 """
 
-from typing import Optional, Tuple
+from typing import Literal, Optional, Tuple
 from src.adapters.interfaces.graph import GraphClient
 from src.constants.kg import (
     IdentificationParams,
@@ -245,6 +245,33 @@ class GraphAdapter:
         # TODO: semantic search
         return self.graph.search_entities(
             brain_id, limit, skip, node_labels, node_uuids, query_text
+        )
+
+    def deprecate_relationship(
+        self,
+        subject: Node,
+        predicate: Predicate,
+        object: Node,
+        brain_id: str = "default",
+    ) -> Tuple[Node, Predicate, Node] | None:
+        """
+        Deprecate a relationship from the graph.
+        """
+        return self.graph.deprecate_relationship(subject, predicate, object, brain_id)
+
+    def update_properties(
+        self,
+        uuid: str,
+        updating: Literal["node", "relationship"],
+        brain_id: str = "default",
+        new_properties: dict = {},
+        properties_to_remove: list[str] = [],
+    ) -> Node | Predicate | None:
+        """
+        Update the properties of a node or relationship in the graph.
+        """
+        return self.graph.update_properties(
+            uuid, updating, brain_id, new_properties, properties_to_remove
         )
 
 

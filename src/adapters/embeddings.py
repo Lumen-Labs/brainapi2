@@ -68,16 +68,16 @@ class VectorStoreAdapter:
     def search_similar_by_ids(
         self,
         vector_ids: list[str],
+        brain_id: str,
         store: str,
         min_similarity: float,
         limit: int = 10,
-        brain_id: str = "default",
     ) -> list[Vector]:
         """
         Search similar vectors by their IDs.
         """
         return self.vector_store.search_similar_by_ids(
-            vector_ids, store, min_similarity, limit, brain_id
+            vector_ids, brain_id, store, min_similarity, limit
         )
 
 

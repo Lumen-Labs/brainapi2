@@ -12,10 +12,14 @@ from .KGAgentExecuteGraphOperationTool import KGAgentExecuteGraphOperationTool
 from .KGAgentAddNodesTool import KGAgentAddNodesTool
 from .KGAgentAddTripletsTool import KGAgentAddTripletsTool
 from .KGAgentSearchGraphTool import KGAgentSearchGraphTool
+from .KGAgentDeleteRelationshipTool import KGAgentDeleteRelationshipTool
+from .KGAgentUpdatePropertiesTool import KGAgentUpdatePropertiesTool
 
 __all__ = [
     "KGAgentExecuteGraphOperationTool",
     "KGAgentAddNodesTool",
     "KGAgentAddTripletsTool",
     "KGAgentSearchGraphTool",
+    "KGAgentDeleteRelationshipTool",
+    "KGAgentUpdatePropertiesTool",
 ]

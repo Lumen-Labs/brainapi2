@@ -10,7 +10,7 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 
 from typing import List, Tuple
 from src.adapters.interfaces.data import DataClient, SearchResult
-from src.constants.data import Brain, Observation, StructuredData, TextChunk
+from src.constants.data import Brain, KGChanges, Observation, StructuredData, TextChunk
 
 
 class DataAdapter:
@@ -82,3 +82,11 @@ class DataAdapter:
         Get the list of brains from the data client.
         """
         return self.data.get_brains_list()
+
+    def save_kg_changes(
+        self, kg_changes: KGChanges, brain_id: str = "default"
+    ) -> KGChanges:
+        """
+        Save a KG changes to the data client.
+        """
+        return self.data.save_kg_changes(kg_changes, brain_id)

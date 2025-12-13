@@ -9,7 +9,7 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 """
 
 import os
-from typing import Any, Optional, Tuple
+from typing import Any, Literal, Optional, Tuple
 from neo4j import GraphDatabase
 from src.adapters.interfaces.graph import GraphClient
 from src.config import config
@@ -91,7 +91,7 @@ class Neo4jClient(GraphClient):
         Clean a property key to be used in a Cypher query.
         """
         words = property_key.split()
-        return "".join(word.capitalize() for word in words)
+        return words[0].lower() + "".join(word.capitalize() for word in words[1:])
 
     def _format_property_key(self, property_key: str) -> str:
         """
@@ -225,11 +225,13 @@ class Neo4jClient(GraphClient):
         safe_desc = predicate.description.replace("'", "\\'")
 
         cypher_query = f"""
-        MATCH (a:{":".join(self._clean_labels(subject.labels))}) WHERE a.Name = '{subject.name}'
-        MATCH (b:{":".join(self._clean_labels(to_object.labels))}) WHERE b.Name = '{to_object.name}'
-        CREATE (a)-[:{":".join(self._clean_labels([predicate.name]))} {{ Description: '{safe_desc}' }}]->(b)
+        MATCH (a:{":".join(self._clean_labels(subject.labels))}) WHERE a.name = '{subject.name}'
+        MATCH (b:{":".join(self._clean_labels(to_object.labels))}) WHERE b.name = '{to_object.name}'
+        MERGE (a)-[r:{":".join(self._clean_labels([predicate.name]))}]->(b)
+        ON CREATE SET r.description = '{safe_desc}', r.uuid = '{predicate.uuid}'
         RETURN a, b
         """
+
         self.ensure_database(brain_id)
         result = self.driver.execute_query(cypher_query, database_=brain_id)
         return result
@@ -243,7 +245,7 @@ class Neo4jClient(GraphClient):
 
         queries = []
         for node in nodes:
-            query = f"""MATCH (n:{":".join(self._clean_labels(node.labels))}) WHERE n.Name = '{node.name}'
+            query = f"""MATCH (n:{":".join(self._clean_labels(node.labels))}) WHERE n.name = '{node.name}'
     OPTIONAL MATCH (n)-[r*1]-(m)
     RETURN n, r, m"""
             queries.append(query)
@@ -259,7 +261,7 @@ class Neo4jClient(GraphClient):
         """
         cypher_query = f"""
         MATCH (n) 
-        WHERE toLower(n.Name) CONTAINS toLower('{text}')
+        WHERE toLower(n.name) CONTAINS toLower('{text}')
         RETURN n
         """
         self.ensure_database(brain_id)
@@ -440,12 +442,15 @@ class Neo4jClient(GraphClient):
         where_clauses = []
 
         for key, value in params_dict.items():
-            where_clauses.append(f"n.{key} = '{value}'")
+            where_clauses.append(
+                f"n.{self._format_property_key(key)} = {self._format_value(value)}"
+            )
 
         cypher_query = f"""
         MATCH (n{(":" + ":".join(self._clean_labels(entity_types))) if entity_types else ""}) {("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""}
         RETURN n.uuid as uuid, n.name as name, labels(n) as labels, n.description as description, properties(n) as properties
         """
+
         self.ensure_database(brain_id)
         result = self.driver.execute_query(cypher_query, database_=brain_id)
         if not result.records or len(result.records) == 0:
@@ -712,9 +717,9 @@ class Neo4jClient(GraphClient):
         if query_text:
             if query_search_target == "all":
                 filters.append(
-                    f"(toLower(coalesce(n.name, n.Name, '')) CONTAINS toLower('{query_text}') OR "
-                    f"toLower(coalesce(m.name, m.Name, '')) CONTAINS toLower('{query_text}') OR "
-                    f"toLower(coalesce(r.description, r.Description, '')) CONTAINS toLower('{query_text}'))"
+                    f"(toLower(coalesce(n.name, n.name, '')) CONTAINS toLower('{query_text}') OR "
+                    f"toLower(coalesce(m.name, m.name, '')) CONTAINS toLower('{query_text}') OR "
+                    f"toLower(coalesce(r.description, r.description, '')) CONTAINS toLower('{query_text}'))"
                 )
             elif query_search_target == "node_name":
                 filters.append(f"toLower(n.name) CONTAINS toLower('{query_text}')")
@@ -854,7 +859,7 @@ class Neo4jClient(GraphClient):
             filters.append(f"n.uuid IN [{','.join(node_uuids)}]")
         if query_text:
             filters.append(
-                f"(toLower(coalesce(n.name, n.Name, '')) CONTAINS toLower('{query_text}'))"
+                f"(toLower(coalesce(n.name, n.name, '')) CONTAINS toLower('{query_text}'))"
             )
         cypher_query = f"""
         MATCH (n)
@@ -902,6 +907,120 @@ class Neo4jClient(GraphClient):
                 )
             )
         return SearchEntitiesResult(results=nodes, total=total)
+
+    def deprecate_relationship(
+        self,
+        subject: Node,
+        predicate: Predicate,
+        object: Node,
+        brain_id: str,
+    ) -> Tuple[Node, Predicate, Node] | None:
+        """
+        Deprecate a relationship from the graph.
+        """
+        cypher_query = f"""
+        MATCH (a:{":".join(self._clean_labels(subject.labels))}) WHERE a.name = '{subject.name}'
+        MATCH (b:{":".join(self._clean_labels(object.labels))}) WHERE b.name = '{object.name}'
+        MATCH (a)-[r:{":".join(self._clean_labels([predicate.name]))}]->(b)
+        SET r.deprecated = true
+        RETURN a.uuid as a_uuid, a.name as a_name, labels(a) as a_labels, a.description as a_description, properties(a) as a_properties,
+            b.uuid as b_uuid, b.name as b_name, labels(b) as b_labels, b.description as b_description, properties(b) as b_properties,
+            r.uuid as r_uuid, type(r) as r_type, r.description as r_description, properties(r) as r_properties
+        """
+        self.ensure_database(brain_id)
+        result = self.driver.execute_query(cypher_query, database_=brain_id)
+        if result.records:
+            return (
+                Node(
+                    uuid=result.records[0].get("a_uuid", "") or "",
+                    name=result.records[0].get("a_name", "") or "",
+                    labels=result.records[0].get("a_labels", []) or [],
+                    description=result.records[0].get("a_description", "") or "",
+                    properties=result.records[0].get("a_properties", {}) or {},
+                ),
+                Predicate(
+                    name=result.records[0].get("r_type", "") or "",
+                    description=result.records[0].get("r_description", "") or "",
+                    direction=result.records[0].get("r_direction", "neutral"),
+                ),
+                Node(
+                    uuid=result.records[0].get("b_uuid", "") or "",
+                    name=result.records[0].get("b_name", "") or "",
+                    labels=result.records[0].get("b_labels", []) or [],
+                    description=result.records[0].get("b_description", "") or "",
+                    properties=result.records[0].get("b_properties", {}) or {},
+                ),
+            )
+        return None
+
+    def update_properties(
+        self,
+        uuid: str,
+        updating: Literal["node", "relationship"],
+        brain_id: str,
+        new_properties: dict,
+        properties_to_remove: list[str],
+    ) -> Node | Predicate | None:
+        """
+        Update the properties of a node or relationship in the graph.
+        """
+
+        property_set_operations = []
+        for property, value in new_properties.items():
+            cypher_key = self._format_property_key(property)
+            formatted_value = self._format_value(value)
+            property_set_operations.append(f"t.{cypher_key} = {formatted_value}")
+
+        property_remove_operations = []
+        for property in properties_to_remove:
+            cypher_key = self._format_property_key(property)
+            property_remove_operations.append(f"t.{cypher_key}")
+
+        properties_set_op = (
+            f"SET {', '.join(property_set_operations)}"
+            if property_set_operations
+            else ""
+        )
+        properties_remove_op = (
+            f"REMOVE {', '.join(property_remove_operations)}"
+            if property_remove_operations
+            else ""
+        )
+
+        if updating == "node":
+            cypher_query = f"""
+            MATCH (t) WHERE t.uuid = '{uuid}'
+            {properties_set_op}
+            {properties_remove_op}
+            RETURN t.uuid as uuid, t.name as name, labels(t) as labels, t.description as description, properties(t) as properties
+            """
+        elif updating == "relationship":
+            cypher_query = f"""
+            MATCH ()-[t]->() WHERE t.uuid = '{uuid}'
+            {properties_set_op}
+            {properties_remove_op}
+            RETURN t, type(t) AS rel_type, t.description AS rel_description, properties(t) as properties
+            """
+
+        self.ensure_database(brain_id)
+        result = self.driver.execute_query(cypher_query, database_=brain_id)
+
+        if result.records:
+            if updating == "node":
+                return Node(
+                    uuid=result.records[0].get("uuid", "") or "",
+                    name=result.records[0].get("name", "") or "",
+                    labels=result.records[0].get("labels", []) or [],
+                    description=result.records[0].get("description", "") or "",
+                    properties=result.records[0].get("properties", {}) or {},
+                )
+            elif updating == "relationship":
+                return Predicate(
+                    name=result.records[0].get("rel_type", "") or "",
+                    description=result.records[0].get("rel_description", "") or "",
+                    direction=result.records[0].get("direction", "neutral"),
+                )
+        return None
 
 
 _neo4j_client = Neo4jClient()

@@ -14,8 +14,18 @@ from langchain.tools import BaseTool
 
 from src.adapters.graph import GraphAdapter
 from src.adapters.embeddings import EmbeddingsAdapter, VectorStoreAdapter
+from src.constants.data import (
+    PartialNode,
+    KGChangeLogNodePropertiesUpdated,
+    KGChangeLogPredicateUpdatedProperty,
+    KGChangeLogRelationshipCreated,
+    KGChanges,
+    KGChangesType,
+    PartialPredicate,
+)
 from src.constants.kg import Node, Predicate, Triple
 from src.services.api.constants.tool_schemas import TRIPLE_SCHEMA
+from src.services.data.main import data_adapter
 from src.utils.nlp.names import most_similar_name_with_labels_or_none
 
 
@@ -31,6 +41,7 @@ class KGAgentAddTripletsTool(BaseTool):
     embeddings: EmbeddingsAdapter
     identification_params: Optional[dict] = None
     metadata: Optional[dict] = None
+    brain_id: str = "default"
 
     args_schema: dict = {
         "type": "object",
@@ -51,6 +62,7 @@ class KGAgentAddTripletsTool(BaseTool):
         embeddings: EmbeddingsAdapter,
         identification_params: Optional[dict] = None,
         metadata: Optional[dict] = None,
+        brain_id: str = "default",
     ):
         description: str = (
             "This tool is used to register triplets into the knowledge graph. "
@@ -64,6 +76,7 @@ class KGAgentAddTripletsTool(BaseTool):
             description=description,
             identification_params=identification_params or {},
             metadata=metadata or {},
+            brain_id=brain_id or "default",
         )
 
     def _run(self, *args, **kwargs) -> str:
@@ -79,8 +92,12 @@ class KGAgentAddTripletsTool(BaseTool):
             v_sub = self.embeddings.embed_text(subject.name)
             v_obj = self.embeddings.embed_text(object_node.name)
 
-            v_sim_sub = self.vector_store.search_vectors(v_sub.embeddings, "nodes", k=5)
-            v_sim_obj = self.vector_store.search_vectors(v_obj.embeddings, "nodes", k=5)
+            v_sim_sub = self.vector_store.search_vectors(
+                v_sub.embeddings, "nodes", k=5, brain_id=self.brain_id
+            )
+            v_sim_obj = self.vector_store.search_vectors(
+                v_obj.embeddings, "nodes", k=5, brain_id=self.brain_id
+            )
 
             sim_sub = most_similar_name_with_labels_or_none(
                 subject.name,
@@ -111,7 +128,9 @@ class KGAgentAddTripletsTool(BaseTool):
                     "labels": subject.labels,
                     "uuid": str(uuid4()),
                 }
-                vector = self.vector_store.add_vectors([v_sub], store="nodes")
+                vector = self.vector_store.add_vectors(
+                    [v_sub], store="nodes", brain_id=self.brain_id
+                )
                 subject.uuid = v_sub.metadata.get("uuid")
 
             if sim_obj:
@@ -132,7 +151,9 @@ class KGAgentAddTripletsTool(BaseTool):
                     "labels": object_node.labels,
                     "uuid": str(uuid4()),
                 }
-                vector = self.vector_store.add_vectors([v_obj], store="nodes")
+                vector = self.vector_store.add_vectors(
+                    [v_obj], store="nodes", brain_id=self.brain_id
+                )
                 object_node.uuid = v_obj.metadata.get("uuid")
 
             predicate = Predicate(
@@ -150,20 +171,72 @@ class KGAgentAddTripletsTool(BaseTool):
                 "node_ids": [triplet.subject.uuid, triplet.object.uuid],
                 "predicate": triplet.predicate.name,
             }
-            self.vector_store.add_vectors([vector], "triplets")
+            self.vector_store.add_vectors([vector], "triplets", brain_id=self.brain_id)
 
             self.kg.add_nodes(
                 [triplet.subject, triplet.object],
+                brain_id=self.brain_id,
                 metadata=self.metadata,
             )
+            sub_kg_changelog = KGChanges(
+                type=KGChangesType.NODE_PROPERTIES_UPDATED,
+                change=KGChangeLogNodePropertiesUpdated(
+                    node=PartialNode(
+                        **triplet.subject.model_dump(mode="json"),
+                    ),
+                    properties=[
+                        KGChangeLogPredicateUpdatedProperty(
+                            property=property,
+                            previous_value=None,
+                            new_value=triplet.subject.properties[property],
+                        )
+                        for property in triplet.subject.properties
+                    ],
+                ),
+            )
+            obj_kg_changelog = KGChanges(
+                type=KGChangesType.NODE_PROPERTIES_UPDATED,
+                change=KGChangeLogNodePropertiesUpdated(
+                    node=PartialNode(
+                        **triplet.object.model_dump(mode="json"),
+                    ),
+                    properties=[
+                        KGChangeLogPredicateUpdatedProperty(
+                            property=property,
+                            previous_value=None,
+                            new_value=triplet.object.properties[property],
+                        )
+                        for property in triplet.object.properties
+                    ],
+                ),
+            )
+            data_adapter.save_kg_changes(sub_kg_changelog, brain_id=self.brain_id)
+            data_adapter.save_kg_changes(obj_kg_changelog, brain_id=self.brain_id)
             self.kg.add_relationship(
                 triplet.subject,
                 triplet.predicate,
                 triplet.object,
+                brain_id=self.brain_id,
             )
+            kg_changes = KGChanges(
+                type=KGChangesType.RELATIONSHIP_CREATED,
+                change=KGChangeLogRelationshipCreated(
+                    type=KGChangesType.RELATIONSHIP_CREATED,
+                    subject=PartialNode(
+                        **triplet.subject.model_dump(mode="json"),
+                    ),
+                    predicate=PartialPredicate(
+                        uuid=triplet.predicate.uuid,
+                        name=triplet.predicate.name,
+                        description=triplet.predicate.description,
+                    ),
+                    object=PartialNode(
+                        **triplet.object.model_dump(mode="json"),
+                    ),
+                ),
+            )
+            data_adapter.save_kg_changes(kg_changes, brain_id=self.brain_id)
 
             # TODO: save natural language relationship/predicate+s+o vector
-
-            # TODO: add changelog relationship created
 
         return f"Triplets added successfully: {triplets}"

@@ -9,7 +9,7 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 """
 
 from abc import ABC, abstractmethod
-from typing import Optional, Tuple
+from typing import Literal, Optional, Tuple
 
 from src.constants.kg import (
     IdentificationParams,
@@ -245,3 +245,30 @@ class GraphClient(ABC):
         Search the entities of the graph.
         """
         raise NotImplementedError("search_entities method not implemented")
+
+    @abstractmethod
+    def deprecate_relationship(
+        self,
+        subject: Node,
+        predicate: Predicate,
+        object: Node,
+        brain_id: str,
+    ) -> Tuple[Node, Predicate, Node] | None:
+        """
+        Deprecate a relationship from the graph.
+        """
+        raise NotImplementedError("deprecate_relationship method not implemented")
+
+    @abstractmethod
+    def update_properties(
+        self,
+        uuid: str,
+        updating: Literal["node", "relationship"],
+        brain_id: str,
+        new_properties: dict,
+        properties_to_remove: list[str],
+    ) -> Node | Predicate | None:
+        """
+        Update the properties of a node or relationship in the graph.
+        """
+        raise NotImplementedError("update_properties method not implemented")

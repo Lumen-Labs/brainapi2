@@ -9,7 +9,8 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 """
 
 from datetime import datetime
-from typing import List, Optional
+from enum import Enum
+from typing import Annotated, Any, List, Literal, Optional, Union
 import uuid
 from pydantic import BaseModel, Field
 
@@ -62,24 +63,138 @@ class Observation(BaseModel):
     )
 
 
+class KGChangesType(Enum):
+    """
+    KG changes type.
+    """
+
+    RELATIONSHIP_CREATED = "relationship_created"
+    RELATIONSHIP_DEPRECATED = "relationship_deprecated"
+    NODE_PROPERTIES_UPDATED = "node_properties_updated"
+    RELATIONSHIP_PROPERTIES_UPDATED = "relationship_properties_updated"
+
+
+class PartialNode(BaseModel):
+    """
+    Partial node model.
+    """
+
+    uuid: str = Field(description="The id of the node.")
+    name: str = Field(description="The name of the node.")
+    labels: List[str] = Field(description="The labels of the node.")
+    description: Optional[str] = Field(description="The description of the node.")
+    properties: dict = Field(description="The properties of the node.")
+
+
+class PartialPredicate(BaseModel):
+    """
+    Partial relationship model.
+    """
+
+    uuid: str = Field(description="The id of the relationship.")
+    name: str = Field(description="The name of the relationship.")
+    description: Optional[str] = Field(
+        description="The description of the relationship."
+    )
+    properties: Optional[dict] = Field(
+        default=None, description="The properties of the relationship."
+    )
+
+
+class KGChangeLogRelationshipCreated(BaseModel):
+    """
+    KG change log relationship created model.
+    """
+
+    type: Literal[KGChangesType.RELATIONSHIP_CREATED] = Field(
+        default=KGChangesType.RELATIONSHIP_CREATED,
+        description="The type of the change.",
+    )
+    subject: PartialNode = Field(description="The subject of the relationship.")
+    predicate: PartialPredicate = Field(
+        description="The predicate of the relationship."
+    )
+    object: PartialNode = Field(description="The object of the relationship.")
+
+
+class KGChangeLogRelationshipDeprecated(BaseModel):
+    """
+    KG change log relationship deprecated model.
+    """
+
+    type: Literal[KGChangesType.RELATIONSHIP_DEPRECATED] = Field(
+        default=KGChangesType.RELATIONSHIP_DEPRECATED,
+        description="The type of the change.",
+    )
+    subject: PartialNode = Field(description="The subject of the relationship.")
+    predicate: PartialPredicate = Field(
+        description="The predicate of the relationship."
+    )
+    object: PartialNode = Field(description="The object of the relationship.")
+    new_predicate: Optional[PartialPredicate] = Field(
+        description="The new predicate of the relationship."
+    )
+
+
+class KGChangeLogPredicateUpdatedProperty(BaseModel):
+    """
+    KG change log relationship updated property model.
+    """
+
+    property: str = Field(description="The property that was updated.")
+    previous_value: Any = Field(description="The previous value of the property.")
+    new_value: Any = Field(description="The new value of the property.")
+
+
+class KGChangeLogNodePropertiesUpdated(BaseModel):
+    """
+    KG change log node properties updated model.
+    """
+
+    type: Literal[KGChangesType.NODE_PROPERTIES_UPDATED] = Field(
+        default=KGChangesType.NODE_PROPERTIES_UPDATED,
+        description="The type of the change.",
+    )
+    node: PartialNode = Field(description="The node that was updated.")
+    properties: List[KGChangeLogPredicateUpdatedProperty] = Field(
+        description="The properties that were updated."
+    )
+
+
+class KGChangeLogPredicatePropertiesUpdated(BaseModel):
+    """
+    KG change log relationship properties updated model.
+    """
+
+    type: Literal[KGChangesType.RELATIONSHIP_PROPERTIES_UPDATED] = Field(
+        default=KGChangesType.RELATIONSHIP_PROPERTIES_UPDATED,
+        description="The type of the change.",
+    )
+    predicate: PartialPredicate = Field(description="The predicate that was updated.")
+    properties: List[KGChangeLogPredicateUpdatedProperty] = Field(
+        description="The properties that were updated."
+    )
+
+
 class KGChanges(BaseModel):
     """
     KG changes model.
     """
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-
-    node_ids: Optional[List[str]] = Field(
-        default=None, description="The id of the node that was changed."
-    )
-    predicate_id: Optional[str] = Field(
-        default=None, description="The id of the predicate that was changed."
-    )
-
-    changelog: List[dict] = Field(description="The changelog of the changes.")
-    date: datetime = Field(
+    type: KGChangesType = Field(description="The type of the changes.")
+    change: Annotated[
+        Union[
+            KGChangeLogRelationshipCreated,
+            KGChangeLogRelationshipDeprecated,
+            KGChangeLogNodePropertiesUpdated,
+            KGChangeLogPredicatePropertiesUpdated,
+        ],
+        Field(discriminator="type"),
+    ] = Field(description="The change data, discriminated by type.")
+    timestamp: datetime = Field(
         default_factory=datetime.now,
-        description="The date and time the changes were made.",
+        description="The timestamp of the changes.",
     )
 
 

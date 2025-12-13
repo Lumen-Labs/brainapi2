@@ -14,7 +14,7 @@ from pymongo.database import Database
 from pymongo.collection import Collection
 from src.adapters.interfaces.data import DataClient, SearchResult
 from src.config import config
-from src.constants.data import Brain, Observation, StructuredData, TextChunk
+from src.constants.data import Brain, KGChanges, Observation, StructuredData, TextChunk
 
 
 class MongoClient(DataClient):
@@ -162,6 +162,11 @@ class MongoClient(DataClient):
             )
             for result in result
         ]
+
+    def save_kg_changes(self, kg_changes: KGChanges, brain_id: str) -> KGChanges:
+        collection = self.get_collection("kg_changes", database=brain_id)
+        collection.insert_one(kg_changes.model_dump(mode="json"))
+        return kg_changes
 
 
 _mongo_client = MongoClient()

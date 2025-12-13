@@ -176,6 +176,7 @@ async def retrieve_neighbors(
             # And the values are the similar nodes found, respectively
             v_neighbors = vector_store_adapter.search_similar_by_ids(
                 vector_ids=related_node_ids,
+                brain_id=brain_id,
                 store="nodes",
                 min_similarity=0.2,
                 limit=(limit - len(normalized)) * 10,

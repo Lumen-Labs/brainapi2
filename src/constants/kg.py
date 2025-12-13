@@ -48,6 +48,7 @@ class Predicate(BaseModel):
     Predicate model.
     """
 
+    uuid: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
     description: str
     last_updated: datetime = Field(

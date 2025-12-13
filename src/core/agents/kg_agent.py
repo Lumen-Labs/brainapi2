@@ -26,8 +26,10 @@ from src.constants.prompts.kg_agent import (
 )
 from src.core.agents.tools.kg_agent import (
     KGAgentAddTripletsTool,
+    KGAgentDeleteRelationshipTool,
     KGAgentExecuteGraphOperationTool,
     KGAgentSearchGraphTool,
+    KGAgentUpdatePropertiesTool,
 )
 from src.adapters.embeddings import EmbeddingsAdapter, VectorStoreAdapter
 
@@ -67,7 +69,9 @@ class KGAgent:
                 "use the appropriate syntax."
             )
 
-    def _get_tools(self, identification_params: dict, metadata: dict) -> List[BaseTool]:
+    def _get_tools(
+        self, identification_params: dict, metadata: dict, brain_id: str = "default"
+    ) -> List[BaseTool]:
         return [
             KGAgentAddTripletsTool(
                 self,
@@ -76,6 +80,7 @@ class KGAgent:
                 self.embeddings,
                 identification_params,
                 metadata,
+                brain_id=brain_id,
             ),
             KGAgentSearchGraphTool(
                 self,
@@ -84,6 +89,18 @@ class KGAgent:
                 self.embeddings,
                 identification_params,
                 metadata,
+                brain_id=brain_id,
+            ),
+            KGAgentDeleteRelationshipTool(
+                self,
+                self.kg,
+                self.vector_store,
+                brain_id=brain_id,
+            ),
+            KGAgentUpdatePropertiesTool(
+                self,
+                self.kg,
+                brain_id=brain_id,
             ),
         ]
 
@@ -94,6 +111,7 @@ class KGAgent:
         tools: Optional[List[BaseTool]] = None,
         output_schema: Optional[BaseModel] = None,
         extra_system_prompt: Optional[dict] = None,
+        brain_id: str = "default",
     ):
         system_prompt = KG_AGENT_SYSTEM_PROMPT.format(
             extra_system_prompt=extra_system_prompt if extra_system_prompt else ""
@@ -101,7 +119,11 @@ class KGAgent:
 
         self.agent = create_agent(
             model=self.llm_adapter.llm.langchain_model,
-            tools=tools if tools else self._get_tools(identification_params, metadata),
+            tools=(
+                tools
+                if tools
+                else self._get_tools(identification_params, metadata, brain_id)
+            ),
             system_prompt=system_prompt,
             response_format=output_schema if output_schema else None,
         )
@@ -117,12 +139,13 @@ class KGAgent:
         metadata: Optional[dict],
         identification_params: Optional[dict],
         preferred_entities: Optional[list[str]],
+        brain_id: str = "default",
     ) -> str:
         """
         Update the knowledge graph with new information.
         """
 
-        self._get_agent(identification_params, metadata)
+        self._get_agent(identification_params, metadata, brain_id=brain_id)
 
         preferred_entities_prompt = f"""
         You must prioritize the extraction of the following entities: {preferred_entities}, 
@@ -151,13 +174,17 @@ class KGAgent:
         return response
 
     def structured_update_kg(
-        self, main_node: Node, textual_data: dict, identification_params: dict
+        self,
+        main_node: Node,
+        textual_data: dict,
+        identification_params: dict,
+        brain_id: str = "default",
     ) -> str:
         """
         Update the knowledge graph with new structured information.
         """
 
-        self._get_agent(identification_params, metadata={})
+        self._get_agent(identification_params, metadata={}, brain_id=brain_id)
 
         response = self.agent.invoke(
             {

@@ -13,7 +13,7 @@ from typing import List, Tuple
 
 from pydantic import BaseModel
 
-from src.constants.data import Brain, Observation, StructuredData, TextChunk
+from src.constants.data import Brain, KGChanges, Observation, StructuredData, TextChunk
 
 
 class SearchResult(BaseModel):
@@ -91,3 +91,10 @@ class DataClient(ABC):
         Get the list of brains from the data client.
         """
         raise NotImplementedError("get_brains_list method not implemented")
+
+    @abstractmethod
+    def save_kg_changes(self, kg_changes: KGChanges, brain_id: str) -> KGChanges:
+        """
+        Save a KG changes to the data client.
+        """
+        raise NotImplementedError("save_kg_changes method not implemented")

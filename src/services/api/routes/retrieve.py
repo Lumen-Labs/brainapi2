@@ -72,7 +72,9 @@ async def get_neighbors_with_identification_params(
     Get the neighbors of an entity.
     """
     return await retrieve_neighbors_controller(
-        identification_params=request.identification_params, limit=request.limit
+        identification_params=request.identification_params,
+        limit=request.limit,
+        brain_id=request.brain_id,
     )
 
 

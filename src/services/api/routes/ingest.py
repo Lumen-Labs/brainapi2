@@ -40,7 +40,6 @@ async def ingest_structured_data(data: IngestionStructuredRequestBody):
     """
     Ingest structured data to the processing pipeline and save to the memory.
     """
-    print("[data]", data)
     task = ingest_structured_data_task.delay(data.model_dump())
 
     return JSONResponse(

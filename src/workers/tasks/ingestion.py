@@ -10,7 +10,16 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 
 import json
 from uuid import uuid4
-from src.constants.data import Observation, StructuredData, TextChunk
+from src.constants.data import (
+    KGChangeLogPredicateUpdatedProperty,
+    KGChanges,
+    KGChangesType,
+    Observation,
+    PartialNode,
+    StructuredData,
+    TextChunk,
+    KGChangeLogNodePropertiesUpdated,
+)
 from src.constants.kg import Node
 from src.services.api.constants.requests import IngestionStructuredRequestBody
 from src.services.data.main import data_adapter
@@ -119,6 +128,7 @@ def ingest_data(self, args: dict):
         metadata={**payload.meta_keys, "resource_id": text_chunk.id},
         identification_params=payload.identification_params,
         preferred_entities=payload.preferred_extraction_entities,
+        brain_id=payload.brain_id,
     )
 
     return self.request.id
@@ -153,6 +163,26 @@ def ingest_structured_data(self, args: dict):
             identification_params=element.identification_params.model_dump(mode="json"),
             metadata=element.textual_data,
         )[0]
+
+        # Saving the node properties updated change
+        kg_changes = KGChanges(
+            type=KGChangesType.NODE_PROPERTIES_UPDATED,
+            change=KGChangeLogNodePropertiesUpdated(
+                node=PartialNode(
+                    **node.model_dump(mode="json"),
+                ),
+                properties=[
+                    KGChangeLogPredicateUpdatedProperty(
+                        property=property,
+                        previous_value=None,
+                        new_value=node.properties[property],
+                    )
+                    for property in node.properties
+                ],
+            ),
+        )
+        data_adapter.save_kg_changes(kg_changes, brain_id=payload.brain_id)
+
         vector = embeddings_adapter.embed_text(node.name)
         vector.id = node.uuid
         vector.metadata = {
@@ -245,6 +275,7 @@ def ingest_structured_data(self, args: dict):
             main_node=node,
             textual_data=element.textual_data,
             identification_params=element.identification_params.model_dump(mode="json"),
+            brain_id=payload.brain_id,
         )
 
     return self.request.id
