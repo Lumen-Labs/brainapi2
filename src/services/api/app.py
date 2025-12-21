@@ -20,6 +20,7 @@ from src.services.api.routes.ingest import ingest_router
 from src.services.api.routes.retrieve import retrieve_router
 from src.services.api.routes.meta import meta_router
 from src.services.api.routes.system import system_router
+from src.services.api.routes.tasks import tasks_router
 
 app = FastAPI(debug=os.getenv("ENV") == "development")
 
@@ -38,7 +39,7 @@ app.include_router(ingest_router)
 app.include_router(retrieve_router)
 app.include_router(meta_router)
 app.include_router(system_router)
-
+app.include_router(tasks_router)
 
 @app.get("/")
 async def root():

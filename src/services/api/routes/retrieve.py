@@ -3,7 +3,7 @@ File: /retrieve.py
 Created Date: Saturday October 25th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Saturday October 25th 2025 12:32:21 pm
+Last Modified: Saturday December 13th 2025
 Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
 -----
 """
@@ -25,6 +25,16 @@ from src.services.api.controllers.retrieve import (
 )
 from src.services.api.controllers.retrieve import (
     retrieve_data as retrieve_data_controller,
+)
+from src.services.api.controllers.structured_data import (
+    get_structured_data_by_id as get_structured_data_by_id_controller,
+    get_structured_data_list as get_structured_data_list_controller,
+    get_structured_data_types as get_structured_data_types_controller,
+)
+from src.services.api.controllers.observations import (
+    get_observation_by_id as get_observation_by_id_controller,
+    get_observations_list as get_observations_list_controller,
+    get_observation_labels as get_observation_labels_controller,
 )
 
 retrieve_router = APIRouter(prefix="/retrieve", tags=["retrieve"])
@@ -147,3 +157,72 @@ async def get_entities(
     return await retrieve_get_entities_controller(
         limit, skip, node_labels, query_text, brain_id
     )
+
+@retrieve_router.get(path="/structured-data/types")
+async def get_structured_data_types(
+    brain_id: str = "default",
+):
+    """
+    Get all unique types from structured data.
+    """
+    return await get_structured_data_types_controller(brain_id)
+
+@retrieve_router.get(path="/structured-data/{id}")
+async def get_structured_data_by_id(
+    id: str,
+    brain_id: str = "default",
+):
+    """
+    Get structured data by ID.
+    """
+    return await get_structured_data_by_id_controller(id, brain_id)
+
+@retrieve_router.get(path="/structured-data")
+async def get_structured_data_list(
+    limit: int = 10,
+    skip: int = 0,
+    types: Optional[str] = None,
+    query_text: Optional[str] = None,
+    brain_id: str = "default",
+):
+    """
+    Get a list of structured data.
+    """
+    if types:
+        types = types.split(",")
+    return await get_structured_data_list_controller(limit, skip, types, query_text, brain_id)
+
+@retrieve_router.get(path="/observations/labels")
+async def get_observation_labels(
+    brain_id: str = "default",
+):
+    """
+    Get all unique labels from observations.
+    """
+    return await get_observation_labels_controller(brain_id)
+
+@retrieve_router.get(path="/observations/{id}")
+async def get_observation_by_id(
+    id: str,
+    brain_id: str = "default",
+):
+    """
+    Get observation by ID.
+    """
+    return await get_observation_by_id_controller(id, brain_id)
+
+@retrieve_router.get(path="/observations")
+async def get_observations_list(
+    limit: int = 10,
+    skip: int = 0,
+    resource_id: Optional[str] = None,
+    labels: Optional[str] = None,
+    query_text: Optional[str] = None,
+    brain_id: str = "default",
+):
+    """
+    Get a list of observations.
+    """
+    if labels:
+        labels = labels.split(",")
+    return await get_observations_list_controller(limit, skip, resource_id, labels, query_text, brain_id)
