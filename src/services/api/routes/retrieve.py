@@ -159,20 +159,23 @@ async def get_entities(
     )
 
 @retrieve_router.get(path="/structured-data/types")
-async def get_structured_data_types():
+async def get_structured_data_types(
+    brain_id: str = "default",
+):
     """
     Get all unique types from structured data.
     """
-    return await get_structured_data_types_controller()
+    return await get_structured_data_types_controller(brain_id)
 
 @retrieve_router.get(path="/structured-data/{id}")
 async def get_structured_data_by_id(
     id: str,
+    brain_id: str = "default",
 ):
     """
     Get structured data by ID.
     """
-    return await get_structured_data_by_id_controller(id)
+    return await get_structured_data_by_id_controller(id, brain_id)
 
 @retrieve_router.get(path="/structured-data")
 async def get_structured_data_list(
@@ -180,30 +183,33 @@ async def get_structured_data_list(
     skip: int = 0,
     types: Optional[str] = None,
     query_text: Optional[str] = None,
+    brain_id: str = "default",
 ):
     """
     Get a list of structured data.
     """
     if types:
         types = types.split(",")
-    return await get_structured_data_list_controller(limit, skip, types, query_text)
+    return await get_structured_data_list_controller(limit, skip, types, query_text, brain_id)
 
 @retrieve_router.get(path="/observations/labels")
-async def get_observation_labels():
+async def get_observation_labels(
+    brain_id: str = "default",
+):
     """
     Get all unique labels from observations.
     """
-    return await get_observation_labels_controller()
+    return await get_observation_labels_controller(brain_id)
 
 @retrieve_router.get(path="/observations/{id}")
 async def get_observation_by_id(
     id: str,
+    brain_id: str = "default",
 ):
     """
     Get observation by ID.
     """
-    return await get_observation_by_id_controller(id)
-
+    return await get_observation_by_id_controller(id, brain_id)
 
 @retrieve_router.get(path="/observations")
 async def get_observations_list(
@@ -212,10 +218,11 @@ async def get_observations_list(
     resource_id: Optional[str] = None,
     labels: Optional[str] = None,
     query_text: Optional[str] = None,
+    brain_id: str = "default",
 ):
     """
     Get a list of observations.
     """
     if labels:
         labels = labels.split(",")
-    return await get_observations_list_controller(limit, skip, resource_id, labels, query_text)
+    return await get_observations_list_controller(limit, skip, resource_id, labels, query_text, brain_id)
