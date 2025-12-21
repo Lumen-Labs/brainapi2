@@ -3,7 +3,7 @@ File: /ingestion.py
 Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Sunday October 19th 2025 12:14:21 pm
+Last Modified: Saturday December 13th 2025
 Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
 -----
 """
@@ -35,7 +35,8 @@ from src.constants.tasks.ingestion import (
     IngestionTaskArgs,
     IngestionTaskDataType,
 )
-
+import json
+from src.services.kg_agent.main import cache_adapter
 
 @ingestion_app.task(bind=True)
 def ingest_data(self, args: dict):
@@ -129,6 +130,18 @@ def ingest_data(self, args: dict):
         identification_params=payload.identification_params,
         preferred_entities=payload.preferred_extraction_entities,
         brain_id=payload.brain_id,
+    )
+
+    result = {
+        "status": "completed",
+        "task_id": self.request.id,
+        "text_chunk_id": text_chunk.id,
+        "observations_count": len(observations)
+    }
+    
+    cache_adapter.set(
+        f"task:{self.request.id}",
+        json.dumps(result)
     )
 
     return self.request.id
@@ -277,5 +290,16 @@ def ingest_structured_data(self, args: dict):
             identification_params=element.identification_params.model_dump(mode="json"),
             brain_id=payload.brain_id,
         )
+
+    result = {
+        "status": "completed",
+        "task_id": self.request.id,
+        "ingested_count": len(payload.data)
+    }
+    
+    cache_adapter.set(
+        f"task:{self.request.id}",
+        json.dumps(result)
+    )
 
     return self.request.id
