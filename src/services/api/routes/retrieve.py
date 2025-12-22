@@ -10,7 +10,6 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 
 from typing import Optional
 from fastapi import APIRouter, Body, Query
-
 from src.services.api.constants.requests import (
     RetrieveNeighborsAiModeRequestBody,
     RetrieveNeighborsWithIdentificationParamsRequestBody,

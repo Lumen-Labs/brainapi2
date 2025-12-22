@@ -43,13 +43,13 @@ async def retrieve_data(
         preferred_entities = []
 
     def _get_data():
-        text_embeddings = embeddings_adapter.embed_text(text, brain_id)
+        text_embeddings = embeddings_adapter.embed_text(text)
 
         data_vectors = vector_store_adapter.search_vectors(
-            text_embeddings.embeddings, "data", limit
+            text_embeddings.embeddings, "data", brain_id, limit
         )
         triple_vectors = vector_store_adapter.search_vectors(
-            text_embeddings.embeddings, "triplets", limit
+            text_embeddings.embeddings, "triplets", brain_id, limit
         )
 
         search_result = data_adapter.search(text, brain_id)
