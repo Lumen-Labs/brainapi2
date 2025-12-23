@@ -67,7 +67,7 @@ class DataAdapter:
         """
         Save a structured data to the data client.
         """
-        return self.data.save_kg_changes(kg_changes=structured_data, brain_id=brain_id)
+        return self.data.save_structured_data(structured_data=structured_data, brain_id=brain_id)
 
     def create_brain(self, name_key: str) -> Brain:
         """
