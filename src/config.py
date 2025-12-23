@@ -110,6 +110,7 @@ class MongoConfig:
         self.password = os.getenv("MONGO_PASSWORD")
 
         self.connection_string = os.getenv("MONGO_CONNECTION_STRING")
+        self.system_database = os.getenv("MONGO_SYSTEM_DATABASE", "_system")
 
         if [self.host, self.port, self.username, self.password].count(
             None

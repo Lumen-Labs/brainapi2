@@ -141,7 +141,7 @@ class MongoClient(DataClient):
         return brain
 
     def get_brain(self, name_key: str) -> Brain:
-        collection = self.get_collection("brains", "system")
+        collection = self.get_collection("brains", config.mongo.system_database)
         result = collection.find_one({"name_key": name_key})
         if not result:
             return None
@@ -152,7 +152,7 @@ class MongoClient(DataClient):
         )
 
     def get_brains_list(self) -> List[Brain]:
-        collection = self.get_collection("brains", "system")
+        collection = self.get_collection("brains", config.mongo.system_database)
         result = collection.find()
         return [
             Brain(
