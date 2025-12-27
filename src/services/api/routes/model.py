@@ -12,8 +12,8 @@ from fastapi import APIRouter
 
 from src.services.api.constants.requests import AddEntityRequest, UpdateEntityRequest, AddRelationshipRequest, UpdateRelationshipRequest
 from src.services.api.controllers.model import (
-    add_entity as add_entity_controller,
-    update_entity as update_entity_controller,
+    add_nodes as add_nodes_controller,
+    update_node as update_node_controller,
     add_relationship as add_relationship_controller,
     update_relationship as update_relationship_controller,
 )
@@ -26,23 +26,35 @@ async def add_entity(request: AddEntityRequest):
     """
     Add a single entity (node) to the graph.
     """
-    return await add_entity_controller(
+    import uuid as uuid_lib
+    from src.constants.kg import Node
+    
+    node = Node(
+        uuid=str(uuid_lib.uuid4()),
         name=request.name,
-        brain_id=request.brain_id,
         labels=request.labels,
         description=request.description,
         properties=request.properties,
+    )
+    
+    return await add_nodes_controller(
+        nodes=[{
+            "name": request.name,
+            "labels": request.labels,
+            "description": request.description,
+            "properties": request.properties,
+        }],
+        brain_id=request.brain_id,
         identification_params=request.identification_params,
         metadata=request.metadata,
     )
-
 
 @model_router.put(path="/entity")
 async def update_entity(request: UpdateEntityRequest):
     """
     Update an entity (node) in the graph.
     """
-    return await update_entity_controller(
+    return await update_node_controller(
         uuid=request.uuid,
         brain_id=request.brain_id,
         new_name=request.new_name,

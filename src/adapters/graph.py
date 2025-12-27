@@ -286,30 +286,7 @@ class GraphAdapter:
         """
         return self.graph.get_graph_node_properties(brain_id)
     
-    def add_entity(
-        self,
-        name: str,
-        brain_id: str = "default",
-        labels: list[str] = [],
-        description: Optional[str] = None,
-        properties: Optional[dict] = None,
-        identification_params: Optional[dict] = None,
-        metadata: Optional[dict] = None,
-    ) -> Node | None:
-        """
-        Add a single entity (node) to the graph.
-        """
-        return self.graph.add_entity(
-            name,
-            brain_id,
-            labels,
-            description,
-            properties,
-            identification_params,
-            metadata,
-        )
-
-    def update_entity(
+    def update_node(
         self,
         uuid: str,
         brain_id: str = "default",
@@ -322,7 +299,7 @@ class GraphAdapter:
         """
         Update an entity (node) in the graph.
         """
-        return self.graph.update_entity(
+        return self.graph.update_node(
             uuid,
             brain_id,
             new_name,

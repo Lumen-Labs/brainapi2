@@ -1047,42 +1047,8 @@ class Neo4jClient(GraphClient):
         self.ensure_database(brain_id)
         result = self.driver.execute_query(cypher_query, database_=brain_id)
         return [record["property"] for record in result.records]
-    
-    def add_entity(
-        self,
-        name: str,
-        brain_id: str,
-        labels: list[str],
-        description: Optional[str] = None,
-        properties: Optional[dict] = None,
-        identification_params: Optional[dict] = None,
-        metadata: Optional[dict] = None,
-    ) -> Node | None:
-        """
-        Add a single entity (node) to the graph.
-        """
-        import uuid as uuid_lib
-        
-        node = Node(
-            uuid=str(uuid_lib.uuid4()),
-            name=name,
-            labels=labels,
-            description=description,
-            properties=properties or {},
-        )
-        
-        result = self.add_nodes(
-            nodes=[node],
-            brain_id=brain_id,
-            identification_params=identification_params,
-            metadata=metadata,
-        )
-        
-        if isinstance(result, list) and len(result) > 0:
-            return result[0]
-        return None
 
-    def update_entity(
+    def update_node(
         self,
         uuid: str,
         brain_id: str,

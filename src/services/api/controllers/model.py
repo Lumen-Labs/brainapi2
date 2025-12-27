@@ -13,32 +13,39 @@ from typing import Optional
 from src.services.kg_agent.main import graph_adapter
 from src.constants.kg import Node, Predicate
 
-async def add_entity(
-    name: str,
+async def add_nodes(
+    nodes: list[dict],
     brain_id: str,
-    labels: list[str],
-    description: Optional[str] = None,
-    properties: Optional[dict] = None,
     identification_params: Optional[dict] = None,
     metadata: Optional[dict] = None,
-) -> Node | None:
+) -> list[Node] | str:
     """
-    Add a single entity (node) to the graph.
+    Add multiple nodes to the graph.
     """
+    from src.constants.kg import Node
+    import uuid as uuid_lib
+    
+    node_objects = []
+    for node_data in nodes:
+        node_objects.append(Node(
+            uuid=str(uuid_lib.uuid4()),
+            name=node_data.get("name"),
+            labels=node_data.get("labels", []),
+            description=node_data.get("description"),
+            properties=node_data.get("properties"),
+        ))
+    
     result = await asyncio.to_thread(
-        graph_adapter.add_entity,
-        name=name,
+        graph_adapter.add_nodes,
+        nodes=node_objects,
         brain_id=brain_id,
-        labels=labels,
-        description=description,
-        properties=properties,
         identification_params=identification_params,
         metadata=metadata,
     )
+    
     return result
 
-
-async def update_entity(
+async def update_node(
     uuid: str,
     brain_id: str,
     new_name: Optional[str] = None,
@@ -51,7 +58,7 @@ async def update_entity(
     Update an entity (node) in the graph.
     """
     result = await asyncio.to_thread(
-        graph_adapter.update_entity,
+        graph_adapter.update_node,
         uuid=uuid,
         brain_id=brain_id,
         new_name=new_name,

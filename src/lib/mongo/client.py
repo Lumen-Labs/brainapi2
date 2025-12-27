@@ -280,5 +280,73 @@ class MongoClient(DataClient):
         ]
         results = collection.aggregate(pipeline)
         return [result["_id"] for result in results]
+    
+    def get_changelog_by_id(
+        self, id: str, brain_id: str
+    ) -> KGChanges:
+        from src.constants.data import KGChangesType
+        
+        collection = self.get_collection("kg_changes", database=brain_id)
+        result = collection.find_one({"id": id})
+        if not result:
+            return None
+        
+        if "change" in result and isinstance(result["change"], dict):
+            if "type" in result["change"] and isinstance(result["change"]["type"], str):
+                result["change"]["type"] = KGChangesType(result["change"]["type"])
+        
+        if "type" in result and isinstance(result["type"], str):
+            result["type"] = KGChangesType(result["type"])
+        
+        return KGChanges.model_validate(result)
+
+    def get_changelogs_list(
+        self, 
+        brain_id: str, 
+        limit: int = 10, 
+        skip: int = 0, 
+        types: list[str] = None,
+        query_text: str = None
+    ) -> list[KGChanges]:
+        from src.constants.data import KGChangesType
+        
+        collection = self.get_collection("kg_changes", database=brain_id)
+        query = {}
+        if types:
+            query["type"] = {"$in": types}
+        
+        if query_text:
+            query["$or"] = [
+                {"change": {"$regex": query_text, "$options": "i"}},
+                {"type": {"$regex": query_text, "$options": "i"}}
+            ]
+        
+        results = collection.find(query).skip(skip).limit(limit).sort("timestamp", -1)
+        changelogs = []
+        for result in results:
+            try:
+                if "change" in result and isinstance(result["change"], dict):
+                    if "type" in result["change"] and isinstance(result["change"]["type"], str):
+                        result["change"]["type"] = KGChangesType(result["change"]["type"])
+                
+                if "type" in result and isinstance(result["type"], str):
+                    result["type"] = KGChangesType(result["type"])
+                
+                changelog = KGChanges.model_validate(result)
+                changelogs.append(changelog)
+            except Exception as e:
+                print(f"Error parsing changelog {result.get('id')}: {e}")
+                continue
+        
+        return changelogs
+
+    def get_changelog_types(self, brain_id: str) -> list[str]:
+        collection = self.get_collection("kg_changes", database=brain_id)
+        pipeline = [
+            {"$group": {"_id": "$type"}},
+            {"$sort": {"_id": 1}}
+        ]
+        results = collection.aggregate(pipeline)
+        return [result["_id"] for result in results]
 
 _mongo_client = MongoClient()

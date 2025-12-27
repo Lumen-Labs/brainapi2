@@ -144,3 +144,30 @@ class DataAdapter:
         Get all unique labels from observations.
         """
         return self.data.get_observation_labels(brain_id=brain_id)
+    
+    def get_changelog_by_id(
+        self, id: str, brain_id: str = "default"
+    ) -> KGChanges:
+        """
+        Get changelog by ID.
+        """
+        return self.data.get_changelog_by_id(id=id, brain_id=brain_id)
+
+    def get_changelogs_list(
+        self, 
+        brain_id: str = "default", 
+        limit: int = 10, 
+        skip: int = 0, 
+        types: list[str] = None,
+        query_text: str = None
+    ) -> list[KGChanges]:
+        """
+        Get a list of changelogs.
+        """
+        return self.data.get_changelogs_list(brain_id=brain_id, limit=limit, skip=skip, types=types, query_text=query_text)
+
+    def get_changelog_types(self, brain_id: str = "default") -> list[str]:
+        """
+        Get all unique types from changelogs.
+        """
+        return self.data.get_changelog_types(brain_id=brain_id)

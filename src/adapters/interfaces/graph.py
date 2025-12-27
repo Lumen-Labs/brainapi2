@@ -288,23 +288,7 @@ class GraphClient(ABC):
         raise NotImplementedError("get_graph_node_properties method not implemented")
     
     @abstractmethod
-    def add_entity(
-        self,
-        name: str,
-        brain_id: str,
-        labels: list[str],
-        description: Optional[str] = None,
-        properties: Optional[dict] = None,
-        identification_params: Optional[dict] = None,
-        metadata: Optional[dict] = None,
-    ) -> Node | None:
-        """
-        Add a single entity (node) to the graph.
-        """
-        raise NotImplementedError("add_entity method not implemented")
-    
-    @abstractmethod
-    def update_entity(
+    def update_node(
         self,
         uuid: str,
         brain_id: str,
