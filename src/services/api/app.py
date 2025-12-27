@@ -3,7 +3,7 @@ File: /app.py
 Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Sunday October 19th 2025 9:17:44 am
+Last Modified: Saturday December 27th 2025
 Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
 -----
 """
@@ -19,6 +19,7 @@ from src.services.api.middlewares.brains import BrainMiddleware
 from src.services.api.routes.ingest import ingest_router
 from src.services.api.routes.retrieve import retrieve_router
 from src.services.api.routes.meta import meta_router
+from src.services.api.routes.model import model_router
 from src.services.api.routes.system import system_router
 from src.services.api.routes.tasks import tasks_router
 
@@ -38,6 +39,7 @@ app.add_middleware(
 app.include_router(ingest_router)
 app.include_router(retrieve_router)
 app.include_router(meta_router)
+app.include_router(model_router)
 app.include_router(system_router)
 app.include_router(tasks_router)
 

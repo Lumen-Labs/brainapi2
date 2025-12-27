@@ -3,7 +3,7 @@ File: /graph.py
 Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Sunday October 19th 2025 8:59:28 am
+Last Modified: Saturday December 27th 2025
 Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
 -----
 """
@@ -131,12 +131,6 @@ class GraphAdapter:
         Get the relationships of the graph.
         """
         return self.graph.get_graph_relationships(brain_id)
-
-    def get_graph_property_keys(self, brain_id: str = "default") -> list[str]:
-        """
-        Get the property keys of the graph.
-        """
-        return self.graph.get_graph_property_keys(brain_id)
 
     def get_by_uuid(self, uuid: str, brain_id: str = "default") -> Node:
         """
@@ -273,6 +267,69 @@ class GraphAdapter:
         return self.graph.update_properties(
             uuid, updating, brain_id, new_properties, properties_to_remove
         )
+    
+    def get_graph_relationship_types(self, brain_id: str = "default") -> list[str]:
+        """
+        Get all unique relationship types from the graph.
+        """
+        return self.graph.get_graph_relationship_types(brain_id)
 
+    def get_graph_node_types(self, brain_id: str = "default") -> list[str]:
+        """
+        Get all unique node types from the graph.
+        """
+        return self.graph.get_graph_node_types(brain_id)
+    
+    def get_graph_node_properties(self, brain_id: str = "default") -> list[str]:
+        """
+        Get all unique property keys from nodes in the graph.
+        """
+        return self.graph.get_graph_node_properties(brain_id)
+    
+    def add_entity(
+        self,
+        name: str,
+        brain_id: str = "default",
+        labels: list[str] = [],
+        description: Optional[str] = None,
+        properties: Optional[dict] = None,
+        identification_params: Optional[dict] = None,
+        metadata: Optional[dict] = None,
+    ) -> Node | None:
+        """
+        Add a single entity (node) to the graph.
+        """
+        return self.graph.add_entity(
+            name,
+            brain_id,
+            labels,
+            description,
+            properties,
+            identification_params,
+            metadata,
+        )
+
+    def update_entity(
+        self,
+        uuid: str,
+        brain_id: str = "default",
+        new_name: Optional[str] = None,
+        new_description: Optional[str] = None,
+        new_labels: Optional[list[str]] = None,
+        new_properties: Optional[dict] = None,
+        properties_to_remove: Optional[list[str]] = None,
+    ) -> Node | None:
+        """
+        Update an entity (node) in the graph.
+        """
+        return self.graph.update_entity(
+            uuid,
+            brain_id,
+            new_name,
+            new_description,
+            new_labels,
+            new_properties,
+            properties_to_remove,
+        )
 
 _graph_adapter = GraphAdapter()

@@ -3,7 +3,7 @@ File: /retrieve.py
 Created Date: Saturday October 25th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Saturday December 13th 2025
+Last Modified: Saturday December 27th 2025
 Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
 -----
 """
@@ -23,7 +23,7 @@ from src.services.api.controllers.retrieve import (
     get_entities as retrieve_get_entities_controller,
 )
 from src.services.api.controllers.retrieve import (
-    retrieve_data as retrieve_data_controller,
+    retrieve_data as retrieve_data_controller
 )
 from src.services.api.controllers.structured_data import (
     get_structured_data_by_id as get_structured_data_by_id_controller,
@@ -138,7 +138,6 @@ async def get_relationships(
         query_text,
         query_search_target,
     )
-
 
 @retrieve_router.get(path="/entities")
 async def get_entities(

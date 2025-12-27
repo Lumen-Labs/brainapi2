@@ -3,7 +3,7 @@ File: /client.py
 Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Sunday October 19th 2025 12:58:06 pm
+Last Modified: Saturday December 27th 2025
 Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
 -----
 """
@@ -462,18 +462,6 @@ class Neo4jClient(GraphClient):
             description=result.records[0].get("description", "") or "",
             properties=result.records[0].get("properties", {}) or {},
         )
-
-    def get_graph_property_keys(self, brain_id: str) -> list[str]:
-        """
-        Get the property keys of the graph.
-        """
-        cypher_query = """
-        CALL db.propertyKeys() YIELD propertyKey
-        RETURN propertyKey
-        """
-        self.ensure_database(brain_id)
-        result = self.driver.execute_query(cypher_query, database_=brain_id)
-        return [record["propertyKey"] for record in result.records]
 
     def get_neighbors(
         self, node: Node, limit: int, brain_id: str
@@ -1020,6 +1008,173 @@ class Neo4jClient(GraphClient):
                     description=result.records[0].get("rel_description", "") or "",
                     direction=result.records[0].get("direction", "neutral"),
                 )
+        return None
+    
+    def get_graph_relationship_types(self, brain_id: str) -> list[str]:
+        """
+        Get all unique relationship types from the graph.
+        """
+        cypher_query = """
+        CALL db.relationshipTypes() YIELD relationshipType
+        RETURN relationshipType
+        """
+        self.ensure_database(brain_id)
+        result = self.driver.execute_query(cypher_query, database_=brain_id)
+        return [record["relationshipType"] for record in result.records]
+
+    def get_graph_node_types(self, brain_id: str) -> list[str]:
+        """
+        Get all unique node types from the graph.
+        """
+        cypher_query = """
+        CALL db.labels() YIELD label
+        RETURN label
+        """
+        self.ensure_database(brain_id)
+        result = self.driver.execute_query(cypher_query, database_=brain_id)
+        return [record["label"] for record in result.records]
+    
+    def get_graph_node_properties(self, brain_id: str) -> list[str]:
+        """
+        Get all unique property keys from nodes in the graph.
+        """
+        cypher_query = """
+        MATCH (n)
+        UNWIND keys(n) AS property
+        RETURN DISTINCT property
+        ORDER BY property
+        """
+        self.ensure_database(brain_id)
+        result = self.driver.execute_query(cypher_query, database_=brain_id)
+        return [record["property"] for record in result.records]
+    
+    def add_entity(
+        self,
+        name: str,
+        brain_id: str,
+        labels: list[str],
+        description: Optional[str] = None,
+        properties: Optional[dict] = None,
+        identification_params: Optional[dict] = None,
+        metadata: Optional[dict] = None,
+    ) -> Node | None:
+        """
+        Add a single entity (node) to the graph.
+        """
+        import uuid as uuid_lib
+        
+        node = Node(
+            uuid=str(uuid_lib.uuid4()),
+            name=name,
+            labels=labels,
+            description=description,
+            properties=properties or {},
+        )
+        
+        result = self.add_nodes(
+            nodes=[node],
+            brain_id=brain_id,
+            identification_params=identification_params,
+            metadata=metadata,
+        )
+        
+        if isinstance(result, list) and len(result) > 0:
+            return result[0]
+        return None
+
+    def update_entity(
+        self,
+        uuid: str,
+        brain_id: str,
+        new_name: Optional[str] = None,
+        new_description: Optional[str] = None,
+        new_labels: Optional[list[str]] = None,
+        new_properties: Optional[dict] = None,
+        properties_to_remove: Optional[list[str]] = None,
+    ) -> Node | None:
+        """
+        Update an entity (node) in the graph.
+        When new_properties is passed, it compares with existing properties:
+        - Adds new properties that don't exist
+        - Updates properties that have changed
+        - Keeps existing properties that aren't in new_properties
+        """
+        operations = []
+        
+        existing_node = None
+        if new_properties:
+            existing_node = self.get_by_uuid(uuid, brain_id)
+            if not existing_node:
+                return None
+        
+        if new_name:
+            operations.append(f"n.name = {self._format_value(new_name)}")
+        
+        if new_description:
+            operations.append(f"n.description = {self._format_value(new_description)}")
+        
+        if new_properties and existing_node:
+            existing_properties = existing_node.properties or {}
+            
+            for property_key, new_value in new_properties.items():
+                existing_value = existing_properties.get(property_key)
+                
+                if property_key not in existing_properties or existing_value != new_value:
+                    cypher_key = self._format_property_key(property_key)
+                    formatted_value = self._format_value(new_value)
+                    operations.append(f"n.{cypher_key} = {formatted_value}")
+        elif new_properties:
+            for property_key, value in new_properties.items():
+                cypher_key = self._format_property_key(property_key)
+                formatted_value = self._format_value(value)
+                operations.append(f"n.{cypher_key} = {formatted_value}")
+        
+        set_clause = f"SET {', '.join(operations)}" if operations else ""
+        
+        remove_clause = ""
+        if properties_to_remove:
+            remove_operations = [
+                f"n.{self._format_property_key(prop)}" 
+                for prop in properties_to_remove
+            ]
+            remove_clause = f"REMOVE {', '.join(remove_operations)}"
+        
+        labels_clause = ""
+        if new_labels:
+            cleaned_labels = self._clean_labels(new_labels)
+            if existing_node:
+                current_labels = existing_node.labels or []
+                if current_labels:
+                    cleaned_current = self._clean_labels(current_labels)
+                    remove_labels = ", ".join([f"n:{label}" for label in cleaned_current])
+                    labels_clause = f"REMOVE {remove_labels}\n"
+            labels_clause += f"SET n:{':'.join(cleaned_labels)}"
+        
+        if not set_clause and not remove_clause and not labels_clause:
+            return existing_node if existing_node else self.get_by_uuid(uuid, brain_id)
+        
+        cypher_query = f"""
+        MATCH (n)
+        WHERE n.uuid = '{uuid}'
+        {set_clause}
+        {remove_clause}
+        {labels_clause}
+        RETURN n.uuid as uuid, n.name as name, labels(n) as labels, 
+            n.description as description, properties(n) as properties
+        """
+        
+        self.ensure_database(brain_id)
+        result = self.driver.execute_query(cypher_query, database_=brain_id)
+        
+        if result.records:
+            return Node(
+                uuid=result.records[0].get("uuid", "") or "",
+                name=result.records[0].get("name", "") or "",
+                labels=result.records[0].get("labels", []) or [],
+                description=result.records[0].get("description", "") or "",
+                properties=result.records[0].get("properties", {}) or {},
+            )
+        
         return None
 
 

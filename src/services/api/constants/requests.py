@@ -3,7 +3,7 @@ File: /requests.py
 Created Date: Monday October 20th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Monday October 20th 2025 7:29:39 pm
+Last Modified: Saturday December 27th 2025
 Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
 -----
 """
@@ -181,3 +181,41 @@ class CreateBrainRequest(BaseModel):
     """
 
     brain_id: str
+
+class AddEntityRequest(BaseModel):
+    """Request model for adding a new entity to the graph."""
+    name: str
+    brain_id: str = "default"
+    labels: list[str] = []
+    description: Optional[str] = None
+    properties: Optional[dict] = None
+    identification_params: Optional[dict] = None
+    metadata: Optional[dict] = None
+
+
+class UpdateEntityRequest(BaseModel):
+    """Request model for updating an existing entity in the graph."""
+    uuid: str
+    brain_id: str = "default"
+    new_name: Optional[str] = None
+    new_description: Optional[str] = None
+    new_labels: Optional[list[str]] = None
+    new_properties: Optional[dict] = None
+    properties_to_remove: Optional[list[str]] = None
+
+
+class AddRelationshipRequest(BaseModel):
+    """Request model for adding a new relationship between two entities."""
+    subject_uuid: str
+    predicate_name: str
+    predicate_description: str
+    object_uuid: str
+    brain_id: str = "default"
+
+
+class UpdateRelationshipRequest(BaseModel):
+    """Request model for updating an existing relationship's properties."""
+    uuid: str
+    brain_id: str = "default"
+    new_properties: Optional[dict] = None
+    properties_to_remove: Optional[list[str]] = None
