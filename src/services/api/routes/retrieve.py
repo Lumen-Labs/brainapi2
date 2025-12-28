@@ -3,7 +3,7 @@ File: /retrieve.py
 Created Date: Saturday October 25th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Saturday December 13th 2025
+Last Modified: Saturday December 27th 2025
 Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
 -----
 """
@@ -23,7 +23,7 @@ from src.services.api.controllers.retrieve import (
     get_entities as retrieve_get_entities_controller,
 )
 from src.services.api.controllers.retrieve import (
-    retrieve_data as retrieve_data_controller,
+    retrieve_data as retrieve_data_controller
 )
 from src.services.api.controllers.structured_data import (
     get_structured_data_by_id as get_structured_data_by_id_controller,
@@ -34,6 +34,11 @@ from src.services.api.controllers.observations import (
     get_observation_by_id as get_observation_by_id_controller,
     get_observations_list as get_observations_list_controller,
     get_observation_labels as get_observation_labels_controller,
+)
+from src.services.api.controllers.changelogs import (
+    get_changelog_by_id as get_changelog_by_id_controller,
+    get_changelogs_list as get_changelogs_list_controller,
+    get_changelog_types as get_changelog_types_controller,
 )
 
 retrieve_router = APIRouter(prefix="/retrieve", tags=["retrieve"])
@@ -139,7 +144,6 @@ async def get_relationships(
         query_search_target,
     )
 
-
 @retrieve_router.get(path="/entities")
 async def get_entities(
     limit: int = 10,
@@ -225,3 +229,37 @@ async def get_observations_list(
     if labels:
         labels = labels.split(",")
     return await get_observations_list_controller(limit, skip, resource_id, labels, query_text, brain_id)
+
+@retrieve_router.get(path="/changelogs/types")
+async def get_changelog_types(
+    brain_id: str = "default",
+):
+    """
+    Get all unique types from changelogs.
+    """
+    return await get_changelog_types_controller(brain_id)
+
+@retrieve_router.get(path="/changelogs/{id}")
+async def get_changelog_by_id(
+    id: str,
+    brain_id: str = "default",
+):
+    """
+    Get changelog by ID.
+    """
+    return await get_changelog_by_id_controller(id, brain_id)
+
+@retrieve_router.get(path="/changelogs")
+async def get_changelogs_list(
+    limit: int = 10,
+    skip: int = 0,
+    types: Optional[str] = None,
+    query_text: Optional[str] = None,
+    brain_id: str = "default",
+):
+    """
+    Get a list of changelogs.
+    """
+    if types:
+        types = types.split(",")
+    return await get_changelogs_list_controller(limit, skip, types, query_text, brain_id)

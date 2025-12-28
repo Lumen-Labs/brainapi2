@@ -150,3 +150,31 @@ class DataClient(ABC):
         Get all unique labels from observations.
         """
         raise NotImplementedError("get_observation_labels method not implemented")
+    
+    @abstractmethod
+    def get_changelog_by_id(self, id: str, brain_id: str) -> KGChanges:
+        """
+        Get changelog by ID.
+        """
+        raise NotImplementedError("get_changelog_by_id method not implemented")
+
+    @abstractmethod
+    def get_changelogs_list(
+        self, 
+        brain_id: str, 
+        limit: int = 10, 
+        skip: int = 0, 
+        types: list[str] = None,
+        query_text: str = None
+    ) -> list[KGChanges]:
+        """
+        Get a list of changelogs.
+        """
+        raise NotImplementedError("get_changelogs_list method not implemented")
+
+    @abstractmethod
+    def get_changelog_types(self, brain_id: str) -> list[str]:
+        """
+        Get all unique types from changelogs.
+        """
+        raise NotImplementedError("get_changelog_types method not implemented")

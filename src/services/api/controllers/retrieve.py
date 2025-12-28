@@ -3,7 +3,7 @@ File: /retrieve.py
 Created Date: Sunday October 26th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Sunday October 26th 2025 4:03:07 pm
+Last Modified: Saturday December 27th 2025
 Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
 -----
 """
@@ -358,7 +358,6 @@ async def get_relationships(
             "total": relationships.total,
         }
     )
-
 
 async def get_entities(
     limit: int = 10,

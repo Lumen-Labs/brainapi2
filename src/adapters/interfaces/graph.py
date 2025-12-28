@@ -3,7 +3,7 @@ File: /graph.py
 Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Sunday October 19th 2025 9:01:05 am
+Last Modified: Saturday December 27th 2025
 Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
 -----
 """
@@ -120,13 +120,6 @@ class GraphClient(ABC):
         Get the relationships of the graph.
         """
         raise NotImplementedError("get_graph_relationships method not implemented")
-
-    @abstractmethod
-    def get_graph_property_keys(self, brain_id: str) -> list[str]:
-        """
-        Get the property keys of the graph.
-        """
-        raise NotImplementedError("get_graph_property_keys method not implemented")
 
     @abstractmethod
     def get_by_uuid(
@@ -272,3 +265,40 @@ class GraphClient(ABC):
         Update the properties of a node or relationship in the graph.
         """
         raise NotImplementedError("update_properties method not implemented")
+
+    @abstractmethod
+    def get_graph_relationship_types(self, brain_id: str) -> list[str]:
+        """
+        Get all unique relationship types from the graph.
+        """
+        raise NotImplementedError("get_graph_relationship_types method not implemented")
+
+    @abstractmethod
+    def get_graph_node_types(self, brain_id: str) -> list[str]:
+        """
+        Get all unique node types from the graph.
+        """
+        raise NotImplementedError("get_graph_node_types method not implemented")
+
+    @abstractmethod
+    def get_graph_node_properties(self, brain_id: str) -> list[str]:
+        """
+        Get all unique property keys from nodes in the graph.
+        """
+        raise NotImplementedError("get_graph_node_properties method not implemented")
+    
+    @abstractmethod
+    def update_node(
+        self,
+        uuid: str,
+        brain_id: str,
+        new_name: Optional[str] = None,
+        new_description: Optional[str] = None,
+        new_labels: Optional[list[str]] = None,
+        new_properties: Optional[dict] = None,
+        properties_to_remove: Optional[list[str]] = None,
+    ) -> Node | None:
+        """
+        Update an entity (node) in the graph.
+        """
+        raise NotImplementedError("update_entity method not implemented")
