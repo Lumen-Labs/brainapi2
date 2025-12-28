@@ -210,7 +210,7 @@ class KGAgent:
         Retrieve the neighbors of a node.
         """
 
-        graph_db_prop_keys = self.kg.get_graph_property_keys()
+        graph_db_prop_keys = self.kg.get_graph_node_properties()
         graph_db_relationships = self.kg.get_graph_relationships()
         graph_db_entities = self.kg.get_graph_entities()
 
