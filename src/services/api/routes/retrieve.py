@@ -8,7 +8,7 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 -----
 """
 
-from typing import Optional
+from typing import Literal, Optional
 from fastapi import APIRouter, Body, Query
 from src.services.api.constants.requests import (
     RetrieveNeighborsAiModeRequestBody,
@@ -22,6 +22,7 @@ from src.services.api.controllers.retrieve import (
     get_relationships as retrieve_get_relationships_controller,
     get_entities as retrieve_get_entities_controller,
 )
+from src.services.api.controllers.kg import get_hops as get_hops_controller
 from src.services.api.controllers.retrieve import (
     retrieve_data as retrieve_data_controller,
 )
@@ -61,13 +62,17 @@ async def retrieve(
 async def get_neighbors(
     uuid: str = Query(..., description="The UUID of the entity to get neighbors for."),
     limit: int = Query(10, description="The number of neighbors to return."),
+    look_for: Optional[str] = Query(
+        None,
+        description="The description of what in the neighbors should share with the target.",
+    ),
     brain_id: str = "default",
 ):
     """
     Get the neighbors of an entity.
     """
     return await retrieve_neighbors_controller(
-        uuid=uuid, limit=limit, brain_id=brain_id
+        uuid=uuid, limit=limit, look_for=look_for, brain_id=brain_id
     )
 
 
@@ -83,6 +88,7 @@ async def get_neighbors_with_identification_params(
     return await retrieve_neighbors_controller(
         identification_params=request.identification_params,
         limit=request.limit,
+        look_for=request.look_for if request.look_for else None,
         brain_id=request.brain_id,
     )
 
@@ -157,6 +163,7 @@ async def get_entities(
         limit, skip, node_labels, query_text, brain_id
     )
 
+
 @retrieve_router.get(path="/structured-data/types")
 async def get_structured_data_types(
     brain_id: str = "default",
@@ -165,6 +172,7 @@ async def get_structured_data_types(
     Get all unique types from structured data.
     """
     return await get_structured_data_types_controller(brain_id)
+
 
 @retrieve_router.get(path="/structured-data/{id}")
 async def get_structured_data_by_id(
@@ -175,6 +183,7 @@ async def get_structured_data_by_id(
     Get structured data by ID.
     """
     return await get_structured_data_by_id_controller(id, brain_id)
+
 
 @retrieve_router.get(path="/structured-data")
 async def get_structured_data_list(
@@ -189,7 +198,10 @@ async def get_structured_data_list(
     """
     if types:
         types = types.split(",")
-    return await get_structured_data_list_controller(limit, skip, types, query_text, brain_id)
+    return await get_structured_data_list_controller(
+        limit, skip, types, query_text, brain_id
+    )
+
 
 @retrieve_router.get(path="/observations/labels")
 async def get_observation_labels(
@@ -200,6 +212,7 @@ async def get_observation_labels(
     """
     return await get_observation_labels_controller(brain_id)
 
+
 @retrieve_router.get(path="/observations/{id}")
 async def get_observation_by_id(
     id: str,
@@ -209,6 +222,7 @@ async def get_observation_by_id(
     Get observation by ID.
     """
     return await get_observation_by_id_controller(id, brain_id)
+
 
 @retrieve_router.get(path="/observations")
 async def get_observations_list(
@@ -224,4 +238,19 @@ async def get_observations_list(
     """
     if labels:
         labels = labels.split(",")
-    return await get_observations_list_controller(limit, skip, resource_id, labels, query_text, brain_id)
+    return await get_observations_list_controller(
+        limit, skip, resource_id, labels, query_text, brain_id
+    )
+
+
+@retrieve_router.get(path="/hops")
+async def get_hops(
+    query: str,
+    degrees: Literal[2] = 2,
+    flattened: bool = True,
+    brain_id: str = "default",
+):  # noqa: F821
+    """
+    Get the hops in the graph for a given query.
+    """
+    return await get_hops_controller(query, degrees, flattened, brain_id)

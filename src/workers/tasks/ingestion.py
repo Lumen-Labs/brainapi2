@@ -9,6 +9,8 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 """
 
 import json
+import tomllib
+from pathlib import Path
 from uuid import uuid4
 from src.constants.data import (
     KGChangeLogPredicateUpdatedProperty,
@@ -21,12 +23,14 @@ from src.constants.data import (
     KGChangeLogNodePropertiesUpdated,
 )
 from src.constants.kg import Node
+from src.constants.prompts.misc import NODE_DESCRIPTION_PROMPT
+from src.core.saving.auto_kg import enrich_kg_from_input
 from src.services.api.constants.requests import IngestionStructuredRequestBody
 from src.services.data.main import data_adapter
+from src.services.input.agents import llm_small_adapter
 from src.services.kg_agent.main import (
     embeddings_adapter,
     graph_adapter,
-    kg_agent,
     vector_store_adapter,
 )
 from src.services.observations.main import observations_agent
@@ -35,8 +39,25 @@ from src.constants.tasks.ingestion import (
     IngestionTaskArgs,
     IngestionTaskDataType,
 )
-import json
 from src.services.kg_agent.main import cache_adapter
+
+PYPROJECT_PATH = Path(__file__).parent.parent.parent.parent / "pyproject.toml"
+with open(PYPROJECT_PATH, "rb") as f:
+    BRAIN_VERSION = tomllib.load(f)["project"]["version"]
+
+
+def format_textual_data(data: dict, include_keys: bool = True) -> str:
+    def format_value(v):
+        if isinstance(v, str):
+            return v
+        if isinstance(v, list):
+            return ", ".join(str(item) for item in v)
+        return str(v)
+
+    if include_keys:
+        return "\n".join(f"{k}: {format_value(v)}" for k, v in data.items())
+    return "\n".join(format_value(v) for v in data.values())
+
 
 @ingestion_app.task(bind=True)
 def ingest_data(self, args: dict):
@@ -77,12 +98,13 @@ def ingest_data(self, args: dict):
                     else json.dumps(payload.data.json_data)
                 ),
                 metadata=payload.meta_keys,
+                brain_version=BRAIN_VERSION,
             ),
             brain_id=payload.brain_id,
         )
         text_chunk_vector = embeddings_adapter.embed_text(text_chunk.text)
         text_chunk_vector.metadata = {
-            **payload.meta_keys,
+            **(payload.meta_keys if payload.meta_keys else {}),
             "resource_id": text_chunk.id,
         }
         vector_store_adapter.add_vectors(
@@ -116,51 +138,32 @@ def ingest_data(self, args: dict):
         # ================================================
         # ------------ Triplet Extraction ----------------
         # ================================================
-        information = f"""
-        {payload.data.text_data
-                if payload.data.data_type == IngestionTaskDataType.TEXT.value
-                else json.dumps(payload.data.json_data)}
-                
-        Annotations:
-        {observations}
-        """
-
-        kg_agent.update_kg(
-            information=information,
-            metadata={**payload.meta_keys, "resource_id": text_chunk.id},
-            identification_params=payload.identification_params,
-            preferred_entities=payload.preferred_extraction_entities,
-            brain_id=payload.brain_id,
-        )
+        enrich_kg_from_input(payload.data.text_data, brain_id=payload.brain_id)
 
         result = {
             "status": "completed",
             "task_id": self.request.id,
             "text_chunk_id": text_chunk.id,
-            "observations_count": len(observations)
+            "observations_count": len(observations),
         }
-        
+
         cache_adapter.set(
-            f"task:{self.request.id}",
-            json.dumps(result),
-            expires_in=3600
+            f"task:{self.request.id}", json.dumps(result), expires_in=3600
         )
 
         return self.request.id
-    
+
     except Exception as e:
         error_result = {
             "status": "failed",
             "task_id": self.request.id,
             "error": str(e),
         }
-        
+
         cache_adapter.set(
-            f"task:{self.request.id}",
-            json.dumps(error_result),
-            expires_in=3600
+            f"task:{self.request.id}", json.dumps(error_result), expires_in=3600
         )
-        
+
         raise
 
 
@@ -174,12 +177,24 @@ def ingest_structured_data(self, args: dict):
 
         for element in payload.data:
             uuid = str(uuid4())
+            description = llm_small_adapter.generate_text(
+                prompt=NODE_DESCRIPTION_PROMPT.format(
+                    element=json.dumps(element.model_dump(mode="json"), indent=2),
+                    element_type=", ".join(element.types) if element.types else "thing",
+                    element_name=(
+                        element.identification_params.name
+                        if element.identification_params
+                        else "the thing"
+                    ),
+                )
+            )
             node = graph_adapter.add_nodes(
                 [
                     Node(
                         uuid=uuid,
                         labels=element.types,
                         name=element.identification_params.name,
+                        description=description,
                         properties={
                             **(element.json_data if element.json_data else {}),
                             **(
@@ -191,7 +206,9 @@ def ingest_structured_data(self, args: dict):
                     )
                 ],
                 brain_id=payload.brain_id,
-                identification_params=element.identification_params.model_dump(mode="json"),
+                identification_params=element.identification_params.model_dump(
+                    mode="json"
+                ),
                 metadata=element.textual_data,
             )[0]
 
@@ -234,22 +251,18 @@ def ingest_structured_data(self, args: dict):
                         "labels": element.types,
                         "name": element.identification_params.name,
                     },
+                    brain_version=BRAIN_VERSION,
                 ),
                 brain_id=payload.brain_id,
             )
             vector = embeddings_adapter.embed_text(
-                "\n".join(
-                    [
-                        (
-                            v
-                            if isinstance(v, str)
-                            else (", ".join(v) if isinstance(v, list) else str(v))
-                        )
-                        for v in element.textual_data.values()
-                    ]
-                )
+                format_textual_data(element.textual_data, include_keys=False)
                 + "\n"
-                + (", ".join(node.labels) if isinstance(node.labels, list) else node.labels)
+                + (
+                    ", ".join(node.labels)
+                    if isinstance(node.labels, list)
+                    else node.labels
+                )
                 + "\n"
                 + node.name,
             )
@@ -261,16 +274,7 @@ def ingest_structured_data(self, args: dict):
             }
             vector_store_adapter.add_vectors(vectors=[vector], store="data")
 
-            text_content = "\n".join(
-                [
-                    (
-                        f"{k}: {v}"
-                        if isinstance(v, str)
-                        else (f"{k}: {', '.join(v) if isinstance(v, list) else str(v)}")
-                    )
-                    for k, v in element.textual_data.items()
-                ]
-            )
+            text_content = format_textual_data(element.textual_data)
             observations = observations_agent.observe(
                 text=text_content,
                 observate_for=payload.observate_for,
@@ -283,7 +287,9 @@ def ingest_structured_data(self, args: dict):
                     "labels": node.labels,
                     "name": node.name,
                 }
-                vector_store_adapter.add_vectors(vectors=[obs_vector], store="observations")
+                vector_store_adapter.add_vectors(
+                    vectors=[obs_vector], store="observations"
+                )
             if len(observations) > 0:
                 data_adapter.save_observations(
                     [
@@ -301,39 +307,31 @@ def ingest_structured_data(self, args: dict):
                     brain_id=payload.brain_id,
                 )
 
-            # TODO: + vectorize the predicates and new nodes + save changelog&vectors
-            kg_agent.structured_update_kg(
-                main_node=node,
-                textual_data=element.textual_data,
-                identification_params=element.identification_params.model_dump(mode="json"),
-                brain_id=payload.brain_id,
+            enrich_kg_from_input(
+                element.textual_data, targeting=node, brain_id=payload.brain_id
             )
 
         result = {
             "status": "completed",
             "task_id": self.request.id,
-            "ingested_count": len(payload.data)
+            "ingested_count": len(payload.data),
         }
-        
+
         cache_adapter.set(
-            f"task:{self.request.id}",
-            json.dumps(result),
-            expires_in=3600
+            f"task:{self.request.id}", json.dumps(result), expires_in=3600
         )
 
         return self.request.id
-    
+
     except Exception as e:
         error_result = {
             "status": "failed",
             "task_id": self.request.id,
             "error": str(e),
         }
-        
+
         cache_adapter.set(
-            f"task:{self.request.id}",
-            json.dumps(error_result),
-            expires_in=3600
+            f"task:{self.request.id}", json.dumps(error_result), expires_in=3600
         )
-        
+
         raise

@@ -32,7 +32,9 @@ class VectorStoreClient(ABC):
     """
 
     @abstractmethod
-    def add_vectors(self, vectors: list[Vector], store: str, brain_id: str) -> None:
+    def add_vectors(
+        self, vectors: list[Vector], store: str, brain_id: str
+    ) -> list[str]:
         """
         Add vectors to the vector store.
         """
@@ -40,7 +42,7 @@ class VectorStoreClient(ABC):
 
     @abstractmethod
     def search_vectors(
-        self, query: str, brain_id: str, store: str, k: int = 10
+        self, data_vector: list[float], brain_id: str, store: str, k: int = 10
     ) -> list[Vector]:
         """
         Search vectors in the vector store and return the top k vectors.

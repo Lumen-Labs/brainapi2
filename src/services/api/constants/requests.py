@@ -11,7 +11,7 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 from typing import List, Any, Optional
 from pydantic import BaseModel, Field, field_serializer
 from src.constants.data import Observation, TextChunk
-from src.constants.kg import IdentificationParams, Node, Predicate, Relationship
+from src.constants.kg import IdentificationParams, Node, Predicate
 from src.constants.tasks.ingestion import IngestionTaskArgs
 
 
@@ -172,6 +172,9 @@ class RetrieveNeighborsWithIdentificationParamsRequestBody(BaseModel):
     limit: int = Field(10, description="The number of neighbors to return.")
     brain_id: str = Field(
         default="default", description="The brain identifier to store the data in."
+    )
+    look_for: Optional[str] = Field(
+        None, description="Optional filter for what type of neighbors to look for."
     )
 
 

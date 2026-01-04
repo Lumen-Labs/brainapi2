@@ -9,7 +9,7 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 """
 
 from abc import ABC, abstractmethod
-from typing import Literal, Optional, Tuple
+from typing import Dict, List, Literal, Optional, Tuple
 
 from src.constants.kg import (
     IdentificationParams,
@@ -18,6 +18,7 @@ from src.constants.kg import (
     SearchEntitiesResult,
     SearchRelationshipsResult,
 )
+from src.adapters.interfaces.embeddings import VectorStoreClient
 
 
 class GraphClient(ABC):
@@ -165,12 +166,14 @@ class GraphClient(ABC):
     @abstractmethod
     def get_neighbors(
         self,
-        node: Node,
-        limit: int,
+        nodes: list[Node | str],
         brain_id: str,
-    ) -> list[Tuple[Node, Predicate, Node]]:
+        same_type_only: bool = False,
+        limit: int | None = None,
+        of_types: Optional[list[str]] = None,
+    ) -> Dict[str, List[Tuple[Predicate, Node]]]:
         """
-        Get the neighbors of a node.
+        Get the neighbors of a node with their relationships.
         """
         raise NotImplementedError("get_neighbors method not implemented")
 
@@ -272,3 +275,33 @@ class GraphClient(ABC):
         Update the properties of a node or relationship in the graph.
         """
         raise NotImplementedError("update_properties method not implemented")
+
+    @abstractmethod
+    def get_schema(self, brain_id: str) -> dict:
+        """
+        Get the schema/ontology of the graph.
+        """
+        raise NotImplementedError("get_schema method not implemented")
+
+    @abstractmethod
+    def get_2nd_degree_hops(
+        self,
+        from_: List[str],
+        flattened: bool,
+        vector_store_adapter: VectorStoreClient,
+        brain_id: str,
+    ) -> Dict[str, List[Tuple[Predicate, Node, List[Tuple[Predicate, Node]]]]]:
+        """
+        Gets the 2nd degree hops for each node in a list of things to search for.
+
+        from_ is the node to start from.
+        flattened is a boolean to indicate if the result should be lightweighted (removed metadata, etc).
+        brain_id is the brain id to search in.
+
+        Returns:
+        A dictionary with the from_ string as the key and a list of tuples as the value.
+        The tuples are the node and their relationships.
+        The node is the 1st degree hop.
+        The relationships are the 2nd degree hops.
+        """
+        raise NotImplementedError("get_2nd_degree_hops not implemented")

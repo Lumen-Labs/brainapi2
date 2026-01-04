@@ -9,6 +9,9 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 """
 
 from fastapi import APIRouter
+from typing import Literal
+from typing_extensions import Annotated
+from fastapi import Form, UploadFile
 from starlette.responses import JSONResponse
 
 from src.services.api.constants.requests import (
@@ -45,3 +48,17 @@ async def ingest_structured_data(data: IngestionStructuredRequestBody):
     return JSONResponse(
         content={"message": "Structured data ingested successfully", "task_id": task.id}
     )
+
+
+@ingest_router.post(path="/file")
+async def ingest_file(
+    file: Annotated[UploadFile, Form()],
+    brain_id: str = Form(default="default"),
+    understanding_level: str = Annotated[
+        Literal["basic", "deep"], Form(default="deep")
+    ],
+):
+    """
+    Ingest a file into the processing pipeline and save to the memory.
+    """
+    return JSONResponse(content={"message": "File ingested successfully"})

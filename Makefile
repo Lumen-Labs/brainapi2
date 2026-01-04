@@ -50,21 +50,27 @@ start-api:
 stop-api:
 	pkill -f uvicorn
 
-DEBUG_ENVS := LANGCHAIN_DEBUG="true" LANGCHAIN_VERBOSE="true" DEBUG="true"
+DEBUG_ENVS := LANGCHAIN_DEBUG="true" LANGCHAIN_VERBOSE="true" DEBUG="true" ENV="development"
 
 start-all:
-	@if [ "$$DEBUG" = "true" ]; then \
+	@if [ "$(filter debug,$(MAKECMDGOALS))" = "debug" ] || [ "$$DEBUG" = "true" ]; then \
 		echo "DEBUG mode enabled"; \
-		export $(DEBUG_ENVS); \
+		$(MAKE) start-milvus DEBUG=true & \
+		$(MAKE) start-rabbitmq DEBUG=true & \
+		$(MAKE) start-redis DEBUG=true & \
+		$(MAKE) start-neo4j DEBUG=true & \
+		$(MAKE) start-mongo DEBUG=true & \
+		$(MAKE) start-api DEBUG=true & \
+		bash -c "export $(DEBUG_ENVS) && poetry run celery -A src.workers.app worker --loglevel=info --pool=threads --concurrency=10"; \
+	else \
+		$(MAKE) start-milvus & \
+		$(MAKE) start-rabbitmq & \
+		$(MAKE) start-redis & \
+		$(MAKE) start-neo4j & \
+		$(MAKE) start-mongo & \
+		$(MAKE) start-api & \
+		poetry run celery -A src.workers.app worker --loglevel=info --pool=threads --concurrency=10; \
 	fi
-	export ENV=development
-	make start-milvus &
-	make start-rabbitmq &
-	make start-redis &
-	make start-neo4j &
-	make start-mongo &
-	make start-api &
-	@bash -c "if [ "$$DEBUG" = "true" ]; then export $(DEBUG_ENVS) && poetry run celery -A src.workers.app worker --loglevel=info; else poetry run celery -A src.workers.app worker --loglevel=info; fi"
 
 debug:
 	@:

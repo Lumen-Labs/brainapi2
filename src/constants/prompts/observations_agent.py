@@ -14,7 +14,7 @@ You are given a text, your task is to carefully read it and understand the meani
 
 You think step by step and reason about the text, you must not miss any important information or hidden concepts.
 
-You must return the text with the hidden concepts and meanings highlighted in bold.
+You must return the text with the hidden, implicit concepts and meanings.
 
 Text:
 {text}

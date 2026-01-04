@@ -9,6 +9,7 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 """
 
 from abc import ABC, abstractmethod
+from typing import Any
 
 from langchain.chat_models.base import BaseChatModel
 
@@ -19,6 +20,7 @@ class LLM(ABC):
     """
 
     langchain_model: BaseChatModel
+    client: Any
 
     @abstractmethod
     def generate_text(self, prompt: str, max_new_tokens: int = None) -> str:

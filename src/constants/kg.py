@@ -26,6 +26,12 @@ class Node(BaseModel):
     name: str
     description: Optional[str] = None
     properties: dict = Field(default_factory=dict)
+
+    happened_at: Optional[datetime | None] = Field(
+        default=None,
+        description="The date and time the node happened at if known otherwise None. Mostly used for event nodes.",
+    )
+
     last_updated: datetime = Field(
         default_factory=datetime.now,
         description="The date and time the node was last updated.",
