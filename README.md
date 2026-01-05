@@ -26,6 +26,58 @@
   <img src="https://pbs.twimg.com/media/G6jXa2HXsAAJhDO?format=jpg&amp;name=4096x4096" alt="BrainAPI Concept Art" width="1000" style="border-radius:4px;box-shadow:0 2px 12px rgba(0,0,0,0.09);margin-bottom:16px;"/>
 </p>
 
+## 🏃‍♂️ Local Development & Running BrainAPI2
+
+You can run **BrainAPI2 locally** in two main ways:
+
+### 1. Clone or Download the Project
+
+- **Clone via Git:**
+  ```sh
+  git clone https://github.com/lumen-labs/brainapi2.git
+  cd brainapi2
+  ```
+- **Or Download ZIP:**  
+  [Download ZIP from GitHub](https://github.com/lumen-labs/brainapi2/archive/refs/heads/main.zip), then unzip and `cd` into the project folder.
+
+- **Install dependencies (recommended with Python 3.11+):**
+
+  ```sh
+  poetry install
+  ```
+
+- **Use the Makefile commands to start the API & Workers:**
+
+  ```sh
+  make start-all
+  ```
+
+---
+
+### 2. Run Using the Container Image
+
+- **Pull the prebuilt container:**
+
+  ```sh
+  docker pull ghcr.io/lumen-labs/brainapi:latest
+  ```
+
+- **Start all required services and the BrainAPI container:**
+  Use the included `example-docker-compose.yaml` to start up BrainAPI and all dependencies together:
+
+  ```sh
+  docker compose -f example-docker-compose.yaml up -d
+  ```
+
+---
+
+> This will bring up all necessary databases and services so data ingestion, querying, and API access all work out-of-the-box.
+
+See the [`example-docker-compose.yaml`](./example-docker-compose.yaml) file for configuration details, ports, and volumes.
+For step-by-step instructions, visit the [Quick Start Guide](https://brainapi.lumen-labs.ai/docs/quickstart).
+
+---
+
 <p align="center">
   <a href="https://www.youtube.com/watch?v=wWwTFU5-qeA">
     <img src="https://img.youtube.com/vi/wWwTFU5-qeA/0.jpg" alt="BrainAPI Overview Video" width="100%" style="aspect-ratio: 16/9;object-fit: cover;border-radius:4px;box-shadow:0 2px 12px rgba(0,0,0,0.09);margin-bottom:16px;"/>

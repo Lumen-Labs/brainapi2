@@ -104,12 +104,19 @@ container-release:
 	BUILD_DATE=$$(date -u +'%Y-%m-%dT%H:%M:%SZ')
 	BUILD_SHA=$$(git rev-parse HEAD || echo "unknown")
 	CACHE_BUST=$$(date +%s)
-	docker build --no-cache --build-arg BUILD_DATE="$$BUILD_DATE" --build-arg BUILD_SHA="$$BUILD_SHA" --build-arg CACHE_BUST="$$CACHE_BUST" --platform linux/amd64 -t ghcr.io/lumen-labs/brainapi:v$(VERSION) ./
+	docker build --no-cache \
+		--build-arg BUILD_DATE="$$BUILD_DATE" \
+		--build-arg BUILD_SHA="$$BUILD_SHA" \
+		--build-arg CACHE_BUST="$$CACHE_BUST" \
+		--platform linux/amd64 \
+		--label org.opencontainers.image.source="https://github.com/lumen-labs/brainapi2" \
+		-t ghcr.io/lumen-labs/brainapi:v$(VERSION) ./
 	docker tag ghcr.io/lumen-labs/brainapi:v$(VERSION) ghcr.io/lumen-labs/brainapi:latest
 	git tag -s v$(VERSION) -m "Release v$(VERSION)"
 	docker push ghcr.io/lumen-labs/brainapi:v$(VERSION)
 	docker push ghcr.io/lumen-labs/brainapi:latest
 	git push origin v$(VERSION)
+
 
 v-patch:
 	poetry version patch
