@@ -52,6 +52,9 @@ class Neo4jClient(GraphClient):
         """
         Ensure a database exists.
         """
+        if self._verify_database_accessible(database):
+            return
+
         try:
             cypher_query = f"CREATE DATABASE {database}"
             self.driver.execute_query(cypher_query, database_="system")
@@ -61,12 +64,24 @@ class Neo4jClient(GraphClient):
                 "already exists" in error_msg
                 or "not supported in community edition" in error_msg
                 or "unsupported administration command" in error_msg
-                or "database not found" in error_msg
-                or "graph not found" in error_msg
             ):
                 pass
             else:
                 raise
+
+        retries = 0
+        max_wait_retries = 30
+        while retries < max_wait_retries:
+            if self._verify_database_accessible(database):
+                return
+            time.sleep(0.2)
+            retries += 1
+
+        if not self._verify_database_accessible(database):
+            raise RuntimeError(
+                f"Database '{database}' could not be created or is not accessible. "
+                "If using Neo4j Community Edition, you can only use the default 'neo4j' database."
+            )
 
     def _verify_database_accessible(self, database: str) -> bool:
         """
