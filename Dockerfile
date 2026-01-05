@@ -10,6 +10,10 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
+RUN mkdir -p /app/.cache && chown -R appuser:appuser /app/.cache
+ENV TRANSFORMERS_CACHE=/app/.cache
+ENV SENTENCE_TRANSFORMERS_HOME=/app/.cache
+
 RUN apt-get update && apt-get install -y \
     build-essential \
     curl \
@@ -32,6 +36,8 @@ RUN poetry config virtualenvs.in-project true && \
     rm -rf $POETRY_CACHE_DIR && \
     .venv/bin/pip uninstall -y torch && \
     .venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu --no-cache-dir
+
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2')"
 
 # Production stage
 FROM python:3.11-slim AS production
