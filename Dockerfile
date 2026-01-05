@@ -19,7 +19,7 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/* && \
     pip install poetry==1.8.3 && \
-    groupadd -r appuser && useradd -r -g appuser appuser
+    groupadd -r appuser && useradd -r -g appuser -m appuser
 
 WORKDIR /app
 
