@@ -5,36 +5,33 @@ ARG BUILD_DATE
 ARG BUILD_SHA
 ARG CACHE_BUST
 
-# Set environment variables
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Install system dependencies
 RUN apt-get update && apt-get install -y \
     build-essential \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Poetry
 RUN pip install poetry==1.8.3
 
-# Configure Poetry
 ENV POETRY_NO_INTERACTION=1 \
     POETRY_VENV_IN_PROJECT=1 \
     POETRY_CACHE_DIR=/tmp/poetry_cache \
     POETRY_VENV_PATH=/app/.venv
 
-# Set work directory
 WORKDIR /app
 
-# Copy Poetry files
 COPY pyproject.toml poetry.lock ./
 
-# Install dependencies
 RUN poetry config virtualenvs.in-project true && \
-    poetry lock && poetry install --no-root --sync && rm -rf $POETRY_CACHE_DIR
+    poetry lock --no-update && \
+    poetry install --no-root --sync && \
+    rm -rf $POETRY_CACHE_DIR && \
+    .venv/bin/pip uninstall -y torch && \
+    .venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu --no-cache-dir
 
 # Production stage
 FROM python:3.11-slim AS production
@@ -47,34 +44,22 @@ LABEL build_date="${BUILD_DATE}" \
       build_sha="${BUILD_SHA}" \
       cache_bust="${CACHE_BUST}"
 
-# Set environment variables
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PATH="/app/.venv/bin:$PATH"
 
-# Install runtime dependencies
 RUN apt-get update && apt-get install -y \
     curl \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* && \
+    groupadd -r appuser && useradd -r -g appuser appuser
 
-# Create non-root user
-RUN groupadd -r appuser && useradd -r -g appuser appuser
-
-# Set work directory
 WORKDIR /app
 
-# Copy virtual environment from builder stage
-COPY --from=builder /app/.venv /app/.venv
+COPY --from=builder --chown=appuser:appuser /app/.venv /app/.venv
 
-# Copy application code
-COPY src/ ./src/
+COPY --chown=appuser:appuser src/ ./src/
 
-# Change ownership to non-root user
-RUN chown -R appuser:appuser /app
 USER appuser
-
-# Switch to non-root user
-USER root
 
 # Expose port
 EXPOSE 8000
