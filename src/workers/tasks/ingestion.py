@@ -140,15 +140,11 @@ def ingest_data(self, args: dict):
         # ================================================
         enrich_kg_from_input(payload.data.text_data, brain_id=payload.brain_id)
 
-        result = {
-            "status": "completed",
-            "task_id": self.request.id,
-            "text_chunk_id": text_chunk.id,
-            "observations_count": len(observations),
-        }
-
         cache_adapter.set(
-            f"task:{self.request.id}", json.dumps(result), expires_in=3600
+            key=f"task:{self.request.id}",
+            value=json.dumps({"status": "completed", "task_id": self.request.id}),
+            brain_id=payload.brain_id,
+            expires_in=3600 * 24,
         )
 
         return self.request.id
@@ -158,10 +154,14 @@ def ingest_data(self, args: dict):
             "status": "failed",
             "task_id": self.request.id,
             "error": str(e),
+            "payload": payload.model_dump(mode="json"),
         }
 
         cache_adapter.set(
-            f"task:{self.request.id}", json.dumps(error_result), expires_in=3600
+            key=f"task:{self.request.id}",
+            value=json.dumps(error_result),
+            brain_id=payload.brain_id,
+            expires_in=3600 * 24 * 7,
         )
 
         raise
@@ -311,14 +311,11 @@ def ingest_structured_data(self, args: dict):
                 element.textual_data, targeting=node, brain_id=payload.brain_id
             )
 
-        result = {
-            "status": "completed",
-            "task_id": self.request.id,
-            "ingested_count": len(payload.data),
-        }
-
         cache_adapter.set(
-            f"task:{self.request.id}", json.dumps(result), expires_in=3600
+            key=f"task:{self.request.id}",
+            value=json.dumps({"status": "completed", "task_id": self.request.id}),
+            brain_id=payload.brain_id,
+            expires_in=3600 * 24,
         )
 
         return self.request.id
@@ -328,10 +325,14 @@ def ingest_structured_data(self, args: dict):
             "status": "failed",
             "task_id": self.request.id,
             "error": str(e),
+            "payload": payload.model_dump(mode="json"),
         }
 
         cache_adapter.set(
-            f"task:{self.request.id}", json.dumps(error_result), expires_in=3600
+            key=f"task:{self.request.id}",
+            value=json.dumps(error_result),
+            brain_id=payload.brain_id,
+            expires_in=3600 * 24 * 7,
         )
 
         raise

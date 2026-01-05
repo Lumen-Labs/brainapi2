@@ -8,6 +8,7 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 -----
 """
 
+import json
 from fastapi import APIRouter
 from typing import Literal
 from typing_extensions import Annotated
@@ -18,6 +19,7 @@ from src.services.api.constants.requests import (
     IngestionRequestBody,
     IngestionStructuredRequestBody,
 )
+from src.services.input.agents import cache_adapter
 from src.workers.tasks.ingestion import ingest_data as ingest_data_task
 from src.workers.tasks.ingestion import (
     ingest_structured_data as ingest_structured_data_task,
@@ -33,6 +35,13 @@ async def ingest_data(data: IngestionRequestBody):
     """
     task = ingest_data_task.delay(data.model_dump())
 
+    cache_adapter.set(
+        key=f"task:{task.id}",
+        value=json.dumps({"status": "processing", "task_id": task.id}),
+        brain_id=data.brain_id,
+        expires_in=3600 * 24,
+    )
+
     return JSONResponse(
         content={"message": "Data ingested successfully", "task_id": task.id}
     )
@@ -44,6 +53,13 @@ async def ingest_structured_data(data: IngestionStructuredRequestBody):
     Ingest structured data to the processing pipeline and save to the memory.
     """
     task = ingest_structured_data_task.delay(data.model_dump())
+
+    cache_adapter.set(
+        key=f"task:{task.id}",
+        value=json.dumps({"status": "processing", "task_id": task.id}),
+        brain_id=data.brain_id,
+        expires_in=3600 * 24,
+    )
 
     return JSONResponse(
         content={"message": "Structured data ingested successfully", "task_id": task.id}
@@ -61,4 +77,5 @@ async def ingest_file(
     """
     Ingest a file into the processing pipeline and save to the memory.
     """
+
     return JSONResponse(content={"message": "File ingested successfully"})
