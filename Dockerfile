@@ -10,10 +10,6 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-RUN mkdir -p /app/.cache && chown -R appuser:appuser /app/.cache
-ENV TRANSFORMERS_CACHE=/app/.cache
-ENV SENTENCE_TRANSFORMERS_HOME=/app/.cache
-
 RUN apt-get update && apt-get install -y \
     build-essential \
     curl \
@@ -66,6 +62,10 @@ COPY --from=builder --chown=appuser:appuser /app/.venv /app/.venv
 COPY --chown=appuser:appuser src/ ./src/
 
 USER appuser
+
+RUN mkdir -p /app/.cache && chown -R appuser:appuser /app/.cache
+ENV TRANSFORMERS_CACHE=/app/.cache
+ENV SENTENCE_TRANSFORMERS_HOME=/app/.cache
 
 # Expose port
 EXPOSE 8000
