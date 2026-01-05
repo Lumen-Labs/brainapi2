@@ -1,12 +1,13 @@
 #!/bin/bash
 set -e
 
-if [ ! -d "/app/.venv" ] || [ ! -f "/app/.venv/bin/python" ]; then
+if [ ! -f "/app/.venv/bin/python" ] || ! /app/.venv/bin/python -c "import sentence_transformers" 2>/dev/null; then
     echo "Installing dependencies..."
     poetry config virtualenvs.in-project true
+    poetry lock --no-update
     poetry install --no-root --sync
-    .venv/bin/pip uninstall -y torch
-    .venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu --no-cache-dir
+    /app/.venv/bin/pip uninstall -y torch || true
+    /app/.venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu --no-cache-dir
 fi
 
 echo "Checking for sentence-transformers model..."
