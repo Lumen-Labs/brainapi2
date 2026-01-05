@@ -324,10 +324,10 @@ Retrieval based not just on _what_ an entity is, but on the _scale_ and _timing_
 
 Integrate BrainAPI into your applications using our official client libraries:
 
-| Platform    | Package                                                    | Status                                                                                    |
-| ----------- | ---------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| **Python**  | [`lumen_brain`](https://pypi.org/project/lumen_brain/)     | ![PyPI](https://img.shields.io/pypi/v/lumen_brain?label=v0.x&color=orange) ⚠️ Pre-release |
-| **Node.js** | [`lumen-brain`](https://www.npmjs.com/package/lumen-brain) | ![npm](https://img.shields.io/npm/v/lumen-brain?label=v0.x&color=orange) ⚠️ Pre-release   |
+| Platform    | Package                                                               | Status                                                                                    |
+| ----------- | --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| **Python**  | [`lumen_brain`](https://pypi.org/project/lumen_brain/)                | ![PyPI](https://img.shields.io/pypi/v/lumen_brain?label=v0.x&color=orange) ⚠️ Pre-release |
+| **Node.js** | [`lumen-brain`](https://www.npmjs.com/package/@lumenlabs/lumen-brain) | ![npm](https://img.shields.io/npm/v/lumen-brain?label=v0.x&color=orange) ⚠️ Pre-release   |
 
 > **Note:** Both SDKs are currently at version 0.x and under active development. For production use cases, we recommend using the [REST API](https://brainapi.lumen-labs.ai/docs/rest) directly until v1.0 releases.
 
