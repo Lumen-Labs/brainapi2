@@ -20,6 +20,7 @@ if os.getenv("MILVUS_URI") and not os.getenv("MILVUS_URI").startswith(
 
 from pymilvus import MilvusClient as Milvus
 from pymilvus import connections, db
+from pymilvus.milvus_client.index import IndexParams
 
 from src.adapters.interfaces.embeddings import VectorStoreClient
 from src.config import config
@@ -173,13 +174,14 @@ class MilvusClient(VectorStoreClient):
 
         if collection_created:
             try:
-                index_params = {
-                    "metric_type": "COSINE",
-                    "index_type": "AUTOINDEX",
-                }
+                index_params = IndexParams()
+                index_params.add_index(
+                    field_name="embeddings",
+                    index_type="AUTOINDEX",
+                    metric_type="COSINE",
+                )
                 client.create_index(
                     collection_name=store,
-                    field_name="embeddings",
                     index_params=index_params,
                 )
             except Exception as e:

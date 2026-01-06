@@ -6,8 +6,6 @@ if [ ! -f "/app/.venv/bin/python" ] || ! /app/.venv/bin/python -c "import torch;
     poetry config virtualenvs.in-project true
     poetry lock --no-update
     poetry install --no-root --sync
-    /app/.venv/bin/pip uninstall -y torch || true
-    /app/.venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu --no-cache-dir
 fi
 
 echo "Checking for sentence-transformers model..."
