@@ -41,7 +41,6 @@ class IngestionManager:
 
     def process_node_vectors(self, node_data: ScoutEntity, brain_id):
         if node_data.name in self.resolved_cache:
-            node_data.uuid = self.resolved_cache[node_data.name]
             return node_data.uuid
 
         v_sub = self.embeddings.embed_text(node_data.name)
@@ -67,7 +66,6 @@ class IngestionManager:
     def process_rel_vectors(self, rel_data: ArchitectAgentRelationship, brain_id):
         if hasattr(rel_data, "description") and rel_data.description:
             v_rel = self.embeddings.embed_text(rel_data.description)
-            v_rel.id = rel_data.uuid
             v_rel.metadata = {
                 **(self.metadata or {}),
                 "uuid": rel_data.uuid,
