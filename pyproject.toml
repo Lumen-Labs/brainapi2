@@ -1,6 +1,6 @@
 [project]
 name = "brainapi2"
-version = "2.0.8-dev"
+version = "2.0.9-dev"
 description = "Version 2.x.x of the BrainAPI memory layer."
 authors = [
     {name = "Christian",email = "alch.infoemail@gmail.com"}
@@ -29,6 +29,7 @@ dependencies = [
     "python-multipart (>=0.0.20,<0.0.21)",
     "sentence-transformers (>=2.2.0,<3.0.0)",
     "tenacity (>=8.2.3,<10.0.0)",
+    "sympy (>=1.12.1,<1.14.0)",
 ]
 
 [tool.poetry]
@@ -58,6 +59,7 @@ pillow = ">=10.0.0,<12.0.0"
 sentence-transformers = ">=2.2.0,<3.0.0"
 tenacity = ">=8.2.3,<10.0.0"
 python-multipart = ">=0.0.20,<0.0.21"
+sympy = ">=1.12.1,<1.14.0"
 
 [tool.pylint.messages_control]
 enable = ["abstract-method"]
