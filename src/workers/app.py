@@ -11,6 +11,8 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 import os
 from celery import Celery
 
+from src.config import config
+
 os.environ.setdefault("GRPC_ENABLE_FORK_SUPPORT", "1")
 
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
@@ -37,4 +39,5 @@ ingestion_app.conf.update(
     task_acks_late=True,
     task_reject_on_worker_lost=True,
     worker_pool="threads",
+    worker_concurrency=config.celery.worker_concurrency,
 )

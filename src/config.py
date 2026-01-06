@@ -155,6 +155,17 @@ class MongoConfig:
             raise ValueError("Mongo configuration is not complete")
 
 
+class CeleryConfig:
+    """
+    Configuration class for the Celery configuration.
+    """
+
+    def __init__(self):
+        self.worker_concurrency = os.getenv("CELERY_WORKER_CONCURRENCY")
+        if [self.worker_concurrency].count(None) > 0:
+            raise ValueError("Celery configuration is not complete")
+
+
 class Config:
     """
     Configuration class for the application.
@@ -168,6 +179,7 @@ class Config:
         self.embeddings = EmbeddingsConfig()
         self.mongo = MongoConfig()
         self.gcp = GCPConfig()
+        self.celery = CeleryConfig()
 
         self.brainpat_token = os.getenv("BRAINPAT_TOKEN")
 
