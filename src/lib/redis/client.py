@@ -57,6 +57,8 @@ class RedisClient(CacheClient):
         Set a value in the cache with an expiration time.
         """
         prefixed_key = self._get_key(key, brain_id)
+        if key.startswith("task:"):
+            self.client.sadd(f"{brain_id}:_task_index", key)
         return self.client.set(
             prefixed_key, value, **({"ex": expires_in} if expires_in else {})
         )
@@ -66,7 +68,16 @@ class RedisClient(CacheClient):
         Delete a value from the cache.
         """
         prefixed_key = self._get_key(key, brain_id)
+        if key.startswith("task:"):
+            self.client.srem(f"{brain_id}:_task_index", key)
         return self.client.delete(prefixed_key)
+
+    def get_task_keys(self, brain_id: str) -> list[str]:
+        """
+        Get all task keys for a given brain_id.
+        """
+        keys = self.client.smembers(f"{brain_id}:_task_index")
+        return [k.decode("utf-8") if isinstance(k, bytes) else k for k in keys]
 
 
 _redis_client = RedisClient()

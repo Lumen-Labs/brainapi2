@@ -47,3 +47,10 @@ class CacheClient(ABC):
         Delete a value from the cache.
         """
         raise NotImplementedError("delete method not implemented")
+
+    @abstractmethod
+    def get_task_keys(self, brain_id: str) -> list[str]:
+        """
+        Get all task keys for a given brain_id.
+        """
+        raise NotImplementedError("get_task_keys method not implemented")

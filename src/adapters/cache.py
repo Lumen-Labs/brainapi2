@@ -49,3 +49,9 @@ class CacheAdapter:
         Delete a value from the cache.
         """
         return self.cache.delete(key, brain_id)
+
+    def get_task_keys(self, brain_id: str = "default") -> list[str]:
+        """
+        Get all task keys for a given brain_id.
+        """
+        return self.cache.get_task_keys(brain_id)
