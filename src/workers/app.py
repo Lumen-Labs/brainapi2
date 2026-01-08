@@ -40,4 +40,7 @@ ingestion_app.conf.update(
     task_reject_on_worker_lost=True,
     worker_pool="threads",
     worker_concurrency=config.celery.worker_concurrency,
+    broker_pool_limit=100,
+    broker_connection_retry_on_startup=True,
+    broker_connection_timeout=10,
 )

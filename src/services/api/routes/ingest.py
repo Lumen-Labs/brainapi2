@@ -9,11 +9,13 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 """
 
 import json
-from fastapi import APIRouter
+import asyncio
+from fastapi import APIRouter, HTTPException
 from typing import Literal
 from typing_extensions import Annotated
 from fastapi import Form, UploadFile
 from starlette.responses import JSONResponse
+from celery.exceptions import OperationalError
 
 from src.services.api.constants.requests import (
     IngestionRequestBody,
@@ -25,6 +27,9 @@ from src.workers.tasks.ingestion import (
     ingest_structured_data as ingest_structured_data_task,
 )
 
+MAX_TASK_RETRIES = 3
+RETRY_DELAY_BASE = 0.1
+
 ingest_router = APIRouter(prefix="/ingest", tags=["ingest"])
 
 
@@ -33,7 +38,15 @@ async def ingest_data(data: IngestionRequestBody):
     """
     Ingest data to the processing pipeline and save to the memory.
     """
-    task = ingest_data_task.delay(data.model_dump())
+    task = None
+    for attempt in range(MAX_TASK_RETRIES):
+        try:
+            task = ingest_data_task.delay(data.model_dump())
+            break
+        except OperationalError:
+            if attempt == MAX_TASK_RETRIES - 1:
+                raise HTTPException(status_code=503, detail="Task queue unavailable")
+            await asyncio.sleep(RETRY_DELAY_BASE * (attempt + 1))
 
     cache_adapter.set(
         key=f"task:{task.id}",
@@ -52,7 +65,15 @@ async def ingest_structured_data(data: IngestionStructuredRequestBody):
     """
     Ingest structured data to the processing pipeline and save to the memory.
     """
-    task = ingest_structured_data_task.delay(data.model_dump())
+    task = None
+    for attempt in range(MAX_TASK_RETRIES):
+        try:
+            task = ingest_structured_data_task.delay(data.model_dump())
+            break
+        except OperationalError:
+            if attempt == MAX_TASK_RETRIES - 1:
+                raise HTTPException(status_code=503, detail="Task queue unavailable")
+            await asyncio.sleep(RETRY_DELAY_BASE * (attempt + 1))
 
     cache_adapter.set(
         key=f"task:{task.id}",

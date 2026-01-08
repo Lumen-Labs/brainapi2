@@ -153,7 +153,7 @@ def enrich_kg_from_input(
 
         for future in all_futures:
             try:
-                normalized_result = future.result(timeout=90)
+                normalized_result = future.result(timeout=180)
                 input_tokens += normalized_result.input_tokens or 0
                 output_tokens += normalized_result.output_tokens or 0
                 if normalized_result.entity:
@@ -184,7 +184,7 @@ def enrich_kg_from_input(
 
         for future in relationship_futures:
             try:
-                normalized_result = future.result(timeout=90)
+                normalized_result = future.result(timeout=180)
                 input_tokens += normalized_result.input_tokens or 0
                 output_tokens += normalized_result.output_tokens or 0
                 if normalized_result.relationship:
@@ -215,7 +215,7 @@ def enrich_kg_from_input(
 
         for future, node_data in node_embedding_futures:
             try:
-                future.result(timeout=60)
+                future.result(timeout=180)
                 graph_nodes.append(
                     Node(
                         uuid=node_data.uuid,
