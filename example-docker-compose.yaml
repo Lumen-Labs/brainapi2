@@ -12,12 +12,12 @@ services:
       redis-server
       --appendonly yes
       --maxmemory 2gb
-      --maxmemory-policy allkeys-lru
+      --maxmemory-policy volatile-lru
       --save 900 1
       --save 300 10
       --save 60 10000
       --tcp-backlog 511
-      --timeout 300
+      --timeout 0
     networks:
       - appnet
     restart: unless-stopped
@@ -223,10 +223,10 @@ services:
       -A src.workers.app worker
       --loglevel=info
       --concurrency=10
-      --max-tasks-per-child=1000
-      --time-limit=300
-      --soft-time-limit=240
-      --prefetch-multiplier=2
+      --max-tasks-per-child=50
+      --time-limit=3600
+      --soft-time-limit=3000
+      --prefetch-multiplier=1
       --optimization=fair
     depends_on:
       redis:

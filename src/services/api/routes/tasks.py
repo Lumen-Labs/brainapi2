@@ -27,7 +27,11 @@ async def get_tasks(brain_id: str = "default"):
                 continue
             result = json.loads(str_result)
             results.append(
-                {"id": task.split(":")[-1], "status": result.get("status", "unknown")}
+                {
+                    **result,
+                    "id": task.split(":")[-1],
+                    "status": result.get("status", "unknown"),
+                }
             )
         return {"tasks": results}
     except Exception as e:
@@ -56,9 +60,9 @@ async def get_task(task_id: str, brain_id: str = "default"):
         else:
             result = json.loads(str_result)
         return {
+            **result,
             "task_id": task_id,
             "status": result.get("status", "unknown"),
-            "result": result,
         }
     except Exception as e:
         log(f"Error in get_task: {type(e).__name__}: {str(e)}")

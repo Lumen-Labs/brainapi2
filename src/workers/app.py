@@ -43,4 +43,13 @@ ingestion_app.conf.update(
     broker_pool_limit=100,
     broker_connection_retry_on_startup=True,
     broker_connection_timeout=10,
+    result_expires=3600 * 24 * 7,
+    task_track_started=True,
+    task_time_limit=3600,
+    task_soft_time_limit=3000,
+    broker_transport_options={
+        "visibility_timeout": 7200,
+        "fanout_prefix": True,
+        "fanout_patterns": True,
+    },
 )

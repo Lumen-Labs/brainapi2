@@ -50,9 +50,9 @@ async def ingest_data(data: IngestionRequestBody):
 
     cache_adapter.set(
         key=f"task:{task.id}",
-        value=json.dumps({"status": "processing", "task_id": task.id}),
+        value=json.dumps({"status": "queued", "task_id": task.id}),
         brain_id=data.brain_id,
-        expires_in=3600 * 24,
+        expires_in=3600 * 24 * 7,
     )
 
     return JSONResponse(
@@ -77,9 +77,9 @@ async def ingest_structured_data(data: IngestionStructuredRequestBody):
 
     cache_adapter.set(
         key=f"task:{task.id}",
-        value=json.dumps({"status": "processing", "task_id": task.id}),
+        value=json.dumps({"status": "queued", "task_id": task.id}),
         brain_id=data.brain_id,
-        expires_in=3600 * 24,
+        expires_in=3600 * 24 * 7,
     )
 
     return JSONResponse(

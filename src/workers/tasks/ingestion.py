@@ -64,8 +64,16 @@ def ingest_data(self, args: dict):
     """
     Ingest data into the database.
     """
+    payload = None
     try:
         payload = IngestionTaskArgs(**args)
+
+        cache_adapter.set(
+            key=f"task:{self.request.id}",
+            value=json.dumps({"status": "started", "task_id": self.request.id}),
+            brain_id=payload.brain_id,
+            expires_in=3600 * 24 * 7,
+        )
 
         payload.meta_keys = (
             {
@@ -144,23 +152,24 @@ def ingest_data(self, args: dict):
             key=f"task:{self.request.id}",
             value=json.dumps({"status": "completed", "task_id": self.request.id}),
             brain_id=payload.brain_id,
-            expires_in=3600 * 24,
+            expires_in=3600 * 24 * 7,
         )
 
         return self.request.id
 
     except Exception as e:
+        brain_id = payload.brain_id if payload else args.get("brain_id", "default")
         error_result = {
             "status": "failed",
             "task_id": self.request.id,
             "error": str(e),
-            "payload": payload.model_dump(mode="json"),
+            "payload": payload.model_dump(mode="json") if payload else args,
         }
 
         cache_adapter.set(
             key=f"task:{self.request.id}",
             value=json.dumps(error_result),
-            brain_id=payload.brain_id,
+            brain_id=brain_id,
             expires_in=3600 * 24 * 7,
         )
 
@@ -172,8 +181,22 @@ def ingest_structured_data(self, args: dict):
     """
     Ingest structured data into the database.
     """
+    payload = None
     try:
         payload = IngestionStructuredRequestBody(**args)
+
+        cache_adapter.set(
+            key=f"task:{self.request.id}",
+            value=json.dumps(
+                {
+                    "status": "started",
+                    "task_id": self.request.id,
+                    "total_elements": len(payload.data),
+                }
+            ),
+            brain_id=payload.brain_id,
+            expires_in=3600 * 24 * 7,
+        )
 
         for element in payload.data:
             uuid = str(uuid4())
@@ -315,23 +338,24 @@ def ingest_structured_data(self, args: dict):
             key=f"task:{self.request.id}",
             value=json.dumps({"status": "completed", "task_id": self.request.id}),
             brain_id=payload.brain_id,
-            expires_in=3600 * 24,
+            expires_in=3600 * 24 * 7,
         )
 
         return self.request.id
 
     except Exception as e:
+        brain_id = payload.brain_id if payload else args.get("brain_id", "default")
         error_result = {
             "status": "failed",
             "task_id": self.request.id,
             "error": str(e),
-            "payload": payload.model_dump(mode="json"),
+            "payload": payload.model_dump(mode="json") if payload else args,
         }
 
         cache_adapter.set(
             key=f"task:{self.request.id}",
             value=json.dumps(error_result),
-            brain_id=payload.brain_id,
+            brain_id=brain_id,
             expires_in=3600 * 24 * 7,
         )
 
