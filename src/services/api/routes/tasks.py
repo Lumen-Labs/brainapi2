@@ -19,17 +19,18 @@ tasks_router = APIRouter(prefix="/tasks", tags=["tasks"])
 @tasks_router.get("/")
 async def get_tasks(brain_id: str = "default"):
     try:
-        tasks = cache_adapter.get_task_keys(brain_id)
+        task_keys = cache_adapter.get_task_keys(brain_id)
         results = []
-        for task in tasks:
-            str_result = cache_adapter.get(task, brain_id=brain_id)
+        for task_key in task_keys:
+            task_id = task_key.split(":")[-1]
+            str_result = cache_adapter.get_task(task_id, brain_id=brain_id)
             if str_result is None:
                 continue
             result = json.loads(str_result)
             results.append(
                 {
                     **result,
-                    "id": task.split(":")[-1],
+                    "id": task_id,
                     "status": result.get("status", "unknown"),
                 }
             )
@@ -48,7 +49,7 @@ async def get_task(task_id: str, brain_id: str = "default"):
     Get the result of a task by its ID.
     """
     try:
-        str_result = cache_adapter.get(f"task:{task_id}", brain_id=brain_id)
+        str_result = cache_adapter.get_task(task_id, brain_id=brain_id)
         if str_result is None:
             return {
                 "task_id": task_id,

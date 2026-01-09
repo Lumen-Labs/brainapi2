@@ -55,3 +55,9 @@ class CacheAdapter:
         Get all task keys for a given brain_id.
         """
         return self.cache.get_task_keys(brain_id)
+
+    def get_task(self, task_id: str, brain_id: str = "default") -> Optional[str]:
+        """
+        Get a specific task by ID.
+        """
+        return self.cache.get_task(task_id, brain_id)

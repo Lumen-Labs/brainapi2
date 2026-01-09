@@ -54,3 +54,10 @@ class CacheClient(ABC):
         Get all task keys for a given brain_id.
         """
         raise NotImplementedError("get_task_keys method not implemented")
+
+    @abstractmethod
+    def get_task(self, task_id: str, brain_id: str) -> Optional[str]:
+        """
+        Get a specific task by ID.
+        """
+        raise NotImplementedError("get_task method not implemented")
