@@ -8,7 +8,7 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 -----
 """
 
-from typing import List, Optional
+from typing import Iterable, List, Optional, Union
 from langchain.agents import create_agent
 from langchain.tools import BaseTool
 from pydantic import BaseModel
@@ -204,7 +204,7 @@ class KGAgent:
         return response
 
     def retrieve_neighbors(
-        self, node: Node, looking_for: Optional[str], limit: int
+        self, node: Node, looking_for: Optional[Union[str, Iterable[str]]], limit: int
     ) -> RetrieveNeighborsOutputSchema:
         """
         Retrieve the neighbors of a node.
@@ -237,9 +237,14 @@ class KGAgent:
             extra_system_prompt=extra_system_prompt_str,
         )
 
+        if isinstance(looking_for, str):
+            looking_for_items = [looking_for]
+        else:
+            looking_for_items = list(looking_for) if looking_for else []
+
         looking_for_prompt = f"""
         You must look for neighbors for the main node considering this reasons:
-        {" ".join([f"- {reason}" for reason in looking_for])}
+        {" ".join([f"- {reason}" for reason in looking_for_items])}
         """
 
         _response = self.agent.invoke(

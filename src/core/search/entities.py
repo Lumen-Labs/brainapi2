@@ -21,7 +21,17 @@ def search_entities(
     brain_id: str = "default",
 ) -> SearchEntitiesResult:
     """
-    Search the entities of the graph.
+    Search entities in the knowledge graph.
+    
+    Parameters:
+        limit (int): Maximum number of entities to return.
+        skip (int): Number of entities to skip (offset) for pagination.
+        node_labels (Optional[list[str]]): Filter results to nodes matching any of these labels.
+        query_text (Optional[str]): Text to match against entity properties or content.
+        brain_id (str): Identifier of the graph/brain to query.
+    
+    Returns:
+        SearchEntitiesResult: Result object containing matched entities and pagination metadata.
     """
     result = graph_adapter.search_entities(
         brain_id, limit, skip, node_labels, query_text
