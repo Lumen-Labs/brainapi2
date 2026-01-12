@@ -8,7 +8,7 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 -----
 """
 
-from typing import List, Optional
+from typing import Iterable, List, Optional, Union
 from langchain.agents import create_agent
 from langchain.tools import BaseTool
 from pydantic import BaseModel
@@ -204,21 +204,13 @@ class KGAgent:
         return response
 
     def retrieve_neighbors(
-        self, node: Node, looking_for: Optional[str], limit: int
+        self, node: Node, looking_for: Optional[Union[str, Iterable[str]]], limit: int
     ) -> RetrieveNeighborsOutputSchema:
         """
-        Retrieve neighbors and related information for a given node using the KG agent.
-        
-        Parameters:
-            node (Node): The main node for which neighbors should be retrieved.
-            looking_for (Optional[str or Iterable[str]]): One or more reasons or search hints the agent should prioritize when selecting neighbors. When provided as a sequence, each element is treated as a separate reason.
-            limit (int): Maximum number of neighbor results the agent should return.
-        
-        Returns:
-            RetrieveNeighborsOutputSchema: The agent-produced structured neighbor information and associated metadata.
+        Retrieve the neighbors of a node.
         """
 
-        graph_db_prop_keys = self.kg.get_graph_node_properties()
+        graph_db_prop_keys = self.kg.get_graph_property_keys()
         graph_db_relationships = self.kg.get_graph_relationships()
         graph_db_entities = self.kg.get_graph_entities()
 
@@ -245,9 +237,14 @@ class KGAgent:
             extra_system_prompt=extra_system_prompt_str,
         )
 
+        if isinstance(looking_for, str):
+            looking_for_items = [looking_for]
+        else:
+            looking_for_items = list(looking_for) if looking_for else []
+
         looking_for_prompt = f"""
         You must look for neighbors for the main node considering this reasons:
-        {" ".join([f"- {reason}" for reason in looking_for])}
+        {" ".join([f"- {reason}" for reason in looking_for_items])}
         """
 
         _response = self.agent.invoke(

@@ -13,6 +13,7 @@ from typing import Optional
 from src.services.kg_agent.main import graph_adapter
 from src.constants.kg import Node, Predicate
 
+
 async def add_nodes(
     nodes: list[dict],
     brain_id: str,
@@ -21,31 +22,41 @@ async def add_nodes(
 ) -> list[Node] | str:
     """
     Create and add multiple Node objects to the graph.
-    
+
     Each input dict is converted into a Node (a new UUID is generated for each) and then added to the graph via the graph adapter.
-    
+
     Parameters:
         nodes (list[dict]): List of node data dicts. Expected keys include `name`, optional `labels` (list), optional `description`, and optional `properties` (dict).
         brain_id (str): Identifier for the target brain/graph.
         identification_params (dict, optional): Parameters used to identify existing nodes for deduplication or matching; passed through to the graph adapter.
         metadata (dict, optional): Additional metadata forwarded to the graph adapter.
-    
+
     Returns:
         list[Node] | str: The list of added Node objects, or a string result as returned by the graph adapter.
     """
     from src.constants.kg import Node
     import uuid as uuid_lib
-    
+
     node_objects = []
     for node_data in nodes:
-        node_objects.append(Node(
-            uuid=str(uuid_lib.uuid4()),
-            name=node_data.get("name"),
-            labels=node_data.get("labels", []),
-            description=node_data.get("description"),
-            properties=node_data.get("properties"),
-        ))
-    
+        name = node_data.get("name")
+        if not name:
+            raise ValueError("Node name is required and cannot be empty")
+
+        properties = node_data.get("properties")
+        if properties is None:
+            properties = {}
+
+        node_objects.append(
+            Node(
+                uuid=str(uuid_lib.uuid4()),
+                name=name,
+                labels=node_data.get("labels", []),
+                description=node_data.get("description"),
+                properties=properties,
+            )
+        )
+
     result = await asyncio.to_thread(
         graph_adapter.add_nodes,
         nodes=node_objects,
@@ -53,8 +64,9 @@ async def add_nodes(
         identification_params=identification_params,
         metadata=metadata,
     )
-    
+
     return result
+
 
 async def update_node(
     uuid: str,
@@ -67,9 +79,9 @@ async def update_node(
 ) -> Node | None:
     """
     Update fields of a node in the graph.
-    
+
     Only the provided parameters will be applied to the node; omitted optional parameters are left unchanged.
-    
+
     Parameters:
         uuid (str): UUID of the node to update.
         brain_id (str): Identifier of the brain/graph where the node resides.
@@ -78,7 +90,7 @@ async def update_node(
         new_labels (Optional[list[str]]): Labels to assign to the node.
         new_properties (Optional[dict]): Properties to set or update on the node.
         properties_to_remove (Optional[list[str]]): List of property keys to remove from the node.
-    
+
     Returns:
         Node | None: The updated Node if it exists, `None` if no node with the given UUID was found.
     """
@@ -104,14 +116,14 @@ async def add_relationship(
 ) -> str:
     """
     Create a predicate relationship between two nodes identified by UUIDs within the specified brain.
-    
+
     Parameters:
         subject_uuid (str): UUID of the subject node.
         predicate_name (str): Name of the predicate (relationship).
         predicate_description (str): Description for the predicate.
         object_uuid (str): UUID of the object node.
         brain_id (str): Identifier of the brain/graph where the relationship will be created.
-    
+
     Returns:
         str: Adapter result for the created relationship (typically the relationship identifier).
     """
@@ -120,26 +132,27 @@ async def add_relationship(
         uuid=subject_uuid,
         brain_id=brain_id,
     )
-    
+
     object_node = await asyncio.to_thread(
         graph_adapter.get_by_uuid,
         uuid=object_uuid,
         brain_id=brain_id,
     )
-    
+
     if not subject_node:
         raise ValueError(f"Subject node with UUID {subject_uuid} not found")
-    
+
     if not object_node:
         raise ValueError(f"Object node with UUID {object_uuid} not found")
-    
+
     import uuid as uuid_lib
+
     predicate = Predicate(
         uuid=str(uuid_lib.uuid4()),
         name=predicate_name,
         description=predicate_description,
     )
-    
+
     result = await asyncio.to_thread(
         graph_adapter.add_relationship,
         subject=subject_node,
@@ -147,7 +160,7 @@ async def add_relationship(
         to_object=object_node,
         brain_id=brain_id,
     )
-    
+
     return result
 
 
@@ -159,13 +172,13 @@ async def update_relationship(
 ) -> Predicate | None:
     """
     Update properties of an existing relationship identified by its UUID.
-    
+
     Parameters:
         uuid (str): UUID of the relationship to update.
         brain_id (str): Identifier of the brain/graph scope where the relationship exists.
         new_properties (dict): Properties to add or update on the relationship.
         properties_to_remove (list[str]): List of property names to remove from the relationship.
-    
+
     Returns:
         Predicate | None: The updated Predicate object if the relationship was found and updated, `None` otherwise.
     """
