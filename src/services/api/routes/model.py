@@ -29,23 +29,12 @@ async def add_entity(request: AddEntityRequest):
     Returns:
     	Response payload containing details of the created node.
     """
-    import uuid as uuid_lib
-    from src.constants.kg import Node
-    
-    node = Node(
-        uuid=str(uuid_lib.uuid4()),
-        name=request.name,
-        labels=request.labels,
-        description=request.description,
-        properties=request.properties,
-    )
-    
     return await add_nodes_controller(
         nodes=[{
             "name": request.name,
             "labels": request.labels,
             "description": request.description,
-            "properties": request.properties,
+            "properties": request.properties or {},
         }],
         brain_id=request.brain_id,
         identification_params=request.identification_params,
