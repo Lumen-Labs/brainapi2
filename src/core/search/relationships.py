@@ -24,7 +24,20 @@ def search_relationships(
     brain_id: str = "default",
 ) -> SearchRelationshipsResult:
     """
-    Search the relationships of the graph.
+    Search for relationships in the knowledge graph using optional filters and full-text query.
+    
+    Parameters:
+        limit (int): Maximum number of relationship records to return.
+        skip (int): Number of matching records to skip (offset).
+        relationship_types (list[str] | None): List of relationship type names to include; when None, all types are allowed.
+        from_node_labels (list[str] | None): List of labels to filter source nodes; when None, any source node label is allowed.
+        to_node_labels (list[str] | None): List of labels to filter target nodes; when None, any target node label is allowed.
+        query_text (str | None): Full-text query string applied to the specified search target; when None, no full-text filtering is applied.
+        query_search_target (str | None): Field to apply the full-text query to (e.g., "all", "from", "to", "relationship"); defaults to "all".
+        brain_id (str): Identifier of the brain/graph context to search within.
+    
+    Returns:
+        SearchRelationshipsResult: Search results containing matching relationships and associated metadata.
     """
     result = graph_adapter.search_relationships(
         brain_id,

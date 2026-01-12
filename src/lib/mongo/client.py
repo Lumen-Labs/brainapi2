@@ -271,6 +271,15 @@ class MongoClient(DataClient):
         ]
     
     def get_observation_labels(self, brain_id: str) -> list[str]:
+        """
+        Return the list of unique observation labels for the specified brain, sorted lexicographically.
+        
+        Parameters:
+            brain_id (str): Name/key of the brain used as the MongoDB database to query.
+        
+        Returns:
+            list[str]: Sorted list of distinct label strings found in observations' metadata.labels.
+        """
         collection = self.get_collection("observations", database=brain_id)
         pipeline = [
             {"$match": {"metadata.labels": {"$exists": True}}},
@@ -284,6 +293,20 @@ class MongoClient(DataClient):
     def get_changelog_by_id(
         self, id: str, brain_id: str
     ) -> KGChanges:
+        """
+        Retrieve a changelog entry by id from the specified brain's kg_changes collection.
+        
+        If a document is found, convert string values of the nested `change.type` and the top-level `type`
+        fields to the `KGChangesType` enum when present, then validate and return a `KGChanges` model.
+        Returns `None` if no matching document exists.
+        
+        Parameters:
+            id (str): The changelog document id to retrieve.
+            brain_id (str): The brain (database) name where the kg_changes collection resides.
+        
+        Returns:
+            KGChanges or None: The validated `KGChanges` model for the found document, or `None` if not found.
+        """
         from src.constants.data import KGChangesType
         
         collection = self.get_collection("kg_changes", database=brain_id)
@@ -308,6 +331,19 @@ class MongoClient(DataClient):
         types: list[str] = None,
         query_text: str = None
     ) -> list[KGChanges]:
+        """
+        Retrieve changelog entries for a brain with optional type filtering and text search.
+        
+        Parameters:
+            brain_id (str): Identifier of the brain (database) to query.
+            limit (int): Maximum number of changelogs to return.
+            skip (int): Number of changelogs to skip (offset).
+            types (list[str] | None): If provided, restrict results to changelogs whose top-level `type` is in this list.
+            query_text (str | None): If provided, perform a case-insensitive substring search on the `change` and `type` fields.
+        
+        Returns:
+            list[KGChanges]: Changelogs validated into `KGChanges` models, sorted by `timestamp` descending. Entries that fail model validation are skipped (an error message is printed). String values in nested `change.type` and top-level `type` are converted to `KGChangesType` when applicable.
+        """
         from src.constants.data import KGChangesType
         
         collection = self.get_collection("kg_changes", database=brain_id)
@@ -341,6 +377,15 @@ class MongoClient(DataClient):
         return changelogs
 
     def get_changelog_types(self, brain_id: str) -> list[str]:
+        """
+        Retrieve the sorted list of distinct changelog types for a brain.
+        
+        Parameters:
+            brain_id (str): Identifier of the brain (database name) to query.
+        
+        Returns:
+            list[str]: Changelog type strings sorted in ascending order.
+        """
         collection = self.get_collection("kg_changes", database=brain_id)
         pipeline = [
             {"$group": {"_id": "$type"}},

@@ -23,7 +23,13 @@ async def get_relationships_properties(
     brain_id: str = "default",
 ):
     """
-    Get all unique relationship types from the graph.
+    Retrieve all unique relationship types present in the graph for the specified brain.
+    
+    Parameters:
+        brain_id (str): Identifier of the brain/graph to query. Defaults to "default".
+    
+    Returns:
+        A list of relationship type names (strings) found in the specified graph.
     """
     return await get_relationships_properties_controller(brain_id)
 
@@ -32,7 +38,13 @@ async def get_entities_labels(
     brain_id: str = "default",
 ):
     """
-    Get all unique node labels from the graph.
+    Retrieve all unique node labels present in the graph.
+    
+    Parameters:
+        brain_id (str): Identifier of the brain/graph to query. Defaults to "default".
+    
+    Returns:
+        labels (list[str]): List of unique node label names.
     """
     return await get_entities_labels_controller(brain_id)
 
@@ -41,6 +53,12 @@ async def get_entity_properties(
     brain_id: str = "default",
 ):
     """
-    Get all unique property keys from entities in the graph.
+    Retrieve all unique property keys used by entities in the specified brain/graph.
+    
+    Parameters:
+        brain_id (str): Identifier of the brain/graph to query; defaults to "default".
+    
+    Returns:
+        list[str]: A list of property key names present on entities in the graph.
     """
     return await get_entity_properties_controller(brain_id)

@@ -24,7 +24,10 @@ model_router = APIRouter(prefix="/model", tags=["model"])
 @model_router.post(path="/entity")
 async def add_entity(request: AddEntityRequest):
     """
-    Add a single entity (node) to the graph.
+    Create a new entity (node) in the knowledge graph.
+    
+    Returns:
+    	Response payload containing details of the created node.
     """
     import uuid as uuid_lib
     from src.constants.kg import Node
@@ -53,6 +56,8 @@ async def add_entity(request: AddEntityRequest):
 async def update_entity(request: UpdateEntityRequest):
     """
     Update an entity (node) in the graph.
+    
+    @returns The controller's response containing the updated node representation or an operation result.
     """
     return await update_node_controller(
         uuid=request.uuid,
@@ -68,7 +73,10 @@ async def update_entity(request: UpdateEntityRequest):
 @model_router.post(path="/relationship")
 async def add_relationship(request: AddRelationshipRequest):
     """
-    Add a relationship between two nodes in the graph.
+    Create a relationship linking two nodes in the graph.
+    
+    Returns:
+        relationship (dict): Representation of the created relationship.
     """
     return await add_relationship_controller(
         subject_uuid=request.subject_uuid,
@@ -81,7 +89,12 @@ async def add_relationship(request: AddRelationshipRequest):
 @model_router.put(path="/relationship")
 async def update_relationship(request: UpdateRelationshipRequest):
     """
-    Update a relationship's properties in the graph.
+    Update properties of an existing relationship.
+    
+    Uses the following fields from `request`: `uuid`, `brain_id`, `new_properties` (defaults to an empty dict if missing), and `properties_to_remove` (defaults to an empty list if missing).
+    
+    Returns:
+        The updated relationship representation or a result object describing the outcome of the update.
     """
     return await update_relationship_controller(
         uuid=request.uuid,

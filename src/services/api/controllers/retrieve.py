@@ -337,7 +337,23 @@ async def get_relationships(
     brain_id: str = "default",
 ):
     """
-    Get the relationships of the graph.
+    Retrieve relationships from the knowledge graph with optional filtering and pagination.
+    
+    Parameters:
+        relationship_types (list[str], optional): Filter results to specific relationship types.
+        from_node_labels (list[str], optional): Filter relationships originating from nodes with these labels.
+        to_node_labels (list[str], optional): Filter relationships targeting nodes with these labels.
+        query_text (str, optional): Text to search within relationship or node content.
+        query_search_target (str, optional): Field to target for text search; commonly "all", "from", or "to".
+        limit (int, optional): Maximum number of relationships to return.
+        skip (int, optional): Number of relationships to skip (offset).
+        brain_id (str, optional): Identifier of the brain/graph to query.
+    
+    Returns:
+        JSONResponse: A response whose JSON content contains:
+            - message: Confirmation string.
+            - relationships: List of serialized relationship objects.
+            - total: Total number of matching relationships.
     """
     relationships = await asyncio.to_thread(
         search_relationships,
@@ -367,7 +383,20 @@ async def get_entities(
     brain_id: str = "default",
 ):
     """
-    Get the entities of the graph.
+    Retrieve entities from the knowledge graph with optional label and text filters.
+    
+    Parameters:
+        limit (int): Maximum number of entities to return (pagination).
+        skip (int): Number of entities to skip (pagination offset).
+        node_labels (Optional[list[str]]): If provided, only return entities whose labels match any value in this list.
+        query_text (Optional[str]): If provided, filter entities by matching text content.
+        brain_id (str): Identifier of the knowledge graph/brain to query.
+    
+    Returns:
+        JSONResponse: Object containing:
+            - message (str): Informational message.
+            - entities (list): Serialized entity objects.
+            - total (int): Total number of matching entities.
     """
     entities = await asyncio.to_thread(
         search_entities, limit, skip, node_labels, query_text, brain_id
