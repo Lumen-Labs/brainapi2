@@ -147,14 +147,27 @@ class DataClient(ABC):
     @abstractmethod
     def get_observation_labels(self, brain_id: str) -> list[str]:
         """
-        Get all unique labels from observations.
+        Return all unique observation labels for the specified brain.
+        
+        Parameters:
+            brain_id (str): Identifier of the brain whose observation labels should be retrieved.
+        
+        Returns:
+            labels (list[str]): A list of unique label strings present in the brain's observations.
         """
         raise NotImplementedError("get_observation_labels method not implemented")
     
     @abstractmethod
     def get_changelog_by_id(self, id: str, brain_id: str) -> KGChanges:
         """
-        Get changelog by ID.
+        Retrieve a changelog entry by its identifier within a brain.
+        
+        Parameters:
+            id (str): Identifier of the changelog to retrieve.
+            brain_id (str): Identifier of the brain that contains the changelog.
+        
+        Returns:
+            KGChanges: The changelog entry matching the provided `id` in the specified `brain_id`.
         """
         raise NotImplementedError("get_changelog_by_id method not implemented")
 
@@ -168,13 +181,29 @@ class DataClient(ABC):
         query_text: str = None
     ) -> list[KGChanges]:
         """
-        Get a list of changelogs.
+        Retrieve a paginated list of knowledge-graph changelogs for a brain.
+        
+        Parameters:
+            brain_id (str): Identifier of the brain whose changelogs to retrieve.
+            limit (int): Maximum number of changelogs to return.
+            skip (int): Number of changelogs to skip (offset) for pagination.
+            types (list[str] | None): Optional list of changelog types to filter results by.
+            query_text (str | None): Optional text to filter changelogs by relevance or content.
+        
+        Returns:
+            list[KGChanges]: A list of KGChanges matching the provided filters and pagination.
         """
         raise NotImplementedError("get_changelogs_list method not implemented")
 
     @abstractmethod
     def get_changelog_types(self, brain_id: str) -> list[str]:
         """
-        Get all unique types from changelogs.
+        Return the set of unique changelog types associated with the specified brain.
+        
+        Parameters:
+            brain_id (str): Identifier of the brain whose changelog types should be retrieved.
+        
+        Returns:
+            list[str]: A list of unique changelog type names (order not guaranteed).
         """
         raise NotImplementedError("get_changelog_types method not implemented")

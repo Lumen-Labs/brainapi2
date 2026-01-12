@@ -207,7 +207,15 @@ class KGAgent:
         self, node: Node, looking_for: Optional[str], limit: int
     ) -> RetrieveNeighborsOutputSchema:
         """
-        Retrieve the neighbors of a node.
+        Retrieve neighbors and related information for a given node using the KG agent.
+        
+        Parameters:
+            node (Node): The main node for which neighbors should be retrieved.
+            looking_for (Optional[str or Iterable[str]]): One or more reasons or search hints the agent should prioritize when selecting neighbors. When provided as a sequence, each element is treated as a separate reason.
+            limit (int): Maximum number of neighbor results the agent should return.
+        
+        Returns:
+            RetrieveNeighborsOutputSchema: The agent-produced structured neighbor information and associated metadata.
         """
 
         graph_db_prop_keys = self.kg.get_graph_node_properties()

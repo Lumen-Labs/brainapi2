@@ -117,7 +117,13 @@ class GraphClient(ABC):
     @abstractmethod
     def get_graph_relationships(self, brain_id: str) -> list[str]:
         """
-        Get the relationships of the graph.
+        Retrieve the relationship types present in the specified graph.
+        
+        Parameters:
+            brain_id (str): Identifier of the brain/graph to query.
+        
+        Returns:
+            list[str]: Relationship type names present in the graph.
         """
         raise NotImplementedError("get_graph_relationships method not implemented")
 
@@ -128,7 +134,14 @@ class GraphClient(ABC):
         brain_id: str,
     ) -> Node:
         """
-        Get a node by its UUID.
+        Retrieve a node identified by its UUID from the specified brain.
+        
+        Parameters:
+            uuid (str): The node's UUID.
+            brain_id (str): Identifier of the brain/graph to query.
+        
+        Returns:
+            Node: The node matching the given UUID.
         """
         raise NotImplementedError("get_by_uuid method not implemented")
 
@@ -262,28 +275,56 @@ class GraphClient(ABC):
         properties_to_remove: list[str],
     ) -> Node | Predicate | None:
         """
-        Update the properties of a node or relationship in the graph.
+        Update properties on a graph node or relationship.
+        
+        Parameters:
+            uuid (str): UUID of the target node or relationship.
+            updating (Literal["node", "relationship"]): Whether to update a node's properties or a relationship's properties.
+            brain_id (str): Identifier of the graph/brain where the entity resides.
+            new_properties (dict): Properties to set or overwrite on the target entity.
+            properties_to_remove (list[str]): Property keys to remove from the target entity.
+        
+        Returns:
+            Node | Predicate | None: The updated node or relationship object if the update succeeds, or `None` if no entity was found or no update was performed.
         """
         raise NotImplementedError("update_properties method not implemented")
 
     @abstractmethod
     def get_graph_relationship_types(self, brain_id: str) -> list[str]:
         """
-        Get all unique relationship types from the graph.
+        List unique relationship types present in the specified graph.
+        
+        Parameters:
+            brain_id (str): Identifier of the graph/brain to query.
+        
+        Returns:
+            relationship_types (list[str]): Relationship type names present in the graph.
         """
         raise NotImplementedError("get_graph_relationship_types method not implemented")
 
     @abstractmethod
     def get_graph_node_types(self, brain_id: str) -> list[str]:
         """
-        Get all unique node types from the graph.
+        Return all unique node types (labels) present in the graph for the given brain.
+        
+        Parameters:
+            brain_id (str): Identifier of the brain/graph to query.
+        
+        Returns:
+            list[str]: A list of node type names (labels) present in the specified graph.
         """
         raise NotImplementedError("get_graph_node_types method not implemented")
 
     @abstractmethod
     def get_graph_node_properties(self, brain_id: str) -> list[str]:
         """
-        Get all unique property keys from nodes in the graph.
+        Retrieve all unique node property keys present in the graph for the given brain.
+        
+        Parameters:
+            brain_id (str): Identifier of the graph/brain to query.
+        
+        Returns:
+            list[str]: Unique property key names found on nodes in the specified graph.
         """
         raise NotImplementedError("get_graph_node_properties method not implemented")
     
@@ -299,6 +340,18 @@ class GraphClient(ABC):
         properties_to_remove: Optional[list[str]] = None,
     ) -> Node | None:
         """
-        Update an entity (node) in the graph.
+        Update a node's identifying fields, labels, and properties in the graph.
+        
+        Parameters:
+            uuid (str): UUID of the node to update.
+            brain_id (str): Identifier of the graph/brain where the node resides.
+            new_name (Optional[str]): New name for the node; if omitted, name is unchanged.
+            new_description (Optional[str]): New description for the node; if omitted, description is unchanged.
+            new_labels (Optional[list[str]]): New set of labels for the node; if provided, replaces existing labels.
+            new_properties (Optional[dict]): Properties to add or update on the node; keys with values will be set or overwritten.
+            properties_to_remove (Optional[list[str]]): List of property keys to remove from the node.
+        
+        Returns:
+            Node | None: The updated Node if the node was found and modified, `None` if no matching node exists.
         """
         raise NotImplementedError("update_entity method not implemented")

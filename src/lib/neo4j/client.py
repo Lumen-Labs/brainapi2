@@ -432,7 +432,15 @@ class Neo4jClient(GraphClient):
         entity_types: Optional[list[str]] = None,
     ) -> Node:
         """
-        Get a node by its identification params and entity types.
+        Finds a node matching the provided identification parameters and optional entity types.
+        
+        Parameters:
+            identification_params (IdentificationParams): Identification fields used to locate the node (model_dump is used to build WHERE clauses).
+            brain_id (str): Target database identifier to query.
+            entity_types (list[str], optional): Node labels to restrict the match; when provided, the search matches nodes with any of these labels.
+        
+        Returns:
+            Node or None: The matching Node populated with uuid, name, labels, description, and properties, or `None` if no node is found.
         """
 
         params_dict = identification_params.model_dump(
@@ -467,7 +475,13 @@ class Neo4jClient(GraphClient):
         self, node: Node, limit: int, brain_id: str
     ) -> list[Tuple[Node, Predicate, Node]]:
         """
-        Get the neighbors of a node.
+        Retrieve neighbor triples for the given node where the neighbor shares at least one label with the source node.
+        
+        Returns:
+            list[Tuple[Node, Predicate, Node]]: A list of tuples (neighbor_node, predicate, intermediate_node) where
+                - neighbor_node is the matched neighbor (node m),
+                - predicate describes the relationship r2 between the intermediate node and the neighbor (including direction),
+                - intermediate_node is the connector node (c) through which the neighbor is reached.
         """
 
         cypher_query = f"""
@@ -950,7 +964,19 @@ class Neo4jClient(GraphClient):
         properties_to_remove: list[str],
     ) -> Node | Predicate | None:
         """
-        Update the properties of a node or relationship in the graph.
+        Update properties on a node or relationship identified by UUID.
+        
+        Sets and/or removes properties on the matched entity and returns the updated representation.
+        
+        Parameters:
+            uuid (str): UUID of the node or relationship to update.
+            updating (Literal["node", "relationship"]): Whether to update a node or a relationship.
+            brain_id (str): Target database identifier.
+            new_properties (dict): Mapping of property keys to values to set or update on the entity.
+            properties_to_remove (list[str]): List of property keys to remove from the entity.
+        
+        Returns:
+            Node | Predicate | None: A `Node` when a node was updated, a `Predicate` when a relationship was updated, or `None` if no matching entity was found.
         """
 
         property_set_operations = []
@@ -1012,7 +1038,13 @@ class Neo4jClient(GraphClient):
     
     def get_graph_relationship_types(self, brain_id: str) -> list[str]:
         """
-        Get all unique relationship types from the graph.
+        Return all relationship type names present in the specified brain (database).
+        
+        Parameters:
+            brain_id (str): Target database name to query for relationship types.
+        
+        Returns:
+            list[str]: A list of relationship type names found in the graph.
         """
         cypher_query = """
         CALL db.relationshipTypes() YIELD relationshipType
@@ -1024,7 +1056,13 @@ class Neo4jClient(GraphClient):
 
     def get_graph_node_types(self, brain_id: str) -> list[str]:
         """
-        Get all unique node types from the graph.
+        Return the set of node label types present in the specified graph database.
+        
+        Parameters:
+            brain_id (str): The target database/graph identifier to query.
+        
+        Returns:
+            list[str]: A list of node label strings found in the database.
         """
         cypher_query = """
         CALL db.labels() YIELD label
@@ -1036,7 +1074,10 @@ class Neo4jClient(GraphClient):
     
     def get_graph_node_properties(self, brain_id: str) -> list[str]:
         """
-        Get all unique property keys from nodes in the graph.
+        Return all distinct node property keys present in the database, ordered alphabetically.
+        
+        Returns:
+            properties (list[str]): Sorted list of distinct property key names used on nodes.
         """
         cypher_query = """
         MATCH (n)
@@ -1059,11 +1100,21 @@ class Neo4jClient(GraphClient):
         properties_to_remove: Optional[list[str]] = None,
     ) -> Node | None:
         """
-        Update an entity (node) in the graph.
-        When new_properties is passed, it compares with existing properties:
-        - Adds new properties that don't exist
-        - Updates properties that have changed
-        - Keeps existing properties that aren't in new_properties
+        Update the node identified by `uuid` with the provided name, description, labels, and property changes.
+        
+        If `new_properties` is provided, only properties that are new or whose values differ from the existing node are set; existing properties not mentioned are left unchanged. If `properties_to_remove` is provided, those properties are removed. If `new_labels` is provided, existing labels are removed (if the node was loaded) and replaced with the cleaned `new_labels`. If no changes are specified, the function returns the existing node (or None if not found) without executing an update.
+        
+        Parameters:
+            uuid (str): UUID of the node to update.
+            brain_id (str): Target database/brain identifier.
+            new_name (Optional[str]): New value for the node's `name` property.
+            new_description (Optional[str]): New value for the node's `description` property.
+            new_labels (Optional[list[str]]): New labels to assign to the node; labels will be cleaned and applied.
+            new_properties (Optional[dict]): Properties to add or update; only keys that are new or changed are applied when the existing node can be loaded.
+            properties_to_remove (Optional[list[str]]): Property keys to remove from the node.
+        
+        Returns:
+            Node or None: The updated Node when the update succeeds, the existing Node if no changes were requested, or `None` if the node does not exist or no update occurred.
         """
         operations = []
         
