@@ -10,17 +10,6 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 
 from fastapi import APIRouter
 
-from src.services.api.constants.requests import AddEntityRequest, UpdateEntityRequest, AddRelationshipRequest, UpdateRelationshipRequest
-from src.services.api.controllers.model import (
-    add_nodes as add_nodes_controller,
-    update_node as update_node_controller,
-    add_relationship as add_relationship_controller,
-    update_relationship as update_relationship_controller,
-)
-
-model_router = APIRouter(prefix="/model", tags=["model"])
-
-
 @model_router.post(path="/entity")
 async def add_entity(request: AddEntityRequest):
     """
