@@ -1,15 +1,4 @@
 """
-File: /model.py
-Created Date: Saturday December 27th 2025
-Author: Christian Nonis <alch.infoemail@gmail.com>
------
-Last Modified: Saturday December 27th 2025
-Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
------
-"""
-
-from fastapi import APIRouter
-
 @model_router.post(path="/entity")
 async def add_entity(request: AddEntityRequest):
     """
