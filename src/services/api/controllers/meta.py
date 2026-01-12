@@ -27,13 +27,13 @@ async def get_entities_labels(brain_id: str):
 
 async def get_relationships_properties(brain_id: str):
     """
-    Retrieve relationship types and their property keys for the graph associated with the given brain.
+    Retrieve relationship types for the graph associated with the given brain.
     
     Parameters:
         brain_id (str): Identifier of the brain whose graph to query.
     
     Returns:
-        relationship_properties: A collection mapping relationship types to their associated property keys.
+        list[str]: Relationship type names present in the graph.
     """
     result = await asyncio.to_thread(graph_adapter.get_graph_relationship_types, brain_id)
     return result
