@@ -59,6 +59,25 @@ async def update_relationship(request: UpdateRelationshipRequest):
     Update properties of an existing relationship.
     
     Uses the following fields from `request`: `uuid`, `brain_id`, `new_properties` (defaults to an empty dict if missing), and `properties_to_remove` (defaults to an empty list if missing).
+@model_router.post(path="/entity")
+async def add_entity(request: AddEntityRequest):
+    """
+    Create a new entity (node) in the knowledge graph.
+    
+    Returns:
+    	Response payload containing details of the created node.
+    """
+    return await add_nodes_controller(
+        nodes=[{
+            "name": request.name,
+            "labels": request.labels,
+            "description": request.description,
+            "properties": request.properties or {},
+        }],
+        brain_id=request.brain_id,
+        identification_params=request.identification_params,
+        metadata=request.metadata,
+    )
     
     Returns:
         The updated relationship representation or a result object describing the outcome of the update.
