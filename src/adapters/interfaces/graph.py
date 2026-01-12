@@ -354,4 +354,4 @@ class GraphClient(ABC):
         Returns:
             Node | None: The updated Node if the node was found and modified, `None` if no matching node exists.
         """
-        raise NotImplementedError("update_entity method not implemented")
+        raise NotImplementedError("update_node method not implemented")
