@@ -1172,7 +1172,7 @@ class Neo4jClient(GraphClient):
         
         cypher_query = f"""
         MATCH (n)
-        WHERE n.uuid = '{uuid}'
+        WHERE n.uuid = $uuid
         {set_clause}
         {remove_clause}
         {labels_clause}
@@ -1181,7 +1181,11 @@ class Neo4jClient(GraphClient):
         """
         
         self.ensure_database(brain_id)
-        result = self.driver.execute_query(cypher_query, database_=brain_id)
+        result = self.driver.execute_query(
+            cypher_query, 
+            parameters_={"uuid": uuid},
+            database_=brain_id
+        )
         
         if result.records:
             return Node(
