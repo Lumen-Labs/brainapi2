@@ -8,11 +8,15 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 -----
 """
 
+import json
+import time
 from typing import Optional
 from redis import Redis
 from redis.connection import ConnectionPool
 from src.adapters.interfaces.cache import CacheClient
 from src.config import config
+
+TASK_RETENTION_SECONDS = 3600 * 24 * 7
 
 
 class RedisClient(CacheClient):
@@ -55,8 +59,17 @@ class RedisClient(CacheClient):
     ) -> bool:
         """
         Set a value in the cache with an expiration time.
+        Task keys are stored WITHOUT TTL to prevent eviction by volatile-lru.
         """
         prefixed_key = self._get_key(key, brain_id)
+        if key.startswith("task:"):
+            task_id = key.split(":")[-1]
+            self.client.hset(
+                f"{brain_id}:_tasks",
+                task_id,
+                json.dumps({"data": value, "created_at": time.time()}),
+            )
+            return True
         return self.client.set(
             prefixed_key, value, **({"ex": expires_in} if expires_in else {})
         )
@@ -66,7 +79,53 @@ class RedisClient(CacheClient):
         Delete a value from the cache.
         """
         prefixed_key = self._get_key(key, brain_id)
+        if key.startswith("task:"):
+            task_id = key.split(":")[-1]
+            return self.client.hdel(f"{brain_id}:_tasks", task_id)
         return self.client.delete(prefixed_key)
+
+    def get_task_keys(self, brain_id: str) -> list[str]:
+        """
+        Get all task keys for a given brain_id.
+        Also cleans up expired tasks (older than TASK_RETENTION_SECONDS).
+        """
+        tasks_hash = f"{brain_id}:_tasks"
+        all_tasks = self.client.hgetall(tasks_hash)
+        valid_keys = []
+        now = time.time()
+        expired_keys = []
+
+        for task_id, task_data in all_tasks.items():
+            task_id_str = (
+                task_id.decode("utf-8") if isinstance(task_id, bytes) else task_id
+            )
+            try:
+                data = json.loads(task_data)
+                created_at = data.get("created_at", 0)
+                if now - created_at > TASK_RETENTION_SECONDS:
+                    expired_keys.append(task_id_str)
+                else:
+                    valid_keys.append(f"task:{task_id_str}")
+            except (json.JSONDecodeError, TypeError):
+                expired_keys.append(task_id_str)
+
+        if expired_keys:
+            self.client.hdel(tasks_hash, *expired_keys)
+
+        return valid_keys
+
+    def get_task(self, task_id: str, brain_id: str) -> Optional[str]:
+        """
+        Get a specific task by ID.
+        """
+        task_data = self.client.hget(f"{brain_id}:_tasks", task_id)
+        if task_data is None:
+            return None
+        try:
+            data = json.loads(task_data)
+            return data.get("data")
+        except (json.JSONDecodeError, TypeError):
+            return None
 
 
 _redis_client = RedisClient()

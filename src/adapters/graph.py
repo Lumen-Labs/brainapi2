@@ -8,7 +8,7 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 -----
 """
 
-from typing import Literal, Optional, Tuple
+from typing import Dict, List, Literal, Optional, Tuple
 from src.adapters.interfaces.graph import GraphClient
 from src.constants.kg import (
     IdentificationParams,
@@ -17,6 +17,8 @@ from src.constants.kg import (
     SearchEntitiesResult,
     SearchRelationshipsResult,
 )
+from src.adapters.interfaces.embeddings import VectorStoreClient
+from src.utils.normalization.list_reduction import reduce_list
 
 
 class GraphAdapter:
@@ -167,12 +169,23 @@ class GraphAdapter:
         )
 
     def get_neighbors(
-        self, node: Node, limit: int, brain_id: str = "default"
-    ) -> list[Tuple[Node, Predicate, Node]]:
+        self,
+        nodes: list[Node | str],
+        same_type_only: bool = False,
+        limit: int | None = None,
+        of_types: Optional[list[str]] = None,
+        brain_id: str = "default",
+    ) -> Dict[str, List[Tuple[Predicate, Node]]]:
         """
         Get the neighbors of a node.
         """
-        return self.graph.get_neighbors(node, limit, brain_id)
+        return self.graph.get_neighbors(
+            nodes,
+            brain_id=brain_id,
+            same_type_only=same_type_only,
+            limit=limit,
+            of_types=of_types,
+        )
 
     def get_node_with_rel_by_uuid(
         self, rel_ids_with_node_ids: list[tuple[str, str]], brain_id: str = "default"
@@ -220,7 +233,6 @@ class GraphAdapter:
         Search the relationships of the graph.
         """
         relationship_uuids = []
-        # TODO: semantic search + src/core/agents/tools/kg_agent/KGAgentAddTripletsTool.py:165
         return self.graph.search_relationships(
             brain_id,
             limit,
@@ -245,7 +257,6 @@ class GraphAdapter:
         Search the entities of the graph.
         """
         node_uuids = []
-        # TODO: semantic search
         return self.graph.search_entities(
             brain_id, limit, skip, node_labels, node_uuids, query_text
         )
@@ -351,5 +362,152 @@ class GraphAdapter:
             new_properties,
             properties_to_remove,
         )
+
+    def get_schema(self, brain_id: str = "default") -> dict:
+        """
+        Get the schema/ontology of the graph.
+        """
+        return self.graph.get_schema(brain_id)
+
+    def get_2nd_degree_hops(
+        self,
+        from_uuids: List[str],
+        flattened: bool,
+        vector_store_adapter: VectorStoreClient,
+        brain_id: str = "default",
+    ) -> List[Tuple[Node, List[Tuple[Predicate, Node, List[Tuple[Predicate, Node]]]]]]:
+
+        def flatten_node(n):
+            return (
+                {"uuid": n.uuid, "labels": n.labels, "name": n.name} if flattened else n
+            )
+
+        def flatten_pred(p):
+            return (
+                {"uuid": p.uuid, "name": p.name, "direction": p.direction}
+                if flattened
+                else p
+            )
+
+        nodes = self.get_by_uuids(from_uuids, brain_id)
+        nodes_by_uuid = {n.uuid: n for n in nodes}
+
+        vs = vector_store_adapter.get_by_ids(
+            [n.properties["v_id"] for n in nodes], brain_id=brain_id, store="nodes"
+        )
+        averaged_vector = [
+            sum(v.embeddings[i] for v in vs) / len(vs)
+            for i in range(len(vs[0].embeddings))
+        ]
+
+        all_fd_nodes = self.get_neighbors(list(nodes_by_uuid.keys()), brain_id=brain_id)
+
+        all_fd_v_ids = [
+            fd[1].properties["v_id"] for fds in all_fd_nodes.values() for fd in fds
+        ]
+        all_fd_vs = vector_store_adapter.get_by_ids(
+            all_fd_v_ids, brain_id=brain_id, store="nodes"
+        )
+        fd_vs_by_uuid = {v.metadata["uuid"]: v for v in all_fd_vs}
+
+        all_filtered_fd_uuids = []
+        filtered_fd_by_origin = {}
+
+        for node_uuid, fd_list in all_fd_nodes.items():
+            fd_nodes_by_uuid = {fd[1].uuid: fd[1] for fd in fd_list}
+            fd_vs_with_desc = [
+                {
+                    "embeddings": fd_vs_by_uuid[fd[1].uuid].embeddings,
+                    "metadata": fd_vs_by_uuid[fd[1].uuid].metadata,
+                    "description": (
+                        fd_nodes_by_uuid.get(fd[1].uuid, {}).description
+                        if fd_nodes_by_uuid.get(fd[1].uuid)
+                        else None
+                    ),
+                }
+                for fd in fd_list
+                if fd[1].uuid in fd_vs_by_uuid
+            ]
+            from_node = nodes_by_uuid[node_uuid]
+            filtered = reduce_list(
+                fd_vs_with_desc,
+                access_key="embeddings",
+                similarity_threshold=0.5,
+                by_vector=averaged_vector,
+                rerank={
+                    "local": "description",
+                    "with_": from_node.description,
+                },
+            )
+            filtered_uuids = {v["metadata"]["uuid"] for v in filtered}
+            filtered_fd_by_origin[node_uuid] = [
+                fd for fd in fd_list if fd[1].uuid in filtered_uuids
+            ]
+            all_filtered_fd_uuids.extend(filtered_uuids)
+
+        all_sd_nodes = self.get_neighbors(all_filtered_fd_uuids, brain_id=brain_id)
+
+        all_sd_v_ids = [
+            sd[1].properties["v_id"] for sds in all_sd_nodes.values() for sd in sds
+        ]
+        all_sd_vs = vector_store_adapter.get_by_ids(
+            all_sd_v_ids, brain_id=brain_id, store="nodes"
+        )
+        sd_vs_by_uuid = {v.metadata["uuid"]: v for v in all_sd_vs}
+
+        hops = []
+        exclude_set = set(from_uuids)
+
+        for from_uuid in from_uuids:
+            if from_uuid not in nodes_by_uuid:
+                continue
+            from_node = nodes_by_uuid[from_uuid]
+            node_hops = []
+
+            for fd_pred, fd_node in filtered_fd_by_origin.get(from_uuid, []):
+                sd_list = all_sd_nodes.get(fd_node.uuid, [])
+                sd_nodes_by_uuid = {sd[1].uuid: sd[1] for sd in sd_list}
+
+                sd_vs_with_desc = [
+                    {
+                        "embeddings": sd_vs_by_uuid[sd[1].uuid].embeddings,
+                        "metadata": sd_vs_by_uuid[sd[1].uuid].metadata,
+                        "description": (
+                            sd_nodes_by_uuid.get(sd[1].uuid, {}).description
+                            if sd_nodes_by_uuid.get(sd[1].uuid)
+                            else None
+                        ),
+                    }
+                    for sd in sd_list
+                    if sd[1].uuid in sd_vs_by_uuid
+                ]
+
+                reduced = reduce_list(
+                    sd_vs_with_desc,
+                    access_key="embeddings",
+                    similarity_threshold=0.5,
+                    by_vector=averaged_vector,
+                    rerank={
+                        "local": "description",
+                        "with_": from_node.description,
+                    },
+                )
+                reduced_uuids = {v["metadata"]["uuid"] for v in reduced}
+
+                second_degree = [
+                    (flatten_pred(sd[0]), flatten_node(sd[1]))
+                    for sd in sd_list
+                    if sd[1].uuid in reduced_uuids
+                    and sd[1].uuid not in exclude_set
+                    and sd[1].uuid != from_uuid
+                ]
+
+                node_hops.append(
+                    (flatten_pred(fd_pred), flatten_node(fd_node), second_degree)
+                )
+
+            hops.append((flatten_node(from_node), node_hops))
+
+        return hops
 
 _graph_adapter = GraphAdapter()

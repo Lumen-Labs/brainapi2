@@ -88,7 +88,7 @@ class MongoClient(DataClient):
         return SearchResult(text_chunks=text_chunks, observations=observations)
 
     def get_text_chunks_by_ids(
-        self, ids: List[str], brain_id: str, with_observations: bool = False
+        self, ids: List[str], with_observations: bool = False, brain_id: str = "default"
     ) -> List[TextChunk]:
         chunks_collection = self.get_collection("text_chunks", database=brain_id)
         text_chunks = chunks_collection.find({"id": {"$in": ids}})
@@ -133,7 +133,7 @@ class MongoClient(DataClient):
         return structured_data
 
     def create_brain(self, name_key: str) -> Brain:
-        collection = self.get_collection("brains", "system")
+        collection = self.get_collection("brains", config.mongo.system_database)
         brain = Brain(name_key=name_key)
         brain_dict = brain.model_dump(mode="json", exclude={"id"})
         result = collection.insert_one(brain_dict)
@@ -141,7 +141,7 @@ class MongoClient(DataClient):
         return brain
 
     def get_brain(self, name_key: str) -> Brain:
-        collection = self.get_collection("brains", "system")
+        collection = self.get_collection("brains", config.mongo.system_database)
         result = collection.find_one({"name_key": name_key})
         if not result:
             return None
@@ -152,7 +152,7 @@ class MongoClient(DataClient):
         )
 
     def get_brains_list(self) -> List[Brain]:
-        collection = self.get_collection("brains", "system")
+        collection = self.get_collection("brains", config.mongo.system_database)
         result = collection.find()
         return [
             Brain(
@@ -168,9 +168,7 @@ class MongoClient(DataClient):
         collection.insert_one(kg_changes.model_dump(mode="json"))
         return kg_changes
 
-    def get_structured_data_by_id(
-        self, id: str, brain_id: str
-    ) -> StructuredData:
+    def get_structured_data_by_id(self, id: str, brain_id: str) -> StructuredData:
         collection = self.get_collection("structured_data", database=brain_id)
         result = collection.find_one({"id": id})
         if not result:
@@ -184,20 +182,25 @@ class MongoClient(DataClient):
         )
 
     def get_structured_data_list(
-        self, brain_id: str, limit: int = 10, skip: int = 0, types: list[str] = None, query_text: str = None
+        self,
+        brain_id: str,
+        limit: int = 10,
+        skip: int = 0,
+        types: list[str] = None,
+        query_text: str = None,
     ) -> list[StructuredData]:
         collection = self.get_collection("structured_data", database=brain_id)
         query = {}
         if types:
             query["types"] = {"$in": types}
-        
+
         if query_text:
             query["$or"] = [
                 {"data": {"$regex": query_text, "$options": "i"}},
                 {"types": {"$regex": query_text, "$options": "i"}},
-                {"metadata": {"$regex": query_text, "$options": "i"}}
+                {"metadata": {"$regex": query_text, "$options": "i"}},
             ]
-        
+
         results = collection.find(query).skip(skip).limit(limit)
         return [
             StructuredData(
@@ -209,20 +212,18 @@ class MongoClient(DataClient):
             )
             for result in results
         ]
-    
+
     def get_structured_data_types(self, brain_id: str) -> list[str]:
         collection = self.get_collection("structured_data", database=brain_id)
         pipeline = [
             {"$unwind": "$types"},
             {"$group": {"_id": "$types"}},
-            {"$sort": {"_id": 1}}
+            {"$sort": {"_id": 1}},
         ]
         results = collection.aggregate(pipeline)
         return [result["_id"] for result in results]
 
-    def get_observation_by_id(
-        self, id: str, brain_id: str
-    ) -> Observation:
+    def get_observation_by_id(self, id: str, brain_id: str) -> Observation:
         collection = self.get_collection("observations", database=brain_id)
         result = collection.find_one({"id": id})
         if not result:
@@ -236,13 +237,13 @@ class MongoClient(DataClient):
         )
 
     def get_observations_list(
-        self, 
-        brain_id: str, 
-        limit: int = 10, 
-        skip: int = 0, 
+        self,
+        brain_id: str,
+        limit: int = 10,
+        skip: int = 0,
         resource_id: str = None,
         labels: list[str] = None,
-        query_text: str = None
+        query_text: str = None,
     ) -> list[Observation]:
         collection = self.get_collection("observations", database=brain_id)
         query = {}
@@ -250,14 +251,14 @@ class MongoClient(DataClient):
             query["resource_id"] = resource_id
         if labels:
             query["metadata.labels"] = {"$in": labels}
-        
+
         if query_text:
             query["$or"] = [
                 {"text": {"$regex": query_text, "$options": "i"}},
                 {"resource_id": {"$regex": query_text, "$options": "i"}},
-                {"metadata": {"$regex": query_text, "$options": "i"}}
+                {"metadata": {"$regex": query_text, "$options": "i"}},
             ]
-        
+
         results = collection.find(query).skip(skip).limit(limit)
         return [
             Observation(
@@ -269,7 +270,7 @@ class MongoClient(DataClient):
             )
             for result in results
         ]
-    
+
     def get_observation_labels(self, brain_id: str) -> list[str]:
         """
         Return the list of unique observation labels for the specified brain, sorted lexicographically.
@@ -285,7 +286,7 @@ class MongoClient(DataClient):
             {"$match": {"metadata.labels": {"$exists": True}}},
             {"$unwind": "$metadata.labels"},
             {"$group": {"_id": "$metadata.labels"}},
-            {"$sort": {"_id": 1}}
+            {"$sort": {"_id": 1}},
         ]
         results = collection.aggregate(pipeline)
         return [result["_id"] for result in results]
@@ -393,5 +394,6 @@ class MongoClient(DataClient):
         ]
         results = collection.aggregate(pipeline)
         return [result["_id"] for result in results]
+
 
 _mongo_client = MongoClient()

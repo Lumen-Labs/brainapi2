@@ -7,6 +7,7 @@ Last Modified: Saturday December 13th 2025
 Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
 -----
 """
+
 import json
 from src.utils.logging import log
 from fastapi import APIRouter
@@ -14,35 +15,60 @@ from src.services.kg_agent.main import cache_adapter
 
 tasks_router = APIRouter(prefix="/tasks", tags=["tasks"])
 
+
+@tasks_router.get("/")
+async def get_tasks(brain_id: str = "default"):
+    try:
+        task_keys = cache_adapter.get_task_keys(brain_id)
+        results = []
+        for task_key in task_keys:
+            task_id = task_key.split(":")[-1]
+            str_result = cache_adapter.get_task(task_id, brain_id=brain_id)
+            if str_result is None:
+                continue
+            result = json.loads(str_result)
+            results.append(
+                {
+                    **result,
+                    "id": task_id,
+                    "status": result.get("status", "unknown"),
+                }
+            )
+        return {"tasks": results}
+    except Exception as e:
+        log(f"Error in get_tasks: {type(e).__name__}: {str(e)}")
+        return {
+            "status": "error",
+            "result": {"error": str(e), "error_type": type(e).__name__},
+        }
+
+
 @tasks_router.get("/{task_id}")
 async def get_task(task_id: str, brain_id: str = "default"):
     """
     Get the result of a task by its ID.
     """
     try:
-        str_result = cache_adapter.get(f"task:{task_id}", brain_id=brain_id)
+        str_result = cache_adapter.get_task(task_id, brain_id=brain_id)
         if str_result is None:
             return {
                 "task_id": task_id,
                 "status": "pending",
-                "result": {"message": "Task is still processing or not found"}
+                "result": {"message": "Task is still processing or not found"},
             }
         if isinstance(str_result, bytes):
             result = json.loads(str_result.decode("utf-8"))
         else:
             result = json.loads(str_result)
         return {
+            **result,
             "task_id": task_id,
             "status": result.get("status", "unknown"),
-            "result": result
         }
     except Exception as e:
         log(f"Error in get_task: {type(e).__name__}: {str(e)}")
         return {
             "task_id": task_id,
             "status": "error",
-            "result": {
-                "error": str(e),
-                "error_type": type(e).__name__
-            }
+            "result": {"error": str(e), "error_type": type(e).__name__},
         }

@@ -27,6 +27,9 @@ class TextChunk(BaseModel):
         default_factory=datetime.now,
         description="The date and time the chunk was inserted.",
     )
+    brain_version: str = Field(
+        description="The version of the brain when the chunk was inserted.",
+    )
 
 
 class StructuredData(BaseModel):
@@ -43,6 +46,9 @@ class StructuredData(BaseModel):
     inserted_at: datetime = Field(
         default_factory=datetime.now,
         description="The date and time the structured data was inserted.",
+    )
+    brain_version: str = Field(
+        description="The version of the brain when the structured data was inserted.",
     )
 
 

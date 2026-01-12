@@ -8,3 +8,8 @@ common.egg-info
 .venv
 .env.development
 venv/
+README.md
+READMEP.md
+tmp
+gcp_credentials.json
+.favorites.json

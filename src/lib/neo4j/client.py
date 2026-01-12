@@ -9,8 +9,11 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 """
 
 import os
-from typing import Any, Literal, Optional, Tuple
+import time
+from typing import Any, Dict, List, Literal, Optional, Tuple
 from neo4j import GraphDatabase
+from neo4j.exceptions import ClientError
+from src.adapters.interfaces.embeddings import VectorStoreClient
 from src.adapters.interfaces.graph import GraphClient
 from src.config import config
 from src.constants.kg import (
@@ -33,6 +36,9 @@ class Neo4jClient(GraphClient):
         self.driver = GraphDatabase.driver(
             f"bolt://{config.neo4j.host}:{config.neo4j.port}",
             auth=(config.neo4j.username, config.neo4j.password),
+            connection_timeout=30,
+            max_connection_lifetime=300,
+            connection_acquisition_timeout=60,
         )
 
     def execute_operation(self, operation: str, brain_id: str) -> str:
@@ -46,6 +52,9 @@ class Neo4jClient(GraphClient):
         """
         Ensure a database exists.
         """
+        if self._verify_database_accessible(database):
+            return
+
         try:
             cypher_query = f"CREATE DATABASE {database}"
             self.driver.execute_query(cypher_query, database_="system")
@@ -55,12 +64,65 @@ class Neo4jClient(GraphClient):
                 "already exists" in error_msg
                 or "not supported in community edition" in error_msg
                 or "unsupported administration command" in error_msg
-                or "database not found" in error_msg
-                or "graph not found" in error_msg
             ):
                 pass
             else:
                 raise
+
+        retries = 0
+        max_wait_retries = 30
+        while retries < max_wait_retries:
+            if self._verify_database_accessible(database):
+                return
+            time.sleep(0.2)
+            retries += 1
+
+        if not self._verify_database_accessible(database):
+            raise RuntimeError(
+                f"Database '{database}' could not be created or is not accessible. "
+                "If using Neo4j Community Edition, you can only use the default 'neo4j' database."
+            )
+
+    def _verify_database_accessible(self, database: str) -> bool:
+        """
+        Verify that a database is accessible by executing a simple query.
+        """
+        try:
+            self.driver.execute_query("RETURN 1 AS test", database_=database)
+            return True
+        except ClientError as e:
+            error_code = getattr(e, "code", None)
+            if error_code == "Neo.ClientError.Database.DatabaseNotFound":
+                return False
+            raise
+
+    def _execute_query_with_retry(
+        self, query: str, database: str, max_retries: int = 3, retry_delay: float = 0.1
+    ):
+        """
+        Execute a query with retry logic for DatabaseNotFound errors.
+        Verifies database accessibility instead of using sleep.
+        """
+        last_exception = None
+        for attempt in range(max_retries):
+            try:
+                return self.driver.execute_query(query, database_=database)
+            except ClientError as e:
+                error_code = getattr(e, "code", None)
+                if error_code == "Neo.ClientError.Database.DatabaseNotFound":
+                    last_exception = e
+                    if attempt < max_retries - 1:
+                        self.ensure_database(database)
+                        retries = 0
+                        while retries < 10 and not self._verify_database_accessible(
+                            database
+                        ):
+                            time.sleep(retry_delay)
+                            retries += 1
+                        continue
+                raise
+        if last_exception:
+            raise last_exception
 
     @property
     def graphdb_type(self) -> str:
@@ -131,8 +193,10 @@ class Neo4jClient(GraphClient):
         Add nodes to the graph.
         """
         results = []
+        self.ensure_database(brain_id)
+
         for node in nodes:
-            identification_dict = {"Name": node.name}
+            identification_dict = {"name": node.name}
 
             all_properties = {
                 **(node.properties or {}),
@@ -141,24 +205,15 @@ class Neo4jClient(GraphClient):
 
             if identification_params:
                 for key, value in identification_params.items():
-                    identification_dict[key] = value
+                    normalized_key = self._clean_property_key(key)
+                    if normalized_key != "name":
+                        identification_dict[normalized_key] = value
 
             identification_items = []
             for key, value in identification_dict.items():
                 cypher_key = self._format_property_key(key)
-
-                if isinstance(value, str):
-                    escaped_value = self._format_value(value)
-                    identification_items.append(f"{cypher_key}: {escaped_value}")
-                elif isinstance(value, (int, float, bool)):
-                    identification_items.append(
-                        f"{cypher_key}: {self._format_value(value)}"
-                    )
-                elif value is None:
-                    identification_items.append(f"{cypher_key}: null")
-                else:
-                    escaped_value = self._format_value(value)
-                    identification_items.append(f"{cypher_key}: {escaped_value}")
+                escaped_value = self._format_value(value)
+                identification_items.append(f"{cypher_key}: {escaped_value}")
 
             identification_set_str = f"{{{', '.join(identification_items)}}}"
 
@@ -168,19 +223,8 @@ class Neo4jClient(GraphClient):
             property_assignments = []
             for key, value in all_properties.items():
                 cypher_key = self._format_property_key(key)
-
-                if isinstance(value, str):
-                    escaped_value = self._format_value(value)
-                    property_assignments.append(f"n.{cypher_key} = {escaped_value}")
-                elif isinstance(value, (int, float, bool)):
-                    property_assignments.append(
-                        f"n.{cypher_key} = {self._format_value(value)}"
-                    )
-                elif value is None:
-                    property_assignments.append(f"n.{cypher_key} = null")
-                else:
-                    escaped_value = self._format_value(value)
-                    property_assignments.append(f"n.{cypher_key} = {escaped_value}")
+                escaped_value = self._format_value(value)
+                property_assignments.append(f"n.{cypher_key} = {escaped_value}")
 
             property_assignments.append(f"n.uuid = '{node.uuid}'")
 
@@ -192,9 +236,8 @@ class Neo4jClient(GraphClient):
     SET {properties_set}
     RETURN n
             """
-            self.ensure_database(brain_id)
             try:
-                result = self.driver.execute_query(cypher_query, database_=brain_id)
+                result = self._execute_query_with_retry(cypher_query, brain_id)
                 results.append(result)
                 log("Nodes added: ", results)
             except Exception as e:
@@ -222,13 +265,11 @@ class Neo4jClient(GraphClient):
         """
         Add a relationship between two nodes to the graph.
         """
-        safe_desc = predicate.description.replace("'", "\\'")
-
         cypher_query = f"""
-        MATCH (a:{":".join(self._clean_labels(subject.labels))}) WHERE a.name = '{subject.name}'
-        MATCH (b:{":".join(self._clean_labels(to_object.labels))}) WHERE b.name = '{to_object.name}'
+        MATCH (a:{":".join(self._clean_labels(subject.labels))}) WHERE a.name = {self._format_value(subject.name)}
+        MATCH (b:{":".join(self._clean_labels(to_object.labels))}) WHERE b.name = {self._format_value(to_object.name)}
         MERGE (a)-[r:{":".join(self._clean_labels([predicate.name]))}]->(b)
-        ON CREATE SET r.description = '{safe_desc}', r.uuid = '{predicate.uuid}'
+        ON CREATE SET r.description = {self._format_value(predicate.description)}, r.uuid = {self._format_value(predicate.uuid)}
         RETURN a, b
         """
 
@@ -245,7 +286,7 @@ class Neo4jClient(GraphClient):
 
         queries = []
         for node in nodes:
-            query = f"""MATCH (n:{":".join(self._clean_labels(node.labels))}) WHERE n.name = '{node.name}'
+            query = f"""MATCH (n:{":".join(self._clean_labels(node.labels))}) WHERE n.name = {self._format_value(node.name)}
     OPTIONAL MATCH (n)-[r*1]-(m)
     RETURN n, r, m"""
             queries.append(query)
@@ -261,7 +302,7 @@ class Neo4jClient(GraphClient):
         """
         cypher_query = f"""
         MATCH (n) 
-        WHERE toLower(n.name) CONTAINS toLower('{text}')
+        WHERE toLower(n.name) CONTAINS toLower({self._format_value(text)})
         RETURN n
         """
         self.ensure_database(brain_id)
@@ -416,11 +457,11 @@ class Neo4jClient(GraphClient):
         result = self.driver.execute_query(cypher_query, database_=brain_id)
         return [
             Node(
-                uuid=record["uuid"],
-                name=record["name"],
-                labels=record["labels"],
-                description=record["description"],
-                properties=record["properties"],
+                uuid=record.get("uuid", ""),
+                name=record.get("name", ""),
+                labels=record.get("labels", []),
+                description=record.get("description", ""),
+                properties=record.get("properties", {}),
             )
             for record in result.records
         ]
@@ -472,8 +513,13 @@ class Neo4jClient(GraphClient):
         )
 
     def get_neighbors(
-        self, node: Node, limit: int, brain_id: str
-    ) -> list[Tuple[Node, Predicate, Node]]:
+        self,
+        nodes: list[Node | str],
+        brain_id: str,
+        same_type_only: bool = False,
+        limit: int | None = None,
+        of_types: Optional[list[str]] = None,
+    ) -> Dict[str, List[Tuple[Predicate, Node]]]:
         """
         Retrieve neighbor triples for the given node where the neighbor shares at least one label with the source node.
         
@@ -483,55 +529,67 @@ class Neo4jClient(GraphClient):
                 - predicate describes the relationship r2 between the intermediate node and the neighbor (including direction),
                 - intermediate_node is the connector node (c) through which the neighbor is reached.
         """
+        if len(nodes) == 0:
+            return {}
 
+        if isinstance(nodes[0], str):
+            node_uuids = nodes
+        else:
+            node_uuids = [node.uuid for node in nodes]
+
+        uuids_list = '", "'.join(node_uuids)
         cypher_query = f"""
-        MATCH (n {{uuid: '{node.uuid}'}})-[r]-(c)-[r2]-(m)
-        WHERE size([l IN labels(n) WHERE l IN labels(m)]) > 0
-        RETURN m.uuid AS uuid, m.name AS name, labels(m) AS labels, m.description AS description, properties(m) AS properties, r2 AS rel,
-               CASE WHEN startNode(r2) = c THEN 'out' ELSE 'in' END AS direction,
+        MATCH (n)-[r]-(c)
+        WHERE n.uuid IN ["{uuids_list}"]
+        """
+
+        if same_type_only:
+            cypher_query += " AND size([l IN labels(n) WHERE l IN labels(c)]) > 0"
+
+        if of_types:
+            cypher_query += (
+                " AND ANY(l IN labels(c) WHERE l IN ["
+                + ",".join(f"'{t}'" for t in self._clean_labels(of_types))
+                + "])"
+            )
+
+        cypher_query += """
+        RETURN n.uuid AS uuid, n.name AS name, labels(n) AS labels, n.description AS description, properties(n) AS properties, r AS rel,
+               CASE WHEN startNode(r) = n THEN 'out' ELSE 'in' END AS direction,
+               type(r) AS rel_type, r.description AS rel_description,
                c.uuid AS c_uuid, c.name AS c_name, labels(c) AS c_labels, c.description AS c_description, properties(c) AS c_properties
         """
+
+        if limit:
+            cypher_query += f" LIMIT {limit}"
+
         self.ensure_database(brain_id)
         result = self.driver.execute_query(cypher_query, database_=brain_id)
 
-        neighbors = []
-        for record in result.records:
-            rel = record["rel"]
-            rel_type = getattr(rel, "type", None)
-            rel_desc = ""
-            try:
-                rel_desc = rel.get("description", "")
-            except Exception:
-                try:
-                    rel_desc = rel["description"]
-                except Exception:
-                    rel_desc = ""
-            direction = record.get("direction", "out")
+        neighbors_dict: Dict[str, List[Tuple[Predicate, Node]]] = {
+            uuid: [] for uuid in node_uuids
+        }
 
-            neighbors.append(
-                (
-                    Node(
-                        uuid=record.get("uuid", ""),
-                        name=record.get("name", "") or "",
-                        labels=record.get("labels", []) or [],
-                        description=record.get("description", "") or "",
-                        properties=record.get("properties", {}) or {},
-                    ),
-                    Predicate(
-                        name=rel_type or "",
-                        description=rel_desc or "",
-                        direction=direction,
-                    ),
-                    Node(
-                        uuid=record.get("c_uuid", ""),
-                        name=record.get("c_name", "") or "",
-                        labels=record.get("c_labels", []) or [],
-                        description=record.get("c_description", "") or "",
-                        properties=record.get("c_properties", {}) or {},
-                    ),
-                )
+        for record in result.records:
+            source_uuid = record["uuid"]
+            neighbor = (
+                Predicate(
+                    name=record.get("rel_type", "") or "",
+                    description=record.get("rel_description", "") or "",
+                    direction=record.get("direction", "neutral"),
+                ),
+                Node(
+                    uuid=record.get("c_uuid", ""),
+                    name=record.get("c_name", "") or "",
+                    labels=record.get("c_labels", []) or [],
+                    description=record.get("c_description", "") or "",
+                    properties=record.get("c_properties", {}) or {},
+                ),
             )
-        return [(n, p, c) for n, p, c in neighbors]
+            if source_uuid in neighbors_dict:
+                neighbors_dict[source_uuid].append(neighbor)
+
+        return neighbors_dict
 
     def get_node_with_rel_by_uuid(
         self, rel_ids_with_node_ids: list[tuple[str, str]], brain_id: str
@@ -861,7 +919,7 @@ class Neo4jClient(GraphClient):
             filters.append(f"n.uuid IN [{','.join(node_uuids)}]")
         if query_text:
             filters.append(
-                f"(toLower(coalesce(n.name, n.name, '')) CONTAINS toLower('{query_text}'))"
+                f"(toLower(coalesce(n.name, n.name, '')) CONTAINS toLower({self._format_value(query_text)}))"
             )
         cypher_query = f"""
         MATCH (n)
@@ -876,8 +934,8 @@ class Neo4jClient(GraphClient):
         RETURN count(n) AS total
         """
         self.ensure_database(brain_id)
-        result = self.driver.execute_query(cypher_query, database_=brain_id)
-        count_result = self.driver.execute_query(cypher_count, database_=brain_id)
+        result = self._execute_query_with_retry(cypher_query, brain_id)
+        count_result = self._execute_query_with_retry(cypher_count, brain_id)
         total = 0
         if count_result and count_result.records:
             total = count_result.records[0].get("total") or 0
@@ -1197,6 +1255,41 @@ class Neo4jClient(GraphClient):
             )
         
         return None
+
+    def get_schema(self, brain_id: str) -> dict:
+        """
+        Get the schema/ontology of the graph.
+        Returns all node labels and relationship types in JSON format.
+        """
+        self.ensure_database(brain_id)
+
+        labels_query = "CALL db.labels() YIELD label RETURN label"
+        relationships_query = (
+            "CALL db.relationshipTypes() YIELD relationshipType RETURN relationshipType"
+        )
+
+        labels_result = self.driver.execute_query(labels_query, database_=brain_id)
+        relationships_result = self.driver.execute_query(
+            relationships_query, database_=brain_id
+        )
+
+        labels = [record["label"] for record in labels_result.records]
+        relationships = [
+            record["relationshipType"] for record in relationships_result.records
+        ]
+
+        return {"labels": labels, "relationships": relationships}
+
+    def get_2nd_degree_hops(
+        self,
+        from_: List[str],
+        flattened: bool,
+        vector_store_adapter: VectorStoreClient,
+        brain_id: str,
+    ) -> Dict[str, List[Tuple[Predicate, Node, List[Tuple[Predicate, Node]]]]]:
+        return super().get_2nd_degree_hops(
+            from_, flattened, vector_store_adapter, brain_id
+        )
 
 
 _neo4j_client = Neo4jClient()

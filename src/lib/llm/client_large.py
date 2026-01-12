@@ -45,7 +45,7 @@ class LLMClientLarge(LLM):
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=max_new_tokens,
+            **({"max_tokens": max_new_tokens} if max_new_tokens else {}),
         )
         return response.choices[0].message.content
 
@@ -61,7 +61,7 @@ class LLMClientLarge(LLM):
                 _response = self.client.chat.completions.create(
                     model=self.model,
                     messages=[{"role": "user", "content": prompt}],
-                    max_tokens=max_new_tokens,
+                    **({"max_tokens": max_new_tokens} if max_new_tokens else {}),
                     response_format={"type": "json_object"},
                 )
                 _response = (

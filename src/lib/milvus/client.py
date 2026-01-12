@@ -19,6 +19,8 @@ if os.getenv("MILVUS_URI") and not os.getenv("MILVUS_URI").startswith(
     os.environ["MILVUS_URI"] = f"https://{os.getenv('MILVUS_URI')}"
 
 from pymilvus import MilvusClient as Milvus
+from pymilvus import connections, db
+from pymilvus.milvus_client.index import IndexParams
 
 from src.adapters.interfaces.embeddings import VectorStoreClient
 from src.config import config
@@ -36,7 +38,8 @@ class MilvusClient(VectorStoreClient):
     """
 
     def __init__(self):
-        self._client = None
+        self._clients = {}
+        self._default_client = None
         self._lock = None
         self._pid = None
 
@@ -51,50 +54,118 @@ class MilvusClient(VectorStoreClient):
         import os as os_module
 
         current_pid = os_module.getpid()
-        if self._pid is not None and self._pid != current_pid:
-            if self._client is not None:
+        if hasattr(self, "_pid") and self._pid is not None and self._pid != current_pid:
+            for brain_id in list(self._clients.keys()):
                 try:
-                    self._client.close()
+                    self._clients[brain_id].close()
                 except Exception:
                     pass
-            self._client = None
+                del self._clients[brain_id]
+            if self._default_client is not None:
+                try:
+                    self._default_client.close()
+                except Exception:
+                    pass
+                self._default_client = None
         self._pid = current_pid
 
-    @property
-    def client(self):
+    def _get_default_client(self):
         """
-        Lazy initialization of the Milvus client.
+        Get or create a default Milvus client (without db_name) for database management operations.
         """
         self._reset_client_if_forked()
-        if self._client is None:
+        if self._default_client is None:
             with self._get_lock():
                 self._reset_client_if_forked()
-                if self._client is None:
+                if self._default_client is None:
                     if config.milvus.uri and config.milvus.token:
-                        self._client = Milvus(
+                        self._default_client = Milvus(
                             uri=config.milvus.uri,
                             token=config.milvus.token,
+                            timeout=30,
                         )
                     elif config.milvus.host and config.milvus.port:
                         uri = f"http://{config.milvus.host}:{config.milvus.port}"
-                        self._client = Milvus(
+                        self._default_client = Milvus(
                             uri=uri,
                             token=config.milvus.token if config.milvus.token else None,
+                            timeout=30,
                         )
                     else:
                         raise ValueError("Invalid Milvus configuration")
-        return self._client
+        return self._default_client
+
+    def _ensure_database(self, brain_id: str):
+        """
+        Ensure the database exists, creating it if necessary.
+        """
+        try:
+            if config.milvus.uri and config.milvus.token:
+                connections.connect(
+                    uri=config.milvus.uri,
+                    token=config.milvus.token,
+                    timeout=30,
+                )
+            elif config.milvus.host and config.milvus.port:
+                uri = f"http://{config.milvus.host}:{config.milvus.port}"
+                connections.connect(
+                    uri=uri,
+                    token=config.milvus.token if config.milvus.token else None,
+                    timeout=30,
+                )
+            else:
+                raise ValueError("Invalid Milvus configuration")
+
+            databases = db.list_database()
+            if brain_id not in databases:
+                db.create_database(brain_id)
+        except Exception as e:
+            error_msg = str(e).lower()
+            if (
+                "already exists" not in error_msg
+                and "database not found" not in error_msg
+                and "already connected" not in error_msg
+            ):
+                raise
+
+    def _get_client(self, brain_id: str):
+        """
+        Get or create a Milvus client for the specified database (brain_id).
+        """
+        self._reset_client_if_forked()
+        if brain_id not in self._clients:
+            with self._get_lock():
+                self._reset_client_if_forked()
+                if brain_id not in self._clients:
+                    self._ensure_database(brain_id)
+                    if config.milvus.uri and config.milvus.token:
+                        self._clients[brain_id] = Milvus(
+                            uri=config.milvus.uri,
+                            token=config.milvus.token,
+                            db_name=brain_id,
+                        )
+                    elif config.milvus.host and config.milvus.port:
+                        uri = f"http://{config.milvus.host}:{config.milvus.port}"
+                        self._clients[brain_id] = Milvus(
+                            uri=uri,
+                            token=config.milvus.token if config.milvus.token else None,
+                            db_name=brain_id,
+                        )
+                    else:
+                        raise ValueError("Invalid Milvus configuration")
+        return self._clients[brain_id]
 
     def _ensure_store(self, store: str, brain_id: str) -> None:
         """
-        Ensure the store exists and is loaded.
+        Ensure the store exists and is loaded in the specified database.
         """
+        client = self._get_client(brain_id)
         if store not in EMBEDDING_STORES_SIZES:
             raise ValueError(f"Store {store} not available")
 
         collection_created = False
-        if not self.client.has_collection(store):
-            self.client.create_collection(
+        if not client.has_collection(store):
+            client.create_collection(
                 store,
                 dimension=EMBEDDING_STORES_SIZES[store],
                 vector_field_name="embeddings",
@@ -103,60 +174,62 @@ class MilvusClient(VectorStoreClient):
 
         if collection_created:
             try:
-                index_params = {
-                    "metric_type": "COSINE",
-                    "index_type": "AUTOINDEX",
-                }
-                self.client.create_index(
-                    collection_name=store,
+                index_params = IndexParams()
+                index_params.add_index(
                     field_name="embeddings",
+                    index_type="AUTOINDEX",
+                    metric_type="COSINE",
+                )
+                client.create_index(
+                    collection_name=store,
                     index_params=index_params,
                 )
             except Exception as e:
                 print(f"[Milvus] Error creating index for collection {store}: {e}")
 
         try:
-            has_partition = self.client.has_partition(store, brain_id)
-            if not has_partition:
-                self.client.load_collection(store)
+            client.load_collection(store)
         except Exception:
-            try:
-                self.client.load_collection(store)
-            except Exception:
-                pass
+            pass
 
-    def add_vectors(self, vectors: list[Vector], store: str, brain_id: str) -> None:
+    def add_vectors(
+        self, vectors: list[Vector], store: str, brain_id: str
+    ) -> list[str]:
         """
         Add vectors to the vector store.
         """
+        client = self._get_client(brain_id)
         self._ensure_store(store, brain_id)
-        self.client.insert(
+        vs = [
+            {
+                "id": hash(vector.id) % (2**63),
+                "embeddings": vector.embeddings,
+                "uuid": vector.id,
+                **(vector.metadata or {}),
+            }
+            for vector in vectors
+        ]
+        client.insert(
             store,
-            [
-                {
-                    "id": hash(vector.id) % (2**63),
-                    "embeddings": vector.embeddings,
-                    "uuid": vector.id,
-                    **(vector.metadata or {}),
-                }
-                for vector in vectors
-            ],
+            vs,
         )
+        return [v["id"] for v in vs]
 
     def search_vectors(
-        self, data_vector: list[float], store: str, brain_id: str, k: int = 10
+        self, data_vector: list[float], brain_id: str, store: str, k: int = 10
     ) -> list[Vector]:
         """
         Search vectors in the vector store and return the top k vectors.
         """
+        client = self._get_client(brain_id)
         self._ensure_store(store, brain_id)
 
         try:
-            self.client.load_collection(store)
+            client.load_collection(store)
         except Exception:
             pass
 
-        _results = self.client.search(
+        _results = client.search(
             store, data=[data_vector], limit=k, output_fields=["$meta"]
         )
         results = []
@@ -173,20 +246,33 @@ class MilvusClient(VectorStoreClient):
                         distance=result["distance"],
                     )
                 )
+        results.sort(key=lambda x: x.distance)
         return results
 
     def get_by_ids(self, ids: list[str], store: str, brain_id: str) -> list[Vector]:
         """
-        Get vectors by their IDs.
+        Get vectors by their IDs from the specified database (brain_id).
         """
+        if not ids:
+            return []
+        client = self._get_client(brain_id)
         self._ensure_store(store, brain_id)
-        collection = self.client.query(
+        collection = client.query(
             collection_name=store,
-            ids=[hash(id) % (2**63) for id in ids],
-            output_fields=["$meta"],
+            ids=ids,
+            output_fields=["embeddings", "$meta"],
         )
         return [
-            Vector(id=result["id"], metadata=result["entity"]) for result in collection
+            Vector(
+                id=result.get("uuid", str(result["id"])),
+                embeddings=result.get("embeddings"),
+                metadata={
+                    k: v
+                    for k, v in result.items()
+                    if k not in ["id", "embeddings", "distance"]
+                },
+            )
+            for result in collection
         ]
 
     def search_similar_by_ids(
@@ -197,17 +283,18 @@ class MilvusClient(VectorStoreClient):
         min_similarity: float,
         limit: int = 10,
     ) -> dict[str, list[Vector]]:
+        client = self._get_client(brain_id)
         self._ensure_store(store, brain_id)
         try:
-            self.client.load_collection(store)
+            client.load_collection(store)
         except Exception:
             pass
 
         if not vector_ids:
             return {}
 
-        expr = "uuid in [" + ",".join(f"'{v}'" for v in vector_ids) + "]"
-        queried = self.client.query(
+        expr = "id in [" + ",".join(str(v) for v in vector_ids) + "]"
+        queried = client.query(
             collection_name=store,
             filter=expr,
             output_fields=["embeddings", "$meta"],
@@ -216,7 +303,7 @@ class MilvusClient(VectorStoreClient):
 
         for item in queried or []:
             emb = item.get("embeddings") or item.get("embeddings")
-            uuid = item.get("uuid")
+            uuid = item.get("id")
             if emb is not None and uuid:
                 id_to_emb[uuid] = emb
 
@@ -235,7 +322,7 @@ class MilvusClient(VectorStoreClient):
             chunk_embeddings = batch_embeddings[start:end]
             chunk_ids = batch_ids[start:end]
 
-            raw_results = self.client.search(
+            raw_results = client.search(
                 collection_name=store,
                 data=chunk_embeddings,
                 limit=max(limit * 5, limit),

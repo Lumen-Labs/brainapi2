@@ -1,0 +1,282 @@
+version: "3.8"
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: brainapi-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 2gb
+      --maxmemory-policy volatile-lru
+      --save 900 1
+      --save 300 10
+      --save 60 10000
+      --tcp-backlog 511
+      --timeout 0
+    networks:
+      - appnet
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.5
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  neo4j:
+    image: neo4j:5-enterprise
+    container_name: brainapi-neo4j
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j-data:/data
+      - neo4j-logs:/logs
+      - neo4j-plugins:/plugins
+      - ./src/config/neo4j:/var/lib/neo4j/conf
+    environment:
+      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-your_password}
+      - NEO4J_ACCEPT_LICENSE_AGREEMENT=yes
+      - NEO4J_PLUGINS=["apoc"]
+      - NEO4J_server_memory_heap_max__size=2g
+      - NEO4J_server_memory_pagecache_size=1g
+      - NEO4J_server_jvm_additional=-XX:+UseG1GC -XX:MaxGCPauseMillis=200
+    networks:
+      - appnet
+    restart: unless-stopped
+    mem_limit: 3g
+    cpus: 1
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:7474 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.18
+    container_name: brainapi-etcd
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_SNAPSHOT_COUNT=50000
+    volumes:
+      - etcd-data:/etcd
+    command: etcd -advertise-client-urls=http://etcd:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    networks:
+      - appnet
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.2
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  minio:
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    container_name: brainapi-minio
+    environment:
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    ports:
+      - "9001:9001"
+      - "9000:9000"
+    volumes:
+      - minio-data:/minio_data
+    command: minio server /minio_data --console-address ":9001"
+    networks:
+      - appnet
+    restart: unless-stopped
+    mem_limit: 1g
+    cpus: 0.4
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  milvus:
+    image: milvusdb/milvus:v2.6.6
+    container_name: brainapi-milvus
+    command: ["milvus", "run", "standalone"]
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MQ_TYPE: woodpecker
+      MILVUS_COMMON_LOG_LEVEL: warn
+    volumes:
+      - milvus-data:/var/lib/milvus
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+    networks:
+      - appnet
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+    mem_limit: 2g
+    cpus: 0.6
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      start_period: 90s
+      timeout: 20s
+      retries: 3
+
+  mongo:
+    image: mongo:8.0
+    container_name: brainapi-mongo
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME:-root}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-password}
+    volumes:
+      - mongo-data:/data/db
+      - mongo-config:/data/configdb
+    command: >
+      mongod
+      --wiredTigerCacheSizeGB=5
+      --wiredTigerCollectionBlockCompressor=snappy
+      --wiredTigerIndexPrefixCompression=true
+      --logpath=/var/log/mongodb/mongod.log
+      --logappend
+      --bind_ip_all
+    networks:
+      - appnet
+    restart: unless-stopped
+    mem_limit: 1.5g
+    cpus: 0.4
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  brainapi:
+    image: ghcr.io/lumen-labs/brainapi:latest
+    container_name: brainapi-api
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    command: >
+      /app/.venv/bin/python -m uvicorn
+      src.services.api.app:app
+      --host 0.0.0.0
+      --port 8000
+      --workers 4
+      --timeout-keep-alive 30
+      --limit-concurrency 200
+      --backlog 2048
+    depends_on:
+      redis:
+        condition: service_healthy
+      neo4j:
+        condition: service_started
+      mongo:
+        condition: service_healthy
+      milvus:
+        condition: service_healthy
+    networks:
+      - appnet
+    restart: unless-stopped
+    mem_limit: 1024m
+    cpus: 0.9
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "curl",
+          "-f",
+          "http://localhost:8000/",
+          "-H",
+          "BrainPAT: ${BRAINPAT_TOKEN}",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  brainapi-worker:
+    image: ghcr.io/lumen-labs/brainapi:latest
+    container_name: brainapi-worker
+    env_file:
+      - .env
+    command: >
+      /app/.venv/bin/celery
+      -A src.workers.app worker
+      --loglevel=info
+      --concurrency=10
+      --max-tasks-per-child=50
+      --time-limit=3600
+      --soft-time-limit=3000
+      --prefetch-multiplier=1
+      --optimization=fair
+    depends_on:
+      redis:
+        condition: service_healthy
+      neo4j:
+        condition: service_started
+      mongo:
+        condition: service_healthy
+      milvus:
+        condition: service_healthy
+    networks:
+      - appnet
+    restart: unless-stopped
+    mem_limit: 1408m
+    cpus: 0.9
+    deploy:
+      resources:
+        limits:
+          cpus: "0.9"
+          memory: 1408m
+    healthcheck:
+      test: ["CMD", "celery", "-A", "src.workers.app", "inspect", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+networks:
+  appnet:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  redis-data:
+    driver: local
+  neo4j-data:
+    driver: local
+  neo4j-logs:
+    driver: local
+  neo4j-plugins:
+    driver: local
+  etcd-data:
+    driver: local
+  minio-data:
+    driver: local
+  milvus-data:
+    driver: local
+  mongo-data:
+    driver: local
+  mongo-config:
+    driver: local

@@ -56,9 +56,7 @@ class DataAdapter:
         Get data by their IDs.
         """
         return self.data.get_text_chunks_by_ids(
-            ids=ids, 
-            with_observations=with_observations, 
-            brain_id=brain_id
+            ids=ids, with_observations=with_observations, brain_id=brain_id
         )
 
     def save_structured_data(
@@ -67,7 +65,9 @@ class DataAdapter:
         """
         Save a structured data to the data client.
         """
-        return self.data.save_structured_data(structured_data=structured_data, brain_id=brain_id)
+        return self.data.save_structured_data(
+            structured_data=structured_data, brain_id=brain_id
+        )
 
     def create_brain(self, name_key: str) -> Brain:
         """
@@ -104,12 +104,23 @@ class DataAdapter:
         return self.data.get_structured_data_by_id(id=id, brain_id=brain_id)
 
     def get_structured_data_list(
-        self, brain_id: str = "default", limit: int = 10, skip: int = 0, types: list[str] = None, query_text: str = None
+        self,
+        brain_id: str = "default",
+        limit: int = 10,
+        skip: int = 0,
+        types: list[str] = None,
+        query_text: str = None,
     ) -> list[StructuredData]:
         """
         Get a list of structured data.
         """
-        return self.data.get_structured_data_list(brain_id=brain_id, limit=limit, skip=skip, types=types, query_text=query_text)
+        return self.data.get_structured_data_list(
+            brain_id=brain_id,
+            limit=limit,
+            skip=skip,
+            types=types,
+            query_text=query_text,
+        )
 
     def get_structured_data_types(self, brain_id: str = "default") -> list[str]:
         """
@@ -117,28 +128,33 @@ class DataAdapter:
         """
         return self.data.get_structured_data_types(brain_id=brain_id)
 
-    def get_observation_by_id(
-        self, id: str, brain_id: str = "default"
-    ) -> Observation:
+    def get_observation_by_id(self, id: str, brain_id: str = "default") -> Observation:
         """
         Get observation by ID.
         """
         return self.data.get_observation_by_id(id=id, brain_id=brain_id)
 
     def get_observations_list(
-        self, 
-        brain_id: str = "default", 
-        limit: int = 10, 
-        skip: int = 0, 
+        self,
+        brain_id: str = "default",
+        limit: int = 10,
+        skip: int = 0,
         resource_id: str = None,
         labels: list[str] = None,
-        query_text: str = None
+        query_text: str = None,
     ) -> list[Observation]:
         """
         Get a list of observations.
         """
-        return self.data.get_observations_list(brain_id=brain_id, limit=limit, skip=skip, resource_id=resource_id, labels=labels, query_text=query_text)
-    
+        return self.data.get_observations_list(
+            brain_id=brain_id,
+            limit=limit,
+            skip=skip,
+            resource_id=resource_id,
+            labels=labels,
+            query_text=query_text,
+        )
+
     def get_observation_labels(self, brain_id: str = "default") -> list[str]:
         """
         Retrieve all unique observation labels for the specified brain.

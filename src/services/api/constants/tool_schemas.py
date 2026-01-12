@@ -43,9 +43,12 @@ NODE_SCHEMA = {
             "type": "object",
             "description": (
                 "All the extra properties that will be added to the node "
-                "and provide additional context."
+                "and provide additional context. "
+                "This object accepts any key-value pairs dynamically."
             ),
-            "additionalProperties": True,
+            "patternProperties": {
+                ".*": {"description": "Any additional property value"}
+            },
         },
     },
     "required": ["labels", "name"],

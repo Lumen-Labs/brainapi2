@@ -12,6 +12,7 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 
 import os
 import dotenv
+from pathlib import Path
 
 dotenv.load_dotenv(
     dotenv_path=f".env{'.' + os.getenv('ENV') if os.getenv('ENV') else ''}"
@@ -40,6 +41,37 @@ class AzureConfig:
             self.embedding_key,
         ].count(None) > 0:
             raise ValueError("Azure configuration is not complete")
+
+
+class GCPConfig:
+    """
+    Configuration class for the GCP configuration.
+    """
+
+    def __init__(self):
+        credentials_path = os.getenv("GCP_CREDENTIALS_PATH")
+        if not credentials_path:
+            credentials_path = str(
+                Path(__file__).parent.parent / "gcp_credentials.json"
+            )
+        else:
+            credentials_path = os.path.expanduser(credentials_path)
+            if not os.path.isabs(credentials_path):
+                credentials_path = str(Path(__file__).parent.parent / credentials_path)
+        if not os.path.exists(credentials_path):
+            raise FileNotFoundError(
+                f"Credentials file not found at: {credentials_path}. "
+                "Please set GCP_CREDENTIALS_PATH environment variable or place gcp_credentials.json in the project root."
+            )
+
+        self.credentials_path = credentials_path
+        self.project_id = os.getenv("GCP_PROJECT_ID")
+        self.small_llm_model = os.getenv("GCP_SMALL_LLM_MODEL")
+
+        if [self.credentials_path, self.project_id, self.small_llm_model].count(
+            None
+        ) > 0:
+            raise ValueError("GCP configuration is not complete")
 
 
 class RedisConfig:
@@ -97,6 +129,11 @@ class EmbeddingsConfig:
         self.full_endpoint = os.getenv("EMBEDDINGS_FULL_ENDPOINT")
         self.key = os.getenv("EMBEDDINGS_KEY")
 
+        self.small_model = os.getenv("EMBEDDINGS_SMALL_MODEL")
+
+        if [self.full_endpoint, self.key, self.small_model].count(None) > 0:
+            raise ValueError("Embeddings configuration is not complete")
+
 
 class MongoConfig:
     """
@@ -110,11 +147,23 @@ class MongoConfig:
         self.password = os.getenv("MONGO_PASSWORD")
 
         self.connection_string = os.getenv("MONGO_CONNECTION_STRING")
+        self.system_database = os.getenv("MONGO_SYSTEM_DATABASE", "system")
 
         if [self.host, self.port, self.username, self.password].count(
             None
         ) > 0 and not self.connection_string:
             raise ValueError("Mongo configuration is not complete")
+
+
+class CeleryConfig:
+    """
+    Configuration class for the Celery configuration.
+    """
+
+    def __init__(self):
+        self.worker_concurrency = os.getenv("CELERY_WORKER_CONCURRENCY")
+        if [self.worker_concurrency].count(None) > 0:
+            raise ValueError("Celery configuration is not complete")
 
 
 class Config:
@@ -129,6 +178,8 @@ class Config:
         self.milvus = MilvusConfig()
         self.embeddings = EmbeddingsConfig()
         self.mongo = MongoConfig()
+        self.gcp = GCPConfig()
+        self.celery = CeleryConfig()
 
         self.brainpat_token = os.getenv("BRAINPAT_TOKEN")
 

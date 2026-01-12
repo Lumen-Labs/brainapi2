@@ -27,8 +27,14 @@ class EmbeddingsAdapter:
         """
         Embed a text and return a vector.
         """
-        embeddings = self.embeddings.embed_text(text)
-        return Vector(id=str(uuid.uuid4()), embeddings=embeddings, metadata={})
+        from src.lib.embeddings.client import EmbeddingError
+
+        try:
+            embeddings = self.embeddings.embed_text(text)
+            return Vector(id=str(uuid.uuid4()), embeddings=embeddings, metadata={})
+        except EmbeddingError as e:
+            print(f"Embedding failed in adapter, returning empty vector: {e}")
+            return Vector(id=str(uuid.uuid4()), embeddings=[], metadata={})
 
 
 class VectorStoreAdapter:
@@ -43,19 +49,24 @@ class VectorStoreAdapter:
 
     def add_vectors(
         self, vectors: list[Vector], store: str, brain_id: str = "default"
-    ) -> None:
+    ) -> list[str]:
         """
         Add vectors to the vector store.
         """
         return self.vector_store.add_vectors(vectors, store, brain_id)
 
     def search_vectors(
-        self, query: str, store: str, brain_id: str = "default", k: int = 10
+        self,
+        data_vector: list[float],
+        brain_id: str = "default",
+        store: str = "default",
+        k: int = 10,
     ) -> list[Vector]:
         """
         Search vectors in the vector store and return the top k vectors.
         """
-        return self.vector_store.search_vectors(query, store, brain_id, k)
+        vectors = self.vector_store.search_vectors(data_vector, brain_id, store, k)
+        return sorted(vectors, key=lambda x: x.distance, reverse=True)
 
     def get_by_ids(
         self, ids: list[str], store: str, brain_id: str = "default"
