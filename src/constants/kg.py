@@ -82,6 +82,8 @@ class Predicate(BaseModel):
         default=None, description="The observations of the predicate."
     )
 
+    properties: dict = Field(default_factory=dict)
+
     level: Optional[Literal["1", "2", "3"]] = Field(
         default=None,
         description=(

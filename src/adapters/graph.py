@@ -3,8 +3,8 @@ File: /graph.py
 Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Saturday December 27th 2025
-Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
+Last Modified: Monday January 12th 2026 8:26:26 pm
+Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
@@ -131,10 +131,10 @@ class GraphAdapter:
     def get_graph_relationships(self, brain_id: str = "default") -> list[str]:
         """
         Retrieve the relationship types present in the graph.
-        
+
         Parameters:
             brain_id (str): Identifier of the graph/brain to query.
-        
+
         Returns:
             A list of relationship type names.
         """
@@ -143,7 +143,7 @@ class GraphAdapter:
     def get_by_uuid(self, uuid: str, brain_id: str = "default") -> Node:
         """
         Retrieve the node with the specified UUID from the graph.
-        
+
         Returns:
             Node: The node matching the provided UUID.
         """
@@ -283,28 +283,28 @@ class GraphAdapter:
     ) -> Node | Predicate | None:
         """
         Update properties on a graph node or relationship.
-        
+
         Parameters:
-        	uuid (str): UUID of the node or relationship to update.
-        	updating (Literal["node", "relationship"]): Target entity type to update.
-        	brain_id (str): Identifier of the graph (defaults to "default").
-        	new_properties (dict): Properties to add or replace on the entity.
-        	properties_to_remove (list[str]): Names of properties to remove from the entity.
-        
+                uuid (str): UUID of the node or relationship to update.
+                updating (Literal["node", "relationship"]): Target entity type to update.
+                brain_id (str): Identifier of the graph (defaults to "default").
+                new_properties (dict): Properties to add or replace on the entity.
+                properties_to_remove (list[str]): Names of properties to remove from the entity.
+
         Returns:
-        	Node | Predicate | None: The updated entity, or `None` if the entity was not found.
+                Node | Predicate | None: The updated entity, or `None` if the entity was not found.
         """
         return self.graph.update_properties(
             uuid, updating, brain_id, new_properties, properties_to_remove
         )
-    
+
     def get_graph_relationship_types(self, brain_id: str = "default") -> list[str]:
         """
         Retrieve all relationship type names present in the graph.
-        
+
         Parameters:
             brain_id (str): Identifier of the graph (brain) to query. Defaults to "default".
-        
+
         Returns:
             list[str]: List of unique relationship type names found in the graph.
         """
@@ -313,21 +313,21 @@ class GraphAdapter:
     def get_graph_node_types(self, brain_id: str = "default") -> list[str]:
         """
         Get all unique node types from the graph.
-        
+
         @returns:
             A list of node type names available in the graph.
         """
         return self.graph.get_graph_node_types(brain_id)
-    
+
     def get_graph_node_properties(self, brain_id: str = "default") -> list[str]:
         """
         Retrieve all unique node property keys present in the graph.
-        
+
         @returns
             list[str]: A list of unique property key names present on nodes for the specified brain.
         """
         return self.graph.get_graph_node_properties(brain_id)
-    
+
     def update_node(
         self,
         uuid: str,
@@ -340,7 +340,7 @@ class GraphAdapter:
     ) -> Node | None:
         """
         Update an existing node's identifying fields, labels, and properties in the graph.
-        
+
         Parameters:
             uuid (str): UUID of the node to update.
             brain_id (str): Identifier of the brain/graph where the node resides.
@@ -349,7 +349,7 @@ class GraphAdapter:
             new_labels (Optional[list[str]]): New set of labels for the node; provide to replace the node's labels.
             new_properties (Optional[dict]): Properties to add or update on the node; keys are property names and values are their new values.
             properties_to_remove (Optional[list[str]]): List of property names to remove from the node.
-        
+
         Returns:
             Node | None: The updated node if the update succeeded, or `None` if the node was not found.
         """
@@ -509,5 +509,18 @@ class GraphAdapter:
             hops.append((flatten_node(from_node), node_hops))
 
         return hops
+
+    def check_node_existence(
+        self,
+        uuid: str,
+        name: str,
+        labels: list[str],
+        brain_id: str = "default",
+    ) -> bool:
+        """
+        Check if a node exists in the graph.
+        """
+        return self.graph.check_node_existence(uuid, name, labels, brain_id)
+
 
 _graph_adapter = GraphAdapter()

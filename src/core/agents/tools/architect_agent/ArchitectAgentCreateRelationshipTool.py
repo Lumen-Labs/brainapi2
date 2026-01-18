@@ -10,7 +10,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 
 from dataclasses import dataclass
 import json
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 import uuid
 from langchain.tools import BaseTool
 
@@ -19,6 +19,7 @@ from src.constants.agents import (
     ArchitectAgentRelationship,
     ArchitectAgentEntity,
     AtomicJanitorAgentInputOutput,
+    _ArchitectAgentRelationship,
 )
 from src.constants.kg import Node
 from src.core.agents.scout_agent import ScoutEntity
@@ -71,10 +72,12 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
     entities: Dict[str, ScoutEntity]
     brain_id: str = "default"
     targeting: Optional[Node] = None
+    text: str
 
     def __init__(
         self,
         architect_agent: object,
+        text: str,
         entities: Optional[Dict[str, ScoutEntity]],
         kg: GraphAdapter,
         brain_id: str = "default",
@@ -95,6 +98,7 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
             entities=entities_dict,
             brain_id=brain_id,
             targeting=targeting,
+            text=text,
         )
 
     @dataclass
@@ -107,7 +111,7 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
     def _run(self, *args, **kwargs) -> str:
         rel_key = str(uuid.uuid4())
 
-        input_rels = []
+        input_rels: List[_ArchitectAgentRelationship] = []
         output_rels: List[ArchitectAgentRelationship] = []
 
         if args and isinstance(args[0], dict) and "relationships" in args[0]:
@@ -139,12 +143,6 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
             if object not in self.entities:
                 return f"Object not found in entities: {object}. Available entities: {list(self.entities.keys())}"
 
-            input_rels.append(
-                self._ArchitectAgentInputRelationship(
-                    subject, predicate, object, description
-                )
-            )
-
             subj_entity = self.entities.get(subject)
             obj_entity = self.entities.get(object)
 
@@ -152,41 +150,45 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
                 uuid=subj_entity.uuid,
                 name=subj_entity.name,
                 type=subj_entity.type,
-                flow_key=rel_key,
+                **({"flow_key": rel_key} if subj_entity.type != "EVENT" else {}),
+                description=subj_entity.description,
                 **(
                     {"happened_at": subj_entity.properties.get("happened_at")}
                     if subj_entity.properties.get("happened_at")
                     else {}
                 ),
+                properties=subj_entity.properties,
             )
             obj = ArchitectAgentEntity(
                 uuid=obj_entity.uuid,
                 name=obj_entity.name,
                 type=obj_entity.type,
-                flow_key=rel_key,
+                **({"flow_key": rel_key} if obj_entity.type != "EVENT" else {}),
+                description=obj_entity.description,
                 **(
                     {"happened_at": obj_entity.properties.get("happened_at")}
                     if obj_entity.properties.get("happened_at")
                     else {}
                 ),
+                properties=obj_entity.properties,
             )
 
-            output_rels.append(
-                ArchitectAgentRelationship(
-                    flow_key=rel_key,
+            input_rels.append(
+                _ArchitectAgentRelationship(
                     tip=obj,
                     tail=subj,
                     name=predicate,
                     description=description,
+                    properties=subj_entity.properties,
                 )
             )
 
-        natural_lang = ", ".join(
-            [
-                f"""({rel.tail.name})-[:{rel.name} {{description: "{rel.description}"}}]->({rel.tip.name})"""
-                for rel in output_rels
-            ]
-        )
+        # natural_lang = ", ".join(
+        #     [
+        #         f"""({rel.tail.name})-[:{rel.name} {{description: "{rel.description}"}}]->({rel.tip.name})"""
+        #         for rel in output_rels
+        #     ]
+        # )
 
         from src.core.agents.janitor_agent import JanitorAgent
 
@@ -198,13 +200,15 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
             database_desc=_neo4j_client.graphdb_description,
         )
 
-        janitor_response = janitor_agent.run_atomic_janitor(
-            input_relationships=output_rels,
-            text=natural_lang,
-            targeting=self.targeting,
-            brain_id=self.brain_id,
-            timeout=300,
-            max_retries=3,
+        janitor_response: AtomicJanitorAgentInputOutput = (
+            janitor_agent.run_atomic_janitor(
+                input_relationships=input_rels,
+                text=self.text,
+                targeting=self.targeting,
+                brain_id=self.brain_id,
+                timeout=300,
+                max_retries=3,
+            )
         )
 
         janitor_token_detail = token_detail_from_token_counts(
@@ -217,7 +221,12 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
             [self.architect_agent.token_detail, janitor_token_detail]
         )
 
+        fixed_rels_sets = []
+
         if fixed_relationships := getattr(janitor_response, "fixed_relationships", []):
+            fixed_rels_sets = [
+                set((fr.tip.uuid, fr.tail.uuid, fr.name)) for fr in fixed_relationships
+            ]
             output_rels.extend(
                 [
                     ArchitectAgentRelationship(
@@ -226,21 +235,56 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
                         name=rel.name,
                         description=rel.description,
                         tail=rel.tail,
+                        properties=getattr(rel, "properties", {}),
                     )
                     for rel in fixed_relationships
                 ]
             )
 
-        self.architect_agent.relationships_set.extend(output_rels)
-        from pprint import pprint
+        for rel in input_rels:
+            if set((rel.tip.uuid, rel.tail.uuid, rel.name)) not in fixed_rels_sets:
+                output_rels.append(
+                    ArchitectAgentRelationship(
+                        flow_key=rel_key,
+                        tip=rel.tip,
+                        name=rel.name,
+                        description=rel.description,
+                        tail=rel.tail,
+                        properties=getattr(rel, "properties", {}),
+                    )
+                )
 
-        pprint(self.architect_agent.relationships_set)
+        relationships_data = [
+            rel.model_dump(mode="json")
+            for rel in output_rels
+            if isinstance(rel, ArchitectAgentRelationship)
+        ]
+
+        if relationships_data:
+            from src.workers.tasks.ingestion import process_architect_relationships
+
+            print("> Sending relationships to ingestion task")
+            process_architect_relationships.delay(
+                {
+                    "relationships": relationships_data,
+                    "brain_id": self.brain_id,
+                }
+            )
+
+        self.architect_agent.relationships_set.extend(output_rels)
+
         if len(getattr(janitor_response, "wrong_relationships", [])) > 0:
-            return janitor_response
+            return {
+                "status": "ERROR",
+                "wrong_relationships": janitor_response.wrong_relationships,
+            }
 
         # for entity_uuid in used_entity_uuids:
         #     if entity_uuid in self.architect_agent.entities:
         #         del self.architect_agent.entities[entity_uuid]
 
         # return natural_lang
-        return json.dumps({"status": "success", "insert_count": len(output_rels)})
+
+        return json.dumps(
+            {"status": "success", "message": "relationships created successfully"}
+        )

@@ -52,6 +52,7 @@ from src.core.agents.tools.architect_agent.ArchitectAgentGetRemainingEntitiesToP
 from src.core.agents.tools.architect_agent.ArchitectAgentMarkEntitiesAsUsedTool import (
     ArchitectAgentMarkEntitiesAsUsedTool,
 )
+from src.core.saving.ingestion_manager import IngestionManager
 from src.utils.tokens import token_detail_from_token_counts
 
 # from src.core.agents.tools.kg_agent import (
@@ -77,6 +78,7 @@ class ArchitectAgent:
         vector_store: VectorStoreAdapter,
         embeddings: EmbeddingsAdapter,
         # database_desc: str,
+        ingestion_manager: IngestionManager,
     ):
         self.llm_adapter = llm_adapter
         self.cache_adapter = cache_adapter
@@ -91,10 +93,12 @@ class ArchitectAgent:
         self.reasoning_tokens = 0
         self.relationships_set = []
         self.used_entities_set = []
+        self.ingestion_manager = ingestion_manager
         # self.database_desc = database_desc
 
     def _get_tools(
         self,
+        text: Optional[str] = None,
         entities: Optional[Dict[str, ScoutEntity]] = None,
         brain_id: str = "default",
         targeting: Optional[Node] = None,
@@ -103,6 +107,7 @@ class ArchitectAgent:
         return [
             ArchitectAgentCreateRelationshipTool(
                 self,
+                text=text,
                 entities=entities,
                 kg=self.kg,
                 brain_id=brain_id,
@@ -124,6 +129,7 @@ class ArchitectAgent:
         type_: Literal["single", "tooler"],
         tools: Optional[List[BaseTool]] = None,
         output_schema: Optional[BaseModel] = None,
+        text: Optional[str] = None,
         extra_system_prompt: Optional[dict] = None,
         entities: Optional[Dict[str, ScoutEntity]] = None,
         brain_id: str = "default",
@@ -145,7 +151,10 @@ class ArchitectAgent:
                     tools
                     if tools
                     else self._get_tools(
-                        entities=entities, brain_id=brain_id, targeting=targeting
+                        entities=entities,
+                        brain_id=brain_id,
+                        targeting=targeting,
+                        text=text,
                     )
                 )
                 if type_ == "tooler"
@@ -387,6 +396,7 @@ class ArchitectAgent:
 
         self._get_agent(
             type_="tooler",
+            text=text,
             brain_id=brain_id,
             entities=entities_dict,
             targeting=targeting,

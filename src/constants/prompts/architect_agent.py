@@ -206,15 +206,15 @@ Example provided context:
 
 Entities Found by Scout: [
     {{"uuid": "uuid_1", "type": "PERSON", "name": "John"}},
-    {{"uuid": "uuid_2", "type": "EVENT", "name": "WENT_TO", "description": "John went to New York City"}},
+    {{"uuid": "uuid_2", "type": "EVENT", "name": "Went", "description": "John went to New York City"}},
     {{"uuid": "uuid_3", "type": "CITY", "name": "New York City"}},
-    {{"uuid": "uuid_4", "type": "EVENT", "name": "KNEW", "description": "John knew 12 new friends in New York City"}},
+    {{"uuid": "uuid_4", "type": "EVENT", "name": "Knew", "description": "John knew 12 new friends in New York City"}},
     {{"uuid": "uuid_5", "type": "UNIT", "name": "Friends", "description": "The number of friends John knew in New York City"}},
     {{"uuid": "uuid_6", "type": "PERSON", "name": "Mary"}},
-    {{"uuid": "uuid_7", "type": "EVENT", "name": "WAS_IN", "description": "Mary was in San Francisco"}},
+    {{"uuid": "uuid_7", "type": "EVENT", "name": "Was", "description": "Mary was in San Francisco"}},
     {{"uuid": "uuid_8", "type": "CITY", "name": "San Francisco"}},
-    {{"uuid": "uuid_9", "type": "EVENT", "name": "PARTICIPATED_IN", "description": "Mary was doing meetings with his colleagues in San Francisco"}},
-    {{"uuid": "uuid_10", "type": "EVENT", "name": "MEETINGS", "description": "Mary was doing meetings with his colleagues in San Francisco"}},
+    {{"uuid": "uuid_9", "type": "EVENT", "name": "Partecipation", "description": "Mary was doing meetings with his colleagues in San Francisco"}},
+    {{"uuid": "uuid_10", "type": "EVENT", "name": "Meetings", "description": "Mary was doing meetings with his colleagues in San Francisco"}},
     {{"uuid": "uuid_11", "type": "PERSON", "name": "Colleagues", "description": "The colleagues Mary was doing meetings with in San Francisco"}},
 ]
 
@@ -224,10 +224,10 @@ Example architect_agent_create_relationship tool input 1:
             "tail": {{ "uuid": "uuid_1", "name": "John", "type": "PERSON" }},
             "name": "MOVED",
             "description": "John went to New York City",
-            "tip": {{"uuid": "oi2f3hv89v8iwug", "name": "WENT_TO", "type": "EVENT"}}
+            "tip": {{"uuid": "oi2f3hv89v8iwug", "name": "Went", "type": "EVENT"}}
         }},
         {{
-            "tail": {{ "uuid": "uuid_2", "name": "WENT_TO", "type": "EVENT" }},
+            "tail": {{ "uuid": "uuid_2", "name": "Went", "type": "EVENT" }},
             "name": "INTO_LOCATION",
             "description": "John went to New York City",
             "tip": {{"uuid": "e86439864398643", "name": "New York City", "type": "CITY"}}
@@ -236,27 +236,27 @@ Example architect_agent_create_relationship tool input 1:
             "tail": {{ "uuid": "uuid_1", "name": "John", "type": "PERSON" }},
             "name": "ACCOMPLISHED_ACTION",
             "description": "John knew 12 new friends in New York City",
-            "tip": {{"uuid": "uuid_4", "name": "KNEW", "type": "EVENT"}}
+            "tip": {{"uuid": "uuid_4", "name": "Knew", "type": "EVENT"}}
         }},
         {{
-            "tail": {{ "uuid": "uuid_4", "name": "KNEW", "type": "EVENT" }},
+            "tail": {{ "uuid": "uuid_4", "name": "Knew", "type": "EVENT" }},
             "name": "HAPPENED_WITHIN",
             "description": "John knew 12 new friends when he went to New York City",
-            "tip": {{"uuid": "uuid_2", "name": "WENT_TO", "type": "EVENT"}}
+            "tip": {{"uuid": "uuid_2", "name": "Went", "type": "EVENT"}}
         }},
         {{
             "tail": {{ "uuid": "uuid_4", "name": "KNEW", "type": "EVENT" }},
             "name": "TARGETED",
             "properties": {{ "amount": 12 }},
             "description": "John knew 12 new friends in New York City",
-            "tip": {{"uuid": "uuid_5", "name": "FRIENDS", "type": "FRIENDS"}}
+            "tip": {{"uuid": "uuid_5", "name": "Friends", "type": "FRIENDS"}}
         }},
         {{
             "tail": {{ "uuid": "uuid_4", "name": "KNEW", "type": "EVENT" }},
             "name": "TARGETED",
             "properties": {{ "amount": 12 }},
             "description": "John knew 12 new friends in New York City",
-            "tip": {{"uuid": "uuid_5", "name": "FRIENDS", "type": "FRIENDS"}}
+            "tip": {{"uuid": "uuid_5", "name": "Friends", "type": "FRIENDS"}}
         }}
 ]
 Example architect_agent_create_relationship tool output:
@@ -266,19 +266,19 @@ Example architect_agent_create_relationship tool input 2:
             "tail": {{ "uuid": "uuid_6", "name": "Mary", "type": "PERSON" }},
             "name": "EXPERIENCED",
             "description": "Mary was in San Francisco",
-            "tip": {{"uuid": "uuid_7", "name": "WAS_IN", "type": "EVENT"}}
+            "tip": {{"uuid": "uuid_7", "name": "Was", "type": "EVENT"}}
         }},
         {{
-            "tail": {{ "uuid": "uuid_7", "name": "WAS_IN", "type": "EVENT" }},
+            "tail": {{ "uuid": "uuid_7", "name": "Was", "type": "EVENT" }},
             "name": "INTO_LOCATION",
             "description": "Mary was in San Francisco",
             "tip": {{"uuid": "uuid_8", "name": "CITY", "type": "CITY"}}
         }},
         {{
-            "tail": {{ "uuid": "uuid_7", "name": "WAS_IN", "type": "EVENT" }},
+            "tail": {{ "uuid": "uuid_7", "name": "Was", "type": "EVENT" }},
             "name": "HAPPENED_WITHIN",
             "description": "Mary was in San Francisco when John went to New York City",
-            "tip": {{"uuid": "uuid_2", "name": "WENT_TO", "type": "EVENT"}}
+            "tip": {{"uuid": "uuid_2", "name": "Went", "type": "EVENT"}}
         }},
         ... more relationships ...
 ]

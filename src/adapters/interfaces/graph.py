@@ -3,8 +3,8 @@ File: /graph.py
 Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Saturday December 27th 2025
-Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
+Last Modified: Monday January 12th 2026 8:26:26 pm
+Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
@@ -119,10 +119,10 @@ class GraphClient(ABC):
     def get_graph_relationships(self, brain_id: str) -> list[str]:
         """
         Retrieve the relationship types present in the specified graph.
-        
+
         Parameters:
             brain_id (str): Identifier of the brain/graph to query.
-        
+
         Returns:
             list[str]: Relationship type names present in the graph.
         """
@@ -136,11 +136,11 @@ class GraphClient(ABC):
     ) -> Node:
         """
         Retrieve a node identified by its UUID from the specified brain.
-        
+
         Parameters:
             uuid (str): The node's UUID.
             brain_id (str): Identifier of the brain/graph to query.
-        
+
         Returns:
             Node: The node matching the given UUID.
         """
@@ -279,14 +279,14 @@ class GraphClient(ABC):
     ) -> Node | Predicate | None:
         """
         Update properties on a graph node or relationship.
-        
+
         Parameters:
             uuid (str): UUID of the target node or relationship.
             updating (Literal["node", "relationship"]): Whether to update a node's properties or a relationship's properties.
             brain_id (str): Identifier of the graph/brain where the entity resides.
             new_properties (dict): Properties to set or overwrite on the target entity.
             properties_to_remove (list[str]): Property keys to remove from the target entity.
-        
+
         Returns:
             Node | Predicate | None: The updated node or relationship object if the update succeeds, or `None` if no entity was found or no update was performed.
         """
@@ -296,10 +296,10 @@ class GraphClient(ABC):
     def get_graph_relationship_types(self, brain_id: str) -> list[str]:
         """
         List unique relationship types present in the specified graph.
-        
+
         Parameters:
             brain_id (str): Identifier of the graph/brain to query.
-        
+
         Returns:
             relationship_types (list[str]): Relationship type names present in the graph.
         """
@@ -309,10 +309,10 @@ class GraphClient(ABC):
     def get_graph_node_types(self, brain_id: str) -> list[str]:
         """
         Return all unique node types (labels) present in the graph for the given brain.
-        
+
         Parameters:
             brain_id (str): Identifier of the brain/graph to query.
-        
+
         Returns:
             list[str]: A list of node type names (labels) present in the specified graph.
         """
@@ -322,15 +322,15 @@ class GraphClient(ABC):
     def get_graph_node_properties(self, brain_id: str) -> list[str]:
         """
         Retrieve all unique node property keys present in the graph for the given brain.
-        
+
         Parameters:
             brain_id (str): Identifier of the graph/brain to query.
-        
+
         Returns:
             list[str]: Unique property key names found on nodes in the specified graph.
         """
         raise NotImplementedError("get_graph_node_properties method not implemented")
-    
+
     @abstractmethod
     def update_node(
         self,
@@ -344,7 +344,7 @@ class GraphClient(ABC):
     ) -> Node | None:
         """
         Update a node's identifying fields, labels, and properties in the graph.
-        
+
         Parameters:
             uuid (str): UUID of the node to update.
             brain_id (str): Identifier of the graph/brain where the node resides.
@@ -353,7 +353,7 @@ class GraphClient(ABC):
             new_labels (Optional[list[str]]): New set of labels for the node; if provided, replaces existing labels.
             new_properties (Optional[dict]): Properties to add or update on the node; keys with values will be set or overwritten.
             properties_to_remove (Optional[list[str]]): List of property keys to remove from the node.
-        
+
         Returns:
             Node | None: The updated Node if the node was found and modified, `None` if no matching node exists.
         """
@@ -387,3 +387,16 @@ class GraphClient(ABC):
         The relationships are the 2nd degree hops.
         """
         raise NotImplementedError("get_2nd_degree_hops not implemented")
+
+    @abstractmethod
+    def check_node_existence(
+        self,
+        uuid: str,
+        name: str,
+        labels: list[str],
+        brain_id: str,
+    ) -> bool:
+        """
+        Check if a node exists in the graph.
+        """
+        raise NotImplementedError("check_node_existence method not implemented")

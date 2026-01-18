@@ -4,7 +4,7 @@ Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
 Last Modified: Sunday October 19th 2025 9:16:36 am
-Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
+Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
@@ -45,8 +45,8 @@ ingestion_app.conf.update(
     broker_connection_timeout=10,
     result_expires=3600 * 24 * 7,
     task_track_started=True,
-    task_time_limit=3600,
-    task_soft_time_limit=3000,
+    task_time_limit=86400,
+    task_soft_time_limit=86400,
     broker_transport_options={
         "visibility_timeout": 7200,
         "fanout_prefix": True,

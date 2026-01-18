@@ -3,8 +3,8 @@ File: /ingestion.py
 Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Saturday December 13th 2025
-Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
+Last Modified: Monday January 5th 2026 7:57:27 pm
+Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
@@ -12,6 +12,12 @@ import json
 import tomllib
 from pathlib import Path
 from uuid import uuid4
+from typing import List, Tuple
+from concurrent.futures import (
+    Future,
+    ThreadPoolExecutor,
+    TimeoutError as FutureTimeoutError,
+)
 from src.constants.data import (
     KGChangeLogPredicateUpdatedProperty,
     KGChanges,
@@ -22,9 +28,11 @@ from src.constants.data import (
     TextChunk,
     KGChangeLogNodePropertiesUpdated,
 )
-from src.constants.kg import Node
+from src.constants.kg import Node, Predicate
+from src.constants.agents import ArchitectAgentRelationship
 from src.constants.prompts.misc import NODE_DESCRIPTION_PROMPT
 from src.core.saving.auto_kg import enrich_kg_from_input
+from src.core.saving.ingestion_manager import IngestionManager
 from src.services.api.constants.requests import IngestionStructuredRequestBody
 from src.services.data.main import data_adapter
 from src.services.input.agents import llm_small_adapter
@@ -164,6 +172,193 @@ def ingest_data(self, args: dict):
             "task_id": self.request.id,
             "error": str(e),
             "payload": payload.model_dump(mode="json") if payload else args,
+        }
+
+        cache_adapter.set(
+            key=f"task:{self.request.id}",
+            value=json.dumps(error_result),
+            brain_id=brain_id,
+            expires_in=3600 * 24 * 7,
+        )
+
+        raise
+
+
+@ingestion_app.task(bind=True)
+def process_architect_relationships(self, args: dict):
+    """
+    Process architect relationships.
+    """
+
+    print(f"> Processing {len(args.get('relationships', []))} architect relationships")
+
+    relationships_data: List[dict] = args.get("relationships", [])
+    brain_id: str = args.get("brain_id", "default")
+
+    try:
+        cache_adapter.set(
+            key=f"task:{self.request.id}",
+            value=json.dumps(
+                {
+                    "status": "started",
+                    "task_id": self.request.id,
+                    "total_relationships": len(relationships_data),
+                }
+            ),
+            brain_id=brain_id,
+            expires_in=3600 * 24 * 7,
+        )
+
+        ingestion_manager = IngestionManager(
+            embeddings_adapter, vector_store_adapter, graph_adapter
+        )
+
+        relationships = [
+            ArchitectAgentRelationship(**rel_data) for rel_data in relationships_data
+        ]
+
+        with ThreadPoolExecutor(max_workers=10) as io_executor:
+            rel_embedding_futures: List[Tuple[Future, ArchitectAgentRelationship]] = []
+            for relationship in relationships:
+                if not isinstance(relationship, ArchitectAgentRelationship):
+                    print(
+                        f"[!] Skipping invalid relationship type: {type(relationship)}"
+                    )
+                    continue
+                future = io_executor.submit(
+                    ingestion_manager.process_rel_vectors,
+                    relationship,
+                    brain_id,
+                )
+                rel_embedding_futures.append((future, relationship))
+
+            for future, relationship in rel_embedding_futures:
+                print(f"> Processing relationship {relationship.name}")
+                try:
+                    v_id, v_rel_id = future.result(timeout=180)
+
+                    subject_exists = graph_adapter.check_node_existence(
+                        uuid=relationship.tail.uuid,
+                        name=relationship.tail.name,
+                        labels=[relationship.tail.type],
+                        brain_id=brain_id,
+                    )
+                    object_exists = graph_adapter.check_node_existence(
+                        uuid=relationship.tip.uuid,
+                        name=relationship.tip.name,
+                        labels=[relationship.tip.type],
+                        brain_id=brain_id,
+                    )
+
+                    node_embedding_futures = []
+                    print(f"> Subject exists: {subject_exists}")
+                    print(f"> Object exists: {object_exists}")
+                    if not subject_exists:
+                        future = io_executor.submit(
+                            ingestion_manager.process_node_vectors,
+                            relationship.tail,
+                            brain_id,
+                        )
+                        node_embedding_futures.append((future, relationship.tail))
+                    if not object_exists:
+                        future = io_executor.submit(
+                            ingestion_manager.process_node_vectors,
+                            relationship.tip,
+                            brain_id,
+                        )
+                        node_embedding_futures.append((future, relationship.tip))
+
+                    graph_nodes = []
+
+                    for future, node_data in node_embedding_futures:
+                        print(f"> Processing node {node_data.name}")
+                        try:
+                            future.result(timeout=180)
+                            graph_nodes.append(
+                                Node(
+                                    uuid=node_data.uuid,
+                                    labels=[node_data.type],
+                                    name=node_data.name,
+                                    description=node_data.description,
+                                    properties=node_data.properties,
+                                )
+                            )
+                        except FutureTimeoutError:
+                            print(
+                                f"[!] Node embedding future timed out for {node_data.name}, skipping"
+                            )
+                            continue
+                        except Exception as e:
+                            print(
+                                f"[!] Node embedding future failed for {node_data.name}: {e}"
+                            )
+                            continue
+
+                    graph_adapter.add_nodes(graph_nodes, brain_id=brain_id)
+                    print(f"> Added {len(graph_nodes)} nodes")
+                    graph_adapter.add_relationship(
+                        Node(
+                            uuid=relationship.tail.uuid,
+                            flow_key=relationship.tail.flow_key,
+                            labels=[relationship.tail.type],
+                            name=relationship.tail.name,
+                            **(
+                                {"happened_at": relationship.tail.happened_at}
+                                if relationship.tail.happened_at
+                                else {}
+                            ),
+                        ),
+                        Predicate(
+                            uuid=relationship.uuid,
+                            flow_key=relationship.flow_key,
+                            name=relationship.name,
+                            description=relationship.description,
+                            properties={
+                                **(relationship.properties or {}),
+                                "v_id": v_rel_id,
+                            },
+                        ),
+                        Node(
+                            uuid=relationship.tip.uuid,
+                            flow_key=relationship.tip.flow_key,
+                            labels=[relationship.tip.type],
+                            name=relationship.tip.name,
+                            **(
+                                {"happened_at": relationship.tip.happened_at}
+                                if relationship.tip.happened_at
+                                else {}
+                            ),
+                        ),
+                        brain_id=brain_id,
+                    )
+                except FutureTimeoutError:
+                    rel_name = getattr(relationship, "name", "unknown")
+                    print(
+                        f"[!] Relationship embedding future timed out for {rel_name}, skipping"
+                    )
+                    continue
+                except Exception as e:
+                    rel_name = getattr(relationship, "name", "unknown")
+                    print(
+                        f"[!] Relationship embedding future failed for {rel_name}: {e}"
+                    )
+                    continue
+
+        cache_adapter.set(
+            key=f"task:{self.request.id}",
+            value=json.dumps({"status": "completed", "task_id": self.request.id}),
+            brain_id=brain_id,
+            expires_in=3600 * 24 * 7,
+        )
+
+        return self.request.id
+
+    except Exception as e:
+        error_result = {
+            "status": "failed",
+            "task_id": self.request.id,
+            "error": str(e),
+            "args": args,
         }
 
         cache_adapter.set(

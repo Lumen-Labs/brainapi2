@@ -29,6 +29,8 @@ class ArchitectAgentEntity(BaseModel):
         default=None,
         description="The date and time the entity happened at if known otherwise None. Mostly used for event entities.",
     )
+    description: Optional[str] = None
+    properties: Optional[dict] = Field(default_factory=dict)
 
 
 class _ArchitectAgentNew(BaseModel):

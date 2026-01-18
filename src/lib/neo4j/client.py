@@ -3,8 +3,8 @@ File: /client.py
 Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Saturday December 27th 2025
-Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
+Last Modified: Monday January 12th 2026 8:26:26 pm
+Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
@@ -217,8 +217,11 @@ class Neo4jClient(GraphClient):
 
             identification_set_str = f"{{{', '.join(identification_items)}}}"
 
-            if node.description is not None:
-                all_properties["description"] = node.description
+            attributes = ["description", "happened_at", "flow_key", "last_updated"]
+
+            for attr in attributes:
+                if getattr(node, attr, None):
+                    all_properties[attr] = getattr(node, attr)
 
             property_assignments = []
             for key, value in all_properties.items():
@@ -264,11 +267,31 @@ class Neo4jClient(GraphClient):
         """
         Add a relationship between two nodes to the graph.
         """
+
+        objects = [subject, to_object, predicate]
+        attributes = [
+            "properties",
+            "description",
+            "happened_at",
+            "flow_key",
+            "last_updated",
+        ]
+
+        extra_ops = ""
+        for obj in objects:
+            for attr in attributes:
+                value = getattr(obj, attr, None)
+                if value:
+                    extra_ops += f"""
+            SET r.{attr} = {self._format_value(value)}
+            """
+
         cypher_query = f"""
         MATCH (a:{":".join(self._clean_labels(subject.labels))}) WHERE a.name = {self._format_value(subject.name)}
         MATCH (b:{":".join(self._clean_labels(to_object.labels))}) WHERE b.name = {self._format_value(to_object.name)}
         MERGE (a)-[r:{":".join(self._clean_labels([predicate.name]))}]->(b)
-        ON CREATE SET r.description = {self._format_value(predicate.description)}, r.uuid = {self._format_value(predicate.uuid)}
+        ON CREATE SET r.description = {self._format_value(predicate.description)}, r.uuid = {self._format_value(predicate.uuid)}, r.v_id = {self._format_value(predicate.properties.get("v_id"))}
+        {extra_ops}
         RETURN a, b
         """
 
@@ -1304,6 +1327,28 @@ class Neo4jClient(GraphClient):
         return super().get_2nd_degree_hops(
             from_, flattened, vector_store_adapter, brain_id
         )
+
+    def check_node_existence(
+        self,
+        uuid: str,
+        name: str,
+        labels: list[str],
+        brain_id: str,
+    ) -> bool:
+        """
+        Check if a node exists in the graph.
+        """
+        cypher_query = f"""
+        MATCH (n:{":".join(self._clean_labels(labels))})
+        WHERE n.name = $name
+        AND n.uuid = $uuid
+        RETURN n
+        """
+        self.ensure_database(brain_id)
+        result = self.driver.execute_query(
+            cypher_query, parameters_={"uuid": uuid, "name": name}, database_=brain_id
+        )
+        return len(result.records) > 0
 
 
 _neo4j_client = Neo4jClient()
