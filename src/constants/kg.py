@@ -3,8 +3,8 @@ File: /kg.py
 Created Date: Wednesday October 22nd 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Wednesday October 22nd 2025 8:09:09 pm
-Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
+Last Modified: Monday January 5th 2026 9:57:30 pm
+Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
@@ -26,6 +26,10 @@ class Node(BaseModel):
     name: str
     description: Optional[str] = None
     properties: dict = Field(default_factory=dict)
+    flow_key: Optional[str] = Field(
+        default=None,
+        description="Unique identitier for contextualizing the node into the context flow",
+    )
 
     happened_at: Optional[datetime | None] = Field(
         default=None,
@@ -57,6 +61,10 @@ class Predicate(BaseModel):
     uuid: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
     description: str
+    flow_key: Optional[str] = Field(
+        default=None,
+        description="Unique identitier for contextualizing the predicate into the context flow",
+    )
     last_updated: datetime = Field(
         default_factory=datetime.now,
         description="The date and time the predicate was last updated.",
@@ -136,3 +144,12 @@ class SearchEntitiesResult(BaseModel):
 
     results: List[Node]
     total: int
+
+
+class EntityInfo(BaseModel):
+    """
+    Entity info model.
+    """
+
+    most_relevant_node: Node
+    relevant_nodes: List[Node]

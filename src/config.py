@@ -3,8 +3,8 @@ File: /config.py
 Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Sunday October 19th 2025 8:45:58 am
-Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
+Last Modified: Tuesday December 23rd 2025 9:24:20 pm
+Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
@@ -166,6 +166,16 @@ class CeleryConfig:
             raise ValueError("Celery configuration is not complete")
 
 
+class PricingConfig:
+    """
+    Configuration class for the Pricing configuration.
+    """
+
+    def __init__(self):
+        self.input_token_price = float(os.getenv("INPUT_TOKEN_PRICE", 0))
+        self.output_token_price = float(os.getenv("OUTPUT_TOKEN_PRICE", 0))
+
+
 class Config:
     """
     Configuration class for the application.
@@ -180,6 +190,7 @@ class Config:
         self.mongo = MongoConfig()
         self.gcp = GCPConfig()
         self.celery = CeleryConfig()
+        self.pricing = PricingConfig()
 
         self.brainpat_token = os.getenv("BRAINPAT_TOKEN")
 

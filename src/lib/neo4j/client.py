@@ -239,7 +239,6 @@ class Neo4jClient(GraphClient):
             try:
                 result = self._execute_query_with_retry(cypher_query, brain_id)
                 results.append(result)
-                log("Nodes added: ", results)
             except Exception as e:
                 print(f"Error adding node: {e} - {cypher_query}")
                 raise
@@ -1251,7 +1250,7 @@ class Neo4jClient(GraphClient):
         {set_clause}
         {remove_clause}
         {labels_clause}
-        RETURN n.uuid as uuid, n.name as name, labels(n) as labels, 
+        RETURN n.uuid as uuid, n.name as name, labels(n) as labels,
             n.description as description, properties(n) as properties
         """
 

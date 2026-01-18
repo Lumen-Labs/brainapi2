@@ -4,12 +4,12 @@ Created Date: Tuesday December 23rd 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
 Last Modified: Tuesday December 23rd 2025 11:21:54 pm
-Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
+Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
 import json
-from typing import List
+from typing import Dict, List, Union
 from langchain.tools import BaseTool
 
 from src.adapters.embeddings import EmbeddingsAdapter, VectorStoreAdapter
@@ -32,12 +32,16 @@ class JanitorAgentSearchEntitiesTool(BaseTool):
     args_schema: dict = {
         "type": "object",
         "properties": {
-            "query": {
-                "type": "string",
-                "description": "The plain text query to search for entities in the knowledge graph within their names.",
+            "queries": {
+                "type": "array",
+                "items": {
+                    "type": "string",
+                    "description": "The plain text query to search for entities in the knowledge graph within their names.",
+                },
+                "description": "The list of things to search for in the knowledge graph.",
             },
         },
-        "required": ["query"],
+        "required": ["queries"],
     }
 
     def __init__(
@@ -49,9 +53,11 @@ class JanitorAgentSearchEntitiesTool(BaseTool):
         brain_id: str = "default",
     ):
         description: str = (
-            "Tool for searching the entities of the knowledge graph by plain text name. "
-            "This tool will return the entities that were found in the knowledge graph."
-            "Example input: { 'query': 'John Doe' }"
+            "Tool to search for entities in the knowledge graph by plain text names. "
+            "Call this tool once to search for a list of entities with different names, "
+            "don't recall the tool with different queries for same entities, be exaustive on the first call."
+            "This tool will return the a map of entities that were found in the knowledge graph where the key is the query and the value is the list of entities that were found."
+            'Example input: { "queries": ["John Doe", "John", "John D.", "Mary", "John\'s Wife"] }'
         )
         super().__init__(
             janitor_agent=janitor_agent,
@@ -67,43 +73,56 @@ class JanitorAgentSearchEntitiesTool(BaseTool):
         if len(args) > 0:
             _query = args[0]
         else:
-            _query = kwargs.get("query", "")
+            _queries = kwargs.get("queries", [])
 
-        if len(_query) == 0:
-            return "No query provided in the arguments or kwargs"
+        if len(_queries) == 0:
+            return "No queries provided in the arguments or kwargs"
 
-        kg_results = self.kg.search_entities(brain_id=self.brain_id, query_text=_query)
+        found_entities: Dict[str, Union[str, List[Node]]] = {}
 
-        found_entities: List[Node] = []
+        def _clean_query(query: str) -> str:
+            chars_to_remove = "'.\"()[]{}\\|*/+=<>,!?:;"
+            chars_to_underscore = " -"
+            translation_table = str.maketrans(
+                chars_to_underscore, "_" * len(chars_to_underscore), chars_to_remove
+            )
+            return query.strip().lower().translate(translation_table).replace(" ", "_")
 
-        for kg_result in kg_results.results:
-            found_entities.append(kg_result)
-
-        try:
-            query_vector = self.embeddings.embed_text(_query)
-            if query_vector.embeddings and len(query_vector.embeddings) > 0:
-                v_results = self.vector_store.search_vectors(
-                    query_vector.embeddings,
-                    store="nodes",
-                    brain_id=self.brain_id,
-                )
-                if len(v_results) > 0:
-                    found_entities.extend(
-                        self.kg.get_nodes_by_uuid(
-                            [
-                                v_result.metadata.get("uuid")
-                                for v_result in v_results
-                                if v_result.metadata.get("uuid") is not None
-                            ],
-                            brain_id=self.brain_id,
-                        )
+        for _query in _queries:
+            founds = []
+            kg_results = self.kg.search_entities(
+                brain_id=self.brain_id, query_text=_query
+            )
+            founds.extend(kg_results.results)
+            try:
+                query_vector = self.embeddings.embed_text(_query)
+                if query_vector.embeddings and len(query_vector.embeddings) > 0:
+                    v_results = self.vector_store.search_vectors(
+                        query_vector.embeddings,
+                        store="nodes",
+                        brain_id=self.brain_id,
                     )
-        except Exception as e:
-            print(f"Vector search failed, using KG results only: {e}")
+                    if len(v_results) > 0:
+                        founds.extend(
+                            self.kg.get_nodes_by_uuid(
+                                [
+                                    v_result.metadata.get("uuid")
+                                    for v_result in v_results
+                                    if v_result.metadata.get("uuid") is not None
+                                ],
+                                brain_id=self.brain_id,
+                            )
+                        )
+            except Exception as e:
+                print(f"Vector search failed, using KG results only: {e}")
 
-        if len(found_entities) == 0:
-            return "Knowledge graph does not contain any entities that match the query"
+            if len(found_entities) == 0:
+                found_entities[_clean_query(_query)] = (
+                    "Knowledge graph does not contain any entities that match the query"
+                )
+            else:
+                found_entities[_clean_query(_query)] = [
+                    f.model_dump(mode="json") for f in founds
+                ]
 
-        return json.dumps(
-            [entity.model_dump(mode="json") for entity in found_entities], indent=4
-        )
+        return json.dumps(found_entities, indent=4)
