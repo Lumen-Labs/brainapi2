@@ -232,7 +232,7 @@ class JanitorAgent:
 
             return self.agent.invoke(
                 {"messages": messages_list},
-                config={"recursion_limit": 25},
+                config={"recursion_limit": 100},
             )
 
         @retry(
@@ -344,7 +344,7 @@ class JanitorAgent:
 
             return self.agent.invoke(
                 {"messages": messages_list},
-                config={"recursion_limit": 25},
+                config={"recursion_limit": 100},
             )
 
         @retry(
@@ -473,7 +473,7 @@ class JanitorAgent:
 
             return self.agent.invoke(
                 {"messages": messages_list},
-                config={"recursion_limit": 25},
+                config={"recursion_limit": 100},
             )
 
         @retry(

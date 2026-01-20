@@ -26,12 +26,8 @@ class Node(BaseModel):
     name: str
     description: Optional[str] = None
     properties: dict = Field(default_factory=dict)
-    flow_key: Optional[str] = Field(
-        default=None,
-        description="Unique identitier for contextualizing the node into the context flow",
-    )
 
-    happened_at: Optional[datetime | None] = Field(
+    happened_at: Optional[str | None] = Field(
         default=None,
         description="The date and time the node happened at if known otherwise None. Mostly used for event nodes.",
     )

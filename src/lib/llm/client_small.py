@@ -3,8 +3,8 @@ File: /client_small.py
 Created Date: Sunday December 21st 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Sunday December 21st 2025 3:43:44 pm
-Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
+Last Modified: Tuesday December 23rd 2025 9:24:20 pm
+Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
@@ -96,7 +96,7 @@ class LLMClientSmall(LLM):
         return self._langchain_model
 
     def generate_text(
-        self, prompt: str, max_new_tokens: int = None, timeout: int = None
+        self, prompt: str, max_new_tokens: int = 100000, timeout: int = None
     ) -> str:
         if not prompt or len(prompt.strip()) == 0:
             return "Input prompt is empty"
@@ -110,7 +110,7 @@ class LLMClientSmall(LLM):
                 contents=[prompt],
                 config=GenerateContentConfig(
                     response_mime_type="text/plain",
-                    **({"max_new_tokens": max_new_tokens} if max_new_tokens else {}),
+                    **({"max_output_tokens": max_new_tokens} if max_new_tokens else {}),
                 ),
             )
 
@@ -151,7 +151,7 @@ class LLMClientSmall(LLM):
     def generate_json(
         self,
         prompt: str,
-        max_new_tokens: int = None,
+        max_new_tokens: int = 100000,
         max_retries: int = 3,
         timeout: int = None,
     ) -> dict:
@@ -162,10 +162,9 @@ class LLMClientSmall(LLM):
             _response = self.client.models.generate_content(
                 model=self.model,
                 contents=[prompt],
-                max_new_tokens=max_new_tokens,
                 config=GenerateContentConfig(
                     response_mime_type="application/json",
-                    **({"max_new_tokens": max_new_tokens} if max_new_tokens else {}),
+                    **({"max_output_tokens": max_new_tokens} if max_new_tokens else {}),
                 ),
             )
             _response = _response.text.strip("").strip("```")

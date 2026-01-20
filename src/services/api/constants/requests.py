@@ -3,16 +3,17 @@ File: /requests.py
 Created Date: Monday October 20th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Saturday December 27th 2025
-Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
+Last Modified: Monday January 12th 2026 8:26:26 pm
+Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
-from typing import List, Any, Optional
+from typing import List, Any, Optional, Tuple
 from pydantic import BaseModel, Field, field_serializer
 from src.constants.data import Observation, TextChunk
 from src.constants.kg import IdentificationParams, Node, Predicate
 from src.constants.tasks.ingestion import IngestionTaskArgs
+from src.core.search.entity_info import MatchPath
 
 
 class IngestionRequestBody(IngestionTaskArgs):
@@ -185,8 +186,10 @@ class CreateBrainRequest(BaseModel):
 
     brain_id: str
 
+
 class AddEntityRequest(BaseModel):
     """Request model for adding a new entity to the graph."""
+
     name: str
     brain_id: str = "default"
     labels: list[str] = []
@@ -198,6 +201,7 @@ class AddEntityRequest(BaseModel):
 
 class UpdateEntityRequest(BaseModel):
     """Request model for updating an existing entity in the graph."""
+
     uuid: str
     brain_id: str = "default"
     new_name: Optional[str] = None
@@ -209,6 +213,7 @@ class UpdateEntityRequest(BaseModel):
 
 class AddRelationshipRequest(BaseModel):
     """Request model for adding a new relationship between two entities."""
+
     subject_uuid: str
     predicate_name: str
     predicate_description: str
@@ -218,7 +223,24 @@ class AddRelationshipRequest(BaseModel):
 
 class UpdateRelationshipRequest(BaseModel):
     """Request model for updating an existing relationship's properties."""
+
     uuid: str
     brain_id: str = "default"
     new_properties: Optional[dict] = None
     properties_to_remove: Optional[list[str]] = None
+
+
+class GetEntityInfoResponse(BaseModel):
+    """Response model for the get entity info endpoint."""
+
+    target_node: Optional[Node] = None
+    path: MatchPath
+
+
+class GetEntityContextResponse(BaseModel):
+    """Response model for the get entity context endpoint."""
+
+    neighborhood: list[dict]
+    target_node: Optional[Node] = None
+    text_contexts: list[str] = []
+    natural_language_web: list[dict] = []

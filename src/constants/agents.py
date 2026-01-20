@@ -21,10 +21,6 @@ class ArchitectAgentEntity(BaseModel):
     uuid: str
     name: str
     type: str
-    flow_key: Optional[str] = Field(
-        default=None,
-        description="Unique identitier for contextualizing the entity into the context flow",
-    )
     happened_at: Optional[str | None] = Field(
         default=None,
         description="The date and time the entity happened at if known otherwise None. Mostly used for event entities.",

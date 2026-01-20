@@ -150,7 +150,6 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
                 uuid=subj_entity.uuid,
                 name=subj_entity.name,
                 type=subj_entity.type,
-                **({"flow_key": rel_key} if subj_entity.type != "EVENT" else {}),
                 description=subj_entity.description,
                 **(
                     {"happened_at": subj_entity.properties.get("happened_at")}
@@ -163,7 +162,6 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
                 uuid=obj_entity.uuid,
                 name=obj_entity.name,
                 type=obj_entity.type,
-                **({"flow_key": rel_key} if obj_entity.type != "EVENT" else {}),
                 description=obj_entity.description,
                 **(
                     {"happened_at": obj_entity.properties.get("happened_at")}

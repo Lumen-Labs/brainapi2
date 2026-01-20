@@ -3,8 +3,8 @@ File: /kg_agent.py
 Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Sunday October 19th 2025 9:42:00 am
-Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
+Last Modified: Monday January 12th 2026 8:26:26 pm
+Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
@@ -36,7 +36,7 @@ from src.adapters.embeddings import EmbeddingsAdapter, VectorStoreAdapter
 
 class KGAgent:
     """
-    Knowledge Graph Agent. Used to update the knowledge graph with new information.
+    Knowledge Graph Agent. Used to operate with the knowledge graph with new information.
     Not used for batch updates.
     """
 

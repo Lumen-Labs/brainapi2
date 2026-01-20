@@ -522,5 +522,14 @@ class GraphAdapter:
         """
         return self.graph.check_node_existence(uuid, name, labels, brain_id)
 
+    def get_neighborhood(
+        self, node: Node | str, depth: int, brain_id: str = "default"
+    ) -> list[dict]:
+        """
+        Get the neighborhood of a node up to a given depth.
+        Returns a nested structure where each neighbor contains its own neighbors.
+        """
+        return self.graph.get_neighborhood(node, depth, brain_id)
+
 
 _graph_adapter = GraphAdapter()

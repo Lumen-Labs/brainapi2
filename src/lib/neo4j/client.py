@@ -588,7 +588,7 @@ class Neo4jClient(GraphClient):
         cypher_query += """
         RETURN n.uuid AS uuid, n.name AS name, labels(n) AS labels, n.description AS description, properties(n) AS properties, r AS rel,
                CASE WHEN startNode(r) = n THEN 'out' ELSE 'in' END AS direction,
-               type(r) AS rel_type, r.description AS rel_description,
+               type(r) AS rel_type, r.description AS rel_description, properties(r) AS rel_properties,
                c.uuid AS c_uuid, c.name AS c_name, labels(c) AS c_labels, c.description AS c_description, properties(c) AS c_properties
         """
 
@@ -609,6 +609,7 @@ class Neo4jClient(GraphClient):
                     name=record.get("rel_type", "") or "",
                     description=record.get("rel_description", "") or "",
                     direction=record.get("direction", "neutral"),
+                    properties=record.get("rel_properties", {}) or {},
                 ),
                 Node(
                     uuid=record.get("c_uuid", ""),
@@ -1349,6 +1350,89 @@ class Neo4jClient(GraphClient):
             cypher_query, parameters_={"uuid": uuid, "name": name}, database_=brain_id
         )
         return len(result.records) > 0
+
+    def get_neighborhood(
+        self, node: Node | str, depth: int, brain_id: str
+    ) -> list[dict]:
+        """
+        Get the neighborhood of a node up to a given depth.
+        Returns a nested structure where each neighbor contains its own neighbors.
+        """
+        if depth < 1:
+            return []
+        node_uuid = node.uuid if isinstance(node, Node) else node
+        return self._get_neighborhood_recursive(node_uuid, depth, brain_id, set())
+
+    def _get_neighborhood_recursive(
+        self, node_uuid: str, depth: int, brain_id: str, path_visited: set[str]
+    ) -> list[dict]:
+        """
+        Recursively get neighbors at each depth level.
+        Uses path_visited to prevent cycles in the current traversal path.
+        """
+        if depth < 1 or node_uuid in path_visited:
+            return []
+
+        path_visited = path_visited.copy()
+        path_visited.add(node_uuid)
+
+        cypher_query = """
+        MATCH (n)-[r]-(m)
+        WHERE n.uuid = $uuid
+        RETURN 
+            r as rel,
+            type(r) as rel_type,
+            r.description as rel_description,
+            properties(r) as rel_properties,
+            CASE WHEN startNode(r) = n THEN 'out' ELSE 'in' END AS direction,
+            m.uuid as m_uuid,
+            m.name as m_name,
+            labels(m) as m_labels,
+            m.description as m_description,
+            properties(m) as m_properties
+        """
+
+        self.ensure_database(brain_id)
+        result = self.driver.execute_query(
+            cypher_query,
+            parameters_={"uuid": node_uuid},
+            database_=brain_id,
+        )
+
+        neighbors = []
+        for record in result.records:
+            neighbor_node_uuid = record.get("m_uuid", "")
+            if neighbor_node_uuid in path_visited:
+                continue
+
+            neighbor_node = Node(
+                uuid=neighbor_node_uuid,
+                name=record.get("m_name", "") or "",
+                labels=record.get("m_labels", []) or [],
+                description=record.get("m_description", "") or "",
+                properties=record.get("m_properties", {}) or {},
+            )
+
+            predicate = Predicate(
+                name=record.get("rel_type", "") or "",
+                description=record.get("rel_description", "") or "",
+                direction=record.get("direction", "neutral"),
+                properties=record.get("rel_properties", {}) or {},
+            )
+
+            nested_neighbors = self._get_neighborhood_recursive(
+                neighbor_node_uuid, depth - 1, brain_id, path_visited
+            )
+
+            neighbors.append(
+                {
+                    "predicate": predicate,
+                    "node": neighbor_node,
+                    "neighbors": nested_neighbors,
+                }
+            )
+
+        return neighbors
 
 
 _neo4j_client = Neo4jClient()

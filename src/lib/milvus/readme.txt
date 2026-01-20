@@ -1,5 +1,5 @@
 Attu Official:
 
 ```
-docker run -p 8000:3000 -e MILVUS_URL={your-milvus-ip}:19530 zilliz/attu:latest
+docker run -p 3500:3000 --network milvus -e MILVUS_URL=standalone:19530 zilliz/attu:latest
 ```

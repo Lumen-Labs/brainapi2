@@ -400,3 +400,13 @@ class GraphClient(ABC):
         Check if a node exists in the graph.
         """
         raise NotImplementedError("check_node_existence method not implemented")
+
+    @abstractmethod
+    def get_neighborhood(
+        self, node: Node | str, depth: int, brain_id: str
+    ) -> list[dict]:
+        """
+        Get the neighborhood of a node up to a given depth.
+        Returns a nested structure where each neighbor contains its own neighbors.
+        """
+        raise NotImplementedError("get_neighborhood method not implemented")
