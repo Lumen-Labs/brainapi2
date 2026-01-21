@@ -11,7 +11,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 from typing import List, Any, Optional, Tuple
 from pydantic import BaseModel, Field, field_serializer
 from src.constants.data import Observation, TextChunk
-from src.constants.kg import IdentificationParams, Node, Predicate
+from src.constants.kg import EntitySynergy, IdentificationParams, Node, Predicate
 from src.constants.tasks.ingestion import IngestionTaskArgs
 from src.core.search.entity_info import MatchPath
 
@@ -244,3 +244,10 @@ class GetEntityContextResponse(BaseModel):
     target_node: Optional[Node] = None
     text_contexts: list[str] = []
     natural_language_web: list[dict] = []
+
+
+class GetEntitySibilingsResponse(BaseModel):
+    """Response model for the get entity siblings endpoint."""
+
+    target_node: Node
+    synergies: List[EntitySynergy]

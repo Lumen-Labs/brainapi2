@@ -3,8 +3,8 @@ File: /embeddings.py
 Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Sunday October 19th 2025 9:00:59 am
-Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
+Last Modified: Monday January 5th 2026 9:57:30 pm
+Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
@@ -83,7 +83,7 @@ class VectorStoreAdapter:
         store: str,
         min_similarity: float,
         limit: int = 10,
-    ) -> list[Vector]:
+    ) -> dict[str, list[Vector]]:
         """
         Search similar vectors by their IDs.
         """

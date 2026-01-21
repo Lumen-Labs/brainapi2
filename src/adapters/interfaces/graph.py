@@ -410,3 +410,13 @@ class GraphClient(ABC):
         Returns a nested structure where each neighbor contains its own neighbors.
         """
         raise NotImplementedError("get_neighborhood method not implemented")
+
+    @abstractmethod
+    def get_next_by_flow_key(
+        self, predicate_uuid: str, flow_key: str, brain_id: str
+    ) -> List[Tuple[Node, Predicate, Node]]:
+        """
+        Get the next node by the flow key.
+        Returns a tuple where the first element is the connected node to the predicate, the second element is the next relationship by flow key and the third element is the next node.
+        """
+        raise NotImplementedError("get_next_by_flow_key method not implemented")

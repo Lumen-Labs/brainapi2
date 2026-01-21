@@ -44,6 +44,7 @@ from src.services.api.controllers.changelogs import (
 from src.services.api.controllers.entities import (
     get_entity_info as get_entity_info_controller,
     get_entity_context as get_entity_context_controller,
+    get_entity_sibilings as get_entity_sibilings_controller,
 )
 
 retrieve_router = APIRouter(prefix="/retrieve", tags=["retrieve"])
@@ -382,3 +383,15 @@ async def get_entity_context(
     Get the entity context for a given target.
     """
     return await get_entity_context_controller(target, context_depth, brain_id)
+
+
+@retrieve_router.get(path="/entity/synergies")
+async def get_entity_synergies(
+    target: str,
+    polarity: Literal["same", "opposite"] = "same",
+    brain_id: str = "default",
+):
+    """
+    Get the entity synergies for a given target.
+    """
+    return await get_entity_sibilings_controller(target, polarity, brain_id)

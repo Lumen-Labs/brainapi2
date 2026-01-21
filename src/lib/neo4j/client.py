@@ -588,10 +588,12 @@ class Neo4jClient(GraphClient):
         cypher_query += """
         RETURN n.uuid AS uuid, n.name AS name, labels(n) AS labels, n.description AS description, properties(n) AS properties, r AS rel,
                CASE WHEN startNode(r) = n THEN 'out' ELSE 'in' END AS direction,
-               type(r) AS rel_type, r.description AS rel_description, properties(r) AS rel_properties,
+               type(r) AS rel_type, r.description AS rel_description, properties(r) AS rel_properties, r.flow_key as rel_flowkey, r.uuid as rel_uuid,
                c.uuid AS c_uuid, c.name AS c_name, labels(c) AS c_labels, c.description AS c_description, properties(c) AS c_properties
         """
-
+        print("========== cypher_query 1 ==========")
+        print(cypher_query, node_uuids, same_type_only, of_types)
+        print("========== cypher_query 1 ==========")
         if limit:
             cypher_query += f" LIMIT {limit}"
 
@@ -610,6 +612,8 @@ class Neo4jClient(GraphClient):
                     description=record.get("rel_description", "") or "",
                     direction=record.get("direction", "neutral"),
                     properties=record.get("rel_properties", {}) or {},
+                    flow_key=record.get("rel_flowkey", "") or "",
+                    uuid=record.get("rel_uuid", "") or "",
                 ),
                 Node(
                     uuid=record.get("c_uuid", ""),
@@ -1433,6 +1437,55 @@ class Neo4jClient(GraphClient):
             )
 
         return neighbors
+
+    def get_next_by_flow_key(
+        self, predicate_uuid: str, flow_key: str, brain_id: str
+    ) -> List[Tuple[Node, Predicate, Node]]:
+        """
+        Get the next node by the flow key.
+        """
+        cypher_query = f"""
+        MATCH ()-[r]-(m)-[r2]-(b)
+        WHERE r.uuid = $predicate_uuid
+        AND r2.flow_key = $flow_key
+        RETURN
+            m.uuid as m_uuid, m.name as m_name, labels(m) as m_labels,
+            type(r2) as r2_type, r2.description as r2_description, properties(r2) as r2_properties,
+            CASE WHEN startNode(r2) = m THEN 'out' ELSE 'in' END AS r2_direction,
+            b.uuid as b_uuid, b.name as b_name, labels(b) as b_labels, b.description as b_description, properties(b) as b_properties
+        """
+        self.ensure_database(brain_id)
+        result = self.driver.execute_query(
+            cypher_query,
+            parameters_={
+                "predicate_uuid": predicate_uuid,
+                "flow_key": flow_key,
+            },
+            database_=brain_id,
+        )
+        return [
+            (
+                Node(
+                    uuid=record.get("m_uuid", "") or "",
+                    name=record.get("m_name", "") or "",
+                    labels=record.get("m_labels", []) or [],
+                ),
+                Predicate(
+                    name=record.get("r2_type", "") or "",
+                    description=record.get("r2_description", "") or "",
+                    direction=record.get("r2_direction", "neutral"),
+                    properties=record.get("r2_properties", {}) or {},
+                ),
+                Node(
+                    uuid=record.get("b_uuid", "") or "",
+                    name=record.get("b_name", "") or "",
+                    labels=record.get("b_labels", []) or [],
+                    description=record.get("b_description", "") or "",
+                    properties=record.get("b_properties", {}) or {},
+                ),
+            )
+            for record in result.records
+        ]
 
 
 _neo4j_client = Neo4jClient()

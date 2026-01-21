@@ -9,7 +9,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 """
 
 from datetime import datetime
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, Tuple
 import uuid
 from pydantic import BaseModel, ConfigDict, Extra, Field
 
@@ -151,3 +151,12 @@ class EntityInfo(BaseModel):
 
     most_relevant_node: Node
     relevant_nodes: List[Node]
+
+
+class EntitySynergy(BaseModel):
+    """
+    Entity synergy model.
+    """
+
+    node: Node
+    connected_by: Tuple[Node, Node]

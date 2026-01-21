@@ -531,5 +531,13 @@ class GraphAdapter:
         """
         return self.graph.get_neighborhood(node, depth, brain_id)
 
+    def get_next_by_flow_key(
+        self, predicate_uuid: str, flow_key: str, brain_id: str = "default"
+    ) -> List[Tuple[Node, Predicate, Node]]:
+        """
+        Get the next node by the flow key.
+        """
+        return self.graph.get_next_by_flow_key(predicate_uuid, flow_key, brain_id)
+
 
 _graph_adapter = GraphAdapter()
