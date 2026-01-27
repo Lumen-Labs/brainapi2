@@ -60,6 +60,16 @@ class KGAgent:
         embeddings: EmbeddingsAdapter,
         database_desc: str,
     ):
+        """
+        Initialize the KGAgent with required adapters, storage, and a human-readable database description.
+        
+        Parameters:
+            database_desc (str): A brief description of the knowledge graph or database this agent will operate on.
+        
+        Description:
+            Stores provided adapters and clients on the instance, sets the agent to None, and initializes token accounting fields:
+            `input_tokens`, `output_tokens`, `cached_tokens`, `reasoning_tokens` set to 0 and `token_detail` set to None.
+        """
         self.llm_adapter = llm_adapter
         self.cache_adapter = cache_adapter
         self.kg = kg
@@ -74,6 +84,12 @@ class KGAgent:
         self.token_detail = None
 
     def _execute_graph_operation(self, operation: str) -> str:
+        """
+        Execute a graph operation string against the configured knowledge graph.
+        
+        Returns:
+            str: A human-readable status message indicating success, or an error message containing the exception text and the graph database type when execution fails.
+        """
         try:
             self.kg.execute_operation(operation)
             return f"Graph operation executed successfully: {operation}"
@@ -130,6 +146,20 @@ class KGAgent:
         extra_system_prompt: Optional[dict] = None,
         brain_id: str = "default",
     ):
+        """
+        Configure and create the LLM agent instance used by the KGAgent.
+        
+        This method selects an appropriate system prompt based on `type_`, constructs or uses the provided toolset, applies an optional output schema, and assigns the created agent to `self.agent`.
+        
+        Parameters:
+            type_ (Literal["normal", "graph-consolidator"]): Agent mode determining which system prompt to use.
+            identification_params (dict): Identification details (IDs, names) used when building default tools.
+            metadata (dict): Contextual metadata passed to tool creation and agent configuration.
+            tools (Optional[List[BaseTool]]): Optional explicit list of tools to supply to the agent; if omitted, default tools are created.
+            output_schema (Optional[BaseModel]): Optional response schema to enforce the agent's output format.
+            extra_system_prompt (Optional[dict]): Optional additional content to interpolate into the selected system prompt.
+            brain_id (str): Identifier of the knowledge brain/context to use when creating default tools.
+        """
         system_prompt = None
         if type_ == "normal":
             system_prompt = KG_AGENT_SYSTEM_PROMPT.format(
@@ -230,7 +260,15 @@ class KGAgent:
         self, node: Node, looking_for: Optional[Union[str, Iterable[str]]], limit: int
     ) -> RetrieveNeighborsOutputSchema:
         """
-        Retrieve the neighbors of a node.
+        Retrieve neighboring nodes and relationship information for a given node, filtered by optional criteria and capped by a maximum result count.
+        
+        Parameters:
+            node (Node): The main node whose neighbors should be retrieved.
+            looking_for (Optional[Union[str, Iterable[str]]]): A single reason string or an iterable of reason strings used to filter or prioritize which neighbors to return; if None, no extra filtering is applied.
+            limit (int): Maximum number of neighbor entries to return.
+        
+        Returns:
+            RetrieveNeighborsOutputSchema: Structured neighbor data containing the matching nodes, relationships, and associated properties.
         """
 
         graph_db_prop_keys = self.kg.get_graph_property_keys()
@@ -297,7 +335,19 @@ class KGAgent:
         max_retries: int = 3,
     ) -> str:
         """
-        Run the graph consolidator operator.
+        Invoke the graph-consolidator agent to perform a consolidation task on the knowledge graph.
+        
+        Parameters:
+            task (str): Natural-language instruction describing the consolidation operation to run.
+            brain_id (str): Identifier of the knowledge graph brain to target; defaults to "default".
+            timeout (int): Maximum seconds to wait for a single agent invocation before timing out.
+            max_retries (int): Maximum number of retry attempts for the agent invocation when timeouts occur.
+        
+        Returns:
+            status (str): `"OK"` when the consolidator completes successfully.
+        
+        Raises:
+            TimeoutError: If a single invocation exceeds `timeout` seconds or if all retry attempts fail.
         """
 
         self._get_agent(
@@ -315,6 +365,14 @@ class KGAgent:
         )
 
         def _invoke_agent():
+            """
+            Invoke the configured agent with the graph-consolidator prompt for the current task.
+            
+            Sends a user message containing the graph-consolidator task prompt to the agent and returns the agent's response.
+            
+            Returns:
+                dict: Agent response containing generated message content and associated metadata (for example, token usage and model output).
+            """
             return self.agent.invoke(
                 {
                     "messages": [
@@ -335,6 +393,17 @@ class KGAgent:
             reraise=True,
         )
         def _invoke_agent_with_retry():
+            """
+            Invoke the graph-consolidator agent with a timeout and update token accounting from the response.
+            
+            Waits up to `timeout` seconds for the agent invocation to complete. For any returned message that contains `usage_metadata`, updates the agent's token counters and `token_detail`. Returns the agent response dictionary.
+            
+            Returns:
+                dict: The agent response.
+            
+            Raises:
+                TimeoutError: If the agent invocation does not complete within `timeout` seconds.
+            """
             try:
                 with ThreadPoolExecutor(max_workers=1) as executor:
                     future = executor.submit(_invoke_agent)
@@ -369,7 +438,20 @@ class KGAgent:
         return "OK"
 
     def _update_token_counts(self, usage_metadata: dict):
-        """Extract all token counts from usage metadata"""
+        """
+        Update the agent's token counters from LLM usage metadata.
+        
+        Reads token counts from the provided `usage_metadata` mapping and increments the agent's
+        internal counters: `input_tokens`, `output_tokens`, `cached_tokens`, and `reasoning_tokens`.
+        Missing entries are treated as zero.
+        
+        Parameters:
+            usage_metadata (dict): Usage metadata containing any of the following keys:
+                - "input_tokens": total input token count (int)
+                - "output_tokens": total output token count (int)
+                - "input_token_details": dict with "cache_read" (int) for cached input tokens
+                - "output_token_details": dict with "reasoning" (int) for reasoning/output tokens
+        """
         # Base counts
         self.input_tokens += usage_metadata.get("input_tokens", 0)
         self.output_tokens += usage_metadata.get("output_tokens", 0)

@@ -157,13 +157,13 @@ class DataAdapter:
 
     def get_observation_labels(self, brain_id: str = "default") -> list[str]:
         """
-        Retrieve all unique observation labels for the specified brain.
-
+        Get all unique observation labels for the specified brain.
+        
         Parameters:
-            brain_id (str): Identifier of the brain to query labels from.
-
+            brain_id (str): Identifier of the brain to query.
+        
         Returns:
-            list[str]: All unique labels present in observations for the specified brain.
+            list[str]: A list of unique observation label strings for the specified brain.
         """
         return self.data.get_observation_labels(brain_id=brain_id)
 
@@ -225,7 +225,14 @@ class DataAdapter:
         self, structured_data: StructuredData, brain_id: str = "default"
     ) -> StructuredData:
         """
-        Update a structured data.
+        Update an existing structured data entry.
+        
+        Parameters:
+        	structured_data (StructuredData): The structured data object with updated information.
+        	brain_id (str): Identifier of the brain context for the update.
+        
+        Returns:
+        	StructuredData: The updated structured data object.
         """
         return self.data.update_structured_data(
             structured_data=structured_data, brain_id=brain_id

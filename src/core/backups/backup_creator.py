@@ -12,7 +12,13 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 
 def create_backup(brain_id: str) -> Backup:
     """
-    Create a backup of the knowledge graph.
+    Create a backup of the knowledge graph identified by brain_id.
+    
+    Parameters:
+        brain_id (str): Identifier of the brain (knowledge graph) to back up.
+    
+    Returns:
+        Backup: Object containing metadata for the created backup and a download link or path to the stored backup.
     """
 
     # Create Graph backup

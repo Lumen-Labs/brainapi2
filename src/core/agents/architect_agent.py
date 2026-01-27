@@ -80,6 +80,20 @@ class ArchitectAgent:
         # database_desc: str,
         ingestion_manager: IngestionManager,
     ):
+        """
+        Initialize the ArchitectAgent with the required adapters and managers and prepare internal runtime state.
+        
+        Parameters:
+            llm_adapter (LLMAdapter): Adapter for interacting with the language model.
+            cache_adapter (CacheAdapter): Adapter used for cache reads/writes.
+            kg (GraphAdapter): Graph knowledge-base adapter for entity and relationship operations.
+            vector_store (VectorStoreAdapter): Adapter for vector storage and retrieval.
+            embeddings (EmbeddingsAdapter): Adapter that produces vector embeddings for content.
+            ingestion_manager (IngestionManager): Manager responsible for ingesting external data into the system.
+        
+        The constructor initializes internal tracking state including token counters (input, output, cached, reasoning),
+        message/agent state, and containers for discovered relationships and used entities.
+        """
         self.llm_adapter = llm_adapter
         self.cache_adapter = cache_adapter
         self.kg = kg
@@ -104,6 +118,22 @@ class ArchitectAgent:
         targeting: Optional[Node] = None,
     ) -> List[BaseTool]:
 
+        """
+        Builds the set of tools the agent uses for relationship creation and entity tracking.
+        
+        Parameters:
+            text (Optional[str]): Optional prompt or context text passed to the create-relationship tool.
+            entities (Optional[Dict[str, ScoutEntity]]): Optional mapping of entity UUIDs to ScoutEntity instances for context.
+            brain_id (str): Identifier for the knowledge brain/namespace to scope KG operations.
+            targeting (Optional[Node]): Optional target node context to guide relationship creation.
+        
+        Returns:
+            List[BaseTool]: A list containing:
+                - ArchitectAgentCreateRelationshipTool configured with the provided context,
+                - ArchitectAgentGetRemainingEntitiesToProcessTool,
+                - ArchitectAgentCheckUsedEntitiesTool,
+                - ArchitectAgentMarkEntitiesAsUsedTool.
+        """
         return [
             ArchitectAgentCreateRelationshipTool(
                 self,
@@ -135,6 +165,22 @@ class ArchitectAgent:
         brain_id: str = "default",
         targeting: Optional[Node] = None,
     ):
+        """
+        Configure and create the internal LangChain agent and store it on self.agent.
+        
+        Parameters:
+            type_ (Literal["single", "tooler"]): Chooses agent mode. "single" uses a structured response prompt and no tools; "tooler" uses the tooler system prompt and enables tools.
+            tools (Optional[List[BaseTool]]): Explicit tool list to attach when type_ is "tooler". If omitted for "tooler", a default tool set is created from provided context.
+            output_schema (Optional[BaseModel]): Schema used as the agent's response format when type_ is "single".
+            text (Optional[str]): Optional prompt context forwarded to default tool construction when tools are not provided.
+            extra_system_prompt (Optional[dict]): Additional system prompt content interpolated into the selected system prompt.
+            entities (Optional[Dict[str, ScoutEntity]]): Entity context forwarded to default tool construction when tools are not provided.
+            brain_id (str): Identifier forwarded to default tool construction when tools are not provided.
+            targeting (Optional[Node]): Targeting context forwarded to default tool construction when tools are not provided.
+        
+        Side effects:
+            Creates an agent via create_agent and assigns it to self.agent.
+        """
         if type_ == "single":
             system_prompt = ARCHITECT_AGENT_SYSTEM_PROMPT.format(
                 extra_system_prompt=extra_system_prompt if extra_system_prompt else ""
@@ -179,7 +225,22 @@ class ArchitectAgent:
         max_retries: int = 3,
     ) -> ArchitectAgentResponse:
         """
-        Run the architect agent.
+        Orchestrates the agent to discover relationships and new nodes for the provided entities based on the input text.
+        
+        Parameters:
+            text (str): Natural-language description or instructions guiding relationship discovery.
+            entities (List[ScoutEntity]): Entities to process; each entity should include a UUID.
+            targeting (Optional[Node]): Optional node that provides contextual focus for relationship creation.
+            brain_id (str): Identifier for the knowledge brain or workspace to use.
+            timeout (int): Maximum seconds to wait for a single LLM invocation before timing out.
+            max_retries (int): Number of retry attempts for timed-out LLM invocations.
+        
+        Returns:
+            ArchitectAgentResponse: Contains:
+                - new_nodes: list of newly discovered nodes produced by the agent.
+                - relationships: list of relationships the agent created between entities or new nodes.
+                - input_tokens: count of input tokens consumed during this run.
+                - output_tokens: count of output tokens produced during this run.
         """
 
         entities_dict = {entity.uuid: entity for entity in entities}
@@ -200,6 +261,17 @@ class ArchitectAgent:
             all_rels: list[ArchitectAgentRelationship],
             previous_messages: list = None,
         ):
+            """
+            Builds a message history including the provided entities and previously created relationships, invokes the configured agent with that history, and returns the agent's response.
+            
+            Parameters:
+                ent (list[ScoutEntity]): Entities to include in the prompt.
+                all_rels (list[ArchitectAgentRelationship]): Previously created relationships to include in the prompt.
+                previous_messages (list, optional): Prior message objects to include as conversation history; may be trimmed to fit history limits.
+            
+            Returns:
+                The agent's response object containing the model's reply and associated metadata.
+            """
             from langchain_core.messages import HumanMessage
 
             messages_list = []
@@ -253,6 +325,20 @@ class ArchitectAgent:
             entities: List[ScoutEntity],
             seen_relationship_keys: set,
         ) -> set:
+            """
+            Extracts newly created relationships and nodes from a structured agent response and updates the provided tracking collections.
+            
+            Parameters:
+                response (dict): Agent response containing a `structured_response` with optional `relationships` and `new_nodes`.
+                connected_entity_uuids (set): Set of UUIDs already known to be connected; will be updated with newly connected UUIDs.
+                all_relationships (list): List to append newly discovered, deduplicated relationship objects.
+                all_new_nodes (list): List to append any new node objects reported in the response.
+                entities (List[ScoutEntity]): Source entities to check membership of relationship endpoints (used to mark endpoints as connected).
+                seen_relationship_keys (set): Set of (tail_uuid, tip_uuid, relationship_name) tuples used to deduplicate relationships.
+            
+            Returns:
+                set: The set of entity UUIDs that became connected as a result of processing this response iteration.
+            """
             structured_response = response.get("structured_response", {})
             iteration_connected = set()
 
@@ -302,6 +388,19 @@ class ArchitectAgent:
         def _invoke_agent_with_retry(
             unconnected_entities_list: List[ScoutEntity], previous_messages: list
         ):
+            """
+            Invoke the architect agent with a single-worker executor and timeout, and update token counts from any returned messages.
+            
+            Parameters:
+                unconnected_entities_list (List[ScoutEntity]): Entities to include in the agent invocation.
+                previous_messages (list): Message history to send to the agent.
+            
+            Returns:
+                dict: The response dictionary returned by the agent invocation.
+            
+            Raises:
+                TimeoutError: If the agent call does not complete within the configured timeout.
+            """
             try:
                 with ThreadPoolExecutor(max_workers=1) as executor:
                     future = executor.submit(
@@ -324,6 +423,19 @@ class ArchitectAgent:
         def _invoke_and_process(
             unconnected_entities_list: List[ScoutEntity], previous_messages: list
         ):
+            """
+            Invoke the agent for the provided unconnected entities, append any returned messages to the accumulated message history, and process the agent's response to determine which entities became connected.
+            
+            Parameters:
+                unconnected_entities_list (List[ScoutEntity]): Entities to include in this agent invocation.
+                previous_messages (list): Message history to send with the invocation.
+            
+            Returns:
+                set: UUID strings of entities that were connected as a result of this invocation.
+            
+            Raises:
+                TimeoutError: If the agent invocation exhausts retries or times out.
+            """
             try:
                 response = _invoke_agent_with_retry(
                     unconnected_entities_list, previous_messages
@@ -388,7 +500,23 @@ class ArchitectAgent:
         max_retries: int = 3,
     ) -> List[ArchitectAgentRelationship]:
         """
-        Run the architect agent tooler.
+        Drive the architect agent in "tooler" mode to iteratively discover relationships using available tools and collect the results.
+        
+        This invokes the agent with the provided text and entities, manages message history trimming, updates token accounting from message metadata, and accumulates relationships produced by tool-driven agent actions.
+        
+        Parameters:
+            text (str): Natural-language prompt or instructions for relationship discovery.
+            entities (List[ScoutEntity]): Candidate entities the agent may connect; each entity must include a UUID.
+            targeting (Optional[Node]): Optional node to which discovered information should be anchored or related.
+            brain_id (str): Identifier for the knowledge brain/context to use.
+            timeout (int): Maximum seconds to wait for a single agent invocation before raising a timeout.
+            max_retries (int): Maximum number of retry attempts for timed or retried invocations.
+        
+        Returns:
+            List[ArchitectAgentRelationship]: The relationships discovered and collected by the agent during this run.
+        
+        Raises:
+            TimeoutError: If the agent fails to produce a response within `timeout` after the allowed retry attempts.
         """
 
         entities_dict = {entity.uuid: entity for entity in entities}
@@ -405,6 +533,16 @@ class ArchitectAgent:
         accumulated_messages = []
 
         def _invoke_agent(previous_messages: list = None):
+            """
+            Prepare a pruned message history, append a formatted human prompt for the "tooler" flow, and invoke the agent.
+            
+            Parameters:
+                previous_messages (list | None): Prior messages to include in the history; if the count exceeds HISTORY_MAX_MESSAGES,
+                    the oldest messages are removed via RemoveMessage entries and the remaining messages are preserved.
+            
+            Returns:
+                The response object returned by self.agent.invoke when called with the constructed message list.
+            """
             from langchain_core.messages import HumanMessage
 
             messages_list = []
@@ -448,6 +586,18 @@ class ArchitectAgent:
             reraise=True,
         )
         def _invoke_agent_with_retry(previous_messages: list):
+            """
+            Invoke the agent in a worker thread, enforce the configured timeout, and update token counters from any returned message usage metadata.
+            
+            Parameters:
+                previous_messages (list): Message history to pass to the agent invocation.
+            
+            Returns:
+                dict: The agent response object as returned by the underlying _invoke_agent call.
+            
+            Raises:
+                TimeoutError: If the agent invocation exceeds the configured timeout.
+            """
             try:
                 with ThreadPoolExecutor(max_workers=1) as executor:
                     future = executor.submit(_invoke_agent, previous_messages)
@@ -469,6 +619,18 @@ class ArchitectAgent:
                 )
 
         def _invoke_and_process(previous_messages: list):
+            """
+            Invoke the agent with retry logic and append any returned messages to the outer `accumulated_messages` list.
+            
+            Parameters:
+                previous_messages (list): Message history to send to the agent.
+            
+            Returns:
+                response (dict): The agent's response object; may include a "messages" key containing new messages.
+            
+            Raises:
+                TimeoutError: If the agent invocation times out or fails after all retry attempts.
+            """
             try:
                 response = _invoke_agent_with_retry(previous_messages)
                 messages = response.get("messages", [])
@@ -489,7 +651,16 @@ class ArchitectAgent:
         return list(self.relationships_set)
 
     def _update_token_counts(self, usage_metadata: dict):
-        """Extract all token counts from usage metadata"""
+        """
+        Update the agent's token counters from an LLM usage metadata dictionary.
+        
+        Parameters:
+            usage_metadata (dict): Metadata containing token usage details. Expected keys:
+                - "input_tokens": integer count of input tokens.
+                - "output_tokens": integer count of output tokens.
+                - "input_token_details": dict with "cache_read" (int) for cached input token reads.
+                - "output_token_details": dict with "reasoning" (int) for tokens spent on reasoning.
+        """
         # Base counts
         self.input_tokens += usage_metadata.get("input_tokens", 0)
         self.output_tokens += usage_metadata.get("output_tokens", 0)

@@ -66,6 +66,16 @@ class VectorStoreClient(ABC):
         limit: int = 10,
     ) -> dict[str, list[Vector]]:
         """
-        Search similar vectors by their IDs.
+        Finds vectors similar to the vectors identified by the given IDs.
+        
+        Parameters:
+            vector_ids (list[str]): Identifiers of the vectors to find similarities for.
+            brain_id (str): Identifier for the brain/context containing the vectors.
+            store (str): Name of the vector store to query.
+            min_similarity (float): Minimum similarity threshold (e.g., 0.0–1.0) for returned results.
+            limit (int): Maximum number of similar vectors to return per input ID.
+        
+        Returns:
+            dict[str, list[Vector]]: Mapping from each input vector ID to a list of similar `Vector` objects that meet or exceed `min_similarity`, with up to `limit` results per ID.
         """
         raise NotImplementedError("search_similar_by_ids method not implemented")

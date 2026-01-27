@@ -86,6 +86,17 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
         brain_id: str = "default",
         targeting: Optional[Node] = None,
     ):
+        """
+        Initialize the tool for creating a set of relationships between entities for a single phrase.
+        
+        Parameters:
+            architect_agent (object): The owning architect agent instance that this tool will update (holds state like entities, token details, and relationships).
+            text (str): The source text or phrase that the relationships represent.
+            entities (Optional[Dict[str, ScoutEntity]]): Mapping of entity UUIDs to ScoutEntity objects available to resolve relationship subjects/objects; empty dict if None.
+            kg (GraphAdapter): Graph adapter used for resolving and persisting graph-related operations.
+            brain_id (str): Identifier of the target brain/namespace for created relationships.
+            targeting (Optional[Node]): Optional target node to associate with created relationships.
+        """
         description: str = (
             "Tool for creating a set of relationships between entities. "
             "Use this tool to create a set of relationships between entities that together compose a single phrase. "
@@ -112,6 +123,24 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
         description: str
 
     def _run(self, *args, **kwargs) -> str:
+        """
+        Validate and create architect relationships from the provided input, normalize them via the JanitorAgent, enqueue ingestion, and return the operation result.
+        
+        Parameters:
+        	relationships (list[dict], optional): A list of relationship objects provided either as the first positional argument (or as args[0]["relationships"]) or via the "relationships" keyword. Each relationship dict should include:
+        		- subject: UUID or name of the subject entity (required)
+        		- predicate: relationship name/label
+        		- object: UUID or name of the object entity (required)
+        		- description: textual description of the relationship
+        		- amount: optional numeric value associated with the relationship
+        		- properties: optional dict of additional properties
+        	The method resolves subject and object against the tool's entity map and the architect_agent's used_entities_set.
+        
+        Returns:
+        	A success JSON string on successful creation: '{"status": "success", "message": "relationships created successfully"}'.
+        	An error string if the required "relationships" parameter is missing or if a subject/object cannot be resolved (e.g., 'Subject not found in entities: ...').
+        	A dict with status "ERROR" when the JanitorAgent reports wrong relationships; the dict includes keys "wrong_relationships" and "newly_created_nodes".
+        """
         rel_key = str(uuid.uuid4())
 
         print(

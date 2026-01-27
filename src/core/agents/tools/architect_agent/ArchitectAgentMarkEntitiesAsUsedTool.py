@@ -35,6 +35,12 @@ class ArchitectAgentMarkEntitiesAsUsedTool(BaseTool):
         self,
         architect_agent: object,
     ):
+        """
+        Initialize the tool with a reference to the architect agent whose entities may be marked as used.
+        
+        Parameters:
+            architect_agent (object): The architect agent instance whose `entities` and `used_entities_set` this tool will update.
+        """
         description: str = (
             "Tool that marks entities as used. "
             "Use this tool to mark entities as used. "
@@ -46,6 +52,25 @@ class ArchitectAgentMarkEntitiesAsUsedTool(BaseTool):
         )
 
     def _run(self, *args, **kwargs) -> str:
+        """
+        Mark the given entity UUIDs as used on the associated architect agent.
+        
+        Accepts several input shapes to identify the UUIDs to mark: a dict argument with the key "entity_uuids", a keyword "entity_uuids", a list passed as the first positional argument, or keywords "entities" or "uuids". If a single string is provided it will be treated as a single UUID. If no recognizable input is provided, no entities are marked.
+        
+        Parameters:
+            *args: Positional arguments; supported forms include:
+                - A dict containing the key "entity_uuids" with a list of UUID strings.
+                - A list of UUID strings as the first positional argument.
+            **kwargs: Keyword arguments; supported keys include:
+                - "entity_uuids", "entities", or "uuids" with a list (or single string) of UUIDs.
+                - If exactly one keyword is provided, its value is used as the UUID list.
+        
+        Returns:
+            result (str): The string "OK" after processing.
+        
+        Side effects:
+            For each provided UUID found in self.architect_agent.entities, the entity is removed from that mapping and appended to self.architect_agent.used_entities_set.
+        """
         entities_to_mark = []
 
         if args and isinstance(args[0], dict) and "entity_uuids" in args[0]:

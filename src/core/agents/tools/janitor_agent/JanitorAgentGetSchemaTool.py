@@ -54,6 +54,20 @@ class JanitorAgentGetSchemaTool(BaseTool):
         )
 
     def _run(self, *args, **kwargs) -> str:
+        """
+        Retrieve a specified part of the knowledge graph schema and return it as a pretty-printed JSON string.
+        
+        Parameters:
+            target (str, optional): One of "node_labels", "relationship_types", or "event_names". Defaults to "node_labels".
+        
+        Returns:
+            str: A JSON-formatted string (indent=4) containing the requested list from the schema:
+                 - labels for "node_labels"
+                 - relationships for "relationship_types"
+                 - event_names for "event_names"
+                 If `target` is not one of the accepted values, returns the error message
+                 "Invalid target parameter. It must be either 'node_labels' or 'relationship_types' or 'event_names'".
+        """
         _target = kwargs.get("target", "node_labels").lower()
 
         schema_result = self.kg.get_schema(brain_id=self.brain_id)

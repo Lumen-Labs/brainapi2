@@ -67,10 +67,15 @@ def consolidate_graph(
     brain_id: str = "default",
 ) -> ConsolidationResponse:
     """
-    Commits the final review of the new kg state normalizing names, connections and removing duplicates.
-
-    Only macroscopic fixes are being done here, fixes that involve multiple relationships and areas of the graph.
-    Atomic fixes on Nodes and Relationships are being done by the janitor_agent calls inside the ArchitectAgentCreateRelationshipTool.
+    Consolidates and normalizes a collection of new knowledge-graph relationships across the graph.
+    
+    Processes the provided relationships in batches to perform macroscopic fixes such as name normalization, connection normalization, and deduplication across multiple relationships and graph areas. Collects and merges token usage metrics produced during consolidation.
+    
+    Parameters:
+        brain_id (str): Identifier of the target knowledge graph/brain to consolidate into (defaults to "default").
+    
+    Returns:
+        ConsolidationResponse: Response containing merged token usage details for the consolidation run.
     """
 
     batches = [

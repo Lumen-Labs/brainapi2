@@ -89,6 +89,11 @@ class ScoutAgent:
         vector_store: VectorStoreAdapter,
         embeddings: EmbeddingsAdapter,
     ):
+        """
+        Initialize a ScoutAgent with the provided adapters and reset internal agent and token-tracking state.
+        
+        Stores the provided LLM, cache, knowledge graph, vector store, and embeddings adapters on the instance, sets the agent and token_detail to None, and initializes input_tokens, output_tokens, cached_tokens, and reasoning_tokens counters to zero.
+        """
         self.llm_adapter = llm_adapter
         self.cache_adapter = cache_adapter
         self.kg = kg
@@ -102,6 +107,15 @@ class ScoutAgent:
         self.reasoning_tokens = 0
 
     def _get_tools(self, brain_id: str = "default") -> List[BaseTool]:
+        """
+        Provide the list of tools available to the agent for a given brain identifier.
+        
+        Parameters:
+            brain_id (str): Identifier of the brain/context to retrieve tools for; defaults to "default".
+        
+        Returns:
+            List[BaseTool]: A list of BaseTool instances available to the agent for the specified brain.
+        """
         return []
 
     def _get_agent(
@@ -132,7 +146,25 @@ class ScoutAgent:
         max_retries: int = 3,
     ) -> ScoutAgentResponse:
         """
-        Run the scout agent.
+        Extract entities from the provided text using the Scout agent and return a structured response containing the entities and token usage.
+        
+        Performs an LLM invocation (with optional targeting context), applies retries with exponential backoff on timeouts, enforces a per-invocation timeout, and accumulates token usage from the agent responses.
+        
+        Parameters:
+            text: The input text to extract entities from.
+            targeting: Optional Node providing contextual targeting information (name, description, properties) to bias extraction.
+            brain_id: Identifier for the agent/brain configuration to use.
+            timeout: Maximum seconds to wait for a single agent invocation before treating it as a timeout.
+            max_retries: Maximum number of retry attempts for timed-out invocations using exponential backoff.
+        
+        Returns:
+            A ScoutAgentResponse containing:
+                - entities: list of extracted ScoutEntity objects.
+                - input_tokens: accumulated input token count observed during the run.
+                - output_tokens: accumulated output token count observed during the run.
+        
+        Raises:
+            TimeoutError: If a single invocation exceeds `timeout`, or if all retry attempts fail due to timeouts.
         """
 
         self._get_agent(
@@ -170,6 +202,15 @@ class ScoutAgent:
             reraise=True,
         )
         def _invoke_agent_with_retry():
+            """
+            Invoke the agent in a separate thread, enforce the configured timeout, and update token accounting from the agent's response.
+            
+            Returns:
+                dict: The agent response dictionary.
+            
+            Raises:
+                TimeoutError: If the agent invocation exceeds the specified timeout.
+            """
             try:
                 with ThreadPoolExecutor(max_workers=1) as executor:
                     future = executor.submit(_invoke_agent)
@@ -211,7 +252,16 @@ class ScoutAgent:
         )
 
     def _update_token_counts(self, usage_metadata: dict):
-        """Extract all token counts from usage metadata"""
+        """
+        Update the agent's accumulated token counters from a usage metadata dictionary.
+        
+        Parameters:
+            usage_metadata (dict): Metadata containing token counts. Expected keys:
+                - "input_tokens": integer count to add to input_tokens (defaults to 0)
+                - "output_tokens": integer count to add to output_tokens (defaults to 0)
+                - "input_token_details": dict with optional "cache_read" integer to add to cached_tokens (defaults to 0)
+                - "output_token_details": dict with optional "reasoning" integer to add to reasoning_tokens (defaults to 0)
+        """
         # Base counts
         self.input_tokens += usage_metadata.get("input_tokens", 0)
         self.output_tokens += usage_metadata.get("output_tokens", 0)

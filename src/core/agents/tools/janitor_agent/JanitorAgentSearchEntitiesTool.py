@@ -52,6 +52,14 @@ class JanitorAgentSearchEntitiesTool(BaseTool):
         vector_store: VectorStoreAdapter,
         brain_id: str = "default",
     ):
+        """
+        Initialize the JanitorAgentSearchEntitiesTool with the required adapters and configuration.
+        
+        This tool performs plain-text searches against the knowledge graph and an optional vector store, aggregating results into a mapping from a sanitized query key to the list of matching entities.
+        
+        Parameters:
+            brain_id (str): Identifier of the brain (knowledge scope) to use for searches. Defaults to "default".
+        """
         description: str = (
             "Tool to search for entities in the knowledge graph by plain text names. "
             "Call this tool once to search for a list of entities with different names, "
@@ -69,6 +77,17 @@ class JanitorAgentSearchEntitiesTool(BaseTool):
         )
 
     def _run(self, *args, **kwargs) -> str:
+        """
+        Search multiple query strings for matching entities in the knowledge graph and vector store, and return the aggregated results as a JSON-formatted mapping keyed by a sanitized query string.
+        
+        Parameters:
+            args: If provided, the first positional argument is treated as the list of query strings to process.
+            kwargs:
+                queries (List[str]): List of query strings to search for when not passed as a positional argument.
+        
+        Returns:
+            str: A JSON string mapping each sanitized query to either a list of found entity objects (each serialized to JSON) or a message indicating no matches were found.
+        """
         _query = ""
         if len(args) > 0:
             _query = args[0]
@@ -81,6 +100,18 @@ class JanitorAgentSearchEntitiesTool(BaseTool):
         found_entities: Dict[str, Union[str, List[Node]]] = {}
 
         def _clean_query(query: str) -> str:
+            """
+            Sanitizes a query string into a normalized key suitable for dictionary lookup.
+            
+            Removes common punctuation, trims leading/trailing whitespace, converts to lowercase,
+            and replaces spaces and hyphens with underscores.
+            
+            Parameters:
+            	query (str): The input query text to normalize.
+            
+            Returns:
+            	sanitized (str): The normalized query string with punctuation removed, spaces and hyphens replaced by underscores, trimmed and lowercased.
+            """
             chars_to_remove = "'.\"()[]{}\\|*/+=<>,!?:;"
             chars_to_underscore = " -"
             translation_table = str.maketrans(

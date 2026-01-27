@@ -70,7 +70,13 @@ def format_textual_data(data: dict, include_keys: bool = True) -> str:
 @ingestion_app.task(bind=True)
 def ingest_data(self, args: dict):
     """
-    Ingest data into the database.
+    Ingest a payload into the system, persist its content and metadata, generate embeddings and observations, and trigger knowledge-graph enrichment.
+    
+    Parameters:
+        args (dict): Raw task arguments parsed into an IngestionTaskArgs model; must include a brain_id and data payload.
+    
+    Returns:
+        task_id (str): The identifier of the ingestion task (Celery request id) that was created/updated.
     """
     payload = None
     try:
@@ -187,7 +193,21 @@ def ingest_data(self, args: dict):
 @ingestion_app.task(bind=True)
 def process_architect_relationships(self, args: dict):
     """
-    Process architect relationships.
+    Process a batch of architect relationships and ingest corresponding nodes, vectors, and graph edges.
+    
+    Parameters:
+        args (dict): Task payload containing:
+            - "relationships" (List[dict]): List of relationship payloads convertible to ArchitectAgentRelationship.
+            - "brain_id" (str, optional): Target brain identifier; defaults to "default".
+    
+    Description:
+        For each relationship in `args["relationships"]`, the task generates embeddings for the relationship (and for any missing subject/object nodes), creates or updates graph nodes, and adds the relationship edge to the knowledge graph. Progress and final status are stored in the task cache under the current task id. Individual relationship or node failures (including timeouts) are skipped so remaining items continue processing.
+    
+    Returns:
+        str: The Celery task id for the ingestion run.
+    
+    Raises:
+        Exception: Any unhandled exception is recorded to the task cache with status "failed" and then re-raised.
     """
 
     print(
@@ -397,7 +417,25 @@ def process_architect_relationships(self, args: dict):
 @ingestion_app.task(bind=True)
 def ingest_structured_data(self, args: dict):
     """
-    Ingest structured data into the database.
+    Ingest structured elements into the knowledge graph by creating nodes, embedding and storing vectors, generating observations, and saving structured-data records.
+    
+    Parses `args` into an IngestionStructuredRequestBody and for each element:
+    - creates a graph node with properties and metadata,
+    - records node property change logs (KG changes),
+    - embeds and stores node and element vectors in the vector store,
+    - generates and stores observations (vectors and Observation records),
+    - merges and saves structured-data records,
+    - calls knowledge-graph enrichment for the element,
+    and updates a task status cache with "started" and "completed" entries.
+    
+    Parameters:
+        args (dict): The raw task payload parsed into IngestionStructuredRequestBody (must include brain_id and data elements).
+    
+    Returns:
+        str: The task id for this ingestion (self.request.id).
+    
+    Exceptions:
+        On exception, stores a "failed" task status with error details in the cache and re-raises the exception.
     """
     payload = None
     try:

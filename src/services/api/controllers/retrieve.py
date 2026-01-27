@@ -98,6 +98,27 @@ async def retrieve_neighbors(
     limit: int = 10,
     brain_id: str = "default",
 ) -> RetrieveNeighborsRequestResponse:
+    """
+    Retrieve neighboring nodes related to a specified main node.
+    
+    If `uuid` is provided it is used to locate the main node; otherwise `identification_params` is used. Optionally filters first-degree neighbors by semantic similarity to `look_for`, expands those matches to similar nodes, and returns a deduplicated list of neighbor nodes (up to `limit`) with their relationship and the most common matching similar node.
+    
+    Parameters:
+        uuid (Optional[str]): UUID of the main node to retrieve neighbors for. If omitted, `identification_params` must be provided.
+        look_for (Optional[str]): Text used to filter first-degree neighbors by embedding similarity before expanding to similar nodes.
+        identification_params (Optional[IdentificationParams]): Identification parameters used to find the main node when `uuid` is not provided.
+        limit (int): Maximum number of neighbor results to include in the response.
+        brain_id (str): Identifier of the brain / dataset to query.
+    
+    Returns:
+        RetrieveNeighborsRequestResponse: Object containing:
+          - count: total number of unique neighbors found,
+          - main_node: the resolved main Node,
+          - neighbors: list of RetrievedNeighborNode objects (neighbor, relationship, most_common) limited to `limit`.
+    
+    Raises:
+        HTTPException: 404 if the main node cannot be found.
+    """
     async def _get_neighbors():
 
         # ---------------------------------------------------------

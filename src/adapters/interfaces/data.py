@@ -116,7 +116,17 @@ class DataClient(ABC):
         query_text: str = None,
     ) -> list[StructuredData]:
         """
-        Get a list of structured data.
+        Retrieve structured data entries for a specific brain with optional filtering and pagination.
+        
+        Parameters:
+            brain_id (str): Identifier of the brain to query.
+            limit (int): Maximum number of items to return.
+            skip (int): Number of items to skip (offset) for pagination.
+            types (list[str] | None): If provided, restrict results to these structured data types.
+            query_text (str | None): If provided, filter entries that match the text query.
+        
+        Returns:
+            list[StructuredData]: List of matching StructuredData objects.
         """
         raise NotImplementedError("get_structured_data_list method not implemented")
 
@@ -145,20 +155,31 @@ class DataClient(ABC):
         query_text: str = None,
     ) -> list[Observation]:
         """
-        Get a list of observations.
+        Retrieve a filtered, paginated list of observations for a specific brain.
+        
+        Parameters:
+            brain_id (str): Identifier of the brain to query.
+            limit (int): Maximum number of observations to return.
+            skip (int): Number of observations to skip (offset) for pagination.
+            resource_id (str | None): If provided, restrict results to observations for this resource.
+            labels (list[str] | None): If provided, include only observations that have at least one of these labels.
+            query_text (str | None): If provided, include only observations whose text matches this query.
+        
+        Returns:
+            observations (list[Observation]): A list of matching Observation objects ordered according to the backend's default sort.
         """
         raise NotImplementedError("get_observations_list method not implemented")
 
     @abstractmethod
     def get_observation_labels(self, brain_id: str) -> list[str]:
         """
-        Return all unique observation labels for the specified brain.
-
+        Retrieve all unique observation labels for the specified brain.
+        
         Parameters:
             brain_id (str): Identifier of the brain whose observation labels should be retrieved.
-
+        
         Returns:
-            labels (list[str]): A list of unique label strings present in the brain's observations.
+            list[str]: Unique label strings present in the brain's observations.
         """
         raise NotImplementedError("get_observation_labels method not implemented")
 
@@ -203,13 +224,13 @@ class DataClient(ABC):
     @abstractmethod
     def get_changelog_types(self, brain_id: str) -> list[str]:
         """
-        Return the set of unique changelog types associated with the specified brain.
-
+        Return the unique changelog types present for the specified brain.
+        
         Parameters:
-            brain_id (str): Identifier of the brain whose changelog types should be retrieved.
-
+            brain_id (str): Identifier of the brain to query.
+        
         Returns:
-            list[str]: A list of unique changelog type names (order not guaranteed).
+            list[str]: List of unique changelog type names for the brain (order not guaranteed).
         """
         raise NotImplementedError("get_changelog_types method not implemented")
 
@@ -218,6 +239,13 @@ class DataClient(ABC):
         self, structured_data: StructuredData, brain_id: str
     ) -> StructuredData:
         """
-        Update a structured data.
+        Update an existing StructuredData record for a specific brain.
+        
+        Parameters:
+            structured_data (StructuredData): StructuredData object containing the updated content and identifier of the record to update.
+            brain_id (str): Identifier of the brain that owns the structured data.
+        
+        Returns:
+            StructuredData: The stored StructuredData after the update.
         """
         raise NotImplementedError("update_structured_data method not implemented")

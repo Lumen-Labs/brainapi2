@@ -72,6 +72,17 @@ class LLMClientSmall(LLM):
 
     @property
     def langchain_model(self):
+        """
+        Lazily initialize (thread-safe) and return a LangChain ChatVertexAI wrapper configured for Vertex AI.
+        
+        This property constructs the ChatVertexAI instance on first access, sets the
+        GOOGLE_APPLICATION_CREDENTIALS environment variable from config.gcp.credentials_path,
+        and caches the resulting model for subsequent calls. Initialization is guarded
+        with a lock to be safe across threads.
+        
+        Returns:
+            ChatVertexAI: The initialized LangChain ChatVertexAI model instance.
+        """
         if self._langchain_model is None:
             with self._lock:
                 if self._langchain_model is None:
@@ -98,6 +109,22 @@ class LLMClientSmall(LLM):
     def generate_text(
         self, prompt: str, max_new_tokens: int = 100000, timeout: int = None
     ) -> str:
+        """
+        Generate plain-text completion for a prompt using the configured Vertex AI model.
+        
+        If `prompt` is empty or only whitespace, returns the fixed message "Input prompt is empty". The method will retry transient failures up to 3 times and enforce the provided `timeout` per attempt.
+        
+        Parameters:
+            prompt (str): The input prompt to complete.
+            max_new_tokens (int): Maximum number of tokens to generate for the completion. If falsy, no token limit is passed to the API.
+            timeout (int): Maximum seconds to wait for a single generation attempt; defaults to the client's default timeout.
+        
+        Returns:
+            str: The generated plain-text completion, or "Input prompt is empty" when the prompt is empty.
+        
+        Raises:
+            TimeoutError: If generation times out or all retry attempts fail.
+        """
         if not prompt or len(prompt.strip()) == 0:
             return "Input prompt is empty"
 
@@ -105,6 +132,14 @@ class LLMClientSmall(LLM):
         from google.genai.types import GenerateContentConfig
 
         def _generate():
+            """
+            Call the LLM client's generate_content API for the current model and request a plain-text response.
+            
+            If `max_new_tokens` is set in the enclosing scope, the request will include `max_output_tokens` with that value.
+            
+            Returns:
+                The raw response from the client's `generate_content` call containing the generated plain-text output.
+            """
             return self.client.models.generate_content(
                 model=self.model,
                 contents=[prompt],
@@ -155,10 +190,29 @@ class LLMClientSmall(LLM):
         max_retries: int = 3,
         timeout: int = None,
     ) -> dict:
+        """
+        Generate JSON content from a given prompt using the configured language model.
+        
+        Attempts generation up to a specified number of retries with exponential backoff and enforces a timeout for each attempt. Parses the generated text as JSON and returns it as a dictionary.
+        
+        Parameters:
+        	max_new_tokens (int): Maximum number of tokens to generate in the response.
+        	max_retries (int): Number of retry attempts for generation on failure.
+        	timeout (int): Maximum time in seconds to wait for each generation attempt.
+        
+        Returns:
+        	dict: The generated content parsed as a JSON dictionary.
+        """
         timeout = timeout or self.default_timeout
         from google.genai.types import GenerateContentConfig
 
         def _generate():
+            """
+            Generate JSON content from the model based on the given prompt.
+            
+            Returns:
+                dict: The parsed JSON response generated from the prompt.
+            """
             _response = self.client.models.generate_content(
                 model=self.model,
                 contents=[prompt],

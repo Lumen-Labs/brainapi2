@@ -13,6 +13,15 @@ from src.constants.agents import TokenDetail, TokenInputDetail, TokenOutputDetai
 
 
 def merge_token_details(token_details: list[TokenDetail]) -> TokenDetail:
+    """
+    Aggregate a list of TokenDetail objects into a single merged TokenDetail.
+    
+    Parameters:
+        token_details (list[TokenDetail]): List of TokenDetail objects to merge. None entries are ignored; if the list is empty or contains only None, a TokenDetail with all zero/default fields is returned.
+    
+    Returns:
+        TokenDetail: A merged TokenDetail where input and output counts are summed across entries, cache_percentage is (total cached / total input * 100) or 0.0 if total input is zero, reasoning_percentage is (total reasoning / total output * 100) or 0.0 if total output is zero, and grand_total and effective_total are the sums of their respective values.
+    """
     if not token_details:
         return TokenDetail(
             input=TokenInputDetail(total=0, uncached=0, cached=0, cache_percentage=0.0),
@@ -70,6 +79,22 @@ def merge_token_details(token_details: list[TokenDetail]) -> TokenDetail:
 def token_detail_from_token_counts(
     input_tokens: int, output_tokens: int, cached_tokens: int, reasoning_tokens: int
 ) -> TokenDetail:
+    """
+    Constructs a TokenDetail summarizing input and output token counts with cached and reasoning breakdowns.
+    
+    Parameters:
+        input_tokens (int): Total number of input tokens.
+        output_tokens (int): Total number of output tokens.
+        cached_tokens (int): Number of input tokens served from cache.
+        reasoning_tokens (int): Number of output tokens classified as reasoning.
+    
+    Returns:
+        TokenDetail: Aggregated token details containing:
+            - input: TokenInputDetail with total, uncached, cached, and cache_percentage.
+            - output: TokenOutputDetail with total, regular, reasoning, and reasoning_percentage.
+            - grand_total: Sum of input and output tokens.
+            - effective_total: Sum of output tokens plus input tokens not served from cache.
+    """
     return TokenDetail(
         input=TokenInputDetail(
             total=input_tokens,

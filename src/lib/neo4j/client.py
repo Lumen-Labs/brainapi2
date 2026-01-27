@@ -191,7 +191,16 @@ class Neo4jClient(GraphClient):
         metadata: Optional[dict] = None,
     ) -> list[Node] | str:
         """
-        Add nodes to the graph.
+        Insert multiple nodes into the specified brain's graph and return representations of the created nodes.
+        
+        Ensures the target database exists, merges or creates each node by its identification properties (at minimum the node's name), sets node properties and standard attributes (description, happened_at, last_updated, metadata, observations, polarity, and uuid), and retries on transient database-not-found errors.
+        
+        Parameters:
+            identification_params (dict, optional): Additional property keys and values used to identify (MERGE) nodes besides name; keys will be normalized to property-style keys.
+            metadata (dict, optional): Metadata to attach to each node; this metadata is merged with any existing node.metadata for the returned Node objects.
+        
+        Returns:
+            list[Node]: A list of Node objects representing the added nodes. Each returned Node preserves the original node fields and has its metadata set to the merge of the node's own metadata and the provided `metadata`.
         """
         results = []
         self.ensure_database(brain_id)
@@ -274,7 +283,18 @@ class Neo4jClient(GraphClient):
         brain_id: str,
     ) -> str:
         """
-        Add a relationship between two nodes to the graph.
+        Create or update a relationship of the given predicate type between two existing nodes and set relationship attributes.
+        
+        Matches the source node by its labels and name (from `subject`) and the target node by its labels and name (from `to_object`), merges a relationship of type `predicate.name` between them, and sets relationship fields (including `uuid`, `description`, `v_id`, and any provided `properties`, `happened_at`, `flow_key`, `last_updated`) from the supplied `predicate`, `subject`, and `to_object` objects. Ensures the target database exists before executing the query.
+        
+        Parameters:
+        	subject (Node): Source node whose labels and `name` are used to find the relationship start.
+        	predicate (Predicate): Relationship descriptor whose `name` determines the relationship type and whose fields supply relationship attributes to set.
+        	to_object (Node): Target node whose labels and `name` are used to find the relationship end.
+        	brain_id (str): Database name to run the query against.
+        
+        Returns:
+        	query_result: The raw result returned by the Neo4j driver for the executed Cypher query.
         """
 
         objects = [subject, to_object, predicate]
@@ -458,8 +478,16 @@ class Neo4jClient(GraphClient):
 
     def get_by_uuid(self, uuid: str, brain_id: str) -> Node:
         """
-        DEPRECATED: use get_by_uuids instead.
-        Get a node by its UUID.
+        Retrieve a node by its UUID.
+        
+        Deprecated: use `get_by_uuids` which returns richer node data and supports batching.
+        
+        Parameters:
+            uuid (str): The UUID of the node to retrieve.
+            brain_id (str): Target database/brain identifier.
+        
+        Returns:
+            Node or None: The matching node, or `None` if no node with the given UUID exists.
         """
         cypher_query = """
         MATCH (n) WHERE n.uuid = $uuid
@@ -481,7 +509,14 @@ class Neo4jClient(GraphClient):
 
     def get_by_uuids(self, uuids: list[str], brain_id: str) -> list[Node]:
         """
-        Get nodes by their UUIDs.
+        Retrieve nodes that match the given UUIDs from the specified database.
+        
+        Parameters:
+            uuids (list[str]): Node UUIDs to fetch.
+            brain_id (str): Name of the Neo4j database to query.
+        
+        Returns:
+            list[Node]: Nodes with identifiers, names, labels, descriptions, and properties; includes, when available, polarity, happened_at, last_updated, observations, and metadata.
         """
         cypher_query = f"""
         MATCH (n) WHERE n.uuid IN ["{'","'.join(uuids)}"]
@@ -568,13 +603,19 @@ class Neo4jClient(GraphClient):
         of_types: Optional[list[str]] = None,
     ) -> Dict[str, List[Tuple[Predicate, Node]]]:
         """
-        Retrieve neighbor triples for the given node where the neighbor shares at least one label with the source node.
-
+        Retrieve neighboring nodes connected to each given node, grouped by source node UUID.
+        
+        Parameters:
+            nodes (list[Node | str]): List of Node objects or node UUID strings to find neighbors for.
+            brain_id (str): Database identifier to query.
+            same_type_only (bool): If True, include only neighbors whose labels share at least one label with the source node.
+            limit (int | None): Optional maximum number of neighbor records to return (applies to the entire result set).
+            of_types (Optional[list[str]]): Optional list of node label names to filter neighbors by those labels.
+        
         Returns:
-            list[Tuple[Node, Predicate, Node]]: A list of tuples (neighbor_node, predicate, intermediate_node) where
-                - neighbor_node is the matched neighbor (node m),
-                - predicate describes the relationship r2 between the intermediate node and the neighbor (including direction),
-                - intermediate_node is the connector node (c) through which the neighbor is reached.
+            Dict[str, List[Tuple[Predicate, Node]]]: Mapping from each source node UUID to a list of tuples (Predicate, Node),
+                where Predicate describes the relationship (including direction, properties, flow key, and UUID) between the source
+                and the neighbor, and Node represents the neighboring node (including its UUID, name, labels, description, and properties).
         """
         if len(nodes) == 0:
             return {}
@@ -1312,8 +1353,16 @@ class Neo4jClient(GraphClient):
 
     def get_schema(self, brain_id: str) -> dict:
         """
-        Get the schema/ontology of the graph.
-        Returns all node labels and relationship types in JSON format.
+        Retrieve the graph schema for the given brain, including node labels, relationship types, and event names.
+        
+        Parameters:
+            brain_id (str): Identifier of the Neo4j database/brain to query.
+        
+        Returns:
+            dict: A dictionary with keys:
+                - "labels": list of node label names (str).
+                - "relationships": list of relationship type names (str).
+                - "event_names": list of node names (str) for nodes labeled "EVENT".
         """
         self.ensure_database(brain_id)
 
@@ -1350,6 +1399,19 @@ class Neo4jClient(GraphClient):
         vector_store_adapter: VectorStoreClient,
         brain_id: str,
     ) -> Dict[str, List[Tuple[Predicate, Node, List[Tuple[Predicate, Node]]]]]:
+        """
+        Retrieve second-degree neighbor nodes from the given starting nodes.
+        
+        Parameters:
+            from_ (List[str]): List of node UUIDs to start the hop from.
+            flattened (bool): Whether to flatten the result structure.
+            vector_store_adapter (VectorStoreClient): Adapter to the vector store.
+            brain_id (str): Identifier of the brain or graph context.
+        
+        Returns:
+            Dict[str, List[Tuple[Predicate, Node, List[Tuple[Predicate, Node]]]]]: Mapping from each starting node UUID to a list of tuples containing
+                a predicate to a neighbor node, the neighbor node itself, and a list of tuples for that neighbor's predicates and their connected nodes.
+        """
         return super().get_2nd_degree_hops(
             from_, flattened, vector_store_adapter, brain_id
         )
@@ -1362,7 +1424,16 @@ class Neo4jClient(GraphClient):
         brain_id: str,
     ) -> bool:
         """
-        Check if a node exists in the graph.
+        Determine whether a node with the given UUID, name, and labels exists in the specified database.
+        
+        Parameters:
+            uuid (str): Node identifier to match.
+            name (str): Node name to match.
+            labels (list[str]): All labels the node must have.
+            brain_id (str): Target database name.
+        
+        Returns:
+            bool: True if a node matching the UUID, name, and labels exists, False otherwise.
         """
         cypher_query = f"""
         MATCH (n:{":".join(self._clean_labels(labels))})
@@ -1380,8 +1451,18 @@ class Neo4jClient(GraphClient):
         self, node: Node | str, depth: int, brain_id: str
     ) -> list[dict]:
         """
-        Get the neighborhood of a node up to a given depth.
-        Returns a nested structure where each neighbor contains its own neighbors.
+        Retrieve the neighborhood of a node up to a specified depth as a nested structure.
+        
+        Parameters:
+            node (Node | str): The starting node or its UUID.
+            depth (int): Maximum number of hops to traverse; must be >= 1.
+            brain_id (str): Identifier for the brain/graph to scope the query.
+        
+        Returns:
+            list[dict]: A list of neighbor dictionaries. Each dictionary contains the keys
+            `node` (the neighboring Node), `predicate` (the connecting Predicate),
+            `direction` (relationship direction relative to the starting node), and
+            `neighbors` (a list of child neighbor dictionaries with the same shape).
         """
         if depth < 1:
             return []
@@ -1392,8 +1473,19 @@ class Neo4jClient(GraphClient):
         self, node_uuid: str, depth: int, brain_id: str, path_visited: set[str]
     ) -> list[dict]:
         """
-        Recursively get neighbors at each depth level.
-        Uses path_visited to prevent cycles in the current traversal path.
+        Recursively collects neighboring nodes and their connecting predicates up to the specified depth.
+        
+        Parameters:
+            node_uuid (str): UUID of the node to start traversal from.
+            depth (int): Maximum number of hops to traverse; values less than 1 result in no neighbors.
+            brain_id (str): Database/brain identifier to run the query against.
+            path_visited (set[str]): Set of node UUIDs already visited in the current traversal path; used to prevent cycles.
+        
+        Returns:
+            list[dict]: A list of neighbor entries. Each entry is a dict with keys:
+                - "predicate": a Predicate instance describing the relationship from the current node to the neighbor.
+                - "node": a Node instance representing the neighboring node.
+                - "neighbors": a list of nested neighbor entries (same structure) for further hops.
         """
         if depth < 1 or node_uuid in path_visited:
             return []
@@ -1463,7 +1555,15 @@ class Neo4jClient(GraphClient):
         self, predicate_uuid: str, flow_key: str, brain_id: str
     ) -> List[Tuple[Node, Predicate, Node]]:
         """
-        Get the next node by the flow key.
+        Finds subsequent nodes in a flow that follow a relationship identified by a predicate UUID and share the given flow key.
+        
+        Parameters:
+            predicate_uuid (str): UUID of the reference relationship whose adjacent segment is the starting point.
+            flow_key (str): Flow key used to match the subsequent relationship.
+            brain_id (str): Database name (brain) to execute the query against.
+        
+        Returns:
+            List[Tuple[Node, Predicate, Node]]: A list of tuples each containing the middle node, the matching relationship (predicate) that has the flow_key, and the connected target node. Each tuple represents a directed hop from the middle node through the matched predicate to the target node; the predicate includes its direction and properties.
         """
         cypher_query = f"""
         MATCH ()-[r]-(m)-[r2]-(b)

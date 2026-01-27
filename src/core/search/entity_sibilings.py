@@ -21,13 +21,30 @@ from src.services.kg_agent.main import (
 
 class EntitySinergyRetriever:
     def __init__(self, brain_id: str = "default"):
+        """
+        Initialize the retriever with the identifier of the brain (knowledge graph) to operate against.
+        
+        Parameters:
+            brain_id (str): Identifier of the brain/knowledge graph to use for adapter calls. Defaults to "default".
+        """
         self.brain_id = brain_id
 
     def retrieve_sibilings(
         self, target: str, polarity: Literal["same", "opposite"]
     ) -> Tuple[Node, List[EntitySynergy]]:
         """
-        Retrieve the siblings of an entity.
+        Find related entities ("siblings") for a given target text by locating the target node and assembling EntitySynergy connections from its neighbors and embedding-based similarity.
+        
+        This returns the resolved target graph node (or None if no matching node is found) and a list of EntitySynergy objects that represent related nodes discovered via neighbor relationships and vector-similarity matches. The method may return early with an empty list when required intermediate data (target node, similarity seeds, or similar nodes) is missing.
+        
+        Parameters:
+            target: The text used to locate the target entity in the node store.
+            polarity: A directive indicating the type of relation to retrieve; expected values are "same" or "opposite".
+        
+        Returns:
+            (target_node, connections): 
+                - target_node (Node or None): the graph node matching the provided target text, or `None` if not found.
+                - connections (List[EntitySynergy]): a list of EntitySynergy entries representing related entities; may be empty.
         """
         target_embedding = embeddings_adapter.embed_text(target)
         target_node_vs = vector_store_adapter.search_vectors(

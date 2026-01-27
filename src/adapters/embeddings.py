@@ -85,7 +85,19 @@ class VectorStoreAdapter:
         limit: int = 10,
     ) -> dict[str, list[Vector]]:
         """
-        Search similar vectors by their IDs.
+        Finds vectors similar to the provided vector IDs within a specified store and brain.
+        
+        Parameters:
+            vector_ids (list[str]): IDs of the source vectors to find similarities for.
+            brain_id (str): Identifier of the brain/namespace to search within.
+            store (str): Name of the vector store to query.
+            min_similarity (float): Minimum similarity threshold for returned vectors (inclusive).
+            limit (int): Maximum number of similar vectors to return per source ID.
+        
+        Returns:
+            dict[str, list[Vector]]: Mapping from each source vector ID to a list of similar Vectors.
+            Each list contains at most `limit` items, includes only vectors with similarity >= `min_similarity`,
+            and is ordered by descending similarity.
         """
         return self.vector_store.search_similar_by_ids(
             vector_ids, brain_id, store, min_similarity, limit
