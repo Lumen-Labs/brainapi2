@@ -19,6 +19,7 @@ from src.lib.llm.client_small import _llm_small_client
 from src.lib.redis.client import _redis_client
 from src.lib.neo4j.client import _neo4j_client
 from src.lib.embeddings.client import _embeddings_client
+from src.lib.embeddings.client_small import _embeddings_small_client
 from src.lib.milvus.client import _milvus_client
 
 
@@ -34,6 +35,9 @@ graph_adapter.add_client(_neo4j_client)
 
 embeddings_adapter = EmbeddingsAdapter()
 embeddings_adapter.add_client(_embeddings_client)
+
+embeddings_small_adapter = EmbeddingsAdapter()
+embeddings_small_adapter.add_client(_embeddings_small_client)
 
 vector_store_adapter = VectorStoreAdapter()
 vector_store_adapter.add_client(_milvus_client)

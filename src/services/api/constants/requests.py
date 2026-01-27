@@ -11,7 +11,13 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 from typing import List, Any, Optional, Tuple
 from pydantic import BaseModel, Field, field_serializer
 from src.constants.data import Observation, TextChunk
-from src.constants.kg import EntitySynergy, IdentificationParams, Node, Predicate
+from src.constants.kg import (
+    EntitySynergy,
+    IdentificationParams,
+    Node,
+    Predicate,
+    Relationship,
+)
 from src.constants.tasks.ingestion import IngestionTaskArgs
 from src.core.search.entity_info import MatchPath
 
@@ -30,6 +36,10 @@ class IngestionStructuredDataElement(BaseModel):
     json_data: dict = Field(
         default={},
         description="The data rapresenting the structured element.",
+    )
+    metadata: Optional[dict] = Field(
+        default={},
+        description="The metadata of the structured element. The information here will be appended to the entity but not analyzed.",
     )
     types: List[str] = Field(
         default=[],
@@ -251,3 +261,13 @@ class GetEntitySibilingsResponse(BaseModel):
 
     target_node: Node
     synergies: List[EntitySynergy]
+
+
+class GetEntityStatusResponse(BaseModel):
+    """Response model for the get entity status endpoint."""
+
+    node: Node
+    exists: bool
+    has_relationships: bool
+    relationships: List[Tuple[Relationship, Node]]
+    observations: List[Observation]

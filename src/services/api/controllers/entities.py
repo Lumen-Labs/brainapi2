@@ -9,15 +9,19 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
-from typing import Literal
+from typing import List, Literal
 from src.core.search.entity_context import EntityContext
 from src.core.search.entity_info import EventSynergyRetriever
 from src.services.api.constants.requests import (
     GetEntityInfoResponse,
     GetEntityContextResponse,
     GetEntitySibilingsResponse,
+    GetEntityStatusResponse,
 )
 from src.core.search.entity_sibilings import EntitySinergyRetriever
+from src.services.data.main import data_adapter
+from src.services.input.agents import embeddings_adapter
+from src.services.kg_agent.main import graph_adapter, vector_store_adapter
 
 
 async def get_entity_info(
@@ -63,4 +67,54 @@ async def get_entity_sibilings(
     return GetEntitySibilingsResponse(
         target_node=target_node,
         synergies=synergies,
+    )
+
+
+async def get_entity_status(
+    target: str,
+    types: List[str] = [],
+    brain_id: str = "default",
+) -> GetEntityStatusResponse:
+    """
+    Get the entity status for a given target.
+    """
+
+    target_embeddings = embeddings_adapter.embed_text(target)
+    target_node_vs = vector_store_adapter.search_vectors(
+        target_embeddings.embeddings, store="nodes", brain_id=brain_id
+    )
+
+    target_node = None
+
+    for target_node_v in target_node_vs:
+        target_node_id = target_node_v.metadata.get("uuid")
+        target_node = graph_adapter.get_by_uuids([target_node_id], brain_id=brain_id)[0]
+
+        if len(types) > 0:
+            if set(target_node.labels).intersection(set(types)):
+                break
+        else:
+            break
+
+    if not target_node:
+        return GetEntityStatusResponse(
+            node=None,
+            exists=False,
+            has_relationships=False,
+            relationships=[],
+            observations=[],
+        )
+
+    rel_tuples = graph_adapter.get_neighbors([target_node], brain_id=brain_id)
+
+    observations = data_adapter.get_observations_list(
+        brain_id=brain_id, resource_id=target_node.uuid
+    )
+
+    return GetEntityStatusResponse(
+        node=target_node,
+        exists=True,
+        has_relationships=len(rel_tuples[target_node.uuid]) > 0,
+        relationships=rel_tuples[target_node.uuid],
+        observations=observations,
     )

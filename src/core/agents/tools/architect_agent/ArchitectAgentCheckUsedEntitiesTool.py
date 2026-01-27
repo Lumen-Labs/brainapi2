@@ -23,6 +23,7 @@ class ArchitectAgentCheckUsedEntitiesTool(BaseTool):
     ):
         description: str = (
             "Tool for checking used entities. "
+            "You must call this tool after calling the architect_agent_create_relationship tool and after marking entities as used."
             "Returns a list of entities that have been used."
         )
         super().__init__(
@@ -35,4 +36,5 @@ class ArchitectAgentCheckUsedEntitiesTool(BaseTool):
             entity.model_dump() if hasattr(entity, "model_dump") else entity.dict()
             for entity in self.architect_agent.used_entities_set
         ]
+        print("[DEBUG (architect_agent_check_used_entities)]: ", entities_list)
         return json.dumps(entities_list)

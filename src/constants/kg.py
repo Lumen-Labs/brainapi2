@@ -27,6 +27,15 @@ class Node(BaseModel):
     description: Optional[str] = None
     properties: dict = Field(default_factory=dict)
 
+    polarity: Optional[Literal["positive", "negative", "neutral"]] = Field(
+        default="neutral",
+        description="The polarity of the node.",
+    )
+
+    metadata: Optional[dict] = Field(
+        default=None, description="The metadata of the node."
+    )
+
     happened_at: Optional[str | None] = Field(
         default=None,
         description="The date and time the node happened at if known otherwise None. Mostly used for event nodes.",
@@ -73,6 +82,10 @@ class Predicate(BaseModel):
         default="neutral",
         description="The direction of the predicate.",
     )
+    amount: Optional[float] = Field(
+        default=None,
+        description="The amount of the predicate.",
+    )
 
     observations: Optional[List[Observation]] = Field(
         default=None, description="The observations of the predicate."
@@ -106,8 +119,17 @@ class Relationship(BaseModel):
     Relationship model.
     """
 
-    direction: Literal["in", "out", "neutral"]
+    direction: Literal["in", "out", "neutral"] = Field(
+        default="neutral",
+        description=(
+            "The direction of the relationship. always referred to the left/first node.",
+            "eg: Tuple[node, predicate, node] -> direction 'in' means inbound to the first node"
+            "so going from the last node to the first node.",
+        ),
+    )
     predicate: Predicate
+    subject: Node
+    object: Node
 
 
 class IdentificationParams(BaseModel):

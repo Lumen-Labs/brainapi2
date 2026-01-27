@@ -142,6 +142,8 @@ class GraphAdapter:
 
     def get_by_uuid(self, uuid: str, brain_id: str = "default") -> Node:
         """
+        DEPRECATED: use get_by_uuids instead.
+
         Retrieve the node with the specified UUID from the graph.
 
         Returns:
@@ -375,7 +377,22 @@ class GraphAdapter:
         flattened: bool,
         vector_store_adapter: VectorStoreClient,
         brain_id: str = "default",
+        similarity_threshold: float = 0.0,
     ) -> List[Tuple[Node, List[Tuple[Predicate, Node, List[Tuple[Predicate, Node]]]]]]:
+        """
+        Get the 2nd degree hops for a list of nodes.
+
+        Parameters:
+            from_uuids: List[str]: The list of node UUIDs to start from.
+            flattened: bool: Whether to return simplified nodes and relationships.
+            vector_store_adapter: VectorStoreClient: The vector store adapter to use.
+            brain_id: str: The brain ID to use.
+
+        Returns:
+            List[Tuple[Node, List[Tuple[Predicate, Node, List[Tuple[Predicate, Node]]]]]]: The list of 2nd degree hops.
+        """
+
+        # TODO: add a way to light weight the output
 
         def flatten_node(n):
             return (
@@ -403,8 +420,11 @@ class GraphAdapter:
         all_fd_nodes = self.get_neighbors(list(nodes_by_uuid.keys()), brain_id=brain_id)
 
         all_fd_v_ids = [
-            fd[1].properties["v_id"] for fds in all_fd_nodes.values() for fd in fds
-        ]
+            fd[1].properties["v_id"]
+            for fds in all_fd_nodes.values()
+            for fd in fds
+            if fd[1].properties["v_id"]
+        ]  # TODO: [missing_property] check why sometime v_id is not present
         all_fd_vs = vector_store_adapter.get_by_ids(
             all_fd_v_ids, brain_id=brain_id, store="nodes"
         )
@@ -429,17 +449,21 @@ class GraphAdapter:
                 if fd[1].uuid in fd_vs_by_uuid
             ]
             from_node = nodes_by_uuid[node_uuid]
-            filtered = reduce_list(
-                fd_vs_with_desc,
-                access_key="embeddings",
-                similarity_threshold=0.5,
-                by_vector=averaged_vector,
-                rerank={
-                    "local": "description",
-                    "with_": from_node.description,
-                },
-            )
-            filtered_uuids = {v["metadata"]["uuid"] for v in filtered}
+            filtered_uuids = []
+            if from_node.description:
+                filtered = reduce_list(
+                    fd_vs_with_desc,
+                    access_key="embeddings",
+                    similarity_threshold=0.5,
+                    by_vector=averaged_vector,
+                    rerank={
+                        "local": "description",
+                        "with_": from_node.description,
+                    },
+                )
+                filtered_uuids = {v["metadata"]["uuid"] for v in filtered}
+            else:
+                filtered_uuids = {fd[1].uuid for fd in fd_list}
             filtered_fd_by_origin[node_uuid] = [
                 fd for fd in fd_list if fd[1].uuid in filtered_uuids
             ]
@@ -448,7 +472,12 @@ class GraphAdapter:
         all_sd_nodes = self.get_neighbors(all_filtered_fd_uuids, brain_id=brain_id)
 
         all_sd_v_ids = [
-            sd[1].properties["v_id"] for sds in all_sd_nodes.values() for sd in sds
+            getattr(sd[1], "properties", {}).get("v_id")
+            for sds in all_sd_nodes.values()
+            for sd in sds
+            if getattr(sd[1], "properties", {}).get(
+                "v_id"
+            )  # TODO: [missing_property] check why sometime v_id is not present
         ]
         all_sd_vs = vector_store_adapter.get_by_ids(
             all_sd_v_ids, brain_id=brain_id, store="nodes"
@@ -482,17 +511,21 @@ class GraphAdapter:
                     if sd[1].uuid in sd_vs_by_uuid
                 ]
 
-                reduced = reduce_list(
-                    sd_vs_with_desc,
-                    access_key="embeddings",
-                    similarity_threshold=0.5,
-                    by_vector=averaged_vector,
-                    rerank={
-                        "local": "description",
-                        "with_": from_node.description,
-                    },
-                )
-                reduced_uuids = {v["metadata"]["uuid"] for v in reduced}
+                reduced_uuids = []
+                if from_node.description:
+                    reduced = reduce_list(
+                        sd_vs_with_desc,
+                        access_key="embeddings",
+                        similarity_threshold=0.5,
+                        by_vector=averaged_vector,
+                        rerank={
+                            "local": "description",
+                            "with_": from_node.description,
+                        },
+                    )
+                    reduced_uuids = {v["metadata"]["uuid"] for v in reduced}
+                else:
+                    reduced_uuids = {sd["metadata"]["uuid"] for sd in sd_vs_with_desc}
 
                 second_degree = [
                     (flatten_pred(sd[0]), flatten_node(sd[1]))
@@ -501,6 +534,9 @@ class GraphAdapter:
                     and sd[1].uuid not in exclude_set
                     and sd[1].uuid != from_uuid
                 ]
+                
+                if similarity_threshold > 0.0:
+                    if fd_pred["metadata"]["v_id"]
 
                 node_hops.append(
                     (flatten_pred(fd_pred), flatten_node(fd_node), second_degree)

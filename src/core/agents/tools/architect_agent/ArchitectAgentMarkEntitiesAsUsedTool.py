@@ -36,7 +36,7 @@ class ArchitectAgentMarkEntitiesAsUsedTool(BaseTool):
         architect_agent: object,
     ):
         description: str = (
-            "Tool for marking entities as used. "
+            "Tool that marks entities as used. "
             "Use this tool to mark entities as used. "
             "Input must be a list of entity uuids."
         )
@@ -75,5 +75,21 @@ class ArchitectAgentMarkEntitiesAsUsedTool(BaseTool):
                 removed_entity = self.architect_agent.entities.pop(entity_uuid)
                 if removed_entity:
                     self.architect_agent.used_entities_set.append(removed_entity)
+                else:
+                    print(
+                        "[DEBUG (architect_agent_mark_entities_as_used)]: Entity found but not removed: ",
+                        entity_uuid,
+                    )
+            else:
+                print(
+                    "[DEBUG (architect_agent_mark_entities_as_used)]: Entity not found: ",
+                    entity_uuid,
+                )
+
+        print(
+            "[DEBUG (architect_agent_mark_entities_as_used)]: Used entities: ",
+            self.architect_agent.used_entities_set,
+            entities_to_mark,
+        )
 
         return "OK"

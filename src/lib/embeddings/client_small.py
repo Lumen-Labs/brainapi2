@@ -4,7 +4,7 @@ Created Date: Wednesday December 31st 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
 Last Modified: Wednesday December 31st 2025 9:55:46 am
-Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
+Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
@@ -23,3 +23,6 @@ class EmbeddingsClientSmall(EmbeddingsClient):
     def embed_text(self, text: str) -> list[float]:
         embedding = self.model.encode(text, convert_to_numpy=True)
         return embedding.tolist()
+
+
+_embeddings_small_client = EmbeddingsClientSmall()

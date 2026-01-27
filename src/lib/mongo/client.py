@@ -3,8 +3,8 @@ File: /client.py
 Created Date: Saturday October 25th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Saturday December 13th 2025
-Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
+Last Modified: Monday January 12th 2026 8:26:26 pm
+Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
@@ -396,6 +396,16 @@ class MongoClient(DataClient):
         pipeline = [{"$group": {"_id": "$type"}}, {"$sort": {"_id": 1}}]
         results = collection.aggregate(pipeline)
         return [result["_id"] for result in results]
+
+    def update_structured_data(
+        self, structured_data: StructuredData, brain_id: str
+    ) -> StructuredData:
+        collection = self.get_collection("structured_data", database=brain_id)
+        collection.update_one(
+            {"id": structured_data.id},
+            {"$set": structured_data.model_dump(mode="json")},
+        )
+        return structured_data
 
 
 _mongo_client = MongoClient()

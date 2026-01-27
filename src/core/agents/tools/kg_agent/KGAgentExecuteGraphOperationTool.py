@@ -4,7 +4,7 @@ Created Date: Thursday October 23rd 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
 Last Modified: Thursday October 23rd 2025 9:26:22 pm
-Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
+Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
@@ -22,11 +22,13 @@ class KGAgentExecuteGraphOperationTool(BaseTool):
 
     kg_agent: object
     kg: GraphAdapter
+    brain_id: str = "default"
 
-    def __init__(self, kg_agent, kg: GraphAdapter, database_desc: str):
+    def __init__(
+        self, kg_agent, kg: GraphAdapter, database_desc: str, brain_id: str = "default"
+    ):
         description: str = (
-            "Tool for executing search operations on the knowledge graph. "
-            "Use this tool to search for information and existing nodes in the knowledge graph. "
+            "Use this tool to execute any type of graph operation search/edit/query/delete/etc. "
             "The query should be a valid graph operation depending on the graph database type."
             "The query should be a valid JSON object with a 'query' key. "
             "{database_desc}."
@@ -40,7 +42,12 @@ class KGAgentExecuteGraphOperationTool(BaseTool):
         #     "If you get an error, try again after fixing your query and don't give up."
         # )
         formatted_description = description.format(database_desc=database_desc)
-        super().__init__(kg_agent=kg_agent, kg=kg, description=formatted_description)
+        super().__init__(
+            kg_agent=kg_agent,
+            kg=kg,
+            description=formatted_description,
+            brain_id=brain_id,
+        )
 
     def _run(self, *args, **kwargs) -> str:
         _query = ""
@@ -51,12 +58,26 @@ class KGAgentExecuteGraphOperationTool(BaseTool):
             args_query = kwargs.get("args", {})
             if isinstance(args_query, dict):
                 _query = args_query.get("query", "")
-            elif isinstance(args_query, list):
-                _query = args_query[0].get("query", "")
+            elif isinstance(args_query, list) and len(args_query) > 0:
+                first_arg = args_query[0]
+                if isinstance(first_arg, str):
+                    _query = first_arg
+                elif isinstance(first_arg, dict):
+                    _query = first_arg.get("query", "")
 
         if len(_query) == 0:
             return "No query provided in the arguments or kwargs"
 
-        response = self.kg.execute_operation(_query)
+        print(
+            "[DEBUG (kg_agent_execute_graph_operation)]: Executing query: ",
+            _query,
+        )
+
+        response = self.kg.execute_operation(_query, brain_id=self.brain_id)
+
+        print(
+            "[DEBUG (kg_agent_execute_graph_operation)]: Response: ",
+            response,
+        )
 
         return response

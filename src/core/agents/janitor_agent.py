@@ -29,8 +29,8 @@ from tenacity import (
 from src.adapters.embeddings import EmbeddingsAdapter, VectorStoreAdapter
 from src.adapters.graph import GraphAdapter
 from src.adapters.llm import LLMAdapter
-from src.constants.agents import AtomicJanitorAgentInputOutput
-from src.constants.kg import Node
+from src.constants.agents import AtomicJanitorAgentInputOutput, GraphConsolidatorOutput
+from src.constants.kg import Node, Predicate
 from src.constants.prompts.janitor_agent import (
     ATOMIC_JANITOR_AGENT_PROMPT,
     ATOMIC_JANITOR_AGENT_SYSTEM_PROMPT,
@@ -131,7 +131,7 @@ class JanitorAgent:
             )
         elif type_ == "graph-janitor":
             system_prompt = JANITOR_AGENT_GRAPH_NORMALIZATOR_SYSTEM_PROMPT.format(
-                extra_system_prompt=extra_system_prompt if extra_system_prompt else ""
+                extra_system_prompt=extra_system_prompt if extra_system_prompt else "",
             )
         elif type_ == "atomic-janitor":
             system_prompt = ATOMIC_JANITOR_AGENT_SYSTEM_PROMPT.format(
@@ -174,12 +174,11 @@ class JanitorAgent:
 
     def run_graph_consolidator(
         self,
-        new_nodes: List[ScoutEntity | ArchitectAgentNew],
-        text: str,
+        new_relationships: List[ArchitectAgentRelationship],
         brain_id: str = "default",
         timeout: int = 90,
         max_retries: int = 3,
-    ) -> Tuple[int, int]:
+    ) -> list[str]:
         """
         Runs a final janitor consolidation across the kg snapshot
         """
@@ -187,7 +186,14 @@ class JanitorAgent:
         accumulated_messages = []
 
         hops = self.kg.get_2nd_degree_hops(
-            [n.uuid for n in new_nodes],
+            list(
+                set(
+                    [
+                        *[r.tip.uuid for r in new_relationships],
+                        *[r.tail.uuid for r in new_relationships],
+                    ]
+                )
+            ),
             flattened=True,
             vector_store_adapter=self.vector_store,
             brain_id=brain_id,
@@ -195,13 +201,14 @@ class JanitorAgent:
 
         self._get_agent(
             tools=[
-                JanitorAgentExecuteGraphOperationTool(
+                JanitorAgentExecuteGraphReadOperationTool(
                     self,
                     self.kg,
                     self.database_desc,
                     brain_id=brain_id,
                 )
             ],
+            output_schema=GraphConsolidatorOutput,
             brain_id=brain_id,
             type_="graph-janitor",
         )
@@ -224,8 +231,10 @@ class JanitorAgent:
 
             user_message = HumanMessage(
                 content=JANITOR_AGENT_GRAPH_NORMALIZATOR_PROMPT.format(
-                    hops=hops,
-                    text=text,
+                    snapshot_json=json.dumps(hops),
+                    units=json.dumps(
+                        [rel.model_dump(mode="json") for rel in new_relationships]
+                    ),
                 )
             )
             messages_list.append(user_message)
@@ -288,7 +297,12 @@ class JanitorAgent:
             ) from last_attempt.exception()
         except TimeoutError:
             raise
-        return response
+
+        structured_response = response.get("structured_response")
+        if structured_response:
+            return structured_response.tasks
+        else:
+            return []
 
     def run(
         self,

@@ -4,7 +4,7 @@ Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
 Last Modified: Sunday October 19th 2025 10:38:27 am
-Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
+Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
@@ -150,4 +150,28 @@ Example output:
         }}
     ]
 }}
+"""
+
+KG_AGENT_GRAPH_CONSOLIDATOR_SYSTEM_PROMPT = """
+You are a knowledge graph agent specialized in consolidating the knowledge graph.
+
+You have a tool at your disposal to execute graph operations.
+You must ONLY strictly follow the instructions of the task.
+
+Use the tool at your disposal to execute the task in your best effort, in case of syntax error fix your syntax and try again until you succeed.
+
+When you are done executing the task return 'OK'.
+
+If you can't find the elements the task is talking about just return 'OK' anyway.
+"""
+
+KG_AGENT_GRAPH_CONSOLIDATOR_PROMPT = """
+This is the task to consolidate the knowledge graph:
+== START OF TASK ==
+{task}
+== END OF TASK ==
+
+When you are done executing the task return 'OK'.
+
+Begin!
 """

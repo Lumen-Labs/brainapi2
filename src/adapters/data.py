@@ -3,8 +3,8 @@ File: /data.py
 Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Saturday December 13th 2025
-Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
+Last Modified: Monday January 12th 2026 8:26:26 pm
+Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
@@ -158,61 +158,75 @@ class DataAdapter:
     def get_observation_labels(self, brain_id: str = "default") -> list[str]:
         """
         Retrieve all unique observation labels for the specified brain.
-        
+
         Parameters:
             brain_id (str): Identifier of the brain to query labels from.
-        
+
         Returns:
             list[str]: All unique labels present in observations for the specified brain.
         """
         return self.data.get_observation_labels(brain_id=brain_id)
-    
-    def get_changelog_by_id(
-        self, id: str, brain_id: str = "default"
-    ) -> KGChanges:
+
+    def get_changelog_by_id(self, id: str, brain_id: str = "default") -> KGChanges:
         """
         Retrieve a changelog entry by its identifier.
-        
+
         Parameters:
             id (str): Identifier of the changelog entry to retrieve.
             brain_id (str): Brain namespace key to query; defaults to "default".
-        
+
         Returns:
             KGChanges: The changelog entry matching the given `id`.
         """
         return self.data.get_changelog_by_id(id=id, brain_id=brain_id)
 
     def get_changelogs_list(
-        self, 
-        brain_id: str = "default", 
-        limit: int = 10, 
-        skip: int = 0, 
+        self,
+        brain_id: str = "default",
+        limit: int = 10,
+        skip: int = 0,
         types: list[str] = None,
-        query_text: str = None
+        query_text: str = None,
     ) -> list[KGChanges]:
         """
         Retrieve a paginated list of knowledge-graph changelogs for a brain.
-        
+
         Parameters:
             brain_id (str): Identifier of the brain to query.
             limit (int): Maximum number of changelogs to return.
             skip (int): Number of changelogs to skip (offset).
             types (list[str] | None): If provided, restrict results to these changelog types.
             query_text (str | None): If provided, filter changelogs by matching text.
-        
+
         Returns:
             list[KGChanges]: Changelogs matching the filters and pagination parameters.
         """
-        return self.data.get_changelogs_list(brain_id=brain_id, limit=limit, skip=skip, types=types, query_text=query_text)
+        return self.data.get_changelogs_list(
+            brain_id=brain_id,
+            limit=limit,
+            skip=skip,
+            types=types,
+            query_text=query_text,
+        )
 
     def get_changelog_types(self, brain_id: str = "default") -> list[str]:
         """
         Retrieve distinct changelog types for a brain.
-        
+
         Parameters:
             brain_id (str): Identifier of the brain to query; defaults to "default".
-        
+
         Returns:
             list[str]: List of changelog type names.
         """
         return self.data.get_changelog_types(brain_id=brain_id)
+
+    def update_structured_data(
+        self, structured_data: StructuredData, brain_id: str = "default"
+    ) -> StructuredData:
+        """
+        Update a structured data.
+        """
+        return self.data.update_structured_data(
+            structured_data=structured_data, brain_id=brain_id
+        )

@@ -4,7 +4,7 @@ Created Date: Tuesday December 23rd 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
 Last Modified: Tuesday December 23rd 2025 11:07:15 pm
-Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
+Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
@@ -30,7 +30,7 @@ class JanitorAgentGetSchemaTool(BaseTool):
             "target": {
                 "type": "string",
                 "description": "The target to get the schema of. (node_labels or relationship_types)",
-                "enum": ["node_labels", "relationship_types"],
+                "enum": ["node_labels", "relationship_types", "event_names"],
             },
         },
         "required": ["target"],
@@ -64,4 +64,7 @@ class JanitorAgentGetSchemaTool(BaseTool):
         elif _target == "relationship_types":
             relationships = schema_result.get("relationships", [])
             return json.dumps(relationships, indent=4)
-        return "Invalid target parameter. It must be either 'node_labels' or 'relationship_types'"
+        elif _target == "event_names":
+            event_names = schema_result.get("event_names", [])
+            return json.dumps(event_names, indent=4)
+        return "Invalid target parameter. It must be either 'node_labels' or 'relationship_types' or 'event_names'"

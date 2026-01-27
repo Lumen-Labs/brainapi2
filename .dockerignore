@@ -117,3 +117,10 @@ deploy/terraform/
 *.tfstate
 *.tfstate.*
 .terraform/
+
+gcp_credentials.json
+READMEP.md
+Untitled-1.excalidraw
+.favorites.json
+.env
+.env*

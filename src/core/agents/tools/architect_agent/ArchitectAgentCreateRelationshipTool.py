@@ -10,7 +10,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 
 from dataclasses import dataclass
 import json
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 import uuid
 from langchain.tools import BaseTool
 
@@ -25,11 +25,14 @@ from src.constants.kg import Node
 from src.core.agents.scout_agent import ScoutEntity
 from src.services.input.agents import (
     embeddings_adapter,
+    embeddings_small_adapter,
     graph_adapter,
     llm_small_adapter,
     vector_store_adapter,
 )
 from src.lib.neo4j.client import _neo4j_client
+from src.utils.nlp.names import levenshtein_similarity
+from src.utils.similarity.vectors import cosine_similarity
 from src.utils.tokens import merge_token_details, token_detail_from_token_counts
 
 
@@ -111,6 +114,10 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
     def _run(self, *args, **kwargs) -> str:
         rel_key = str(uuid.uuid4())
 
+        print(
+            "[DEBUG (architect_agent_create_relationship)]: Called ArchitectAgentCreateRelationshipTool"
+        )
+
         input_rels: List[_ArchitectAgentRelationship] = []
         output_rels: List[ArchitectAgentRelationship] = []
 
@@ -123,13 +130,23 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
         else:
             return "Error: relationships parameter is required"
 
+        print(
+            "[DEBUG (architect_agent_create_relationship)]: Relationships: ",
+            relationships,
+        )
+
         for rel in relationships:
             subject = rel.get("subject")
             predicate = rel.get("predicate")
             object = rel.get("object")
             description = rel.get("description")
+            amount = rel.get("amount")
+            properties = rel.get("properties")
 
             if subject is None or object is None:
+                print(
+                    "[DEBUG (architect_agent_create_relationship)]: Subject or object is None: subject={subject}, object={object}",
+                )
                 return f"Subject or object is None: subject={subject}, object={object}"
 
             if isinstance(subject, str):
@@ -137,14 +154,37 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
             if isinstance(object, str):
                 object = object.strip()
 
-            if subject not in self.entities:
+            subj_entity = self.entities.get(subject)
+            if not subj_entity:
+                for ent in self.architect_agent.used_entities_set:
+                    if ent.uuid == subject:
+                        subj_entity = ent
+                        break
+
+            obj_entity = self.entities.get(object)
+            if not obj_entity:
+                for ent in self.architect_agent.used_entities_set:
+                    if ent.uuid == object:
+                        obj_entity = ent
+                        break
+
+            if subj_entity is None:
+                print(
+                    "[DEBUG (architect_agent_create_relationship)]: Subject not found in entities: ",
+                    subject,
+                    ". Available entities: ",
+                    list(self.entities.keys()),
+                )
                 return f"Subject not found in entities: {subject}. Available entities: {list(self.entities.keys())}"
 
-            if object not in self.entities:
+            if obj_entity is None:
+                print(
+                    "[DEBUG (architect_agent_create_relationship)]: Object not found in entities: ",
+                    object,
+                    ". Available entities: ",
+                    list(self.entities.keys()),
+                )
                 return f"Object not found in entities: {object}. Available entities: {list(self.entities.keys())}"
-
-            subj_entity = self.entities.get(subject)
-            obj_entity = self.entities.get(object)
 
             subj = ArchitectAgentEntity(
                 uuid=subj_entity.uuid,
@@ -157,6 +197,7 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
                     else {}
                 ),
                 properties=subj_entity.properties,
+                polarity=subj_entity.polarity if subj_entity.polarity else "neutral",
             )
             obj = ArchitectAgentEntity(
                 uuid=obj_entity.uuid,
@@ -169,6 +210,7 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
                     else {}
                 ),
                 properties=obj_entity.properties,
+                polarity=obj_entity.polarity if obj_entity.polarity else "neutral",
             )
 
             input_rels.append(
@@ -177,7 +219,8 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
                     tail=subj,
                     name=predicate,
                     description=description,
-                    properties=subj_entity.properties,
+                    properties=properties,
+                    **({"amount": amount} if amount else {}),
                 )
             )
 
@@ -209,6 +252,11 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
             )
         )
 
+        print(
+            "[DEBUG (architect_agent_create_relationship)]: Janitor response: ",
+            janitor_response,
+        )
+
         janitor_token_detail = token_detail_from_token_counts(
             self.architect_agent.input_tokens,
             self.architect_agent.output_tokens,
@@ -219,9 +267,25 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
             [self.architect_agent.token_detail, janitor_token_detail]
         )
 
-        fixed_rels_sets = []
+        required_new_nodes = getattr(janitor_response, "required_new_nodes", [])
+        newly_created_nodes = []
+        if required_new_nodes:
+            for node in required_new_nodes:
+                scout_entity = ScoutEntity(
+                    uuid=node.uuid,
+                    name=node.name,
+                    type=node.type,
+                    description=node.description,
+                    properties=node.properties,
+                )
+                self.entities[scout_entity.uuid] = scout_entity
+                self.architect_agent.entities.update({scout_entity.uuid: scout_entity})
+                newly_created_nodes.append(scout_entity.model_dump(mode="json"))
 
-        if fixed_relationships := getattr(janitor_response, "fixed_relationships", []):
+        fixed_rels_sets = []
+        fixed_relationships = getattr(janitor_response, "fixed_relationships", []) or []
+
+        if fixed_relationships:
             fixed_rels_sets = [
                 set((fr.tip.uuid, fr.tail.uuid, fr.name)) for fr in fixed_relationships
             ]
@@ -234,13 +298,83 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
                         description=rel.description,
                         tail=rel.tail,
                         properties=getattr(rel, "properties", {}),
+                        **(
+                            {"amount": getattr(rel, "amount", None)}
+                            if getattr(rel, "amount", None)
+                            else {}
+                        ),
                     )
                     for rel in fixed_relationships
                 ]
             )
 
+        fixed_rels_vs = {}
+        input_rels_vs = {}
+
         for rel in input_rels:
-            if set((rel.tip.uuid, rel.tail.uuid, rel.name)) not in fixed_rels_sets:
+            have_similar_relation = False
+            if set((rel.tip.uuid, rel.tail.uuid, rel.name)) in fixed_rels_sets:
+                have_similar_relation = True
+            else:
+                rels_with_same_subject_and_object = [
+                    [r, rel]
+                    for r in fixed_relationships
+                    if r.tip.uuid == rel.tip.uuid
+                    and r.tail.uuid == rel.tail.uuid
+                    or r.tip.uuid == rel.tail.uuid
+                    and r.tail.uuid == rel.tip.uuid
+                ]
+
+                if rels_with_same_subject_and_object:
+                    for fr, _rel in rels_with_same_subject_and_object:
+                        fixed_rels_vs[f"{fr.name}-{fixed_relationships.index(fr)}"] = (
+                            fixed_rels_vs.get(
+                                f"{fr.name}-{fixed_relationships.index(fr)}",
+                                {
+                                    "r": fr,
+                                    "embeddings": embeddings_small_adapter.embed_text(
+                                        fr.name
+                                    ).embeddings,
+                                },
+                            )
+                        )
+                        input_rels_vs[f"{_rel.name}-{input_rels.index(_rel)}"] = (
+                            input_rels_vs.get(
+                                f"{_rel.name}-{input_rels.index(_rel)}",
+                                {
+                                    "r": _rel,
+                                    "embeddings": embeddings_small_adapter.embed_text(
+                                        _rel.name
+                                    ).embeddings,
+                                },
+                            )
+                        )
+
+                    target_embedding = input_rels_vs[
+                        f"{rel.name}-{input_rels.index(rel)}"
+                    ]["embeddings"]
+                    candidates = [
+                        (cosine_similarity(cand["embeddings"], target_embedding), cand)
+                        for cand in fixed_rels_vs.values()
+                    ]
+                    similarity_score, most_similar_fixed_rel = max(
+                        candidates, key=lambda x: x[0]
+                    )
+
+                    if (
+                        similarity_score > 0.90
+                    ):  # TODO: [similarity_threshold] check if this is the suitable threshold
+                        have_similar_relation = True
+                    print(
+                        "[DEBUG (architect_agent_create_relationship)]: Have similar relation: ",
+                        have_similar_relation,
+                        "similarity_score: ",
+                        similarity_score,
+                        "most_similar_fixed_rel: ",
+                        most_similar_fixed_rel,
+                    )
+
+            if not have_similar_relation:
                 output_rels.append(
                     ArchitectAgentRelationship(
                         flow_key=rel_key,
@@ -249,6 +383,11 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
                         description=rel.description,
                         tail=rel.tail,
                         properties=getattr(rel, "properties", {}),
+                        **(
+                            {"amount": getattr(rel, "amount", None)}
+                            if getattr(rel, "amount", None)
+                            else {}
+                        ),
                     )
                 )
 
@@ -261,7 +400,9 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
         if relationships_data:
             from src.workers.tasks.ingestion import process_architect_relationships
 
-            print("> Sending relationships to ingestion task")
+            print(
+                "[DEBUG (architect_agent_create_relationship)]: Sending relationships to ingestion task"
+            )
             process_architect_relationships.delay(
                 {
                     "relationships": relationships_data,
@@ -271,10 +412,19 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
 
         self.architect_agent.relationships_set.extend(output_rels)
 
-        if len(getattr(janitor_response, "wrong_relationships", [])) > 0:
+        wrong_relationships = []
+        if getattr(janitor_response, "wrong_relationships", []):
+            wrong_relationships = getattr(janitor_response, "wrong_relationships", [])
+
+        if len(wrong_relationships) > 0:
+            print(
+                "[DEBUG (architect_agent_create_relationship)]: Wrong relationships: ",
+                getattr(janitor_response, "wrong_relationships", []),
+            )
             return {
                 "status": "ERROR",
                 "wrong_relationships": janitor_response.wrong_relationships,
+                "newly_created_nodes": newly_created_nodes,
             }
 
         # for entity_uuid in used_entity_uuids:

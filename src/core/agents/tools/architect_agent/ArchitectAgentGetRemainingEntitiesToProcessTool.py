@@ -33,9 +33,14 @@ class ArchitectAgentGetRemainingEntitiesToProcessTool(BaseTool):
         )
 
     def _run(self, *args, **kwargs) -> str:
-        return json.dumps(
+        remaining_entities = json.dumps(
             [
                 entity.model_dump(mode="json")
                 for entity in self.architect_agent.entities.values()
             ]
         )
+        print(
+            "[DEBUG (architect_agent_get_remaining_entities_to_process)]: ",
+            remaining_entities,
+        )
+        return remaining_entities

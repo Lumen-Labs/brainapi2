@@ -8,6 +8,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
+from datetime import datetime, timezone
 import os
 import time
 from typing import Any, Dict, List, Literal, Optional, Tuple
@@ -200,7 +201,7 @@ class Neo4jClient(GraphClient):
 
             all_properties = {
                 **(node.properties or {}),
-                **(metadata or {}),
+                "metadata": metadata,
             }
 
             if identification_params:
@@ -217,7 +218,14 @@ class Neo4jClient(GraphClient):
 
             identification_set_str = f"{{{', '.join(identification_items)}}}"
 
-            attributes = ["description", "happened_at", "flow_key", "last_updated"]
+            attributes = [
+                "description",
+                "happened_at",
+                "last_updated",
+                "metadata",
+                "observations",
+                "polarity",
+            ]
 
             for attr in attributes:
                 if getattr(node, attr, None):
@@ -252,7 +260,8 @@ class Neo4jClient(GraphClient):
                 labels=node.labels,
                 name=node.name,
                 description=node.description,
-                properties={**node.properties, **(metadata or {})},
+                properties=node.properties,
+                metadata={**(node.metadata or {}), **(metadata or {})},
             )
             for node in nodes
         ]
@@ -449,6 +458,7 @@ class Neo4jClient(GraphClient):
 
     def get_by_uuid(self, uuid: str, brain_id: str) -> Node:
         """
+        DEPRECATED: use get_by_uuids instead.
         Get a node by its UUID.
         """
         cypher_query = """
@@ -486,6 +496,11 @@ class Neo4jClient(GraphClient):
                 labels=record.get("labels", []),
                 description=record.get("description", ""),
                 properties=record.get("properties", {}),
+                polarity=record.get("polarity", "neutral"),
+                happened_at=record.get("happened_at", None),
+                last_updated=record.get("last_updated", datetime.now(timezone.utc)),
+                observations=record.get("observations", []),
+                metadata=record.get("metadata", {}),
             )
             for record in result.records
         ]
@@ -591,9 +606,6 @@ class Neo4jClient(GraphClient):
                type(r) AS rel_type, r.description AS rel_description, properties(r) AS rel_properties, r.flow_key as rel_flowkey, r.uuid as rel_uuid,
                c.uuid AS c_uuid, c.name AS c_name, labels(c) AS c_labels, c.description AS c_description, properties(c) AS c_properties
         """
-        print("========== cypher_query 1 ==========")
-        print(cypher_query, node_uuids, same_type_only, of_types)
-        print("========== cypher_query 1 ==========")
         if limit:
             cypher_query += f" LIMIT {limit}"
 
@@ -1309,18 +1321,27 @@ class Neo4jClient(GraphClient):
         relationships_query = (
             "CALL db.relationshipTypes() YIELD relationshipType RETURN relationshipType"
         )
+        event_names_query = "MATCH (n) WHERE labels(n) CONTAINS 'EVENT' RETURN n.name"
 
         labels_result = self.driver.execute_query(labels_query, database_=brain_id)
         relationships_result = self.driver.execute_query(
             relationships_query, database_=brain_id
+        )
+        event_names_result = self.driver.execute_query(
+            event_names_query, database_=brain_id
         )
 
         labels = [record["label"] for record in labels_result.records]
         relationships = [
             record["relationshipType"] for record in relationships_result.records
         ]
+        event_names = [record["name"] for record in event_names_result.records]
 
-        return {"labels": labels, "relationships": relationships}
+        return {
+            "labels": labels,
+            "relationships": relationships,
+            "event_names": event_names,
+        }
 
     def get_2nd_degree_hops(
         self,

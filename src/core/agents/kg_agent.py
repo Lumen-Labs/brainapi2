@@ -8,10 +8,18 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
-from typing import Iterable, List, Optional, Union
+from typing import Iterable, List, Literal, Optional, Union
 from langchain.agents import create_agent
 from langchain.tools import BaseTool
 from pydantic import BaseModel
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+    RetryError,
+)
 
 from src.adapters.cache import CacheAdapter
 from src.adapters.graph import GraphAdapter
@@ -19,6 +27,8 @@ from src.adapters.llm import LLMAdapter
 from src.constants.kg import Node
 from src.constants.output_schemas import RetrieveNeighborsOutputSchema
 from src.constants.prompts.kg_agent import (
+    KG_AGENT_GRAPH_CONSOLIDATOR_PROMPT,
+    KG_AGENT_GRAPH_CONSOLIDATOR_SYSTEM_PROMPT,
     KG_AGENT_RETRIEVE_NEIGHBORS_PROMPT,
     KG_AGENT_SYSTEM_PROMPT,
     KG_AGENT_UPDATE_PROMPT,
@@ -32,6 +42,7 @@ from src.core.agents.tools.kg_agent import (
     KGAgentUpdatePropertiesTool,
 )
 from src.adapters.embeddings import EmbeddingsAdapter, VectorStoreAdapter
+from src.utils.tokens import token_detail_from_token_counts
 
 
 class KGAgent:
@@ -56,6 +67,11 @@ class KGAgent:
         self.embeddings = embeddings
         self.agent = None
         self.database_desc = database_desc
+        self.input_tokens = 0
+        self.output_tokens = 0
+        self.cached_tokens = 0
+        self.reasoning_tokens = 0
+        self.token_detail = None
 
     def _execute_graph_operation(self, operation: str) -> str:
         try:
@@ -106,6 +122,7 @@ class KGAgent:
 
     def _get_agent(
         self,
+        type_: Literal["normal", "graph-consolidator"],
         identification_params: dict,
         metadata: dict,
         tools: Optional[List[BaseTool]] = None,
@@ -113,9 +130,15 @@ class KGAgent:
         extra_system_prompt: Optional[dict] = None,
         brain_id: str = "default",
     ):
-        system_prompt = KG_AGENT_SYSTEM_PROMPT.format(
-            extra_system_prompt=extra_system_prompt if extra_system_prompt else ""
-        )
+        system_prompt = None
+        if type_ == "normal":
+            system_prompt = KG_AGENT_SYSTEM_PROMPT.format(
+                extra_system_prompt=extra_system_prompt if extra_system_prompt else ""
+            )
+        elif type_ == "graph-consolidator":
+            system_prompt = KG_AGENT_GRAPH_CONSOLIDATOR_SYSTEM_PROMPT.format(
+                extra_system_prompt=extra_system_prompt if extra_system_prompt else ""
+            )
 
         self.agent = create_agent(
             model=self.llm_adapter.llm.langchain_model,
@@ -265,3 +288,96 @@ class KGAgent:
         response = _response.get("structured_response")
 
         return response
+
+    def run_graph_consolidator_operator(
+        self,
+        task: str,
+        brain_id: str = "default",
+        timeout: int = 180,
+        max_retries: int = 3,
+    ) -> str:
+        """
+        Run the graph consolidator operator.
+        """
+
+        self._get_agent(
+            type_="graph-consolidator",
+            identification_params={},
+            metadata={},
+            tools=[
+                KGAgentExecuteGraphOperationTool(
+                    self,
+                    self.kg,
+                    self.database_desc,
+                    brain_id=brain_id,
+                )
+            ],
+        )
+
+        def _invoke_agent():
+            return self.agent.invoke(
+                {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": KG_AGENT_GRAPH_CONSOLIDATOR_PROMPT.format(
+                                task=task
+                            ),
+                        }
+                    ],
+                },
+            )
+
+        @retry(
+            stop=stop_after_attempt(max_retries),
+            wait=wait_exponential(multiplier=1, min=2, max=30),
+            retry=retry_if_exception_type(TimeoutError),
+            reraise=True,
+        )
+        def _invoke_agent_with_retry():
+            try:
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(_invoke_agent)
+                    response = future.result(timeout=timeout)
+                    for m in response.get("messages", []):
+                        if hasattr(m, "usage_metadata"):
+                            self._update_token_counts(m.usage_metadata)
+                            self.token_detail = token_detail_from_token_counts(
+                                self.input_tokens,
+                                self.output_tokens,
+                                self.cached_tokens,
+                                self.reasoning_tokens,
+                            )
+                    return response
+            except FutureTimeoutError:
+                raise TimeoutError(
+                    f"Graph consolidator operator invoke timed out after {timeout} seconds. "
+                    "This may indicate a network issue or the LLM service is unresponsive."
+                )
+
+        try:
+            response = _invoke_agent_with_retry()
+        except RetryError as e:
+            last_attempt = e.last_attempt
+            raise TimeoutError(
+                f"Graph consolidator operator invoke failed after {last_attempt.attempt_number} attempts. "
+                f"Last error: {last_attempt.exception()}"
+            ) from last_attempt.exception()
+        except TimeoutError:
+            raise
+
+        return "OK"
+
+    def _update_token_counts(self, usage_metadata: dict):
+        """Extract all token counts from usage metadata"""
+        # Base counts
+        self.input_tokens += usage_metadata.get("input_tokens", 0)
+        self.output_tokens += usage_metadata.get("output_tokens", 0)
+
+        # Input details (caching)
+        input_details = usage_metadata.get("input_token_details", {})
+        self.cached_tokens += input_details.get("cache_read", 0)
+
+        # Output details (reasoning)
+        output_details = usage_metadata.get("output_token_details", {})
+        self.reasoning_tokens += output_details.get("reasoning", 0)

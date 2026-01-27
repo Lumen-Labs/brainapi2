@@ -46,42 +46,51 @@ Return ONLY JSON:
 """
 
 JANITOR_AGENT_GRAPH_NORMALIZATOR_SYSTEM_PROMPT = """
-You are the "Knowledge Graph Architect." You are responsible for Global Entity Resolution and Relational Synthesis.
+You are the Janitor of a Knowledge Graph. You are responsible for ensuring graph consistency and quality.
 
-CORE PROTOCOLS:
-1. CO-REFERENCE RESOLUTION:
-   - Identify entities that refer to the same real-world object/event even if labels differ (e.g., "John's Wedding" vs "Mary's Wedding"). 
-   - Criteria for merging: Shared time, shared location, or overlapping key participants identified in the context text.
-2. RELATIONSHIP CONSOLIDATION:
-   - When merging nodes, you MUST re-map all incoming and outgoing edges to the new "Survivor" node.
-   - Avoid duplicate relationships. If Node A and Node B both had a "MADE" relationship from the same person, consolidate them into one.
-3. HIERARCHICAL LINKING:
-   - Connect specific Event instances to broader concepts (e.g., Link "John & Mary's Wedding" to the "Wedding" Concept node via an 'IS_A' relationship).
-4. DIRECTIONAL TRUTH:
-   - Ensure the Actor (Subject) -> Event -> Target (Object) chain is preserved during merges.
+YOUR RESPONSIBILITIES ARE:
+- Ensuring that relationships that require to be event-centric are effectively event centric:
+   (eg: (PERSON:John)-[WENT_TO]->(CITY:New York) should become (PERSON:John)-[MOVED]-(EVENT:Went to)-[TARGETED_LOCATION]->(CITY:New York))
+   
+- Ensuring that relationships, nodes and triplets are unique and there are no duplicates:
+   Two triplets representing the same thing in different ways should be merged into one. 
+   (eg: (PERSON:John)-[ACCOMPLISHED_ACTION]->(EVENT:Trip)-[INTO_LOCATION]->(CITY:New York) and (PERSON:John)-[MOVED]->(EVENT:Went to)-[HAPPENED_WITHIN]->(CITY:New York) if they are representing the same thing should be merged into one, if they are similar but represent different things should be kept separate)
+   In the example above Trip and Went to are unified into a single event node since they rapresent the same thing.
+   
+- Adding connections between nodes that are not directly connected but are related to create a more coherent graph:
+   Connect nodes that are far from each other in the graph because the belong to different contexts but are related.
+   (eg: (PERSON:John {{ "uuid": "uuid_1" }})-[ACCOMPLISHED_ACTION]->(EVENT:Trip {{ "uuid": "uuid_3" }})-[INTO_LOCATION]->(CITY:New York {{ "uuid": "uuid_4" }}) and (PERSON:Mary {{ "uuid": "uuid_2" }})-[MOVED]->(EVENT:Went to {{ "uuid": "uuid_5" }})-[HAPPENED_WITHIN]->(CITY:New York {{ "uuid": "uuid_5" }}) the two New York nodes should be unified if they are two different nodes also you could identify that a new relationship called "HAPPENED_WITHIN" could
+   be added from the EVENT:Trip of John to the EVENT:Went to of Mary)
+
+- Removing amount-nodes and ensuring that amounts are added to the relationships where they are missing:
+   The graph ontology must not include amount-nodes, amounts must be added to the relationships where they are missing.
+   (eg1: (COMPANY:Startup Inc.)-[RAISED]->(EVENT:Funding)-[TARGETED]->(MONEY:100000000) must become (COMPANY:Startup Inc.)-[RAISED]-(EVENT:Funding)-[TARGETED {{ "amount": 100000000 }}]->(FUND_RAISE:Series A) with the amount added to the relationship properties)
+   (eg2: (COMPANY:Startup Inc.)-[RAISED]->(EVENT:Funding {{ "description": "The startup raised $100 million in funding" }})-[TARGETED]->(MONEY) must become (COMPANY:Startup Inc.)-[RAISED]-(EVENT:Funding)-[TARGETED {{ "amount": 100000000 }}]->(FUND_RAISE:Series A) with the amount added to the relationship properties since it was missing but was specified in the description)
+   
+
+Your output must be a JSON object with a "tasks" argument containing a list of detailed string descriptions representing the tasks that needs to be done if there are any, to fix the graph.
+Each task should include info in also the nodes/relationships/properties/triplets that are involved in the task so that the kg_agent can execute the tasks and reffer to the correct nodes/relationships/properties/triplets.
+Example output:
+{{
+   "tasks": [
+      "Fix the relationship (PERSON:John {{ "uuid": "uuid_1" }})-[WENT_TO]->(CITY:New York {{ "uuid": "uuid_2" }}) to be event-centric",
+      "Merge the two triplets (PERSON:John {{ "uuid": "uuid_1" }})-[ACCOMPLISHED_ACTION]->(EVENT:Trip {{ "uuid": "uuid_3" }})-[INTO_LOCATION]->(CITY:New York {{ "uuid": "uuid_4" }}) and (PERSON:John {{ "uuid": "uuid_1" }})-[MOVED]->(EVENT:Went to {{ "uuid": "uuid_5" }})-[HAPPENED_WITHIN]->(CITY:New York {{ "uuid": "uuid_4" }})",
+      ... more tasks ...
+   ]
+}}
+
+If there are no tasks to be done return an empty list:
+{{
+   "tasks": []
+}}
 """
 
 JANITOR_AGENT_GRAPH_NORMALIZATOR_PROMPT = """
-Role: Perform Global Synthesis. You have been provided with a "Neighborhood Snapshot" of the existing Knowledge Graph relevant to the new data.
+Role: Perform Global Review. You have been provided with a "Neighborhood Snapshot" of the existing Knowledge Graph relevant to the new data 
+and you can browse the graph with your tools to have a better picture.
 
-CONTEXT_TEXT: {text}
 NEW_DATA_UNITS: {units}
-GRAPH_SNAPSHOT: {snapshot_json} 
-
-INSTRUCTIONS:
-1. CROSS-REFERENCE: Compare entities in `NEW_DATA_UNITS` against `GRAPH_SNAPSHOT`. 
-   - Look for fuzzy matches (e.g., "J. Doe" vs "John Doe").
-   - Look for situational matches (e.g., Two different 'Wedding' nodes occurring at the same 'Grand Plaza' venue on the same date).
-2. CONSOLIDATION LOGIC:
-   - If a match is found, select the most established Node ID from the `GRAPH_SNAPSHOT` as the Survivor.
-   - Map all relationships from the new units to this Survivor.
-3. REDUNDANCY CHECK:
-   - If the `GRAPH_SNAPSHOT` already contains a relationship (e.g., Mary -> MADE -> Wedding), do NOT create a duplicate edge.
-4. MISSING BRIDGES:
-   - If `John` and `Mary` are both linked to the same `Wedding` in the text, but the `GRAPH_SNAPSHOT` only shows Mary, create the missing link for John.
-
-OUTPUT:
-Return a list of tool calls: `merge_nodes`, `create_relationship`, or `update_node`.
+GRAPH_SNAPSHOT: {snapshot_json}
 """
 
 ATOMIC_JANITOR_AGENT_SYSTEM_PROMPT = """
@@ -95,7 +104,7 @@ REVISION PROTOCOL:
    - SCHEMA ENFORCEMENT: Never change the semantic label (e.g., do not turn 'TARGETED' into 'MADE'). Only swap directions if the entities and the label are logically inverted (e.g., Target --[MADE]--> Actor).
 3. PROPERTY ENFORCEMENT: If a node name contains a number (e.g., "23 Friends"), strip the number from the name. Move that value into the 'amount' or 'count' property of the relationship.
 4. INSTANCE PROTECTION: Never merge nodes of type 'EVENT'. Every event instance must remain unique to preserve individual historical contributions.
-5. RELATIONSHIP RESOLUTION: Use `get_schema` tool to get the knowledege graph current schema and if you find similar relationship names replace them in the new relationships.
+5. RELATIONSHIP RESOLUTION: Use `get_schema` tool with the target "relationship_types" to get the knowledege graph current schema and if you find similar relationship names replace them in the new relationships.
 
 INSTRUCTIONS:
 1. VALIDATE SEMANTICS: Compare the relationship labels to the entities. 
@@ -113,12 +122,12 @@ If everything is correct return a JSON object with a field "status" set to "OK".
 After checking the current state of the knowledge graph you can apply small fixes to:
 - Entity names: in case the entity name is wrong, can be called a different name or the same name exist in the knowledge graph with a different name, you must change the entity name.
 - Entity types: in case the entity type is wrong, can be called a different type or the same type exist in the knowledge graph with a different name, you must change the entity type.
-- Relationship names: in case the relationship can be named better or something similar already exists in the knowledge graph, you must rename the relationship.
 - Relationship directions: in case the relationship direction is wrong, you must swap the tail and tip of the relationship.
 These small fixes must be applied by you directly and without returning an error inside wrong_relationships.
 
 If you identified something wrong with the relationships return a JSON object with the following fields:
 - status: must be "ERROR"
+- required_new_nodes: an optional list containing nodes that are required to be created in the knowledge graph.
 - fixed_relationships: an optional list containing relationships that required just a small adjustment to be correct.
 - wrong_relationships: a list containing JSON objects with the following fields:
   - relationship: the relationship that is wrong
@@ -132,6 +141,15 @@ Example output if everything is correct:
 Example output if there are any errors:
 {{
    "status": "ERROR",
+   "required_new_nodes": [
+      {{
+         "name": "<<The name of the node>>",
+         "type": "<<The type of the node>>",
+         "description": "<<The description of the node>>",
+         "properties": {{...}} // The properties of the node.
+      }},
+      ... more nodes ...
+   ], // return here the optional new nodes that are required to be created in the knowledge graph.
    "fixed_relationships": [{{...}}], // return here the relationships that you already fixed wiht small fixes.
    "wrong_relationships": [
       {{

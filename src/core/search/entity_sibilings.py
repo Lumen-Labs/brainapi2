@@ -46,10 +46,13 @@ class EntitySinergyRetriever:
         neighbors = _neighbors[target_node_id]
 
         positivep_connections: List[EntitySynergy] = []
-        seen_set = set()
+        seen_set = set([target_node.uuid])
+
+        similarity_seed_nodes = []
+        neighbor_map = {}
 
         for neighbor in neighbors:
-            similarity_seed_nodes = []
+            seed_nodes_for_neighbor = []
 
             if "EVENT" in neighbor[1].labels:
                 flow_key = neighbor[0].flow_key or neighbor[0].properties.get(
@@ -60,61 +63,105 @@ class EntitySinergyRetriever:
                 next_rels = graph_adapter.get_next_by_flow_key(
                     neighbor[0].uuid, flow_key, brain_id=self.brain_id
                 )
-                similarity_seed_nodes.extend(t[2] for t in next_rels)
+                seed_nodes_for_neighbor = [t[2] for t in next_rels]
             else:
-                similarity_seed_nodes.append(neighbor[1])
+                seed_nodes_for_neighbor = [neighbor[1]]
 
-            for similarity_seed_node in similarity_seed_nodes:
-                if target_node.labels in similarity_seed_node.labels:
+            for seed_node in seed_nodes_for_neighbor:
+                similarity_seed_nodes.append(seed_node)
+                if seed_node.uuid not in neighbor_map:
+                    neighbor_map[seed_node.uuid] = []
+                neighbor_map[seed_node.uuid].append(neighbor[1])
+
+        if not similarity_seed_nodes:
+            return target_node, positivep_connections
+
+        for similarity_seed_node in similarity_seed_nodes:
+            if any(
+                label in similarity_seed_node.labels for label in target_node.labels
+            ):
+                for connected_by_node in neighbor_map[similarity_seed_node.uuid]:
                     positivep_connections.append(
                         EntitySynergy(
                             node=similarity_seed_node,
-                            connected_by=(neighbor[1], neighbor[1]),
+                            connected_by=(connected_by_node, connected_by_node),
                         )
                     )
                     seen_set.add(similarity_seed_node.uuid)
 
-                similar_dict = vector_store_adapter.search_similar_by_ids(
-                    [similarity_seed_node.properties["v_id"]],
-                    brain_id=self.brain_id,
-                    store="nodes",
-                    min_similarity=0.5,
-                    limit=10,
-                )
-                similar = similar_dict.get(similarity_seed_node.properties["v_id"], [])
+        v_ids_to_search = [
+            seed_node.properties.get("v_id")
+            for seed_node in similarity_seed_nodes
+            if seed_node.properties.get("v_id")
+        ]
 
-                for similar_node_v in similar:
-                    # if similar_node_v.metadata["uuid"] == neighbor[1].uuid:
-                    #     continue
-                    # if similar_node_v.metadata["uuid"] == similarity_seed_node.uuid:
-                    #     continue
+        if not v_ids_to_search:
+            return target_node, positivep_connections
 
-                    similar_node_1 = graph_adapter.get_by_uuid(
-                        similar_node_v.metadata["uuid"], brain_id=self.brain_id
-                    )
+        all_similar_dict = vector_store_adapter.search_similar_by_ids(
+            v_ids_to_search,
+            brain_id=self.brain_id,
+            store="nodes",
+            min_similarity=0.5,
+            limit=10,
+        )
 
-                    if not similar_node_1:
+        similar_node_uuids = set()
+        v_id_to_seed_node = {
+            seed_node.properties.get("v_id"): seed_node
+            for seed_node in similarity_seed_nodes
+            if seed_node.properties.get("v_id")
+        }
+
+        for v_id, similar_vectors in all_similar_dict.items():
+            for similar_node_v in similar_vectors:
+                similar_uuid = similar_node_v.metadata.get("uuid")
+                if similar_uuid:
+                    similar_node_uuids.add(similar_uuid)
+
+        if not similar_node_uuids:
+            return target_node, positivep_connections
+
+        similar_nodes = graph_adapter.get_by_uuids(
+            list(similar_node_uuids), brain_id=self.brain_id
+        )
+        similar_nodes_by_uuid = {node.uuid: node for node in similar_nodes if node}
+
+        if not similar_nodes_by_uuid:
+            return target_node, positivep_connections
+
+        all_neighbors = graph_adapter.get_neighbors(
+            list(similar_nodes_by_uuid.keys()),
+            brain_id=self.brain_id,
+            of_types=list(set(target_node.labels)),
+        )
+
+        for v_id, similar_vectors in all_similar_dict.items():
+            seed_node = v_id_to_seed_node.get(v_id)
+            if not seed_node:
+                continue
+
+            for similar_node_v in similar_vectors:
+                similar_uuid = similar_node_v.metadata.get("uuid")
+                similar_node_1 = similar_nodes_by_uuid.get(similar_uuid)
+
+                if not similar_node_1:
+                    continue
+
+                neighbors_of_similar = all_neighbors.get(similar_node_1.uuid, [])
+
+                for final_connection_tuple in neighbors_of_similar:
+                    final_node_uuid = final_connection_tuple[1].uuid
+                    if final_node_uuid in seen_set:
                         continue
 
-                    final_positivep_connection = graph_adapter.get_neighbors(
-                        [similar_node_1.uuid],
-                        brain_id=self.brain_id,
-                        of_types=list(set(target_node.labels)),
-                    )
+                    seen_set.add(final_node_uuid)
 
-                    for final_positivep_connection_tuple in final_positivep_connection[
-                        similar_node_1.uuid
-                    ]:
-                        if final_positivep_connection_tuple[1].uuid in seen_set:
-                            continue
-
-                        seen_set.add(final_positivep_connection_tuple[1].uuid)
-
-                        positivep_connections.append(
-                            EntitySynergy(
-                                node=final_positivep_connection_tuple[1],
-                                connected_by=(similarity_seed_node, similar_node_1),
-                            )
+                    positivep_connections.append(
+                        EntitySynergy(
+                            node=final_connection_tuple[1],
+                            connected_by=(seed_node, similar_node_1),
                         )
+                    )
 
         return target_node, positivep_connections

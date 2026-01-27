@@ -26,7 +26,7 @@ from src.adapters.embeddings import EmbeddingsAdapter, VectorStoreAdapter
 from src.adapters.cache import CacheAdapter
 from src.adapters.graph import GraphAdapter
 from src.adapters.llm import LLMAdapter
-from src.constants.kg import Node
+from src.constants.kg import Node, Predicate
 from src.constants.prompts.architect_agent import (
     ARCHITECT_AGENT_TOOLER_CREATE_RELATIONSHIPS_PROMPT,
     ARCHITECT_AGENT_TOOLER_SYSTEM_PROMPT,
@@ -91,7 +91,7 @@ class ArchitectAgent:
         self.output_tokens = 0
         self.cached_tokens = 0
         self.reasoning_tokens = 0
-        self.relationships_set = []
+        self.relationships_set: List[ArchitectAgentRelationship] = []
         self.used_entities_set = []
         self.ingestion_manager = ingestion_manager
         # self.database_desc = database_desc

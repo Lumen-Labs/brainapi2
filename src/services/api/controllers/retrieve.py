@@ -3,8 +3,8 @@ File: /retrieve.py
 Created Date: Sunday October 26th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Saturday December 27th 2025
-Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
+Last Modified: Monday January 12th 2026 8:26:26 pm
+Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
@@ -141,7 +141,14 @@ async def retrieve_neighbors(
                 fd_v_neighbors_embeddings_map = {
                     v.id: v.embeddings
                     for v in fd_v_neighbors_embeddings
-                    if cosine_similarity(looking_for_v.embeddings, v.embeddings) > 0.5
+                    if (
+                        cosine_similarity(looking_for_v.embeddings, v.embeddings) > 0.5
+                        and v.id
+                        and not v.id.replace(
+                            "-", ""
+                        ).isalpha()  # likely not a UUID if all numeric (may have hyphens for uuid standard)
+                        and v.id.isdigit()
+                    )
                 }
                 fd_v_neighbors_ids = list(fd_v_neighbors_embeddings_map.keys())
 
@@ -264,7 +271,7 @@ async def get_relationships(
 ):
     """
     Retrieve relationships from the knowledge graph with optional filtering and pagination.
-    
+
     Parameters:
         relationship_types (list[str], optional): Filter results to specific relationship types.
         from_node_labels (list[str], optional): Filter relationships originating from nodes with these labels.
@@ -274,7 +281,7 @@ async def get_relationships(
         limit (int, optional): Maximum number of relationships to return.
         skip (int, optional): Number of relationships to skip (offset).
         brain_id (str, optional): Identifier of the brain/graph to query.
-    
+
     Returns:
         JSONResponse: A response whose JSON content contains:
             - message: Confirmation string.
@@ -301,6 +308,7 @@ async def get_relationships(
         }
     )
 
+
 async def get_entities(
     limit: int = 10,
     skip: int = 0,
@@ -310,14 +318,14 @@ async def get_entities(
 ):
     """
     Retrieve entities from the knowledge graph with optional label and text filters.
-    
+
     Parameters:
         limit (int): Maximum number of entities to return (pagination).
         skip (int): Number of entities to skip (pagination offset).
         node_labels (Optional[list[str]]): If provided, only return entities whose labels match any value in this list.
         query_text (Optional[str]): If provided, filter entities by matching text content.
         brain_id (str): Identifier of the knowledge graph/brain to query.
-    
+
     Returns:
         JSONResponse: Object containing:
             - message (str): Informational message.

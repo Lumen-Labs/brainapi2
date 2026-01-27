@@ -190,7 +190,11 @@ def process_architect_relationships(self, args: dict):
     Process architect relationships.
     """
 
-    print(f"> Processing {len(args.get('relationships', []))} architect relationships")
+    print(
+        "[DEBUG (process_architect_relationships)]: Processing ",
+        len(args.get("relationships", [])),
+        " architect relationships",
+    )
 
     relationships_data: List[dict] = args.get("relationships", [])
     brain_id: str = args.get("brain_id", "default")
@@ -281,6 +285,11 @@ def process_architect_relationships(self, args: dict):
                                     name=node_data.name,
                                     description=node_data.description,
                                     properties=node_data.properties,
+                                    polarity=(
+                                        node_data.polarity
+                                        if node_data.polarity
+                                        else "neutral"
+                                    ),
                                 )
                             )
                         except FutureTimeoutError:
@@ -299,14 +308,21 @@ def process_architect_relationships(self, args: dict):
                     graph_adapter.add_relationship(
                         Node(
                             uuid=relationship.tail.uuid,
-                            flow_key=relationship.tail.flow_key,
                             labels=[relationship.tail.type],
                             name=relationship.tail.name,
+                            polarity=(
+                                relationship.tail.polarity
+                                if relationship.tail.polarity
+                                else "neutral"
+                            ),
                             **(
                                 {"happened_at": relationship.tail.happened_at}
                                 if relationship.tail.happened_at
                                 else {}
                             ),
+                            properties={
+                                **(relationship.tail.properties or {}),
+                            },
                         ),
                         Predicate(
                             uuid=relationship.uuid,
@@ -320,14 +336,21 @@ def process_architect_relationships(self, args: dict):
                         ),
                         Node(
                             uuid=relationship.tip.uuid,
-                            flow_key=relationship.tip.flow_key,
                             labels=[relationship.tip.type],
                             name=relationship.tip.name,
+                            polarity=(
+                                relationship.tip.polarity
+                                if relationship.tip.polarity
+                                else "neutral"
+                            ),
                             **(
                                 {"happened_at": relationship.tip.happened_at}
                                 if relationship.tip.happened_at
                                 else {}
                             ),
+                            properties={
+                                **(relationship.tip.properties or {}),
+                            },
                         ),
                         brain_id=brain_id,
                     )
@@ -395,9 +418,16 @@ def ingest_structured_data(self, args: dict):
 
         for element in payload.data:
             uuid = str(uuid4())
+            _element = element.model_dump(mode="json")
             description = llm_small_adapter.generate_text(
                 prompt=NODE_DESCRIPTION_PROMPT.format(
-                    element=json.dumps(element.model_dump(mode="json"), indent=2),
+                    element=json.dumps(
+                        {
+                            **_element.get("json_data", {}),
+                            **_element.get("textual_data", {}),
+                        },
+                        indent=2,
+                    ),
                     element_type=", ".join(element.types) if element.types else "thing",
                     element_name=(
                         element.identification_params.name
@@ -420,6 +450,7 @@ def ingest_structured_data(self, args: dict):
                                 if element.identification_params
                                 else {}
                             ),
+                            **(element.textual_data if element.textual_data else {}),
                         },
                     )
                 ],
@@ -427,7 +458,9 @@ def ingest_structured_data(self, args: dict):
                 identification_params=element.identification_params.model_dump(
                     mode="json"
                 ),
-                metadata=element.textual_data,
+                metadata={
+                    **(element.metadata if element.metadata else {}),
+                },
             )[0]
 
             # Saving the node properties updated change
@@ -458,19 +491,42 @@ def ingest_structured_data(self, args: dict):
             }
             vector_store_adapter.add_vectors(vectors=[vector], store="nodes")
 
-            data_adapter.save_structured_data(
-                StructuredData(
-                    id=uuid,
-                    data=element.json_data,
-                    types=element.types,
-                    metadata={
-                        "identification_params": element.identification_params,
-                        "textual_data": element.textual_data,
-                        "labels": element.types,
-                        "name": element.identification_params.name,
+            existing_structured_data = data_adapter.get_structured_data_by_id(
+                id=uuid, brain_id=payload.brain_id
+            )
+
+            new_structured_data = None
+
+            if existing_structured_data:
+                new_structured_data = existing_structured_data.model_copy(
+                    update={
+                        "data": {
+                            **(
+                                existing_structured_data.data
+                                if existing_structured_data.data
+                                else {}
+                            ),
+                            **(element.json_data if element.json_data else {}),
+                        },
+                        "types": [
+                            *existing_structured_data.types,
+                            *element.types,
+                        ],
+                        "metadata": {
+                            **(
+                                existing_structured_data.metadata
+                                if existing_structured_data.metadata
+                                else {}
+                            ),
+                            **(element.metadata if element.metadata else {}),
+                        },
+                        "brain_version": BRAIN_VERSION,
                     },
-                    brain_version=BRAIN_VERSION,
-                ),
+                )
+                # TODO: update the changelogs here
+
+            data_adapter.save_structured_data(
+                structured_data=new_structured_data,
                 brain_id=payload.brain_id,
             )
             vector = embeddings_adapter.embed_text(
@@ -526,7 +582,13 @@ def ingest_structured_data(self, args: dict):
                 )
 
             enrich_kg_from_input(
-                element.textual_data, targeting=node, brain_id=payload.brain_id
+                (
+                    json.dumps(element.textual_data, indent=2)
+                    if len(element.textual_data.keys()) > 0
+                    else description
+                ),
+                targeting=node,
+                brain_id=payload.brain_id,
             )
 
         cache_adapter.set(

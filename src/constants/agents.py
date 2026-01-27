@@ -27,6 +27,10 @@ class ArchitectAgentEntity(BaseModel):
     )
     description: Optional[str] = None
     properties: Optional[dict] = Field(default_factory=dict)
+    polarity: Optional[Literal["positive", "negative", "neutral"]] = Field(
+        default="neutral",
+        description="The polarity of the entity.",
+    )
 
 
 class _ArchitectAgentNew(BaseModel):
@@ -65,6 +69,10 @@ class _ArchitectAgentRelationship(BaseModel):
     properties: Optional[dict] = Field(default_factory=dict)
     description: Optional[str] = None
     tail: ArchitectAgentEntity
+    amount: Optional[float] = Field(
+        default=None,
+        description="The amount of the relationship.",
+    )
 
 
 class ArchitectAgentRelationship(_ArchitectAgentRelationship):
@@ -99,7 +107,7 @@ class ArchitectAgentResponse(BaseModel):
 
 
 class AtomicJanitorAgentWrongRelationship(BaseModel):
-    relationship: object
+    relationship: _ArchitectAgentRelationship
     reason: str
     instructions: str
 
@@ -109,6 +117,11 @@ class AtomicJanitorAgentInputOutput(BaseModel):
 
     fixed_relationships: Optional[List[_ArchitectAgentRelationship]] = None
     wrong_relationships: Optional[List[AtomicJanitorAgentWrongRelationship]] = None
+    required_new_nodes: Optional[List[ArchitectAgentNew]] = None
+
+
+class GraphConsolidatorOutput(BaseModel):
+    tasks: List[str] = Field(default_factory=list)
 
 
 class TokenInputDetail(BaseModel):

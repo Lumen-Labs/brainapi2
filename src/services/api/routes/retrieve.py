@@ -8,7 +8,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
-from typing import Literal, Optional
+from typing import List, Literal, Optional
 from fastapi import APIRouter, Body, Query
 from src.services.api.constants.requests import (
     RetrieveNeighborsAiModeRequestBody,
@@ -45,6 +45,7 @@ from src.services.api.controllers.entities import (
     get_entity_info as get_entity_info_controller,
     get_entity_context as get_entity_context_controller,
     get_entity_sibilings as get_entity_sibilings_controller,
+    get_entity_status as get_entity_status_controller,
 )
 
 retrieve_router = APIRouter(prefix="/retrieve", tags=["retrieve"])
@@ -118,7 +119,7 @@ async def get_neighbors_ai_mode(
     )
 
 
-@retrieve_router.post("/context")
+@retrieve_router.get("/context")
 async def get_context(request):
     """
     Get the context of an entity.
@@ -395,3 +396,15 @@ async def get_entity_synergies(
     Get the entity synergies for a given target.
     """
     return await get_entity_sibilings_controller(target, polarity, brain_id)
+
+
+@retrieve_router.get(path="/entity/status")
+async def get_entity_status(
+    target: str,
+    types: Optional[List[str]] = [],
+    brain_id: str = "default",
+):
+    """
+    Get the entity status for a given target.
+    """
+    return await get_entity_status_controller(target, types, brain_id)

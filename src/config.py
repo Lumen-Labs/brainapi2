@@ -192,6 +192,9 @@ class Config:
         self.celery = CeleryConfig()
         self.pricing = PricingConfig()
 
+        self.run_graph_consolidator = (
+            os.getenv("RUN_GRAPH_CONSOLIDATOR", "true") == "true"
+        )
         self.brainpat_token = os.getenv("BRAINPAT_TOKEN")
 
         if not self.brainpat_token:

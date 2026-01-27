@@ -14,6 +14,7 @@ from src.config import config
 from src.constants.kg import Node
 from src.core.agents.scout_agent import ScoutAgent
 from src.core.agents.architect_agent import ArchitectAgent
+from src.core.layers.graph_consolidation.graph_consolidation import consolidate_graph
 from src.core.saving.ingestion_manager import IngestionManager
 from src.services.input.agents import (
     cache_adapter,
@@ -64,7 +65,9 @@ def enrich_kg_from_input(
         )
     )
 
-    architect_response = architect_agent.run_tooler(
+    print("[DEBUG (initial_scout_entities)]: ", entities)
+
+    architect_agent.run_tooler(
         input,
         entities.entities,
         targeting=targeting,
@@ -80,8 +83,24 @@ def enrich_kg_from_input(
         )
     )
 
+    consolidation_response = None
+
+    if config.run_graph_consolidator:
+        print(
+            "[DEBUG (consolidate_graph)]: Consolidating graph with ",
+            len(architect_agent.relationships_set),
+            " relationships",
+        )
+        consolidation_response = consolidate_graph(
+            architect_agent.relationships_set, brain_id=brain_id
+        )
+
     token_details = merge_token_details(
-        [scout_agent.token_detail, architect_agent.token_detail]
+        [
+            scout_agent.token_detail,
+            architect_agent.token_detail,
+            *([consolidation_response.token_detail] if consolidation_response else []),
+        ]
     )
 
     print("-----------------------------------")

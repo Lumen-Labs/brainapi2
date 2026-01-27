@@ -8,7 +8,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
-from typing import List, Optional
+from typing import List, Literal, Optional
 import uuid
 from langchain.agents import create_agent
 from langchain.tools import BaseTool
@@ -43,6 +43,10 @@ class _ScoutEntity(BaseModel):
     name: str
     properties: Optional[dict] = Field(default_factory=dict)
     description: Optional[str] = None
+    polarity: Optional[Literal["positive", "negative", "neutral"]] = Field(
+        default="neutral",
+        description="The polarity of the entity.",
+    )
 
 
 class ScoutEntity(_ScoutEntity):
