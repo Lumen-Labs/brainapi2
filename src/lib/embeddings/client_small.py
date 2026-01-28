@@ -21,6 +21,15 @@ class EmbeddingsClientSmall(EmbeddingsClient):
         self.model = _model
 
     def embed_text(self, text: str) -> list[float]:
+        """
+        Return the embedding vector for the given text using the configured model.
+        
+        Parameters:
+            text (str): Input text to encode.
+        
+        Returns:
+            list[float]: Dense embedding vector representing the input text.
+        """
         embedding = self.model.encode(text, convert_to_numpy=True)
         return embedding.tolist()
 

@@ -400,6 +400,19 @@ class MongoClient(DataClient):
     def update_structured_data(
         self, structured_data: StructuredData, brain_id: str
     ) -> StructuredData:
+        """
+        Update an existing StructuredData record in the specified brain's structured_data collection.
+        
+        Parameters:
+            structured_data (StructuredData): The structured data object whose stored record will be updated; its `id` is used to locate the document.
+            brain_id (str): Identifier of the brain (database) containing the structured_data collection to update.
+        
+        Returns:
+            StructuredData: The same `structured_data` object that was passed in.
+        
+        Notes:
+            The function updates the document matching `structured_data.id` by setting its fields to those from `structured_data`. If no matching document exists, no document is inserted.
+        """
         collection = self.get_collection("structured_data", database=brain_id)
         collection.update_one(
             {"id": structured_data.id},

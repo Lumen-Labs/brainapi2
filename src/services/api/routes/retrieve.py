@@ -112,7 +112,16 @@ async def get_neighbors_ai_mode(
     ),
 ):
     """
-    Get the neighbors of an entity in AI mode.
+    Retrieve neighboring entities using AI-mode identification parameters.
+    
+    Parameters:
+        request (RetrieveNeighborsAiModeRequestBody): Request body containing:
+            - identification_params: parameters that identify the target entity or entities.
+            - looking_for: description of the desired neighbors or relation types.
+            - limit: maximum number of neighbor results to return.
+    
+    Returns:
+        list: Neighboring entities that match the AI-mode identification and search criteria.
     """
     return await retrieve_neighbors_ai_mode_controller(
         request.identification_params, request.looking_for, request.limit
@@ -122,7 +131,13 @@ async def get_neighbors_ai_mode(
 @retrieve_router.get("/context")
 async def get_context(request):
     """
-    Get the context of an entity.
+    Handle an HTTP request to retrieve an entity's contextual information.
+    
+    Parameters:
+        request: The incoming FastAPI request containing the parameters (query string or body) used to identify the target entity and any context options.
+    
+    Returns:
+        The HTTP response payload to be returned to the client containing the entity context.
     """
 
 
@@ -138,20 +153,20 @@ async def get_relationships(
     brain_id: str = "default",
 ):
     """
-    Retrieve relationships from the knowledge graph filtered by the provided criteria.
-
+    Retrieve relationships filtered by types, node labels, and query criteria.
+    
     Parameters:
-        relationship_types (Optional[str]): Comma-separated relationship types to include; will be split into a list if provided.
-        from_node_labels (Optional[str]): Comma-separated source node labels to filter by; will be split into a list if provided.
-        to_node_labels (Optional[str]): Comma-separated target node labels to filter by; will be split into a list if provided.
-        query_text (Optional[str]): Free-text query to match against relationships or nodes.
-        query_search_target (Optional[str]): Which part to apply `query_text` to (for example, "all", "source", or "target"); defaults to "all".
-        limit (int): Maximum number of relationships to return; defaults to 10.
-        skip (int): Number of relationships to skip (offset); defaults to 0.
-        brain_id (str): Identifier of the brain (dataset) to query; defaults to "default".
-
+        relationship_types (Optional[str]): Comma-separated relationship types to include.
+        from_node_labels (Optional[str]): Comma-separated source node labels to filter.
+        to_node_labels (Optional[str]): Comma-separated target node labels to filter.
+        query_text (Optional[str]): Text to match against relationships or nodes.
+        query_search_target (Optional[str]): Target of the text query, such as "all", "source", or "target".
+        limit (int): Maximum number of relationships to return.
+        skip (int): Number of relationships to skip.
+        brain_id (str): Brain (dataset) identifier.
+        
     Returns:
-        A list of relationship records that match the provided filters.
+        List of relationship records matching the filters.
     """
     if relationship_types:
         relationship_types = relationship_types.split(",")
@@ -179,17 +194,15 @@ async def get_entities(
     brain_id: str = "default",
 ):
     """
-    Retrieve entities from the graph matching optional label and text filters.
-
+    Retrieve entities matching optional label and text filters with pagination.
+    
     Parameters:
-        limit (int): Maximum number of entities to return.
-        skip (int): Number of entities to skip (offset).
-        node_labels (Optional[str]): Comma-separated node labels to filter by (e.g. "Person,Company"); if provided, only entities with any of these labels are returned.
+        node_labels (Optional[str]): Comma-separated node labels to filter by (e.g. "Person,Company"); when provided, only entities with any of these labels are returned.
         query_text (Optional[str]): Free-text filter to match entity properties or content.
         brain_id (str): Identifier of the brain/knowledge store to query.
-
+    
     Returns:
-        A collection of entities that match the provided filters and pagination parameters.
+        list: A list of entity records that match the provided filters and pagination parameters.
     """
     if node_labels:
         node_labels = node_labels.split(",")
@@ -311,14 +324,14 @@ async def get_changelog_by_id(
     brain_id: str = "default",
 ):
     """
-    Retrieve a changelog record by its identifier.
-
+    Retrieve a changelog entry by its unique identifier.
+    
     Parameters:
-        id (str): The changelog's unique identifier.
-        brain_id (str): Identifier of the brain to query; defaults to "default".
-
+        id (str): Unique identifier of the changelog entry.
+        brain_id (str): Brain identifier to query. Defaults to "default".
+    
     Returns:
-        The changelog record matching `id`.
+        The changelog entry corresponding to the specified identifier.
     """
     return await get_changelog_by_id_controller(id, brain_id)
 
@@ -356,7 +369,16 @@ async def get_hops(
     brain_id: str = "default",
 ):  # noqa: F821
     """
-    Get the hops in the graph for a given query.
+    Compute graph hops for the given query.
+    
+    Parameters:
+        query (str): Search text or entity identifier to start hop traversal from.
+        degrees (int): Maximum number of hop degrees to traverse (default 2).
+        flattened (bool): If True, return a flattened list of hops; otherwise preserve nested hop structure.
+        brain_id (str): Identifier of the brain (knowledge graph) to query.
+    
+    Returns:
+        list: Hops (paths) connecting matching entities up to the specified degree; the exact structure varies based on `flattened`.
     """
     return await get_hops_controller(query, degrees, flattened, brain_id)
 
@@ -369,7 +391,16 @@ async def get_entity_info(
     brain_id: str = "default",
 ):
     """
-    Get the entity info for a given query.
+    Retrieve detailed information for an entity identified by the given target and query.
+    
+    Parameters:
+        target (str): Identifier or name of the target entity to retrieve.
+        query (str): Query text used to refine or disambiguate the requested entity information.
+        max_depth (int): Maximum graph depth to traverse when collecting related information.
+        brain_id (str): Identifier of the brain/namespace to query.
+    
+    Returns:
+        dict: A mapping containing the entity's attributes and related contextual information.
     """
     return await get_entity_info_controller(target, query, max_depth, brain_id)
 
@@ -381,7 +412,15 @@ async def get_entity_context(
     brain_id: str = "default",
 ):
     """
-    Get the entity context for a given target.
+    Retrieve contextual information for an entity identified by `target`.
+    
+    Parameters:
+        target (str): Identifier or name of the target entity.
+        context_depth (int): Maximum depth of related context to include.
+        brain_id (str): Identifier of the brain/knowledge graph to query.
+    
+    Returns:
+        dict: A mapping containing the entity's contextual information.
     """
     return await get_entity_context_controller(target, context_depth, brain_id)
 
@@ -393,7 +432,15 @@ async def get_entity_synergies(
     brain_id: str = "default",
 ):
     """
-    Get the entity synergies for a given target.
+    Retrieve synergies for a specified entity.
+    
+    Parameters:
+        target (str): Identifier or name of the target entity.
+        polarity (Literal["same", "opposite"]): Which type of synergies to return: "same" for similar/aligned synergies, "opposite" for contrasting/opposing synergies.
+        brain_id (str): Identifier of the knowledge brain to query.
+    
+    Returns:
+        list: A list of synergy records for the target entity matching the requested polarity.
     """
     return await get_entity_sibilings_controller(target, polarity, brain_id)
 
@@ -405,6 +452,14 @@ async def get_entity_status(
     brain_id: str = "default",
 ):
     """
-    Get the entity status for a given target.
+    Retrieve status information for a specified entity.
+    
+    Parameters:
+    	target (str): Identifier or name of the entity to inspect.
+    	types (Optional[List[str]]): Optional list of entity types to filter the status computation.
+    	brain_id (str): Identifier of the brain (knowledge graph) to query.
+    
+    Returns:
+    	status (dict): A dictionary containing the entity's status details.
     """
     return await get_entity_status_controller(target, types, brain_id)

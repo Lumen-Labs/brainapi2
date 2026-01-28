@@ -21,6 +21,12 @@ class ArchitectAgentGetRemainingEntitiesToProcessTool(BaseTool):
         self,
         architect_agent: object,
     ):
+        """
+        Initialize the tool with an architect agent whose entities will be inspected to determine remaining work.
+        
+        Parameters:
+            architect_agent (object): The architect agent instance that exposes an `entities` mapping; each entity is expected to support `model_dump(mode="json")` for serialization.
+        """
         description: str = (
             "Tool for getting the remaining entities to process. "
             "Use this tool to get the remaining entities to process. "
@@ -33,6 +39,12 @@ class ArchitectAgentGetRemainingEntitiesToProcessTool(BaseTool):
         )
 
     def _run(self, *args, **kwargs) -> str:
+        """
+        Get a JSON string listing the remaining entities to process.
+        
+        Returns:
+            str: A JSON array string where each element is the serialized representation of an entity produced by calling `model_dump(mode="json")` on each entity in `self.architect_agent.entities`.
+        """
         remaining_entities = json.dumps(
             [
                 entity.model_dump(mode="json")

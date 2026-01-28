@@ -19,7 +19,12 @@ import unicodedata
 
 def extract_str_entities_from_text(text: str) -> List[str]:
     """
-    Decompose a text into string entity elements.
+    Extracts candidate string entities from the given text.
+    
+    Normalizes Unicode, splits the text into word tokens, and returns a list of unique, entity-like strings in order of first appearance. Tokens that are common multilingual stop words, shorter than two characters, contain no alphabetic character, or are duplicates are excluded. Tokens that originally start with an uppercase letter are returned with their original casing; other tokens are returned with the first letter capitalized.
+    
+    Returns:
+        List[str]: A list of filtered, capitalized entity-like strings.
     """
     if not text or not text.strip():
         return []

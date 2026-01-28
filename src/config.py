@@ -161,6 +161,14 @@ class CeleryConfig:
     """
 
     def __init__(self):
+        """
+        Initialize CeleryConfig by loading the worker concurrency setting from the environment.
+        
+        Sets `self.worker_concurrency` from the `CELERY_WORKER_CONCURRENCY` environment variable and validates its presence.
+        
+        Raises:
+            ValueError: If `CELERY_WORKER_CONCURRENCY` is not set.
+        """
         self.worker_concurrency = os.getenv("CELERY_WORKER_CONCURRENCY")
         if [self.worker_concurrency].count(None) > 0:
             raise ValueError("Celery configuration is not complete")
@@ -172,6 +180,13 @@ class PricingConfig:
     """
 
     def __init__(self):
+        """
+        Initialize pricing configuration from environment variables.
+        
+        Attributes:
+            input_token_price (float): Price per input token from INPUT_TOKEN_PRICE, defaults to 0.0 if unset.
+            output_token_price (float): Price per output token from OUTPUT_TOKEN_PRICE, defaults to 0.0 if unset.
+        """
         self.input_token_price = float(os.getenv("INPUT_TOKEN_PRICE", 0))
         self.output_token_price = float(os.getenv("OUTPUT_TOKEN_PRICE", 0))
 
@@ -182,6 +197,14 @@ class Config:
     """
 
     def __init__(self):
+        """
+        Initialize the application's central configuration by composing environment-backed sub-configurations and loading runtime flags.
+        
+        This constructor instantiates Azure, Redis, Neo4j, Milvus, Embeddings, Mongo, GCP, Celery, and Pricing configuration objects, reads the RUN_GRAPH_CONSOLIDATOR flag into `run_graph_consolidator`, and loads the `BRAINPAT_TOKEN` into `brainpat_token`.
+        
+        Raises:
+            ValueError: If `BRAINPAT_TOKEN` is not set in the environment.
+        """
         self.azure = AzureConfig()
         self.redis = RedisConfig()
         self.neo4j = Neo4jConfig()

@@ -38,6 +38,12 @@ class MatchPath(BaseModel):
 
 class EventSynergyRetriever:
     def __init__(self, memory_id: str):
+        """
+        Initialize the retriever with a memory identifier that is also used as the brain identifier.
+        
+        Parameters:
+            memory_id (str): Identifier for the memory store; assigned to both `memory_id` and `brain_id` on the instance.
+        """
         self.memory_id = memory_id
         self.brain_id = memory_id
 
@@ -53,8 +59,17 @@ class EventSynergyRetriever:
     ):
         # -> List[SynergyPath]:
         """
-        Recursively crawls the graph to find high-similarity paths
-        beyond the initial Triangle.
+        Traverse graph neighbors from the given node to locate the connection path most similar to the provided query embedding, searching up to the specified depth.
+        
+        Parameters:
+            current_node_id (str): UUID of the node to start exploration from.
+            query_embedding (List[float]): Embedding vector representing the query used to score neighbor relations.
+            depth (int): Remaining recursion depth; exploration stops when depth <= 0.
+            visited_ids (Set[str]): Set of visited node UUIDs; this set is mutated to include nodes visited during traversal to avoid cycles.
+            most_similar_conn_rel_tuple (Optional[Tuple[Tuple[Predicate, Node], float]]): Optional running best match (relation tuple and its similarity) to carry forward during recursion.
+        
+        Returns:
+            results (List[Tuple[Tuple[Predicate, Node], float]]): A list containing the most similar (predicate, node) tuple paired with its similarity score found along the explored path, or an empty list if no suitable connections are found.
         """
         if depth <= 0:
             return []
@@ -135,8 +150,15 @@ class EventSynergyRetriever:
         self, target: str, query: str, max_depth: int = 3
     ) -> MatchPath:
         """
-        Starts from a Member and recursively finds the most relevant
-        synergy paths in the graph.
+        Finds and assembles the most relevant graph traversal path(s) that link a target entity to content matching a query.
+        
+        Parameters:
+            target (str): Text used to locate the starting node in the node vector store.
+            query (str): Text used to compute an embedding that guides relevance scoring of neighboring relationships.
+            max_depth (int): Maximum recursion depth when exploring neighboring nodes.
+        
+        Returns:
+            MatchPath: A hierarchical MatchPath rooted at the resolved target node containing the best-match path(s) and an aggregated similarity score. If the target node or any required embeddings are missing, returns a MatchPath with an empty path and similarity 0.0.
         """
 
         query_embedding = embeddings_adapter.embed_text(query)

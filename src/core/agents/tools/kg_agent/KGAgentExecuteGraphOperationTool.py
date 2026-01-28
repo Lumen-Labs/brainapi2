@@ -27,6 +27,15 @@ class KGAgentExecuteGraphOperationTool(BaseTool):
     def __init__(
         self, kg_agent, kg: GraphAdapter, database_desc: str, brain_id: str = "default"
     ):
+        """
+        Initialize the KGAgentExecuteGraphOperationTool with the specified components and configuration.
+        
+        Parameters:
+            kg_agent: The knowledge graph agent to execute operations.
+            kg (GraphAdapter): The graph adapter managing the graph database interface.
+            database_desc (str): Description of the underlying graph database to include in the tool's description.
+            brain_id (str): Identifier for the brain context to use, defaults to "default".
+        """
         description: str = (
             "Use this tool to execute any type of graph operation search/edit/query/delete/etc. "
             "The query should be a valid graph operation depending on the graph database type."
@@ -50,6 +59,17 @@ class KGAgentExecuteGraphOperationTool(BaseTool):
         )
 
     def _run(self, *args, **kwargs) -> str:
+        """
+        Execute a graph operation using a query extracted from the provided arguments and return the KG adapter's response.
+        
+        The function accepts several argument shapes to locate the query:
+        - positional: first positional argument is used as the query string.
+        - kwargs 'args' as dict: use the value of the 'query' key.
+        - kwargs 'args' as list: use the first element if it's a string, or the first element's 'query' value if it's a dict.
+        
+        Returns:
+            The result returned by the graph adapter's execute_operation for the resolved query, or the string "No query provided in the arguments or kwargs" if no query could be found.
+        """
         _query = ""
         if len(args) > 0:
             _query = args[0]

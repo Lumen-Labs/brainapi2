@@ -30,7 +30,15 @@ def enrich_kg_from_input(
     input: str, targeting: Optional[Node] = None, brain_id: str = "default"
 ) -> str:
     """
-    Enrich the knowledge graph from the input.
+    Orchestrates enrichment of the knowledge graph from a free-text input.
+    
+    Runs the scout and architect agents to extract entities and relationships from the provided input, optionally consolidates the resulting relationships into the graph, and reports token usage and cost metrics. Side effects include updating the knowledge graph and printing debug and cost summaries to standard output.
+    
+    Parameters:
+        input (str): Free-text content to process and ingest into the knowledge graph.
+        targeting (Optional[Node]): Optional target node guiding where or how the input should be applied within the graph.
+        brain_id (str): Identifier for the processing context/brain to use for agent operations and consolidation.
+    
     """
 
     ingestion_manager = IngestionManager(

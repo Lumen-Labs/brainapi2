@@ -132,22 +132,26 @@ class GraphAdapter:
 
     def get_graph_relationships(self, brain_id: str = "default") -> list[str]:
         """
-        Retrieve the relationship types present in the graph.
-
+        Retrieve relationship type names available in the graph.
+        
         Parameters:
             brain_id (str): Identifier of the graph/brain to query.
-
+        
         Returns:
-            A list of relationship type names.
+            list[str]: Relationship type names present in the specified graph.
         """
         return self.graph.get_graph_relationships(brain_id)
 
     def get_by_uuid(self, uuid: str, brain_id: str = "default") -> Node:
         """
-        DEPRECATED: use get_by_uuids instead.
-
-        Retrieve the node with the specified UUID from the graph.
-
+        Retrieve a node by its UUID from the graph.
+        
+        Deprecated: use `get_by_uuids` for batch retrieval.
+        
+        Parameters:
+            uuid (str): UUID of the node to retrieve.
+            brain_id (str): Identifier of the graph/brain to query.
+        
         Returns:
             Node: The node matching the provided UUID.
         """
@@ -316,19 +320,19 @@ class GraphAdapter:
 
     def get_graph_node_types(self, brain_id: str = "default") -> list[str]:
         """
-        Get all unique node types from the graph.
-
-        @returns:
-            A list of node type names available in the graph.
+        Get all unique node types stored in the graph.
+        
+        Returns:
+            list[str]: Node type names available in the graph.
         """
         return self.graph.get_graph_node_types(brain_id)
 
     def get_graph_node_properties(self, brain_id: str = "default") -> list[str]:
         """
-        Retrieve all unique node property keys present in the graph.
-
-        @returns
-            list[str]: A list of unique property key names present on nodes for the specified brain.
+        Return all unique node property keys present in the graph for the specified brain.
+        
+        Returns:
+            list[str]: Unique node property key names present in the specified brain's graph.
         """
         return self.graph.get_graph_node_properties(brain_id)
 
@@ -382,19 +386,32 @@ class GraphAdapter:
         similarity_threshold: float = 0.0,
     ) -> List[Tuple[Node, List[Tuple[Predicate, Node, List[Tuple[Predicate, Node]]]]]]:
         """
-        Get the 2nd degree hops for a list of nodes.
-
+        Compute second-degree neighbor hops for the given starting node UUIDs using vector-store–based filtering.
+        
         Parameters:
-            from_uuids: List[str]: The list of node UUIDs to start from.
-            flattened: bool: Whether to return simplified nodes and relationships.
-            vector_store_adapter: VectorStoreClient: The vector store adapter to use.
-            brain_id: str: The brain ID to use.
-
+            from_uuids: List[str] — UUIDs of the starting nodes to explore.
+            flattened: bool — When true, nodes and predicates are returned as lightweight dicts with core fields (`uuid`, `name`, `labels`/`direction`) instead of full objects.
+            vector_store_adapter: VectorStoreClient — Vector store used to fetch embeddings and perform similarity-based filtering.
+            brain_id: str — Identifier of the brain/graph space to query.
+            similarity_threshold: float — Optional threshold for additional similarity-based filtering (0.0 disables the extra check).
+        
         Returns:
-            List[Tuple[Node, List[Tuple[Predicate, Node, List[Tuple[Predicate, Node]]]]]]: The list of 2nd degree hops.
+            List[Tuple[Node, List[Tuple[Predicate, Node, List[Tuple[Predicate, Node]]]]]] — A list where each item corresponds to a starting node and contains:
+                - the starting node (or its flattened representation),
+                - a list of first-degree entries, each being a tuple of (predicate, first-degree node, list of second-degree (predicate, node) tuples).
         """
 
         def flatten_node(n):
+            """
+            Return a flattened node representation when the surrounding `flattened` flag is true, otherwise return the original node.
+            
+            Parameters:
+                n: Node
+                    The node to convert.
+            
+            Returns:
+                dict: A dictionary with keys `uuid`, `labels`, and `name` when `flattened` is true, otherwise the original node object.
+            """
             return (
                 {"uuid": n.uuid, "labels": n.labels, "name": n.name} if flattened else n
             )
@@ -583,7 +600,16 @@ class GraphAdapter:
         brain_id: str = "default",
     ) -> bool:
         """
-        Check if a node exists in the graph.
+        Determine whether a node with the given UUID, name, and labels exists in the graph.
+        
+        Parameters:
+        	uuid (str): UUID of the node to check; may be empty if matching by name and labels.
+        	name (str): Name of the node to match.
+        	labels (list[str]): List of labels/types the node must have.
+        	brain_id (str): Identifier of the graph/brain to query; defaults to "default".
+        
+        Returns:
+        	true if a matching node exists, false otherwise.
         """
         return self.graph.check_node_existence(uuid, name, labels, brain_id)
 
@@ -600,7 +626,15 @@ class GraphAdapter:
         self, predicate_uuid: str, flow_key: str, brain_id: str = "default"
     ) -> List[Tuple[Node, Predicate, Node]]:
         """
-        Get the next node by the flow key.
+        Retrieve the next connected node tuple(s) for a relationship identified by a flow key.
+        
+        Parameters:
+            predicate_uuid (str): UUID of the predicate (relationship) to search from.
+            flow_key (str): Flow key value used to select the next relationship target.
+            brain_id (str): Identifier of the brain/graph namespace to query.
+        
+        Returns:
+            List[Tuple[Node, Predicate, Node]]: A list of (subject node, predicate, object node) tuples that are the next nodes matching the provided flow key; empty list if none are found.
         """
         return self.graph.get_next_by_flow_key(predicate_uuid, flow_key, brain_id)
 
