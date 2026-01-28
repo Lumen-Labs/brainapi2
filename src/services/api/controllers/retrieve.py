@@ -147,7 +147,6 @@ async def retrieve_neighbors(
                         and not v.id.replace(
                             "-", ""
                         ).isalpha()  # likely not a UUID if all numeric (may have hyphens for uuid standard)
-                        and v.id.isdigit()
                     )
                 }
                 fd_v_neighbors_ids = list(fd_v_neighbors_embeddings_map.keys())
@@ -244,7 +243,7 @@ async def retrieve_neighbors_ai_mode(
         if not node:
             raise HTTPException(status_code=404, detail="Entity not found")
 
-        result = kg_agent.retrieve_neighbors(node, looking_for, limit)
+        result = kg_agent.retrieve_neighbors(node, looking_for, limit, brain_id)
 
         ids = [neighbor.uuid for neighbor in result.neighbors]
         descriptions = [neighbor.description for neighbor in result.neighbors]

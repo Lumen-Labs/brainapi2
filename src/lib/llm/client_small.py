@@ -96,7 +96,7 @@ class LLMClientSmall(LLM):
         return self._langchain_model
 
     def generate_text(
-        self, prompt: str, max_new_tokens: int = 100000, timeout: int = None
+        self, prompt: str, max_new_tokens: int = 65536, timeout: int = None
     ) -> str:
         if not prompt or len(prompt.strip()) == 0:
             return "Input prompt is empty"
@@ -151,7 +151,7 @@ class LLMClientSmall(LLM):
     def generate_json(
         self,
         prompt: str,
-        max_new_tokens: int = 100000,
+        max_new_tokens: int = 65536,
         max_retries: int = 3,
         timeout: int = None,
     ) -> dict:

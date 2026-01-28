@@ -197,6 +197,7 @@ class JanitorAgent:
             flattened=True,
             vector_store_adapter=self.vector_store,
             brain_id=brain_id,
+            similarity_threshold=0.35,
         )
 
         self._get_agent(

@@ -33,10 +33,10 @@ class EntitySinergyRetriever:
         target_node_vs = vector_store_adapter.search_vectors(
             target_embedding.embeddings, store="nodes", brain_id=self.brain_id
         )
-
+        if not target_node_vs:
+            return None, []
         target_node_id = target_node_vs[0].metadata.get("uuid")
         target_node = graph_adapter.get_by_uuid(target_node_id, brain_id=self.brain_id)
-
         if not target_node:
             return None, []
 

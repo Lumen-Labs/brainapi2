@@ -48,7 +48,7 @@ ingestion_app.conf.update(
     task_time_limit=86400,
     task_soft_time_limit=86400,
     broker_transport_options={
-        "visibility_timeout": 7200,
+        "visibility_timeout": 86400,
         "fanout_prefix": True,
         "fanout_patterns": True,
     },
