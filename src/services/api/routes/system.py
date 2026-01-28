@@ -4,7 +4,7 @@ Created Date: Monday December 1st 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
 Last Modified: Monday December 1st 2025 10:12:48 pm
-Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
+Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
@@ -32,3 +32,27 @@ async def create_brain(request: CreateBrainRequest):
     Create a new brain
     """
     return await create_new_brain_controller(request)
+
+
+@system_router.get(path="/brains/{brain_id}/reset")  # TODO
+async def reset(brain_id: str):
+    """
+    Resets the brain
+    """
+    raise NotImplementedError("Not implemented")
+
+
+@system_router.get(path="/brains/{brain_id}/delete")  # TODO
+async def delete(brain_id: str):
+    """
+    Deletes the brain and all its data
+    """
+    raise NotImplementedError("Not implemented")
+
+
+@system_router.post(path="/brains/{brain_id}/create-backup")  # TODO
+async def create_backup(brain_id: str):
+    """
+    Creates a backup of the brain and returns a task ID
+    """
+    raise NotImplementedError("Not implemented")

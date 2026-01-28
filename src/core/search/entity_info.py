@@ -222,8 +222,13 @@ class EventSynergyRetriever:
 
             days_ago = 0
             if node.happened_at:
-                days_ago = (datetime.now() - node.happened_at).days
-
+                try:
+                    happened_at = node.happened_at
+                    if isinstance(happened_at, str):
+                        happened_at = datetime.fromisoformat(happened_at)
+                    days_ago = max(0, (datetime.now() - happened_at).days)
+                except Exception:
+                    days_ago = 0
             recency = 1 / (1 + np.log1p(days_ago)) if days_ago > 0 else 1.0
             base_score = similarity * 0.6 + recency * 0.2
 

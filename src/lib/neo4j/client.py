@@ -208,9 +208,10 @@ class Neo4jClient(GraphClient):
         for node in nodes:
             identification_dict = {"name": node.name}
 
+            merged_metadata = {**(metadata or {}), **(node.metadata or {})}
             all_properties = {
                 **(node.properties or {}),
-                "metadata": metadata,
+                "metadata": merged_metadata or None,
             }
 
             if identification_params:
@@ -237,7 +238,9 @@ class Neo4jClient(GraphClient):
             ]
 
             for attr in attributes:
-                if getattr(node, attr, None):
+                if attr == "metadata":
+                    continue
+                if getattr(node, attr, None) is not None:
                     all_properties[attr] = getattr(node, attr)
 
             property_assignments = []
@@ -491,7 +494,10 @@ class Neo4jClient(GraphClient):
         """
         cypher_query = """
         MATCH (n) WHERE n.uuid = $uuid
-        RETURN n.uuid as uuid, n.name as name, labels(n) as labels, n.description as description, properties(n) as properties
+        RETURN n.uuid as uuid, n.name as name, labels(n) as labels, n.description as description,
+        properties(n) as properties,
+        n.polarity as polarity, n.happened_at as happened_at, n.last_updated as last_updated,
+        n.observations as observations, n.metadata as metadata
         """
         self.ensure_database(brain_id)
         result = self.driver.execute_query(
@@ -520,7 +526,10 @@ class Neo4jClient(GraphClient):
         """
         cypher_query = f"""
         MATCH (n) WHERE n.uuid IN ["{'","'.join(uuids)}"]
-        RETURN n.uuid as uuid, n.name as name, labels(n) as labels, n.description as description, properties(n) as properties
+        RETURN n.uuid as uuid, n.name as name, labels(n) as labels, n.description as description,
+        properties(n) as properties,
+        n.polarity as polarity, n.happened_at as happened_at, n.last_updated as last_updated,
+        n.observations as observations, n.metadata as metadata
         """
         self.ensure_database(brain_id)
         result = self.driver.execute_query(cypher_query, database_=brain_id)
@@ -532,10 +541,31 @@ class Neo4jClient(GraphClient):
                 description=record.get("description", ""),
                 properties=record.get("properties", {}),
                 polarity=record.get("polarity", "neutral"),
-                happened_at=record.get("happened_at", None),
-                last_updated=record.get("last_updated", datetime.now(timezone.utc)),
-                observations=record.get("observations", []),
-                metadata=record.get("metadata", {}),
+                **(
+                    {"happened_at": record.get("happened_at", None)}
+                    if record.get("happened_at", None) is not None
+                    else {}
+                ),
+                **(
+                    {
+                        "last_updated": record.get(
+                            "last_updated", datetime.now(timezone.utc)
+                        )
+                    }
+                    if record.get("last_updated", datetime.now(timezone.utc))
+                    is not None
+                    else {}
+                ),
+                **(
+                    {"observations": record.get("observations", [])}
+                    if record.get("observations", []) is not None
+                    else {}
+                ),
+                **(
+                    {"metadata": record.get("metadata", {})}
+                    if record.get("metadata", {}) is not None
+                    else {}
+                ),
             )
             for record in result.records
         ]
@@ -577,7 +607,10 @@ class Neo4jClient(GraphClient):
 
         cypher_query = f"""
         MATCH (n{labels_str}) {where_str}
-        RETURN n.uuid as uuid, n.name as name, labels(n) as labels, n.description as description, properties(n) as properties
+        RETURN n.uuid as uuid, n.name as name, labels(n) as labels, n.description as description,
+        properties(n) as properties,
+        n.polarity as polarity, n.happened_at as happened_at, n.last_updated as last_updated,
+        n.observations as observations, n.metadata as metadata
         """
 
         self.ensure_database(brain_id)
@@ -642,10 +675,13 @@ class Neo4jClient(GraphClient):
             )
 
         cypher_query += """
-        RETURN n.uuid AS uuid, n.name AS name, labels(n) AS labels, n.description AS description, properties(n) AS properties, r AS rel,
-               CASE WHEN startNode(r) = n THEN 'out' ELSE 'in' END AS direction,
-               type(r) AS rel_type, r.description AS rel_description, properties(r) AS rel_properties, r.flow_key as rel_flowkey, r.uuid as rel_uuid,
-               c.uuid AS c_uuid, c.name AS c_name, labels(c) AS c_labels, c.description AS c_description, properties(c) AS c_properties
+        RETURN n.uuid as uuid, n.name as name, labels(n) as labels, n.description as description,
+        properties(n) as properties,
+        n.polarity as polarity, n.happened_at as happened_at, n.last_updated as last_updated,
+        n.observations as observations, n.metadata as metadata, r AS rel,
+        CASE WHEN startNode(r) = n THEN 'out' ELSE 'in' END AS direction,
+        type(r) AS rel_type, r.description AS rel_description, properties(r) AS rel_properties, r.flow_key as rel_flowkey, r.uuid as rel_uuid,
+        c.uuid AS c_uuid, c.name AS c_name, labels(c) AS c_labels, c.description AS c_description, properties(c) AS c_properties
         """
         if limit:
             cypher_query += f" LIMIT {limit}"
@@ -1014,7 +1050,10 @@ class Neo4jClient(GraphClient):
         cypher_query = f"""
         MATCH (n)
         {"WHERE " + " AND ".join(filters) if filters else ""}
-        RETURN n.uuid as uuid, n.name as name, labels(n) as labels, n.description as description, properties(n) as properties
+        RETURN n.uuid as uuid, n.name as name, labels(n) as labels, n.description as description,
+        properties(n) as properties,
+        n.polarity as polarity, n.happened_at as happened_at, n.last_updated as last_updated,
+        n.observations as observations, n.metadata as metadata
         SKIP {skip}
         LIMIT {limit}
         """

@@ -198,7 +198,12 @@ class KGAgent:
         Update the knowledge graph with new information.
         """
 
-        self._get_agent(identification_params, metadata, brain_id=brain_id)
+        self._get_agent(
+            type_="normal",
+            identification_params=identification_params,
+            metadata=metadata,
+            brain_id=brain_id,
+        )
 
         preferred_entities_prompt = f"""
         You must prioritize the extraction of the following entities: {preferred_entities}, 
@@ -237,7 +242,12 @@ class KGAgent:
         Update the knowledge graph with new structured information.
         """
 
-        self._get_agent(identification_params, metadata={}, brain_id=brain_id)
+        self._get_agent(
+            type_="normal",
+            identification_params=identification_params,
+            metadata={},
+            brain_id=brain_id,
+        )
 
         response = self.agent.invoke(
             {
@@ -257,7 +267,11 @@ class KGAgent:
         return response
 
     def retrieve_neighbors(
-        self, node: Node, looking_for: Optional[Union[str, Iterable[str]]], limit: int
+        self,
+        node: Node,
+        looking_for: Optional[Union[str, Iterable[str]]],
+        limit: int,
+        brain_id: str = "default",
     ) -> RetrieveNeighborsOutputSchema:
         """
         Retrieve neighboring nodes and relationship information for a given node, filtered by optional criteria and capped by a maximum result count.
@@ -285,6 +299,7 @@ class KGAgent:
         """
 
         self._get_agent(
+            type_="normal",
             identification_params={},
             metadata={},
             tools=[
@@ -292,10 +307,12 @@ class KGAgent:
                     self,
                     self.kg,
                     self.database_desc,
+                    brain_id=brain_id,
                 )
             ],
             output_schema=RetrieveNeighborsOutputSchema,
             extra_system_prompt=extra_system_prompt_str,
+            brain_id=brain_id,
         )
 
         if isinstance(looking_for, str):

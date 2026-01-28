@@ -10,6 +10,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 
 from typing import Dict, List, Literal, Optional, Tuple
 from src.adapters.interfaces.graph import GraphClient
+from src.constants.embeddings import Vector
 from src.constants.kg import (
     IdentificationParams,
     Node,
@@ -19,6 +20,7 @@ from src.constants.kg import (
 )
 from src.adapters.interfaces.embeddings import VectorStoreClient
 from src.utils.normalization.list_reduction import reduce_list
+from src.utils.similarity.vectors import cosine_similarity
 
 
 class GraphAdapter:
@@ -399,8 +401,6 @@ class GraphAdapter:
                 - a list of first-degree entries, each being a tuple of (predicate, first-degree node, list of second-degree (predicate, node) tuples).
         """
 
-        # TODO: add a way to light weight the output
-
         def flatten_node(n):
             """
             Return a flattened node representation when the surrounding `flattened` flag is true, otherwise return the original node.
@@ -426,9 +426,18 @@ class GraphAdapter:
         nodes = self.get_by_uuids(from_uuids, brain_id)
         nodes_by_uuid = {n.uuid: n for n in nodes}
 
-        vs = vector_store_adapter.get_by_ids(
-            [n.properties["v_id"] for n in nodes], brain_id=brain_id, store="nodes"
-        )
+        v_ids = [
+            n.properties["v_id"] for n in nodes if getattr(n.properties, "v_id", None)
+        ]
+        if len(v_ids) == 0:
+            print("[ ! ] No v_ids found for nodes:", from_uuids)
+            return []
+
+        vs = vector_store_adapter.get_by_ids(v_ids, brain_id=brain_id, store="nodes")
+        if len(vs) == 0:
+            print("[ ! ] No vectors found for nodes:", from_uuids)
+            return []
+
         averaged_vector = [
             sum(v.embeddings[i] for v in vs) / len(vs)
             for i in range(len(vs[0].embeddings))
@@ -436,7 +445,7 @@ class GraphAdapter:
 
         all_fd_nodes = self.get_neighbors(list(nodes_by_uuid.keys()), brain_id=brain_id)
 
-        all_fd_v_ids = [
+        all_fd_v_ids: List[str] = [
             fd[1].properties["v_id"]
             for fds in all_fd_nodes.values()
             for fd in fds
@@ -445,10 +454,10 @@ class GraphAdapter:
         all_fd_vs = vector_store_adapter.get_by_ids(
             all_fd_v_ids, brain_id=brain_id, store="nodes"
         )
-        fd_vs_by_uuid = {v.metadata["uuid"]: v for v in all_fd_vs}
+        fd_vs_by_uuid: Dict[str, Vector] = {v.metadata["uuid"]: v for v in all_fd_vs}
 
         all_filtered_fd_uuids = []
-        filtered_fd_by_origin = {}
+        filtered_fd_by_origin: Dict[str, List[Tuple[Predicate, Node]]] = {}
 
         for node_uuid, fd_list in all_fd_nodes.items():
             fd_nodes_by_uuid = {fd[1].uuid: fd[1] for fd in fd_list}
@@ -478,9 +487,22 @@ class GraphAdapter:
                         "with_": from_node.description,
                     },
                 )
-                filtered_uuids = {v["metadata"]["uuid"] for v in filtered}
+                filtered_uuids = {
+                    v["metadata"]["uuid"]
+                    for v in filtered
+                    if cosine_similarity(averaged_vector, v["embeddings"])
+                    >= similarity_threshold
+                }
             else:
-                filtered_uuids = {fd[1].uuid for fd in fd_list}
+                filtered_uuids = {
+                    fd[1].uuid
+                    for fd in fd_list
+                    if fd[1].uuid in fd_vs_by_uuid
+                    and cosine_similarity(
+                        averaged_vector, fd_vs_by_uuid[fd[1].uuid].embeddings
+                    )
+                    >= similarity_threshold
+                }
             filtered_fd_by_origin[node_uuid] = [
                 fd for fd in fd_list if fd[1].uuid in filtered_uuids
             ]
@@ -488,7 +510,7 @@ class GraphAdapter:
 
         all_sd_nodes = self.get_neighbors(all_filtered_fd_uuids, brain_id=brain_id)
 
-        all_sd_v_ids = [
+        all_sd_v_ids: List[str] = [
             getattr(sd[1], "properties", {}).get("v_id")
             for sds in all_sd_nodes.values()
             for sd in sds
@@ -540,9 +562,19 @@ class GraphAdapter:
                             "with_": from_node.description,
                         },
                     )
-                    reduced_uuids = {v["metadata"]["uuid"] for v in reduced}
+                    reduced_uuids = {
+                        v["metadata"]["uuid"]
+                        for v in reduced
+                        if cosine_similarity(averaged_vector, v["embeddings"])
+                        >= similarity_threshold
+                    }
                 else:
-                    reduced_uuids = {sd["metadata"]["uuid"] for sd in sd_vs_with_desc}
+                    reduced_uuids = {
+                        sd["metadata"]["uuid"]
+                        for sd in sd_vs_with_desc
+                        if cosine_similarity(averaged_vector, sd["embeddings"])
+                        >= similarity_threshold
+                    }
 
                 second_degree = [
                     (flatten_pred(sd[0]), flatten_node(sd[1]))
@@ -551,9 +583,6 @@ class GraphAdapter:
                     and sd[1].uuid not in exclude_set
                     and sd[1].uuid != from_uuid
                 ]
-                
-                if similarity_threshold > 0.0:
-                    if fd_pred["metadata"]["v_id"]
 
                 node_hops.append(
                     (flatten_pred(fd_pred), flatten_node(fd_node), second_degree)

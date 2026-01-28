@@ -61,6 +61,7 @@ from src.utils.tokens import token_detail_from_token_counts
 
 HISTORY_MAX_MESSAGES = 25
 HISTORY_MAX_MESSAGES_DELETE = 8
+MAX_RECURSION_LIMIT = 100
 
 
 class ArchitectAgent:
@@ -412,7 +413,13 @@ class ArchitectAgent:
                     response = future.result(timeout=timeout)
                     for m in response.get("messages", []):
                         if hasattr(m, "usage_metadata"):
-                            self.get_token_summary(m.usage_metadata)
+                            self._update_token_counts(m.usage_metadata)
+                            self.token_detail = token_detail_from_token_counts(
+                                self.input_tokens,
+                                self.output_tokens,
+                                self.cached_tokens,
+                                self.reasoning_tokens,
+                            )
                     return response
             except FutureTimeoutError:
                 raise TimeoutError(
@@ -577,7 +584,10 @@ class ArchitectAgent:
             )
             messages_list.append(user_message)
 
-            return self.agent.invoke({"messages": messages_list})
+            return self.agent.invoke(
+                {"messages": messages_list},
+                config={"recursion_limit": MAX_RECURSION_LIMIT},
+            )
 
         @retry(
             stop=stop_after_attempt(max_retries),

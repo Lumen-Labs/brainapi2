@@ -88,13 +88,13 @@ class JanitorAgentSearchEntitiesTool(BaseTool):
         Returns:
             str: A JSON string mapping each sanitized query to either a list of found entity objects (each serialized to JSON) or a message indicating no matches were found.
         """
-        _query = ""
+  
+        _queries = []
+  
         if len(args) > 0:
-            _query = args[0]
+            _queries = args[0] if isinstance(args[0], list) else [args[0]]
         else:
             _queries = kwargs.get("queries", [])
-
-        if len(_queries) == 0:
             return "No queries provided in the arguments or kwargs"
 
         found_entities: Dict[str, Union[str, List[Node]]] = {}
@@ -147,7 +147,7 @@ class JanitorAgentSearchEntitiesTool(BaseTool):
             except Exception as e:
                 print(f"Vector search failed, using KG results only: {e}")
 
-            if len(found_entities) == 0:
+            if len(founds) == 0:
                 found_entities[_clean_query(_query)] = (
                     "Knowledge graph does not contain any entities that match the query"
                 )

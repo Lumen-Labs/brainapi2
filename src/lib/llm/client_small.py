@@ -107,7 +107,7 @@ class LLMClientSmall(LLM):
         return self._langchain_model
 
     def generate_text(
-        self, prompt: str, max_new_tokens: int = 100000, timeout: int = None
+        self, prompt: str, max_new_tokens: int = 65536, timeout: int = None
     ) -> str:
         """
         Generate plain-text completion for a prompt using the configured Vertex AI model.
@@ -186,7 +186,7 @@ class LLMClientSmall(LLM):
     def generate_json(
         self,
         prompt: str,
-        max_new_tokens: int = 100000,
+        max_new_tokens: int = 65536,
         max_retries: int = 3,
         timeout: int = None,
     ) -> dict:
