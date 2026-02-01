@@ -3,7 +3,7 @@ File: /architect_agent.py
 Created Date: Sunday December 21st 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Tuesday December 23rd 2025 9:24:20 pm
+Last Modified: Thursday January 29th 2026 8:44:06 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
@@ -159,6 +159,8 @@ LOGIC CHECKLIST:
 - If any quantity is specified in the text and the scout identified a Unit, attach the quantity value as 'amount' to the relationship properties.
 - Nodes/Entities MUST be atomic and not composite (phrases) (eg: "Went to San Francisco" is not atomic, "Went to" + "San Francisco" is atomic)
 
+Remember that the uuids are STANDARD uuids 8-4-4-4-12 hexadecimal character strings.
+
 Return ONLY JSON like the examples above.
 """
 
@@ -175,7 +177,7 @@ Entities Found by Scout: {entities}
 Begin!
 """
 
-ARCHITECT_AGENT_TOOLER_SYSTEM_PROMPT = """
+ARCHITECT_AGENT_TOOLER_SYSTEM_PROMPT_UNCOMPRESSED = """
 You are a "Structural Graph Architect." Your goal is to map information into an Active Vector Graph.
 
 THE TRIANGLE OF ATTRIBUTION:
@@ -227,6 +229,7 @@ Example architect_agent_create_relationship tool input 1:
             "subject": "uuid_1",
             "predicate": "ACCOMPLISHED_ACTION",
             "description": "John knew 12 new friends in New York City",
+            "amount": 12, // You must add the amount TO THE RELATIONSHIP PROPERTIES if there is any quantity specified in the text.
             "object": "uuid_4"
         }},
         {{
@@ -240,13 +243,10 @@ Example architect_agent_create_relationship tool input 1:
             "predicate": "TARGETED",
             "description": "John knew 12 new friends in New York City",
             "object": "uuid_5"
+            "amount": 12, // You must add the amount TO THE RELATIONSHIP PROPERTIES if there is any quantity specified in the text.
         }},
-        {{
-            "subject": "uuid_4",
-            "predicate": "TARGETED",
-            "description": "John knew 12 new friends in New York City",
-            "object": "uuid_5"
-        }}
+        ... more relationships (remember that you must map all the entities found by the scout) ... 
+    }}
 ]
 Example architect_agent_create_relationship tool output:
 "OK"
@@ -299,7 +299,7 @@ LOGIC CHECKLIST:
 - Identify the Actor (Origin).
 - Identify the Event Hub (Action Instance).
 - Identify the Target (Destination).
-- If any quantity is specified in the text and the scout identified a Unit, attach the quantity value as 'amount' to the relationship properties.
+- If any quantity is specified in the text and the scout identified a Unit, attach the quantity value as 'amount' to the relationship properties of the relationship with the Unit node.
 - Nodes/Entities MUST be atomic and not composite (phrases) (eg: "Went to San Francisco" is not atomic, "Went to" + "San Francisco" is atomic)
 
 Your workflow must be:
@@ -314,6 +314,47 @@ Your workflow must be:
 9. Repeat the process until all entities are used and no entities are left out.
 10. If it happens that less then 2 entities are left you can call the architect_agent_check_used_entities tool to check if the entities used previously can be connected with the last entity.
 11. Done
+"""
+ARCHITECT_AGENT_TOOLER_SYSTEM_PROMPT = """
+## Role: Structural Graph Architect
+**Objective:** Map input text/entities into an "Active Vector Graph" using the **Triangle of Attribution** logic.
+
+### 1. The Triangle of Attribution (Mandatory)
+Every action must flow through a central **EVENT hub**:
+1. **Initiation Vector:** `[Source/Actor] --(predicate)--> [Event Instance]`
+   - *Property:* Include `amount: [value]` if quantity exists in text.
+2. **Target Vector:** `[Event Instance] --(predicate)--> [Object/Recipient]`
+   - *Property:* Mirror `amount: [value]` for cross-reference.
+3. **Context Vector:** `[Event Instance] --(predicate)--> [Broad Anchor/Context]`
+
+**Note:** For static facts (no action), link entities directly without an Event hub.
+
+### 2. Constraints & Logic
+- **Atomicity:** Predicates/Nodes must be single concepts, not phrases (e.g., "MOVED_TO", not "Went to San Francisco").
+- **Directional Slot-Filling:** - `subject`: Origin/Source.
+  - `object`: Destination/Target.
+- **Forbidden:** - No direct Actor-to-Target links for actions (must use Event hub).
+  - No dedicated nodes for numbers; store quantities as `amount` properties on relationships.
+- **Entity Coverage:** Use 100% of Scout-provided entities. Reuse entities across contexts as needed.
+- **UUIDS:** Use the standard uuids 8-4-4-4-12 hexadecimal character strings.
+- **Relationship Names:** Use general relationship names (eg: "TARGET_PRODUCT_OBJECT_CROISSANTS"=wrong, "TARGETED"=correct)
+- **Properties:** Append the properties to the object relationship, never append them to the relationship name.
+
+### 3. Workflow (The Loop)
+1. **Fetch:** Call `architect_agent_get_remaining_entities_to_process`.
+2. **Contextualize:** Group entities by narrative context.
+3. **Map:** Define atomic relationships.
+4. **Execute:** Call `architect_agent_create_relationship`. 
+   - *On Error:* Fix relationships based on instructions until "OK".
+5. **Clean:** Mark finished entities via `architect_agent_mark_entities_as_used`.
+6. **Re-evaluate:** Check for remaining entities. If $<2$ remain, use `architect_agent_check_used_entities` to find historical bridge nodes.
+7. **Terminate:** Stop when no entities remain. If Scout returns 0 entities initially, state "Empty list" and exit.
+
+### 4. Toolset Summary
+- `get_remaining_entities`: List entities awaiting mapping.
+- `create_relationship`: Submit relationship array. (Returns "OK" or instructions).
+- `mark_entities_as_used`: Archive processed entities.
+- `check_used_entities`: Retrieve archived entities for cross-context bridging.
 """
 
 ARCHITECT_AGENT_TOOLER_CREATE_RELATIONSHIPS_PROMPT = """

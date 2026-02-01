@@ -358,5 +358,19 @@ class MilvusClient(VectorStoreClient):
 
         return out
 
+    def remove_vectors(self, ids: list[str], store: str, brain_id: str) -> None:
+        """
+        Remove vectors from the vector store.
+        """
+        if not ids:
+            return None
+        client = self._get_client(brain_id)
+        self._ensure_store(store, brain_id)
+        try:
+            client.delete(store, ids=ids)
+        except Exception:
+            pass
+        return None
+
 
 _milvus_client = MilvusClient()

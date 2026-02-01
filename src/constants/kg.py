@@ -9,7 +9,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 """
 
 from datetime import datetime
-from typing import List, Literal, Optional, Tuple
+from typing import List, Literal, Optional, Tuple, TypedDict
 import uuid
 from pydantic import BaseModel, ConfigDict, Extra, Field
 
@@ -182,3 +182,14 @@ class EntitySynergy(BaseModel):
 
     node: Node
     connected_by: Tuple[Node, Node]
+
+
+class NodeDict(TypedDict, total=False):
+    uuid: str
+    name: str
+    labels: list[str]
+
+
+class PredicateDict(TypedDict, total=False):
+    uuid: str
+    name: str

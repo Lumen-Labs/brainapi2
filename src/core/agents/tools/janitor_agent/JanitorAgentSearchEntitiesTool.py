@@ -3,7 +3,7 @@ File: /JanitorAgentSearchEntitiesTool.py
 Created Date: Tuesday December 23rd 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Tuesday December 23rd 2025 11:21:54 pm
+Last Modified: Thursday January 29th 2026 8:43:59 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
@@ -15,6 +15,7 @@ from langchain.tools import BaseTool
 from src.adapters.embeddings import EmbeddingsAdapter, VectorStoreAdapter
 from src.adapters.graph import GraphAdapter
 from src.constants.kg import Node
+from src.utils.cleanup import strip_properties
 
 
 class JanitorAgentSearchEntitiesTool(BaseTool):
@@ -54,9 +55,9 @@ class JanitorAgentSearchEntitiesTool(BaseTool):
     ):
         """
         Initialize the JanitorAgentSearchEntitiesTool with the required adapters and configuration.
-        
+
         This tool performs plain-text searches against the knowledge graph and an optional vector store, aggregating results into a mapping from a sanitized query key to the list of matching entities.
-        
+
         Parameters:
             brain_id (str): Identifier of the brain (knowledge scope) to use for searches. Defaults to "default".
         """
@@ -79,22 +80,41 @@ class JanitorAgentSearchEntitiesTool(BaseTool):
     def _run(self, *args, **kwargs) -> str:
         """
         Search multiple query strings for matching entities in the knowledge graph and vector store, and return the aggregated results as a JSON-formatted mapping keyed by a sanitized query string.
-        
+
         Parameters:
             args: If provided, the first positional argument is treated as the list of query strings to process.
             kwargs:
                 queries (List[str]): List of query strings to search for when not passed as a positional argument.
-        
+
         Returns:
             str: A JSON string mapping each sanitized query to either a list of found entity objects (each serialized to JSON) or a message indicating no matches were found.
         """
-  
+
         _queries = []
-  
+
         if len(args) > 0:
-            _queries = args[0] if isinstance(args[0], list) else [args[0]]
-        else:
+            arg_val = args[0]
+            if isinstance(arg_val, list):
+                _queries = arg_val
+            elif isinstance(arg_val, str):
+                try:
+                    parsed = json.loads(arg_val)
+                    if isinstance(parsed, dict) and parsed.get("queries"):
+                        _queries = parsed.get("queries", [])
+                    else:
+                        _queries = [arg_val]
+                except (json.JSONDecodeError, TypeError):
+                    _queries = [arg_val]
+            else:
+                _queries = [arg_val]
+
+        if not _queries and len(kwargs) > 0:
             _queries = kwargs.get("queries", [])
+
+        if not isinstance(_queries, list):
+            _queries = [_queries] if _queries else []
+
+        if not _queries:
             return "No queries provided in the arguments or kwargs"
 
         found_entities: Dict[str, Union[str, List[Node]]] = {}
@@ -102,15 +122,15 @@ class JanitorAgentSearchEntitiesTool(BaseTool):
         def _clean_query(query: str) -> str:
             """
             Sanitizes a query string into a normalized key suitable for dictionary lookup.
-            
+
             Removes common punctuation, trims leading/trailing whitespace, converts to lowercase,
             and replaces spaces and hyphens with underscores.
-            
+
             Parameters:
-            	query (str): The input query text to normalize.
-            
+                query (str): The input query text to normalize.
+
             Returns:
-            	sanitized (str): The normalized query string with punctuation removed, spaces and hyphens replaced by underscores, trimmed and lowercased.
+                sanitized (str): The normalized query string with punctuation removed, spaces and hyphens replaced by underscores, trimmed and lowercased.
             """
             chars_to_remove = "'.\"()[]{}\\|*/+=<>,!?:;"
             chars_to_underscore = " -"
@@ -132,6 +152,7 @@ class JanitorAgentSearchEntitiesTool(BaseTool):
                         query_vector.embeddings,
                         store="nodes",
                         brain_id=self.brain_id,
+                        k=3,
                     )
                     if len(v_results) > 0:
                         founds.extend(
@@ -153,7 +174,11 @@ class JanitorAgentSearchEntitiesTool(BaseTool):
                 )
             else:
                 found_entities[_clean_query(_query)] = [
-                    f.model_dump(mode="json") for f in founds
+                    strip_properties(
+                        [f.model_dump(mode="json")],
+                        pop_also=["last_updated", "v_id", "properties"],
+                    )[0]
+                    for f in founds
                 ]
 
         return json.dumps(found_entities, indent=4)

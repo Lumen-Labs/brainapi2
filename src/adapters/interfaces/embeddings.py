@@ -3,7 +3,7 @@ File: /embeddings.py
 Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Monday January 5th 2026 9:57:30 pm
+Last Modified: Thursday January 29th 2026 8:43:59 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
@@ -24,6 +24,13 @@ class EmbeddingsClient(ABC):
         Embed a text and return a list of floats.
         """
         raise NotImplementedError("embed method not implemented")
+
+    @abstractmethod
+    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        """
+        Embed a list of texts and return a list of lists of floats.
+        """
+        raise NotImplementedError("embed_texts method not implemented")
 
 
 class VectorStoreClient(ABC):
@@ -67,15 +74,22 @@ class VectorStoreClient(ABC):
     ) -> dict[str, list[Vector]]:
         """
         Finds vectors similar to the vectors identified by the given IDs.
-        
+
         Parameters:
             vector_ids (list[str]): Identifiers of the vectors to find similarities for.
             brain_id (str): Identifier for the brain/context containing the vectors.
             store (str): Name of the vector store to query.
             min_similarity (float): Minimum similarity threshold (e.g., 0.0–1.0) for returned results.
             limit (int): Maximum number of similar vectors to return per input ID.
-        
+
         Returns:
             dict[str, list[Vector]]: Mapping from each input vector ID to a list of similar `Vector` objects that meet or exceed `min_similarity`, with up to `limit` results per ID.
         """
         raise NotImplementedError("search_similar_by_ids method not implemented")
+
+    @abstractmethod
+    def remove_vectors(self, ids: list[str], store: str, brain_id: str) -> None:
+        """
+        Remove vectors from the vector store.
+        """
+        raise NotImplementedError("remove_vectors method not implemented")

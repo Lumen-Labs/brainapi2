@@ -4,13 +4,15 @@ Project: architect_agent
 Created Date: Saturday January 17th 2026
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Saturday January 17th 2026 12:37:22 pm
+Last Modified: Thursday January 29th 2026 8:43:59 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
 import json
 from langchain.tools import BaseTool
+
+from src.utils.cleanup import strip_properties
 
 
 class ArchitectAgentMarkEntitiesAsUsedTool(BaseTool):
@@ -37,7 +39,7 @@ class ArchitectAgentMarkEntitiesAsUsedTool(BaseTool):
     ):
         """
         Initialize the tool with a reference to the architect agent whose entities may be marked as used.
-        
+
         Parameters:
             architect_agent (object): The architect agent instance whose `entities` and `used_entities_set` this tool will update.
         """
@@ -54,9 +56,9 @@ class ArchitectAgentMarkEntitiesAsUsedTool(BaseTool):
     def _run(self, *args, **kwargs) -> str:
         """
         Mark the given entity UUIDs as used on the associated architect agent.
-        
+
         Accepts several input shapes to identify the UUIDs to mark: a dict argument with the key "entity_uuids", a keyword "entity_uuids", a list passed as the first positional argument, or keywords "entities" or "uuids". If a single string is provided it will be treated as a single UUID. If no recognizable input is provided, no entities are marked.
-        
+
         Parameters:
             *args: Positional arguments; supported forms include:
                 - A dict containing the key "entity_uuids" with a list of UUID strings.
@@ -64,10 +66,10 @@ class ArchitectAgentMarkEntitiesAsUsedTool(BaseTool):
             **kwargs: Keyword arguments; supported keys include:
                 - "entity_uuids", "entities", or "uuids" with a list (or single string) of UUIDs.
                 - If exactly one keyword is provided, its value is used as the UUID list.
-        
+
         Returns:
             result (str): The string "OK" after processing.
-        
+
         Side effects:
             For each provided UUID found in self.architect_agent.entities, the entity is removed from that mapping and appended to self.architect_agent.used_entities_set.
         """
@@ -99,7 +101,14 @@ class ArchitectAgentMarkEntitiesAsUsedTool(BaseTool):
             if entity_uuid in self.architect_agent.entities:
                 removed_entity = self.architect_agent.entities.pop(entity_uuid)
                 if removed_entity:
-                    self.architect_agent.used_entities_set.append(removed_entity)
+                    _ent = (
+                        removed_entity.model_dump(mode="json")
+                        if hasattr(removed_entity, "model_dump")
+                        else removed_entity
+                    )
+                    self.architect_agent.used_entities_dict[_ent["uuid"]] = (
+                        strip_properties([_ent])[0]
+                    )
                 else:
                     print(
                         "[DEBUG (architect_agent_mark_entities_as_used)]: Entity found but not removed: ",
@@ -113,7 +122,7 @@ class ArchitectAgentMarkEntitiesAsUsedTool(BaseTool):
 
         print(
             "[DEBUG (architect_agent_mark_entities_as_used)]: Used entities: ",
-            self.architect_agent.used_entities_set,
+            list(self.architect_agent.used_entities_dict.keys()),
             entities_to_mark,
         )
 

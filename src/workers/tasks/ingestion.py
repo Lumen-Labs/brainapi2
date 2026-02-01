@@ -3,16 +3,17 @@ File: /ingestion.py
 Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Monday January 5th 2026 7:57:27 pm
+Last Modified: Thursday January 29th 2026 8:44:06 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
+import datetime
 import json
 import tomllib
 from pathlib import Path
 from uuid import uuid4
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 from concurrent.futures import (
     Future,
     ThreadPoolExecutor,
@@ -71,10 +72,10 @@ def format_textual_data(data: dict, include_keys: bool = True) -> str:
 def ingest_data(self, args: dict):
     """
     Ingest a payload into the system, persist its content and metadata, generate embeddings and observations, and trigger knowledge-graph enrichment.
-    
+
     Parameters:
         args (dict): Raw task arguments parsed into an IngestionTaskArgs model; must include a brain_id and data payload.
-    
+
     Returns:
         task_id (str): The identifier of the ingestion task (Celery request id) that was created/updated.
     """
@@ -194,18 +195,18 @@ def ingest_data(self, args: dict):
 def process_architect_relationships(self, args: dict):
     """
     Process a batch of architect relationships and ingest corresponding nodes, vectors, and graph edges.
-    
+
     Parameters:
         args (dict): Task payload containing:
             - "relationships" (List[dict]): List of relationship payloads convertible to ArchitectAgentRelationship.
             - "brain_id" (str, optional): Target brain identifier; defaults to "default".
-    
+
     Description:
         For each relationship in `args["relationships"]`, the task generates embeddings for the relationship (and for any missing subject/object nodes), creates or updates graph nodes, and adds the relationship edge to the knowledge graph. Progress and final status are stored in the task cache under the current task id. Individual relationship or node failures (including timeouts) are skipped so remaining items continue processing.
-    
+
     Returns:
         str: The Celery task id for the ingestion run.
-    
+
     Raises:
         Exception: Any unhandled exception is recorded to the task cache with status "failed" and then re-raised.
     """
@@ -218,6 +219,7 @@ def process_architect_relationships(self, args: dict):
 
     relationships_data: List[dict] = args.get("relationships", [])
     brain_id: str = args.get("brain_id", "default")
+    session_id: Optional[str] = args.get("session_id")
 
     try:
         cache_adapter.set(
@@ -273,6 +275,40 @@ def process_architect_relationships(self, args: dict):
                         labels=[relationship.tip.type],
                         brain_id=brain_id,
                     )
+                    similar_v_rels = []
+                    if v_rel_id is not None:
+                        rel_vectors = vector_store_adapter.get_by_ids(
+                            [str(v_rel_id)],
+                            store="relationships",
+                            brain_id=brain_id,
+                        )
+                        if rel_vectors and getattr(rel_vectors[0], "embeddings", None):
+                            similar_v_rels = vector_store_adapter.search_vectors(
+                                rel_vectors[0].embeddings,
+                                brain_id=brain_id,
+                                store="relationships",
+                                k=10,
+                            )
+                    if similar_v_rels and similar_v_rels[0].distance > 0.9:
+                        similar_rel = graph_adapter.get_triples_by_uuid(
+                            [similar_v_rels[0].metadata.get("uuid")],
+                            brain_id=brain_id,
+                        )
+                        if similar_rel:
+                            similar_tail, _, similar_tip = similar_rel[0]
+                            if (
+                                similar_tail.uuid == relationship.tail.uuid
+                                and similar_tip.uuid == relationship.tip.uuid
+                            ) or (
+                                similar_tail.uuid == relationship.tip.uuid
+                                and similar_tip.uuid == relationship.tail.uuid
+                            ):
+                                vector_store_adapter.remove_vectors(
+                                    [v_rel_id],
+                                    store="relationships",
+                                    brain_id=brain_id,
+                                )
+                                continue
 
                     node_embedding_futures = []
                     print(f"> Subject exists: {subject_exists}")
@@ -353,6 +389,8 @@ def process_architect_relationships(self, args: dict):
                                 **(relationship.properties or {}),
                                 "v_id": v_rel_id,
                             },
+                            last_updated=datetime.datetime.now(),
+                            amount=relationship.amount,
                         ),
                         Node(
                             uuid=relationship.tip.uuid,
@@ -394,6 +432,16 @@ def process_architect_relationships(self, args: dict):
             expires_in=3600 * 24 * 7,
         )
 
+        if session_id:
+            from src.lib.redis.client import _redis_client
+
+            remaining = _redis_client.client.decr(
+                f"{brain_id}:session:{session_id}:pending_tasks"
+            )
+            print(
+                f"[DEBUG (process_architect_relationships)]: Session {session_id} has {remaining} remaining tasks"
+            )
+
         return self.request.id
 
     except Exception as e:
@@ -411,6 +459,11 @@ def process_architect_relationships(self, args: dict):
             expires_in=3600 * 24 * 7,
         )
 
+        if session_id:
+            from src.lib.redis.client import _redis_client
+
+            _redis_client.client.decr(f"{brain_id}:session:{session_id}:pending_tasks")
+
         raise
 
 
@@ -418,7 +471,7 @@ def process_architect_relationships(self, args: dict):
 def ingest_structured_data(self, args: dict):
     """
     Ingest structured elements into the knowledge graph by creating nodes, embedding and storing vectors, generating observations, and saving structured-data records.
-    
+
     Parses `args` into an IngestionStructuredRequestBody and for each element:
     - creates a graph node with properties and metadata,
     - records node property change logs (KG changes),
@@ -427,13 +480,13 @@ def ingest_structured_data(self, args: dict):
     - merges and saves structured-data records,
     - calls knowledge-graph enrichment for the element,
     and updates a task status cache with "started" and "completed" entries.
-    
+
     Parameters:
         args (dict): The raw task payload parsed into IngestionStructuredRequestBody (must include brain_id and data elements).
-    
+
     Returns:
         str: The task id for this ingestion (self.request.id).
-    
+
     Exceptions:
         On exception, stores a "failed" task status with error details in the cache and re-raises the exception.
     """
@@ -520,15 +573,6 @@ def ingest_structured_data(self, args: dict):
             )
             data_adapter.save_kg_changes(kg_changes, brain_id=payload.brain_id)
 
-            vector = embeddings_adapter.embed_text(node.name)
-            vector.id = node.uuid
-            vector.metadata = {
-                "labels": node.labels,
-                "name": node.name,
-                "uuid": node.uuid,
-            }
-            vector_store_adapter.add_vectors(vectors=[vector], store="nodes")
-
             existing_structured_data = data_adapter.get_structured_data_by_id(
                 id=uuid, brain_id=payload.brain_id
             )
@@ -562,6 +606,22 @@ def ingest_structured_data(self, args: dict):
                     },
                 )
                 # TODO: update the changelogs here
+            else:
+                vector = embeddings_adapter.embed_text(node.name)
+                vector.id = node.uuid
+                vector.metadata = {
+                    "labels": node.labels,
+                    "name": node.name,
+                    "uuid": node.uuid,
+                }
+                vector_store_adapter.add_vectors(vectors=[vector], store="nodes")
+                new_structured_data = StructuredData(
+                    id=uuid,
+                    data=element.json_data,
+                    types=element.types,
+                    metadata=element.metadata,
+                    brain_version=BRAIN_VERSION,
+                )
 
             data_adapter.save_structured_data(
                 structured_data=new_structured_data,
@@ -654,4 +714,86 @@ def ingest_structured_data(self, args: dict):
             expires_in=3600 * 24 * 7,
         )
 
+        raise
+
+
+@ingestion_app.task(bind=True)
+def consolidate_graph_async(
+    self,
+    session_id: str,
+    brain_id: str = "default",
+    ingestion_session_id: str = None,
+):
+    """
+    Consolidate graph after all processing tasks complete.
+    """
+    import os
+    import langsmith
+    from src.core.layers.graph_consolidation.graph_consolidation import (
+        consolidate_graph,
+    )
+    from src.lib.redis.client import _redis_client
+    from src.config import config
+
+    print(
+        f"[DEBUG (consolidate_graph_async)]: Starting consolidation for session {session_id}"
+    )
+
+    if not config.run_graph_consolidator:
+        print(
+            "[DEBUG (consolidate_graph_async)]: Graph consolidator is disabled, skipping"
+        )
+        return
+
+    relationships_data_str = _redis_client.get(
+        f"session:{session_id}:relationships", brain_id=brain_id
+    )
+    if not relationships_data_str:
+        print(
+            f"[DEBUG (consolidate_graph_async)]: No relationships data found for session {session_id}"
+        )
+        return
+
+    relationships_data = json.loads(relationships_data_str)
+    relationships = [
+        ArchitectAgentRelationship(**rel_data) for rel_data in relationships_data
+    ]
+
+    print(
+        f"[DEBUG (consolidate_graph_async)]: Consolidating graph with {len(relationships)} relationships"
+    )
+
+    project_name = os.getenv("LANGSMITH_PROJECT", "brainapi")
+    tracing_metadata = {"brain_id": brain_id, "flow": "consolidate_graph"}
+    if ingestion_session_id:
+        tracing_metadata["ingestion_session_id"] = ingestion_session_id
+
+    try:
+        with langsmith.tracing_context(
+            project_name=project_name,
+            enabled=True,
+            tags=["consolidate_graph", "janitor", "kg_agent"],
+            metadata=tracing_metadata,
+        ):
+            consolidation_response = consolidate_graph(relationships, brain_id=brain_id)
+        try:
+            from langchain_core.tracers.langchain import wait_for_all_tracers
+
+            wait_for_all_tracers()
+        except ImportError:
+            pass
+        print(
+            f"[DEBUG (consolidate_graph_async)]: Consolidation completed for session {session_id}"
+        )
+        _redis_client.delete(f"session:{session_id}:relationships", brain_id=brain_id)
+        _redis_client.client.delete(f"{brain_id}:session:{session_id}:pending_tasks")
+        return (
+            consolidation_response.model_dump(mode="json")
+            if hasattr(consolidation_response, "model_dump")
+            else None
+        )
+    except Exception as e:
+        print(
+            f"[DEBUG (consolidate_graph_async)]: Consolidation failed for session {session_id}: {e}"
+        )
         raise

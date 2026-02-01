@@ -143,3 +143,4 @@ class TokenDetail(BaseModel):
     output: TokenOutputDetail
     grand_total: int
     effective_total: int
+    grouped_by_agent: Dict[str, "TokenDetail"] = Field(default_factory=dict)

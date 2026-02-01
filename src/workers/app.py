@@ -9,6 +9,13 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 """
 
 import os
+from pathlib import Path
+
+import dotenv
+
+_project_root = Path(__file__).resolve().parent.parent.parent
+dotenv.load_dotenv(_project_root / ".env")
+
 from celery import Celery
 
 from src.config import config

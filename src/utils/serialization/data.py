@@ -4,7 +4,7 @@ Created Date: Friday October 24th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
 Last Modified: Friday October 24th 2025 6:52:20 pm
-Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
+Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
@@ -12,10 +12,12 @@ import json
 import re
 
 
-def str_to_json(text: str, empty_fallback: bool = False) -> list[str]:
+def str_to_json(text: str | None, empty_fallback: bool = False) -> list[str]:
     """
     Convert a string to a json list of strings.
     """
+    if not text:
+        return []
     text = text.strip().replace("```json", "").replace("```", "")
     try:
         return json.loads(text)

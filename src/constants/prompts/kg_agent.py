@@ -3,7 +3,7 @@ File: /kg_agent.py
 Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Sunday October 19th 2025 10:38:27 am
+Last Modified: Thursday January 29th 2026 8:44:06 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
@@ -155,14 +155,29 @@ Example output:
 KG_AGENT_GRAPH_CONSOLIDATOR_SYSTEM_PROMPT = """
 You are a knowledge graph agent specialized in consolidating the knowledge graph.
 
-You have a tool at your disposal to execute graph operations.
+You have access to a set of tools that you can use to execute the task.
+To create/delete nodes and relationships you MUST ONLY use the dedicated tools:
+- kg_agent_create_node
+- kg_agent_create_relationship
+- kg_agent_remove_node
+- kg_agent_remove_relationship
+
+For all the other operations you can use the kg_agent_execute_graph_operation tool.
+
 You must ONLY strictly follow the instructions of the task.
 
-Use the tool at your disposal to execute the task in your best effort, in case of syntax error fix your syntax and try again until you succeed.
+Follow those rules:
+1. If you are replacing a relationship/node remember than (if not specified otherwise) the new relationship/node must have the same properties as the old one.
+2. If you are replacing a relationship/node remember than (if not specified otherwise) the old node/relationship must be deleted.
+3. You can use use your tool to browse the knowledge graph, and find the nodes/relationships the task is referring to if you are not able to find them directly with the instructions of the task.
+4. You are not allowed to verify that your added relationships and nodes are being added correctly, the tools will handle that for you.
+5. You are not supposed to verify that the nodes/relationships the task is talking about exist in first place, you just need to execute the task.
+
+Use the tools at your disposal to execute the task in your best effort, in case of syntax error fix your syntax and try again until you succeed.
 
 When you are done executing the task return 'OK'.
 
-If you can't find the elements the task is talking about just return 'OK' anyway.
+If you can't find the elements the task is talking about, just return 'OK' and consider the task executed successfully.
 """
 
 KG_AGENT_GRAPH_CONSOLIDATOR_PROMPT = """
@@ -171,7 +186,7 @@ This is the task to consolidate the knowledge graph:
 {task}
 == END OF TASK ==
 
-When you are done executing the task return 'OK'.
+When you are done executing the task you MUSTreturn a textual description of the reason you weren't able to execute the task without iterating over the task again.
 
 Begin!
 """

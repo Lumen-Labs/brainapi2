@@ -3,7 +3,7 @@ File: /graph.py
 Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Monday January 12th 2026 8:26:26 pm
+Last Modified: Thursday January 29th 2026 8:43:59 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
@@ -14,7 +14,9 @@ from typing import Dict, List, Literal, Optional, Tuple
 from src.constants.kg import (
     IdentificationParams,
     Node,
+    NodeDict,
     Predicate,
+    PredicateDict,
     SearchEntitiesResult,
     SearchRelationshipsResult,
 )
@@ -279,14 +281,14 @@ class GraphClient(ABC):
     ) -> Node | Predicate | None:
         """
         Update properties on a node or relationship in the graph.
-        
+
         Parameters:
             uuid (str): UUID of the target node or relationship.
             updating (Literal["node", "relationship"]): Which entity type to update.
             brain_id (str): Identifier of the graph/brain containing the entity.
             new_properties (dict): Properties to set or overwrite on the entity.
             properties_to_remove (list[str]): Property keys to remove from the entity.
-        
+
         Returns:
             Node | Predicate | None: The updated node or relationship if changes were applied, `None` if the entity was not found or no update occurred.
         """
@@ -344,7 +346,7 @@ class GraphClient(ABC):
     ) -> Node | None:
         """
         Update a node's identifying fields, labels, and properties.
-        
+
         Parameters:
             uuid (str): UUID of the node to update.
             brain_id (str): Identifier of the graph or brain containing the node.
@@ -353,7 +355,7 @@ class GraphClient(ABC):
             new_labels (Optional[list[str]]): New labels to replace existing labels.
             new_properties (Optional[dict]): Properties to add or update on the node.
             properties_to_remove (Optional[list[str]]): Property keys to remove from the node.
-        
+
         Returns:
             Node | None: The updated node, or `None` if no matching node exists.
         """
@@ -375,20 +377,20 @@ class GraphClient(ABC):
     ) -> Dict[str, List[Tuple[Predicate, Node, List[Tuple[Predicate, Node]]]]]:
         """
         Return second-degree hops for each starting node.
-        
+
         Parameters:
-        	from_ (List[str]): List of starting node UUIDs or identifiers to expand.
-        	flattened (bool): If true, return lightweight results with non-essential metadata removed.
-        	vector_store_adapter (VectorStoreClient): Adapter used to resolve or enrich nodes via the vector store.
-        	brain_id (str): Identifier of the brain/graph to query.
-        
+                from_ (List[str]): List of starting node UUIDs or identifiers to expand.
+                flattened (bool): If true, return lightweight results with non-essential metadata removed.
+                vector_store_adapter (VectorStoreClient): Adapter used to resolve or enrich nodes via the vector store.
+                brain_id (str): Identifier of the brain/graph to query.
+
         Returns:
-        	hops_by_start (Dict[str, List[Tuple[Predicate, Node, List[Tuple[Predicate, Node]]]]]):
-        		Mapping from each starting node identifier in `from_` to a list of first-degree entries.
-        		Each first-degree entry is a tuple of:
-        		  - `Predicate`: relationship from the starting node to the first-hop node,
-        		  - `Node`: the first-hop node,
-        		  - `List[Tuple[Predicate, Node]]`: list of second-degree hops where each item is a `(Predicate, Node)` tuple representing the relationship and the second-hop node.
+                hops_by_start (Dict[str, List[Tuple[Predicate, Node, List[Tuple[Predicate, Node]]]]]):
+                        Mapping from each starting node identifier in `from_` to a list of first-degree entries.
+                        Each first-degree entry is a tuple of:
+                          - `Predicate`: relationship from the starting node to the first-hop node,
+                          - `Node`: the first-hop node,
+                          - `List[Tuple[Predicate, Node]]`: list of second-degree hops where each item is a `(Predicate, Node)` tuple representing the relationship and the second-hop node.
         """
         raise NotImplementedError("get_2nd_degree_hops not implemented")
 
@@ -402,13 +404,13 @@ class GraphClient(ABC):
     ) -> bool:
         """
         Determine whether a node with the given identity exists in the specified brain.
-        
+
         Parameters:
             uuid (str): UUID of the node to check.
             name (str): Name of the node to match.
             labels (list[str]): List of labels/types the node must have.
             brain_id (str): Identifier of the brain (graph) to search within.
-        
+
         Returns:
             true if a node matching the provided uuid, name, and labels exists in the brain, false otherwise.
         """
@@ -420,12 +422,12 @@ class GraphClient(ABC):
     ) -> list[dict]:
         """
         Retrieve the neighborhood of a node up to a specified depth.
-        
+
         Parameters:
             node (Node | str): The starting node or its UUID.
             depth (int): Maximum distance from the starting node to include (1 = immediate neighbors).
             brain_id (str): Identifier of the brain/graph to query.
-        
+
         Returns:
             list[dict]: A nested list of dictionaries representing the neighborhood; each dictionary represents a node and contains its neighbors as nested structures up to the requested depth.
         """
@@ -437,8 +439,47 @@ class GraphClient(ABC):
     ) -> List[Tuple[Node, Predicate, Node]]:
         """
         Retrieve the next connected node and the relationship identified by a flow key for a given predicate.
-        
+
         Returns:
             List[Tuple[Node, Predicate, Node]]: A list of triples where each triple is (connected node to the predicate, relationship that matches the provided flow_key, next node reached via that relationship).
         """
         raise NotImplementedError("get_next_by_flow_key method not implemented")
+
+    @abstractmethod
+    def get_triples_by_uuid(
+        self, uuids: list[str], brain_id: str
+    ) -> List[Tuple[Node, Predicate, Node]]:
+        """
+        Get triples by its UUIDs.
+        """
+        raise NotImplementedError("get_triples_by_uuid method not implemented")
+
+    @abstractmethod
+    def remove_nodes(self, uuids: list[str], brain_id: str) -> list[Node]:
+        """
+        Remove nodes from the graph.
+        """
+        raise NotImplementedError("remove_nodes method not implemented")
+
+    @abstractmethod
+    def remove_relationships(
+        self,
+        relationships: list[Tuple[NodeDict, PredicateDict, NodeDict]],
+        brain_id: str,
+    ) -> list[Tuple[Node, Predicate, Node]]:
+        """
+        Remove relationships from the graph.
+        """
+        raise NotImplementedError("remove_relationships method not implemented")
+
+    @abstractmethod
+    def list_relationships(
+        self,
+        brain_id: str,
+        subject: str,
+        object: str,
+    ) -> list[Tuple[Node, Predicate, Node]]:
+        """
+        List the relationships between the subject and object.
+        """
+        raise NotImplementedError("list_relationships method not implemented")

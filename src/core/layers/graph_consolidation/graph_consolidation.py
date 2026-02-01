@@ -4,7 +4,7 @@ Project: graph_consolidation
 Created Date: Saturday January 24th 2026
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Saturday January 24th 2026 11:13:43 am
+Last Modified: Thursday January 29th 2026 8:43:59 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
@@ -68,12 +68,12 @@ def consolidate_graph(
 ) -> ConsolidationResponse:
     """
     Consolidates and normalizes a collection of new knowledge-graph relationships across the graph.
-    
+
     Processes the provided relationships in batches to perform macroscopic fixes such as name normalization, connection normalization, and deduplication across multiple relationships and graph areas. Collects and merges token usage metrics produced during consolidation.
-    
+
     Parameters:
         brain_id (str): Identifier of the target knowledge graph/brain to consolidate into (defaults to "default").
-    
+
     Returns:
         ConsolidationResponse: Response containing merged token usage details for the consolidation run.
     """
@@ -119,30 +119,41 @@ def consolidate_graph(
                 janitor_agent.output_tokens,
                 janitor_agent.cached_tokens,
                 janitor_agent.reasoning_tokens,
+                "janitor_agent",
             )
         )
 
         # 2. ~~Something to review and approve/reject what janitor proposed~~
         # Another agent that reviews the porposed fixes and approves or rejects them .. what ?
 
+        kg_agent = KGAgent(
+            llm_adapter=llm_small_adapter,
+            cache_adapter=cache_adapter,
+            kg=graph_adapter,
+            vector_store=vector_store_adapter,
+            embeddings=embeddings_adapter,
+            database_desc=_neo4j_client.graphdb_description,
+        )
         for task in tasks:
-            kg_agent = KGAgent(
-                llm_adapter=llm_small_adapter,
-                cache_adapter=cache_adapter,
-                kg=graph_adapter,
-                vector_store=vector_store_adapter,
-                embeddings=embeddings_adapter,
-                database_desc=_neo4j_client.graphdb_description,
-            )
-            token_details.append(
-                token_detail_from_token_counts(
-                    kg_agent.input_tokens,
-                    kg_agent.output_tokens,
-                    kg_agent.cached_tokens,
-                    kg_agent.reasoning_tokens,
+            try:
+                kg_agent.run_graph_consolidator_operator(
+                    task, brain_id=brain_id, reuse_agent=True
                 )
+            except Exception as e:
+                print(
+                    "[DEBUG (consolidate_graph)]: Exception error for kg_agent.run_graph_consolidator_operator(task, brain_id=brain_id)"
+                )
+                print(e)
+                continue
+        token_details.append(
+            token_detail_from_token_counts(
+                kg_agent.input_tokens,
+                kg_agent.output_tokens,
+                kg_agent.cached_tokens,
+                kg_agent.reasoning_tokens,
+                "kg_agent",
             )
-            kg_agent.run_graph_consolidator_operator(task, brain_id=brain_id)
+        )
 
     token_detail = merge_token_details(token_details)
 

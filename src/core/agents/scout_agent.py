@@ -91,7 +91,7 @@ class ScoutAgent:
     ):
         """
         Initialize a ScoutAgent with the provided adapters and reset internal agent and token-tracking state.
-        
+
         Stores the provided LLM, cache, knowledge graph, vector store, and embeddings adapters on the instance, sets the agent and token_detail to None, and initializes input_tokens, output_tokens, cached_tokens, and reasoning_tokens counters to zero.
         """
         self.llm_adapter = llm_adapter
@@ -109,10 +109,10 @@ class ScoutAgent:
     def _get_tools(self, brain_id: str = "default") -> List[BaseTool]:
         """
         Provide the list of tools available to the agent for a given brain identifier.
-        
+
         Parameters:
             brain_id (str): Identifier of the brain/context to retrieve tools for; defaults to "default".
-        
+
         Returns:
             List[BaseTool]: A list of BaseTool instances available to the agent for the specified brain.
         """
@@ -144,25 +144,26 @@ class ScoutAgent:
         brain_id: str = "default",
         timeout: int = 90,
         max_retries: int = 3,
+        ingestion_session_id: Optional[str] = None,
     ) -> ScoutAgentResponse:
         """
         Extract entities from the provided text using the Scout agent and return a structured response containing the entities and token usage.
-        
+
         Performs an LLM invocation (with optional targeting context), applies retries with exponential backoff on timeouts, enforces a per-invocation timeout, and accumulates token usage from the agent responses.
-        
+
         Parameters:
             text: The input text to extract entities from.
             targeting: Optional Node providing contextual targeting information (name, description, properties) to bias extraction.
             brain_id: Identifier for the agent/brain configuration to use.
             timeout: Maximum seconds to wait for a single agent invocation before treating it as a timeout.
             max_retries: Maximum number of retry attempts for timed-out invocations using exponential backoff.
-        
+
         Returns:
             A ScoutAgentResponse containing:
                 - entities: list of extracted ScoutEntity objects.
                 - input_tokens: accumulated input token count observed during the run.
                 - output_tokens: accumulated output token count observed during the run.
-        
+
         Raises:
             TimeoutError: If a single invocation exceeds `timeout`, or if all retry attempts fail due to timeouts.
         """
@@ -193,6 +194,18 @@ class ScoutAgent:
                         }
                     ],
                 },
+                config={
+                    "tags": ["scout_agent"],
+                    "metadata": {
+                        "agent": "scout_agent",
+                        "brain_id": brain_id,
+                        **(
+                            {"ingestion_session_id": ingestion_session_id}
+                            if ingestion_session_id
+                            else {}
+                        ),
+                    },
+                },
             )
 
         @retry(
@@ -204,10 +217,10 @@ class ScoutAgent:
         def _invoke_agent_with_retry():
             """
             Invoke the agent in a separate thread, enforce the configured timeout, and update token accounting from the agent's response.
-            
+
             Returns:
                 dict: The agent response dictionary.
-            
+
             Raises:
                 TimeoutError: If the agent invocation exceeds the specified timeout.
             """
@@ -223,6 +236,7 @@ class ScoutAgent:
                                 self.output_tokens,
                                 self.cached_tokens,
                                 self.reasoning_tokens,
+                                "scout_agent",
                             )
                     return response
             except FutureTimeoutError:
@@ -254,7 +268,7 @@ class ScoutAgent:
     def _update_token_counts(self, usage_metadata: dict):
         """
         Update the agent's accumulated token counters from a usage metadata dictionary.
-        
+
         Parameters:
             usage_metadata (dict): Metadata containing token counts. Expected keys:
                 - "input_tokens": integer count to add to input_tokens (defaults to 0)

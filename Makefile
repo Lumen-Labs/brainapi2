@@ -35,6 +35,12 @@ stop-neo4j:
 delete-neo4j-volumes:
 	docker compose -f src/lib/neo4j/docker-compose.yaml down -v --remove-orphans
 
+build-neo4j-extension:
+	docker run --rm -v $(PWD)/src/lib/neo4j:/app -w /app maven:3.9-eclipse-temurin-17 mvn compile
+
+package-neo4j-extension:
+	docker run --rm -v $(PWD)/src/lib/neo4j:/app -w /app maven:3.9-eclipse-temurin-17 mvn package -DskipTests
+
 start-mongo:
 	docker compose -f src/lib/mongo/docker-compose.yaml up -d
 

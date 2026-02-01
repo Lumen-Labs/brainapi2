@@ -14,9 +14,10 @@ import os
 import dotenv
 from pathlib import Path
 
-dotenv.load_dotenv(
-    dotenv_path=f".env{'.' + os.getenv('ENV') if os.getenv('ENV') else ''}"
-)
+_project_root = Path(__file__).resolve().parent.parent
+_env_name = os.getenv("ENV")
+_env_path = _project_root / f".env{'.' + _env_name if _env_name else ''}"
+dotenv.load_dotenv(dotenv_path=_env_path)
 
 
 class AzureConfig:

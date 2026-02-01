@@ -3,7 +3,7 @@ File: /graph.py
 Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Monday January 12th 2026 8:26:26 pm
+Last Modified: Thursday January 29th 2026 8:44:06 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
@@ -14,7 +14,9 @@ from src.constants.embeddings import Vector
 from src.constants.kg import (
     IdentificationParams,
     Node,
+    NodeDict,
     Predicate,
+    PredicateDict,
     SearchEntitiesResult,
     SearchRelationshipsResult,
 )
@@ -133,10 +135,10 @@ class GraphAdapter:
     def get_graph_relationships(self, brain_id: str = "default") -> list[str]:
         """
         Retrieve relationship type names available in the graph.
-        
+
         Parameters:
             brain_id (str): Identifier of the graph/brain to query.
-        
+
         Returns:
             list[str]: Relationship type names present in the specified graph.
         """
@@ -145,13 +147,13 @@ class GraphAdapter:
     def get_by_uuid(self, uuid: str, brain_id: str = "default") -> Node:
         """
         Retrieve a node by its UUID from the graph.
-        
+
         Deprecated: use `get_by_uuids` for batch retrieval.
-        
+
         Parameters:
             uuid (str): UUID of the node to retrieve.
             brain_id (str): Identifier of the graph/brain to query.
-        
+
         Returns:
             Node: The node matching the provided UUID.
         """
@@ -321,7 +323,7 @@ class GraphAdapter:
     def get_graph_node_types(self, brain_id: str = "default") -> list[str]:
         """
         Get all unique node types stored in the graph.
-        
+
         Returns:
             list[str]: Node type names available in the graph.
         """
@@ -330,7 +332,7 @@ class GraphAdapter:
     def get_graph_node_properties(self, brain_id: str = "default") -> list[str]:
         """
         Return all unique node property keys present in the graph for the specified brain.
-        
+
         Returns:
             list[str]: Unique node property key names present in the specified brain's graph.
         """
@@ -387,14 +389,14 @@ class GraphAdapter:
     ) -> List[Tuple[Node, List[Tuple[Predicate, Node, List[Tuple[Predicate, Node]]]]]]:
         """
         Compute second-degree neighbor hops for the given starting node UUIDs using vector-store–based filtering.
-        
+
         Parameters:
             from_uuids: List[str] — UUIDs of the starting nodes to explore.
             flattened: bool — When true, nodes and predicates are returned as lightweight dicts with core fields (`uuid`, `name`, `labels`/`direction`) instead of full objects.
             vector_store_adapter: VectorStoreClient — Vector store used to fetch embeddings and perform similarity-based filtering.
             brain_id: str — Identifier of the brain/graph space to query.
             similarity_threshold: float — Optional threshold for additional similarity-based filtering (0.0 disables the extra check).
-        
+
         Returns:
             List[Tuple[Node, List[Tuple[Predicate, Node, List[Tuple[Predicate, Node]]]]]] — A list where each item corresponds to a starting node and contains:
                 - the starting node (or its flattened representation),
@@ -404,11 +406,11 @@ class GraphAdapter:
         def flatten_node(n):
             """
             Return a flattened node representation when the surrounding `flattened` flag is true, otherwise return the original node.
-            
+
             Parameters:
                 n: Node
                     The node to convert.
-            
+
             Returns:
                 dict: A dictionary with keys `uuid`, `labels`, and `name` when `flattened` is true, otherwise the original node object.
             """
@@ -427,10 +429,13 @@ class GraphAdapter:
         nodes_by_uuid = {n.uuid: n for n in nodes}
 
         v_ids = [
-            n.properties["v_id"] for n in nodes if getattr(n.properties, "v_id", None)
+            n.properties["v_id"] for n in nodes if n.properties.get("v_id") is not None
         ]
         if len(v_ids) == 0:
-            print("[ ! ] No v_ids found for nodes:", from_uuids)
+            print(
+                "[ ! ] No v_ids found for nodes:", from_uuids
+            )  # TODO: no node without v_id exists in the graph, check why this is happening
+            print(f"[DEBUG (get_2nd_degree_hops)]: Nodes: {nodes}")
             return []
 
         vs = vector_store_adapter.get_by_ids(v_ids, brain_id=brain_id, store="nodes")
@@ -449,7 +454,7 @@ class GraphAdapter:
             fd[1].properties["v_id"]
             for fds in all_fd_nodes.values()
             for fd in fds
-            if fd[1].properties["v_id"]
+            if fd[1].properties.get("v_id") is not None
         ]  # TODO: [missing_property] check why sometime v_id is not present
         all_fd_vs = vector_store_adapter.get_by_ids(
             all_fd_v_ids, brain_id=brain_id, store="nodes"
@@ -480,7 +485,7 @@ class GraphAdapter:
                 filtered = reduce_list(
                     fd_vs_with_desc,
                     access_key="embeddings",
-                    similarity_threshold=0.5,
+                    similarity_threshold=0.8,
                     by_vector=averaged_vector,
                     rerank={
                         "local": "description",
@@ -555,7 +560,7 @@ class GraphAdapter:
                     reduced = reduce_list(
                         sd_vs_with_desc,
                         access_key="embeddings",
-                        similarity_threshold=0.5,
+                        similarity_threshold=0.8,
                         by_vector=averaged_vector,
                         rerank={
                             "local": "description",
@@ -601,15 +606,15 @@ class GraphAdapter:
     ) -> bool:
         """
         Determine whether a node with the given UUID, name, and labels exists in the graph.
-        
+
         Parameters:
-        	uuid (str): UUID of the node to check; may be empty if matching by name and labels.
-        	name (str): Name of the node to match.
-        	labels (list[str]): List of labels/types the node must have.
-        	brain_id (str): Identifier of the graph/brain to query; defaults to "default".
-        
+                uuid (str): UUID of the node to check; may be empty if matching by name and labels.
+                name (str): Name of the node to match.
+                labels (list[str]): List of labels/types the node must have.
+                brain_id (str): Identifier of the graph/brain to query; defaults to "default".
+
         Returns:
-        	true if a matching node exists, false otherwise.
+                true if a matching node exists, false otherwise.
         """
         return self.graph.check_node_existence(uuid, name, labels, brain_id)
 
@@ -627,16 +632,51 @@ class GraphAdapter:
     ) -> List[Tuple[Node, Predicate, Node]]:
         """
         Retrieve the next connected node tuple(s) for a relationship identified by a flow key.
-        
+
         Parameters:
             predicate_uuid (str): UUID of the predicate (relationship) to search from.
             flow_key (str): Flow key value used to select the next relationship target.
             brain_id (str): Identifier of the brain/graph namespace to query.
-        
+
         Returns:
             List[Tuple[Node, Predicate, Node]]: A list of (subject node, predicate, object node) tuples that are the next nodes matching the provided flow key; empty list if none are found.
         """
         return self.graph.get_next_by_flow_key(predicate_uuid, flow_key, brain_id)
+
+    def get_triples_by_uuid(
+        self, uuids: list[str], brain_id: str
+    ) -> List[Tuple[Node, Predicate, Node]]:
+        """
+        Get triples by its UUIDs.
+        """
+        return self.graph.get_triples_by_uuid(uuids, brain_id)
+
+    def remove_nodes(self, uuids: list[str], brain_id: str = "default") -> list[Node]:
+        """
+        Remove nodes from the graph.
+        """
+        return self.graph.remove_nodes(uuids, brain_id)
+
+    def remove_relationships(
+        self,
+        relationships: list[Tuple[NodeDict, PredicateDict, NodeDict]],
+        brain_id: str = "default",
+    ) -> list[Tuple[Node, Predicate, Node]]:
+        """
+        Remove relationships from the graph.
+        """
+        return self.graph.remove_relationships(relationships, brain_id)
+
+    def list_relationships(
+        self,
+        subject: str,
+        object: str,
+        brain_id: str = "default",
+    ) -> list[Tuple[Node, Predicate, Node]]:
+        """
+        List the relationships between the subject and object.
+        """
+        return self.graph.list_relationships(subject, object, brain_id)
 
 
 _graph_adapter = GraphAdapter()

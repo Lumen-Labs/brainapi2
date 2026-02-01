@@ -9,6 +9,12 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 """
 
 import os
+from pathlib import Path
+
+import dotenv
+
+_project_root = Path(__file__).resolve().parent.parent.parent
+dotenv.load_dotenv(_project_root / ".env")
 
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -42,6 +48,7 @@ app.include_router(meta_router)
 app.include_router(model_router)
 app.include_router(system_router)
 app.include_router(tasks_router)
+
 
 @app.get("/")
 async def root():
