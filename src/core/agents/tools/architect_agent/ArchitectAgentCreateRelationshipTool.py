@@ -216,7 +216,7 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
 
             if subject is None or object is None:
                 print(
-                    "[DEBUG (architect_agent_create_relationship)]: Subject or object is None: subject={subject}, object={object}",
+                    f"[DEBUG (architect_agent_create_relationship)]: Subject or object is None: subject={subject}, object={object}",
                 )
                 return f"Subject or object is None: subject={subject}, object={object}"
 
