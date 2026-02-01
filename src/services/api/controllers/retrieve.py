@@ -3,8 +3,8 @@ File: /retrieve.py
 Created Date: Sunday October 26th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Saturday December 27th 2025
-Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
+Last Modified: Monday January 12th 2026 8:26:26 pm
+Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
@@ -98,6 +98,27 @@ async def retrieve_neighbors(
     limit: int = 10,
     brain_id: str = "default",
 ) -> RetrieveNeighborsRequestResponse:
+    """
+    Retrieve neighboring nodes related to a specified main node.
+    
+    If `uuid` is provided it is used to locate the main node; otherwise `identification_params` is used. Optionally filters first-degree neighbors by semantic similarity to `look_for`, expands those matches to similar nodes, and returns a deduplicated list of neighbor nodes (up to `limit`) with their relationship and the most common matching similar node.
+    
+    Parameters:
+        uuid (Optional[str]): UUID of the main node to retrieve neighbors for. If omitted, `identification_params` must be provided.
+        look_for (Optional[str]): Text used to filter first-degree neighbors by embedding similarity before expanding to similar nodes.
+        identification_params (Optional[IdentificationParams]): Identification parameters used to find the main node when `uuid` is not provided.
+        limit (int): Maximum number of neighbor results to include in the response.
+        brain_id (str): Identifier of the brain / dataset to query.
+    
+    Returns:
+        RetrieveNeighborsRequestResponse: Object containing:
+          - count: total number of unique neighbors found,
+          - main_node: the resolved main Node,
+          - neighbors: list of RetrievedNeighborNode objects (neighbor, relationship, most_common) limited to `limit`.
+    
+    Raises:
+        HTTPException: 404 if the main node cannot be found.
+    """
     async def _get_neighbors():
 
         # ---------------------------------------------------------
@@ -141,7 +162,13 @@ async def retrieve_neighbors(
                 fd_v_neighbors_embeddings_map = {
                     v.id: v.embeddings
                     for v in fd_v_neighbors_embeddings
-                    if cosine_similarity(looking_for_v.embeddings, v.embeddings) > 0.5
+                    if (
+                        cosine_similarity(looking_for_v.embeddings, v.embeddings) > 0.5
+                        and v.id
+                        and not v.id.replace(
+                            "-", ""
+                        ).isalpha()  # likely not a UUID if all numeric (may have hyphens for uuid standard)
+                    )
                 }
                 fd_v_neighbors_ids = list(fd_v_neighbors_embeddings_map.keys())
 
@@ -237,7 +264,7 @@ async def retrieve_neighbors_ai_mode(
         if not node:
             raise HTTPException(status_code=404, detail="Entity not found")
 
-        result = kg_agent.retrieve_neighbors(node, looking_for, limit)
+        result = kg_agent.retrieve_neighbors(node, looking_for, limit, brain_id)
 
         ids = [neighbor.uuid for neighbor in result.neighbors]
         descriptions = [neighbor.description for neighbor in result.neighbors]
@@ -264,7 +291,7 @@ async def get_relationships(
 ):
     """
     Retrieve relationships from the knowledge graph with optional filtering and pagination.
-    
+
     Parameters:
         relationship_types (list[str], optional): Filter results to specific relationship types.
         from_node_labels (list[str], optional): Filter relationships originating from nodes with these labels.
@@ -274,7 +301,7 @@ async def get_relationships(
         limit (int, optional): Maximum number of relationships to return.
         skip (int, optional): Number of relationships to skip (offset).
         brain_id (str, optional): Identifier of the brain/graph to query.
-    
+
     Returns:
         JSONResponse: A response whose JSON content contains:
             - message: Confirmation string.
@@ -301,6 +328,7 @@ async def get_relationships(
         }
     )
 
+
 async def get_entities(
     limit: int = 10,
     skip: int = 0,
@@ -310,14 +338,14 @@ async def get_entities(
 ):
     """
     Retrieve entities from the knowledge graph with optional label and text filters.
-    
+
     Parameters:
         limit (int): Maximum number of entities to return (pagination).
         skip (int): Number of entities to skip (pagination offset).
         node_labels (Optional[list[str]]): If provided, only return entities whose labels match any value in this list.
         query_text (Optional[str]): If provided, filter entities by matching text content.
         brain_id (str): Identifier of the knowledge graph/brain to query.
-    
+
     Returns:
         JSONResponse: Object containing:
             - message (str): Informational message.

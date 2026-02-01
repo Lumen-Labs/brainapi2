@@ -35,6 +35,12 @@ stop-neo4j:
 delete-neo4j-volumes:
 	docker compose -f src/lib/neo4j/docker-compose.yaml down -v --remove-orphans
 
+build-neo4j-extension:
+	docker run --rm -v $(PWD)/src/lib/neo4j:/app -w /app maven:3.9-eclipse-temurin-17 mvn compile
+
+package-neo4j-extension:
+	docker run --rm -v $(PWD)/src/lib/neo4j:/app -w /app maven:3.9-eclipse-temurin-17 mvn package -DskipTests
+
 start-mongo:
 	docker compose -f src/lib/mongo/docker-compose.yaml up -d
 
@@ -50,7 +56,7 @@ start-api:
 stop-api:
 	pkill -f uvicorn
 
-DEBUG_ENVS := LANGCHAIN_DEBUG="true" LANGCHAIN_VERBOSE="true" DEBUG="true" ENV="development"
+DEBUG_ENVS := LANGCHAIN_DEBUG="true" LANGCHAIN_VERBOSE="true" DEBUG="true"
 
 start-all:
 	@if [ "$(filter debug,$(MAKECMDGOALS))" = "debug" ] || [ "$$DEBUG" = "true" ]; then \
@@ -60,16 +66,16 @@ start-all:
 		$(MAKE) start-redis DEBUG=true & \
 		$(MAKE) start-neo4j DEBUG=true & \
 		$(MAKE) start-mongo DEBUG=true & \
-		$(MAKE) start-api DEBUG=true & \
-		bash -c "export $(DEBUG_ENVS) && poetry run celery -A src.workers.app worker --loglevel=info --pool=threads --concurrency=10"; \
+		ENV="development" $(MAKE) start-api DEBUG=true & \
+		bash -c "export $(DEBUG_ENVS) ENV="development" && poetry run celery -A src.workers.app worker --loglevel=info --pool=threads --concurrency=10"; \
 	else \
 		$(MAKE) start-milvus & \
 		$(MAKE) start-rabbitmq & \
 		$(MAKE) start-redis & \
 		$(MAKE) start-neo4j & \
 		$(MAKE) start-mongo & \
-		$(MAKE) start-api & \
-		poetry run celery -A src.workers.app worker --loglevel=info --pool=threads --concurrency=10; \
+		ENV="development" $(MAKE) start-api & \
+		ENV="development" poetry run celery -A src.workers.app worker --loglevel=info --pool=threads --concurrency=10; \
 	fi
 
 debug:

@@ -4,7 +4,7 @@ Created Date: Wednesday December 31st 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
 Last Modified: Wednesday December 31st 2025 9:55:46 am
-Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
+Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
@@ -21,5 +21,30 @@ class EmbeddingsClientSmall(EmbeddingsClient):
         self.model = _model
 
     def embed_text(self, text: str) -> list[float]:
+        """
+        Return the embedding vector for the given text using the configured model.
+
+        Parameters:
+            text (str): Input text to encode.
+
+        Returns:
+            list[float]: Dense embedding vector representing the input text.
+        """
         embedding = self.model.encode(text, convert_to_numpy=True)
         return embedding.tolist()
+
+    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        """
+        Return the embedding vectors for the given texts using the configured model.
+
+        Parameters:
+            texts (list[str]): Input texts to encode.
+
+        Returns:
+            list[list[float]]: Dense embedding vectors representing the input texts.
+        """
+        embeddings = self.model.encode(texts, convert_to_numpy=True)
+        return embeddings.tolist()
+
+
+_embeddings_small_client = EmbeddingsClientSmall()

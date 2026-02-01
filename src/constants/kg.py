@@ -3,13 +3,13 @@ File: /kg.py
 Created Date: Wednesday October 22nd 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Wednesday October 22nd 2025 8:09:09 pm
-Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
+Last Modified: Monday January 5th 2026 9:57:30 pm
+Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
 from datetime import datetime
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, Tuple, TypedDict
 import uuid
 from pydantic import BaseModel, ConfigDict, Extra, Field
 
@@ -27,7 +27,16 @@ class Node(BaseModel):
     description: Optional[str] = None
     properties: dict = Field(default_factory=dict)
 
-    happened_at: Optional[datetime | None] = Field(
+    polarity: Optional[Literal["positive", "negative", "neutral"]] = Field(
+        default="neutral",
+        description="The polarity of the node.",
+    )
+
+    metadata: Optional[dict] = Field(
+        default=None, description="The metadata of the node."
+    )
+
+    happened_at: Optional[str | None] = Field(
         default=None,
         description="The date and time the node happened at if known otherwise None. Mostly used for event nodes.",
     )
@@ -57,6 +66,10 @@ class Predicate(BaseModel):
     uuid: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
     description: str
+    flow_key: Optional[str] = Field(
+        default=None,
+        description="Unique identitier for contextualizing the predicate into the context flow",
+    )
     last_updated: datetime = Field(
         default_factory=datetime.now,
         description="The date and time the predicate was last updated.",
@@ -69,10 +82,16 @@ class Predicate(BaseModel):
         default="neutral",
         description="The direction of the predicate.",
     )
+    amount: Optional[float] = Field(
+        default=None,
+        description="The amount of the predicate.",
+    )
 
     observations: Optional[List[Observation]] = Field(
         default=None, description="The observations of the predicate."
     )
+
+    properties: dict = Field(default_factory=dict)
 
     level: Optional[Literal["1", "2", "3"]] = Field(
         default=None,
@@ -100,8 +119,17 @@ class Relationship(BaseModel):
     Relationship model.
     """
 
-    direction: Literal["in", "out", "neutral"]
+    direction: Literal["in", "out", "neutral"] = Field(
+        default="neutral",
+        description=(
+            "The direction of the relationship. always referred to the left/first node.",
+            "eg: Tuple[node, predicate, node] -> direction 'in' means inbound to the first node"
+            "so going from the last node to the first node.",
+        ),
+    )
     predicate: Predicate
+    subject: Node
+    object: Node
 
 
 class IdentificationParams(BaseModel):
@@ -136,3 +164,32 @@ class SearchEntitiesResult(BaseModel):
 
     results: List[Node]
     total: int
+
+
+class EntityInfo(BaseModel):
+    """
+    Entity info model.
+    """
+
+    most_relevant_node: Node
+    relevant_nodes: List[Node]
+
+
+class EntitySynergy(BaseModel):
+    """
+    Entity synergy model.
+    """
+
+    node: Node
+    connected_by: Tuple[Node, Node]
+
+
+class NodeDict(TypedDict, total=False):
+    uuid: str
+    name: str
+    labels: list[str]
+
+
+class PredicateDict(TypedDict, total=False):
+    uuid: str
+    name: str

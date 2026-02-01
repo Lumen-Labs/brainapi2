@@ -3,15 +3,25 @@ File: /kg_agent.py
 Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Sunday October 19th 2025 9:42:00 am
-Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
+Last Modified: Thursday January 29th 2026 8:44:06 pm
+Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
-from typing import Iterable, List, Optional, Union
+import os
+from typing import Iterable, List, Literal, Optional, Union
 from langchain.agents import create_agent
 from langchain.tools import BaseTool
 from pydantic import BaseModel
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from langgraph.errors import GraphRecursionError
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+    RetryError,
+)
 
 from src.adapters.cache import CacheAdapter
 from src.adapters.graph import GraphAdapter
@@ -19,6 +29,8 @@ from src.adapters.llm import LLMAdapter
 from src.constants.kg import Node
 from src.constants.output_schemas import RetrieveNeighborsOutputSchema
 from src.constants.prompts.kg_agent import (
+    KG_AGENT_GRAPH_CONSOLIDATOR_PROMPT,
+    KG_AGENT_GRAPH_CONSOLIDATOR_SYSTEM_PROMPT,
     KG_AGENT_RETRIEVE_NEIGHBORS_PROMPT,
     KG_AGENT_SYSTEM_PROMPT,
     KG_AGENT_UPDATE_PROMPT,
@@ -32,11 +44,23 @@ from src.core.agents.tools.kg_agent import (
     KGAgentUpdatePropertiesTool,
 )
 from src.adapters.embeddings import EmbeddingsAdapter, VectorStoreAdapter
+from src.core.agents.tools.kg_agent.KGAgentRemoveRelationshipTool import (
+    KGAgentRemoveRelationshipTool,
+)
+from src.core.agents.tools.kg_agent.KGAgentRemoveNodeTool import KGAgentRemoveNodeTool
+from src.core.agents.tools.kg_agent.KGAgentCreateRelationshipTool import (
+    KGAgentCreateRelationshipTool,
+)
+from src.core.agents.tools.kg_agent.KGAgentCreateNodeTool import KGAgentCreateNodeTool
+from src.utils.tokens import token_detail_from_token_counts
+
+MAX_RECURSION_LIMIT = 50
+MAX_RECURSION_LIMIT_GRAPH_CONSOLIDATOR = 50
 
 
 class KGAgent:
     """
-    Knowledge Graph Agent. Used to update the knowledge graph with new information.
+    Knowledge Graph Agent. Used to operate with the knowledge graph with new information.
     Not used for batch updates.
     """
 
@@ -49,6 +73,16 @@ class KGAgent:
         embeddings: EmbeddingsAdapter,
         database_desc: str,
     ):
+        """
+        Initialize the KGAgent with required adapters, storage, and a human-readable database description.
+
+        Parameters:
+            database_desc (str): A brief description of the knowledge graph or database this agent will operate on.
+
+        Description:
+            Stores provided adapters and clients on the instance, sets the agent to None, and initializes token accounting fields:
+            `input_tokens`, `output_tokens`, `cached_tokens`, `reasoning_tokens` set to 0 and `token_detail` set to None.
+        """
         self.llm_adapter = llm_adapter
         self.cache_adapter = cache_adapter
         self.kg = kg
@@ -56,8 +90,21 @@ class KGAgent:
         self.embeddings = embeddings
         self.agent = None
         self.database_desc = database_desc
+        self.input_tokens = 0
+        self.output_tokens = 0
+        self.cached_tokens = 0
+        self.reasoning_tokens = 0
+        self.token_detail = None
+        self._agent_type = None
+        self._agent_brain_id = None
 
     def _execute_graph_operation(self, operation: str) -> str:
+        """
+        Execute a graph operation string against the configured knowledge graph.
+
+        Returns:
+            str: A human-readable status message indicating success, or an error message containing the exception text and the graph database type when execution fails.
+        """
         try:
             self.kg.execute_operation(operation)
             return f"Graph operation executed successfully: {operation}"
@@ -106,6 +153,7 @@ class KGAgent:
 
     def _get_agent(
         self,
+        type_: Literal["normal", "graph-consolidator"],
         identification_params: dict,
         metadata: dict,
         tools: Optional[List[BaseTool]] = None,
@@ -113,9 +161,29 @@ class KGAgent:
         extra_system_prompt: Optional[dict] = None,
         brain_id: str = "default",
     ):
-        system_prompt = KG_AGENT_SYSTEM_PROMPT.format(
-            extra_system_prompt=extra_system_prompt if extra_system_prompt else ""
-        )
+        """
+        Configure and create the LLM agent instance used by the KGAgent.
+
+        This method selects an appropriate system prompt based on `type_`, constructs or uses the provided toolset, applies an optional output schema, and assigns the created agent to `self.agent`.
+
+        Parameters:
+            type_ (Literal["normal", "graph-consolidator"]): Agent mode determining which system prompt to use.
+            identification_params (dict): Identification details (IDs, names) used when building default tools.
+            metadata (dict): Contextual metadata passed to tool creation and agent configuration.
+            tools (Optional[List[BaseTool]]): Optional explicit list of tools to supply to the agent; if omitted, default tools are created.
+            output_schema (Optional[BaseModel]): Optional response schema to enforce the agent's output format.
+            extra_system_prompt (Optional[dict]): Optional additional content to interpolate into the selected system prompt.
+            brain_id (str): Identifier of the knowledge brain/context to use when creating default tools.
+        """
+        system_prompt = None
+        if type_ == "normal":
+            system_prompt = KG_AGENT_SYSTEM_PROMPT.format(
+                extra_system_prompt=extra_system_prompt if extra_system_prompt else ""
+            )
+        elif type_ == "graph-consolidator":
+            system_prompt = KG_AGENT_GRAPH_CONSOLIDATOR_SYSTEM_PROMPT.format(
+                extra_system_prompt=extra_system_prompt if extra_system_prompt else ""
+            )
 
         self.agent = create_agent(
             model=self.llm_adapter.llm.langchain_model,
@@ -126,7 +194,10 @@ class KGAgent:
             ),
             system_prompt=system_prompt,
             response_format=output_schema if output_schema else None,
+            debug=os.environ.get("DEBUG", "false").lower() == "true",
         )
+        self._agent_type = type_
+        self._agent_brain_id = brain_id
 
     def search_kg(self, query: str) -> str:
         """
@@ -145,7 +216,12 @@ class KGAgent:
         Update the knowledge graph with new information.
         """
 
-        self._get_agent(identification_params, metadata, brain_id=brain_id)
+        self._get_agent(
+            type_="normal",
+            identification_params=identification_params,
+            metadata=metadata,
+            brain_id=brain_id,
+        )
 
         preferred_entities_prompt = f"""
         You must prioritize the extraction of the following entities: {preferred_entities}, 
@@ -169,7 +245,11 @@ class KGAgent:
                 ],
             },
             print_mode="debug",
-            config={"recursion_limit": 50},
+            config={
+                "recursion_limit": MAX_RECURSION_LIMIT,
+                "tags": ["kg_agent"],
+                "metadata": {"agent": "kg_agent", "brain_id": brain_id},
+            },
         )
         return response
 
@@ -184,7 +264,12 @@ class KGAgent:
         Update the knowledge graph with new structured information.
         """
 
-        self._get_agent(identification_params, metadata={}, brain_id=brain_id)
+        self._get_agent(
+            type_="normal",
+            identification_params=identification_params,
+            metadata={},
+            brain_id=brain_id,
+        )
 
         response = self.agent.invoke(
             {
@@ -199,15 +284,31 @@ class KGAgent:
                 ],
             },
             print_mode="debug",
-            config={"recursion_limit": 50},
+            config={
+                "recursion_limit": MAX_RECURSION_LIMIT,
+                "tags": ["kg_agent"],
+                "metadata": {"agent": "kg_agent", "brain_id": brain_id},
+            },
         )
         return response
 
     def retrieve_neighbors(
-        self, node: Node, looking_for: Optional[Union[str, Iterable[str]]], limit: int
+        self,
+        node: Node,
+        looking_for: Optional[Union[str, Iterable[str]]],
+        limit: int,
+        brain_id: str = "default",
     ) -> RetrieveNeighborsOutputSchema:
         """
-        Retrieve the neighbors of a node.
+        Retrieve neighboring nodes and relationship information for a given node, filtered by optional criteria and capped by a maximum result count.
+
+        Parameters:
+            node (Node): The main node whose neighbors should be retrieved.
+            looking_for (Optional[Union[str, Iterable[str]]]): A single reason string or an iterable of reason strings used to filter or prioritize which neighbors to return; if None, no extra filtering is applied.
+            limit (int): Maximum number of neighbor entries to return.
+
+        Returns:
+            RetrieveNeighborsOutputSchema: Structured neighbor data containing the matching nodes, relationships, and associated properties.
         """
 
         graph_db_prop_keys = self.kg.get_graph_property_keys()
@@ -224,6 +325,7 @@ class KGAgent:
         """
 
         self._get_agent(
+            type_="normal",
             identification_params={},
             metadata={},
             tools=[
@@ -231,10 +333,12 @@ class KGAgent:
                     self,
                     self.kg,
                     self.database_desc,
+                    brain_id=brain_id,
                 )
             ],
             output_schema=RetrieveNeighborsOutputSchema,
             extra_system_prompt=extra_system_prompt_str,
+            brain_id=brain_id,
         )
 
         if isinstance(looking_for, str):
@@ -258,10 +362,195 @@ class KGAgent:
                     }
                 ],
             },
-            config={"recursion_limit": 50},
+            config={
+                "recursion_limit": MAX_RECURSION_LIMIT,
+                "tags": ["kg_agent"],
+                "metadata": {"agent": "kg_agent", "brain_id": brain_id},
+            },
             print_mode="debug",
         )
 
         response = _response.get("structured_response")
 
         return response
+
+    def run_graph_consolidator_operator(
+        self,
+        task: str,
+        brain_id: str = "default",
+        timeout: int = 180,
+        max_retries: int = 3,
+        reuse_agent: bool = True,
+    ) -> str:
+        """
+        Invoke the graph-consolidator agent to perform a consolidation task on the knowledge graph.
+
+        Parameters:
+            task (str): Natural-language instruction describing the consolidation operation to run.
+            brain_id (str): Identifier of the knowledge graph brain to target; defaults to "default".
+            timeout (int): Maximum seconds to wait for a single agent invocation before timing out.
+            max_retries (int): Maximum number of retry attempts for the agent invocation when timeouts occur.
+
+        Returns:
+            status (str): `"OK"` when the consolidator completes successfully.
+
+        Raises:
+            TimeoutError: If a single invocation exceeds `timeout` seconds or if all retry attempts fail.
+        """
+
+        if (
+            not reuse_agent
+            or self.agent is None
+            or self._agent_type != "graph-consolidator"
+            or self._agent_brain_id != brain_id
+        ):
+            self._get_agent(
+                type_="graph-consolidator",
+                identification_params={},
+                metadata={},
+                tools=[
+                    KGAgentExecuteGraphOperationTool(
+                        self,
+                        self.kg,
+                        self.database_desc,
+                        brain_id=brain_id,
+                    ),
+                    KGAgentCreateNodeTool(
+                        self,
+                        self.kg,
+                        self.embeddings,
+                        self.vector_store,
+                        brain_id=brain_id,
+                    ),
+                    KGAgentCreateRelationshipTool(
+                        self,
+                        self.kg,
+                        self.embeddings,
+                        self.vector_store,
+                        brain_id=brain_id,
+                    ),
+                    KGAgentRemoveNodeTool(
+                        self,
+                        self.kg,
+                        self.vector_store,
+                        brain_id=brain_id,
+                    ),
+                    KGAgentRemoveRelationshipTool(
+                        self,
+                        self.kg,
+                        self.vector_store,
+                        brain_id=brain_id,
+                    ),
+                ],
+            )
+
+        def _invoke_agent():
+            """
+            Invoke the configured agent with the graph-consolidator prompt for the current task.
+
+            Sends a user message containing the graph-consolidator task prompt to the agent and returns the agent's response.
+
+            Returns:
+                dict: Agent response containing generated message content and associated metadata (for example, token usage and model output).
+            """
+            return self.agent.invoke(
+                {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": KG_AGENT_GRAPH_CONSOLIDATOR_PROMPT.format(
+                                task=task
+                            ),
+                        }
+                    ],
+                },
+                config={
+                    "recursion_limit": MAX_RECURSION_LIMIT_GRAPH_CONSOLIDATOR,
+                    "tags": ["kg_agent", "kg_graph_consolidator"],
+                    "metadata": {"agent": "kg_agent", "brain_id": brain_id},
+                },
+            )
+
+        @retry(
+            stop=stop_after_attempt(max_retries),
+            wait=wait_exponential(multiplier=1, min=2, max=30),
+            retry=retry_if_exception_type(TimeoutError),
+            reraise=True,
+        )
+        def _invoke_agent_with_retry():
+            """
+            Invoke the graph-consolidator agent with a timeout and update token accounting from the response.
+
+            Waits up to `timeout` seconds for the agent invocation to complete. For any returned message that contains `usage_metadata`, updates the agent's token counters and `token_detail`. Returns the agent response dictionary.
+
+            Returns:
+                dict: The agent response.
+
+            Raises:
+                TimeoutError: If the agent invocation does not complete within `timeout` seconds.
+            """
+            try:
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(_invoke_agent)
+                    response = future.result(timeout=timeout)
+                    for m in response.get("messages", []):
+                        if hasattr(m, "usage_metadata"):
+                            self._update_token_counts(m.usage_metadata)
+                            self.token_detail = token_detail_from_token_counts(
+                                self.input_tokens,
+                                self.output_tokens,
+                                self.cached_tokens,
+                                self.reasoning_tokens,
+                                "kg_agent",
+                            )
+                    return response
+            except FutureTimeoutError:
+                raise TimeoutError(
+                    f"Graph consolidator operator invoke timed out after {timeout} seconds. "
+                    "This may indicate a network issue or the LLM service is unresponsive."
+                )
+
+        try:
+            response = _invoke_agent_with_retry()
+        except GraphRecursionError as e:
+            raise ValueError(
+                "Graph consolidator hit recursion limit without reaching a stop condition. "
+                "Consider increasing recursion_limit or simplifying the consolidation task."
+            ) from e
+        except RetryError as e:
+            last_attempt = e.last_attempt
+            raise TimeoutError(
+                f"Graph consolidator operator invoke failed after {last_attempt.attempt_number} attempts. "
+                f"Last error: {last_attempt.exception()}"
+            ) from last_attempt.exception()
+        except TimeoutError:
+            raise
+
+        return "OK"
+
+    def _update_token_counts(self, usage_metadata: dict):
+        """
+        Update the agent's token counters from LLM usage metadata.
+
+        Reads token counts from the provided `usage_metadata` mapping and increments the agent's
+        internal counters: `input_tokens`, `output_tokens`, `cached_tokens`, and `reasoning_tokens`.
+        Missing entries are treated as zero.
+
+        Parameters:
+            usage_metadata (dict): Usage metadata containing any of the following keys:
+                - "input_tokens": total input token count (int)
+                - "output_tokens": total output token count (int)
+                - "input_token_details": dict with "cache_read" (int) for cached input tokens
+                - "output_token_details": dict with "reasoning" (int) for reasoning/output tokens
+        """
+        # Base counts
+        self.input_tokens += usage_metadata.get("input_tokens", 0)
+        self.output_tokens += usage_metadata.get("output_tokens", 0)
+
+        # Input details (caching)
+        input_details = usage_metadata.get("input_token_details", {})
+        self.cached_tokens += input_details.get("cache_read", 0)
+
+        # Output details (reasoning)
+        output_details = usage_metadata.get("output_token_details", {})
+        self.reasoning_tokens += output_details.get("reasoning", 0)

@@ -3,262 +3,199 @@ File: /auto_kg.py
 Created Date: Sunday December 21st 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Sunday December 21st 2025 2:29:01 pm
-Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
+Last Modified: Thursday January 29th 2026 8:43:59 pm
+Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+import os
+import uuid
 from typing import Optional
 
-from src.adapters.embeddings import EmbeddingsAdapter, VectorStoreAdapter
-from src.adapters.graph import GraphAdapter
-from src.constants.kg import Node, Predicate
-from src.core.agents.janitor_agent import JanitorAgentInputOutput
-from src.core.agents.scout_agent import ScoutEntity
-from src.core.agents.architect_agent import ArchitectAgentRelationship
+from src.config import config
+from src.constants.kg import Node
+from src.core.agents.scout_agent import ScoutAgent
+from src.core.agents.architect_agent import ArchitectAgent
+from src.core.layers.graph_consolidation.graph_consolidation import consolidate_graph
+from src.core.saving.ingestion_manager import IngestionManager
 from src.services.input.agents import (
+    cache_adapter,
     embeddings_adapter,
     graph_adapter,
-    janitor_agent,
-    scout_agent,
-    architect_agent,
+    llm_small_adapter,
     vector_store_adapter,
 )
+from src.utils.tokens import merge_token_details, token_detail_from_token_counts
 
-
-class IngestionManager:
-    def __init__(
-        self,
-        embeddings_adapter: EmbeddingsAdapter,
-        vector_store_adapter: VectorStoreAdapter,
-        graph_adapter: GraphAdapter,
-    ):
-        self.embeddings = embeddings_adapter
-        self.vector_store = vector_store_adapter
-        self.kg = graph_adapter
-        self.resolved_cache = {}
-
-    def process_node_vectors(self, node_data: ScoutEntity, brain_id):
-        if node_data.name in self.resolved_cache:
-            return node_data.uuid
-
-        v_sub = self.embeddings.embed_text(node_data.name)
-        v_sub.metadata = {
-            "labels": [node_data.type],
-            "name": node_data.name,
-            "uuid": node_data.uuid,
-        }
-        if v_sub.embeddings:
-            v_ids = self.vector_store.add_vectors(
-                [v_sub], store="nodes", brain_id=brain_id
-            )
-            node_data.properties = {
-                **(node_data.properties or {}),
-                "v_id": v_ids[0],
-            }
-            self.resolved_cache[node_data.name] = v_ids[0]
-            return node_data.uuid
-        else:
-            print("[ ! ]Node not embedded:", node_data)
-        return node_data.uuid
-
-    def process_rel_vectors(self, rel_data: ArchitectAgentRelationship, brain_id):
-        if hasattr(rel_data, "description") and rel_data.description:
-            v_rel = self.embeddings.embed_text(rel_data.description)
-            v_rel.metadata = {
-                **(self.metadata or {}),
-                "uuid": rel_data.uuid,
-                "node_ids": [rel_data.tail.uuid, rel_data.tip.uuid],
-                "predicate": rel_data.name,
-            }
-            if v_rel.embeddings:
-                v_ids = self.vector_store.add_vectors(
-                    [v_rel], store="relationships", brain_id=brain_id
-                )
-                rel_data.properties = {
-                    **(rel_data.properties or {}),
-                    "v_id": v_ids[0],
-                }
-            else:
-                print("[ ! ]Relationship not embedded:", rel_data)
-        return rel_data.uuid
+import langsmith
 
 
 def enrich_kg_from_input(
     input: str, targeting: Optional[Node] = None, brain_id: str = "default"
 ) -> str:
     """
-    Enrich the knowledge graph from the input.
+    Orchestrates enrichment of the knowledge graph from a free-text input.
+
+    Runs the scout and architect agents to extract entities and relationships from the provided input, optionally consolidates the resulting relationships into the graph, and reports token usage and cost metrics. Side effects include updating the knowledge graph and printing debug and cost summaries to standard output.
+
+    Parameters:
+        input (str): Free-text content to process and ingest into the knowledge graph.
+        targeting (Optional[Node]): Optional target node guiding where or how the input should be applied within the graph.
+        brain_id (str): Identifier for the processing context/brain to use for agent operations and consolidation.
+
     """
 
-    input_tokens = 0
-    output_tokens = 0
+    ingestion_session_id = str(uuid.uuid4())
+    project_name = os.getenv("LANGSMITH_PROJECT", "brainapi")
+    with langsmith.tracing_context(
+        project_name=project_name,
+        enabled=True,
+        tags=["enrich_kg", "scout", "architect"],
+        metadata={
+            "ingestion_session_id": ingestion_session_id,
+            "brain_id": brain_id,
+            "flow": "enrich_kg_from_input",
+        },
+    ):
+        _enrich_kg_impl(input, targeting, brain_id, ingestion_session_id)
 
-    manager = IngestionManager(embeddings_adapter, vector_store_adapter, graph_adapter)
 
-    entities = scout_agent.run(input, targeting=targeting, brain_id=brain_id)
-    input_tokens += entities.input_tokens
-    output_tokens += entities.output_tokens
-    # logtable(
-    #     [entity.model_dump(mode="json") for entity in entities.entities],
-    #     title="Entities",
-    # )
-
-    architect_response = architect_agent.run(
-        input, entities.entities, targeting=targeting, brain_id=brain_id
+def _enrich_kg_impl(input: str, targeting, brain_id: str, ingestion_session_id: str):
+    ingestion_manager = IngestionManager(
+        embeddings_adapter, vector_store_adapter, graph_adapter
     )
-    input_tokens += architect_response.input_tokens
-    output_tokens += architect_response.output_tokens
-    # logtable(
-    #     [new_node.model_dump(mode="json") for new_node in architect_response.new_nodes],
-    #     title="New Nodes",
-    # )
-    # logtable(
-    #     [
-    #         relationship.model_dump(mode="json")
-    #         for relationship in architect_response.relationships
-    #     ],
-    #     title="Relationships",
-    # )
 
-    normalized_entities = []
-    normalized_virtual_nodes = []
-    normalized_relationships = []
+    scout_agent = ScoutAgent(
+        llm_small_adapter,
+        cache_adapter,
+        kg=graph_adapter,
+        vector_store=vector_store_adapter,
+        embeddings=embeddings_adapter,
+    )
+    architect_agent = ArchitectAgent(
+        llm_small_adapter,
+        cache_adapter,
+        kg=graph_adapter,
+        vector_store=vector_store_adapter,
+        embeddings=embeddings_adapter,
+        ingestion_manager=ingestion_manager,
+    )
 
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        entity_futures = [
-            executor.submit(
-                janitor_agent.run,
-                JanitorAgentInputOutput(entity=entity),
-                text=input,
-                targeting=targeting,
-                brain_id=brain_id,
+    token_details = []
+    print(f"[DEBUG (ingestion_session_id)]: {ingestion_session_id}")
+
+    entities = scout_agent.run(
+        input,
+        targeting=targeting,
+        brain_id=brain_id,
+        ingestion_session_id=ingestion_session_id,
+    )
+    token_details.append(
+        token_detail_from_token_counts(
+            scout_agent.input_tokens,
+            scout_agent.output_tokens,
+            scout_agent.cached_tokens,
+            scout_agent.reasoning_tokens,
+            "scout_agent",
+        )
+    )
+
+    print("[DEBUG (initial_scout_entities)]: ", entities)
+
+    architect_agent.run_tooler(
+        input,
+        entities.entities,
+        targeting=targeting,
+        brain_id=brain_id,
+        timeout=360 * len(input),
+        ingestion_session_id=ingestion_session_id,
+    )
+    token_details.append(
+        token_detail_from_token_counts(
+            architect_agent.input_tokens,
+            architect_agent.output_tokens,
+            architect_agent.cached_tokens,
+            architect_agent.reasoning_tokens,
+            "architect_agent",
+        )
+    )
+
+    if config.run_graph_consolidator and architect_agent.session_id:
+        from src.lib.redis.client import _redis_client
+        import time
+
+        print(
+            f"[DEBUG (enrich_kg_from_input)]: Waiting for async tasks to complete for session {architect_agent.session_id}"
+        )
+
+        max_wait_time = 300
+        check_interval = 2
+        elapsed_time = 0
+
+        while elapsed_time < max_wait_time:
+            pending_count = _redis_client.client.get(
+                f"{brain_id}:session:{architect_agent.session_id}:pending_tasks"
             )
-            for entity in entities.entities
-        ]
 
-        virtual_node_futures = [
-            executor.submit(
-                janitor_agent.run,
-                JanitorAgentInputOutput(virtual_node=new_node),
-                text=input,
-                targeting=targeting,
-                brain_id=brain_id,
-            )
-            for new_node in architect_response.new_nodes
-        ]
-
-        all_futures = list(entity_futures) + list(virtual_node_futures)
-
-        for future in all_futures:
-            try:
-                normalized_result = future.result(timeout=180)
-                input_tokens += normalized_result.input_tokens or 0
-                output_tokens += normalized_result.output_tokens or 0
-                if normalized_result.entity:
-                    normalized_entities.append(normalized_result.entity)
-                elif normalized_result.virtual_node:
-                    normalized_virtual_nodes.append(normalized_result.virtual_node)
-                else:
-                    print("Entity/Virtual node not normalized:", normalized_result)
-            except FutureTimeoutError:
+            if pending_count is None or int(pending_count) == 0:
                 print(
-                    "[!] Janitor agent entity/virtual_node future timed out, skipping"
+                    f"[DEBUG (enrich_kg_from_input)]: All async tasks completed after {elapsed_time}s"
                 )
-                continue
-            except Exception as e:
-                print(f"[!] Janitor agent entity/virtual_node future failed: {e}")
-                continue
+                break
 
-        relationship_futures = [
-            executor.submit(
-                janitor_agent.run,
-                JanitorAgentInputOutput(relationship=relationship),
-                text=input,
-                targeting=targeting,
-                brain_id=brain_id,
+            print(
+                f"[DEBUG (enrich_kg_from_input)]: {pending_count} tasks still pending, waiting..."
             )
-            for relationship in architect_response.relationships
+            time.sleep(check_interval)
+            elapsed_time += check_interval
+        else:
+            print(
+                f"[DEBUG (enrich_kg_from_input)]: Timeout waiting for tasks to complete after {max_wait_time}s"
+            )
+
+        print(
+            "[DEBUG (consolidate_graph)]: Consolidating graph with ",
+            len(architect_agent.relationships_set),
+            " relationships",
+        )
+
+        from src.workers.tasks.ingestion import consolidate_graph_async
+
+        task_result = consolidate_graph_async.delay(
+            session_id=architect_agent.session_id,
+            brain_id=brain_id,
+            ingestion_session_id=ingestion_session_id,
+        )
+        print(
+            f"[DEBUG (enrich_kg_from_input)]: Consolidation task {task_result.id} queued"
+        )
+
+    token_details = merge_token_details(
+        [
+            scout_agent.token_detail,
+            architect_agent.token_detail,
         ]
-
-        for future in relationship_futures:
-            try:
-                normalized_result = future.result(timeout=180)
-                input_tokens += normalized_result.input_tokens or 0
-                output_tokens += normalized_result.output_tokens or 0
-                if normalized_result.relationship:
-                    normalized_relationships.append(normalized_result.relationship)
-                else:
-                    print("Relationship not normalized:", normalized_result)
-            except FutureTimeoutError:
-                print("[!] Janitor agent relationship future timed out, skipping")
-                continue
-            except Exception as e:
-                print(f"[!] Janitor agent relationship future failed: {e}")
-                continue
-
-    graph_nodes = []
-
-    with ThreadPoolExecutor(max_workers=10) as io_executor:
-        node_embedding_futures = []
-
-        for entity in normalized_entities:
-            future = io_executor.submit(manager.process_node_vectors, entity, brain_id)
-            node_embedding_futures.append((future, entity))
-
-        for virtual_node in normalized_virtual_nodes:
-            future = io_executor.submit(
-                manager.process_node_vectors, virtual_node, brain_id
-            )
-            node_embedding_futures.append((future, virtual_node))
-
-        for future, node_data in node_embedding_futures:
-            try:
-                future.result(timeout=180)
-                graph_nodes.append(
-                    Node(
-                        uuid=node_data.uuid,
-                        labels=[node_data.type],
-                        name=node_data.name,
-                        description=node_data.description,
-                        properties=node_data.properties,
-                    )
-                )
-            except FutureTimeoutError:
-                print(
-                    f"[!] Node embedding future timed out for {node_data.name}, skipping"
-                )
-                continue
-            except Exception as e:
-                print(f"[!] Node embedding future failed for {node_data.name}: {e}")
-                continue
-
-        graph_adapter.add_nodes(graph_nodes, brain_id=brain_id)
-
-        for relationship in normalized_relationships:
-            io_executor.submit(manager.process_rel_vectors, relationship, brain_id)
-            graph_adapter.add_relationship(
-                Node(
-                    uuid=relationship.tail.uuid,
-                    labels=[relationship.tail.type],
-                    name=relationship.tail.name,
-                ),
-                Predicate(
-                    uuid=relationship.uuid,
-                    name=relationship.name,
-                    description=relationship.description,
-                    properties=relationship.properties,
-                ),
-                Node(
-                    uuid=relationship.tip.uuid,
-                    labels=[relationship.tip.type],
-                    name=relationship.tip.name,
-                ),
-                brain_id=brain_id,
-            )
+    )
 
     print("-----------------------------------")
-    print("> Input tokens:   ", input_tokens)
-    print("> Output tokens:  ", output_tokens)
+    print(
+        f"> Input tokens:   {token_details.input.total} -> ${token_details.input.total * config.pricing.input_token_price}"
+    )
+    print(
+        f"> Output tokens:  {token_details.output.total} -> ${token_details.output.total * config.pricing.output_token_price}"
+    )
+    print(
+        f"> Cost -> ${token_details.input.total * config.pricing.input_token_price + token_details.output.total * config.pricing.output_token_price} for {len(input)} characters"
+    )
+    print(
+        f"> Cost/Character -> ${((token_details.input.total * config.pricing.input_token_price + token_details.output.total * config.pricing.output_token_price) / len(input)):.12f}"
+    )
+    print("> Token details: ", token_details.model_dump_json(indent=2))
     print("-----------------------------------")
+
+    try:
+        from langchain_core.tracers.langchain import wait_for_all_tracers
+
+        wait_for_all_tracers()
+    except ImportError:
+        pass

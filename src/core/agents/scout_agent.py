@@ -3,12 +3,12 @@ File: /scout_agent.py
 Created Date: Sunday December 21st 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Sunday December 21st 2025 2:27:56 pm
-Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
+Last Modified: Monday January 5th 2026 9:57:30 pm
+Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
-from typing import List, Optional
+from typing import List, Literal, Optional
 import uuid
 from langchain.agents import create_agent
 from langchain.tools import BaseTool
@@ -31,6 +31,7 @@ from src.constants.prompts.scout_agent import (
     SCOUT_AGENT_EXTRACT_ENTITIES_PROMPT,
     SCOUT_AGENT_SYSTEM_PROMPT,
 )
+from src.utils.tokens import token_detail_from_token_counts
 
 
 class _ScoutEntity(BaseModel):
@@ -42,6 +43,10 @@ class _ScoutEntity(BaseModel):
     name: str
     properties: Optional[dict] = Field(default_factory=dict)
     description: Optional[str] = None
+    polarity: Optional[Literal["positive", "negative", "neutral"]] = Field(
+        default="neutral",
+        description="The polarity of the entity.",
+    )
 
 
 class ScoutEntity(_ScoutEntity):
@@ -84,14 +89,33 @@ class ScoutAgent:
         vector_store: VectorStoreAdapter,
         embeddings: EmbeddingsAdapter,
     ):
+        """
+        Initialize a ScoutAgent with the provided adapters and reset internal agent and token-tracking state.
+
+        Stores the provided LLM, cache, knowledge graph, vector store, and embeddings adapters on the instance, sets the agent and token_detail to None, and initializes input_tokens, output_tokens, cached_tokens, and reasoning_tokens counters to zero.
+        """
         self.llm_adapter = llm_adapter
         self.cache_adapter = cache_adapter
         self.kg = kg
         self.vector_store = vector_store
         self.embeddings = embeddings
         self.agent = None
+        self.token_detail = None
+        self.input_tokens = 0
+        self.output_tokens = 0
+        self.cached_tokens = 0
+        self.reasoning_tokens = 0
 
     def _get_tools(self, brain_id: str = "default") -> List[BaseTool]:
+        """
+        Provide the list of tools available to the agent for a given brain identifier.
+
+        Parameters:
+            brain_id (str): Identifier of the brain/context to retrieve tools for; defaults to "default".
+
+        Returns:
+            List[BaseTool]: A list of BaseTool instances available to the agent for the specified brain.
+        """
         return []
 
     def _get_agent(
@@ -120,9 +144,28 @@ class ScoutAgent:
         brain_id: str = "default",
         timeout: int = 90,
         max_retries: int = 3,
+        ingestion_session_id: Optional[str] = None,
     ) -> ScoutAgentResponse:
         """
-        Run the scout agent.
+        Extract entities from the provided text using the Scout agent and return a structured response containing the entities and token usage.
+
+        Performs an LLM invocation (with optional targeting context), applies retries with exponential backoff on timeouts, enforces a per-invocation timeout, and accumulates token usage from the agent responses.
+
+        Parameters:
+            text: The input text to extract entities from.
+            targeting: Optional Node providing contextual targeting information (name, description, properties) to bias extraction.
+            brain_id: Identifier for the agent/brain configuration to use.
+            timeout: Maximum seconds to wait for a single agent invocation before treating it as a timeout.
+            max_retries: Maximum number of retry attempts for timed-out invocations using exponential backoff.
+
+        Returns:
+            A ScoutAgentResponse containing:
+                - entities: list of extracted ScoutEntity objects.
+                - input_tokens: accumulated input token count observed during the run.
+                - output_tokens: accumulated output token count observed during the run.
+
+        Raises:
+            TimeoutError: If a single invocation exceeds `timeout`, or if all retry attempts fail due to timeouts.
         """
 
         self._get_agent(
@@ -151,6 +194,18 @@ class ScoutAgent:
                         }
                     ],
                 },
+                config={
+                    "tags": ["scout_agent"],
+                    "metadata": {
+                        "agent": "scout_agent",
+                        "brain_id": brain_id,
+                        **(
+                            {"ingestion_session_id": ingestion_session_id}
+                            if ingestion_session_id
+                            else {}
+                        ),
+                    },
+                },
             )
 
         @retry(
@@ -160,10 +215,29 @@ class ScoutAgent:
             reraise=True,
         )
         def _invoke_agent_with_retry():
+            """
+            Invoke the agent in a separate thread, enforce the configured timeout, and update token accounting from the agent's response.
+
+            Returns:
+                dict: The agent response dictionary.
+
+            Raises:
+                TimeoutError: If the agent invocation exceeds the specified timeout.
+            """
             try:
                 with ThreadPoolExecutor(max_workers=1) as executor:
                     future = executor.submit(_invoke_agent)
                     response = future.result(timeout=timeout)
+                    for m in response.get("messages", []):
+                        if hasattr(m, "usage_metadata"):
+                            self._update_token_counts(m.usage_metadata)
+                            self.token_detail = token_detail_from_token_counts(
+                                self.input_tokens,
+                                self.output_tokens,
+                                self.cached_tokens,
+                                self.reasoning_tokens,
+                                "scout_agent",
+                            )
                     return response
             except FutureTimeoutError:
                 raise TimeoutError(
@@ -182,29 +256,34 @@ class ScoutAgent:
         except TimeoutError:
             raise
 
-        def _extract_tokens(r):
-            response_metadata = r.get("response_metadata", {})
-            token_usage = response_metadata.get("token_usage", {})
-            if token_usage:
-                return token_usage.get("prompt_tokens", 0), token_usage.get(
-                    "completion_tokens", 0
-                )
-            usage_metadata = r.get("usage_metadata", {})
-            if usage_metadata:
-                return usage_metadata.get("input_tokens", 0), usage_metadata.get(
-                    "output_tokens", 0
-                )
-            input_tokens = r.get("input_tokens", 0)
-            output_tokens = r.get("output_tokens", 0)
-            return input_tokens, output_tokens
-
-        input_tokens, output_tokens = _extract_tokens(response)
-
         return ScoutAgentResponse(
             entities=[
                 ScoutEntity(**entity.model_dump(mode="json"))
                 for entity in response.get("structured_response", []).entities
             ],
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
+            input_tokens=self.input_tokens,
+            output_tokens=self.output_tokens,
         )
+
+    def _update_token_counts(self, usage_metadata: dict):
+        """
+        Update the agent's accumulated token counters from a usage metadata dictionary.
+
+        Parameters:
+            usage_metadata (dict): Metadata containing token counts. Expected keys:
+                - "input_tokens": integer count to add to input_tokens (defaults to 0)
+                - "output_tokens": integer count to add to output_tokens (defaults to 0)
+                - "input_token_details": dict with optional "cache_read" integer to add to cached_tokens (defaults to 0)
+                - "output_token_details": dict with optional "reasoning" integer to add to reasoning_tokens (defaults to 0)
+        """
+        # Base counts
+        self.input_tokens += usage_metadata.get("input_tokens", 0)
+        self.output_tokens += usage_metadata.get("output_tokens", 0)
+
+        # Input details (caching)
+        input_details = usage_metadata.get("input_token_details", {})
+        self.cached_tokens += input_details.get("cache_read", 0)
+
+        # Output details (reasoning)
+        output_details = usage_metadata.get("output_token_details", {})
+        self.reasoning_tokens += output_details.get("reasoning", 0)

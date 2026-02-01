@@ -3,14 +3,15 @@ File: /client.py
 Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Saturday December 27th 2025
-Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
+Last Modified: Thursday January 29th 2026 8:44:06 pm
+Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
+from datetime import datetime, timezone
 import os
 import time
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple, TypedDict
 from neo4j import GraphDatabase
 from neo4j.exceptions import ClientError
 from src.adapters.interfaces.embeddings import VectorStoreClient
@@ -19,7 +20,9 @@ from src.config import config
 from src.constants.kg import (
     IdentificationParams,
     Node,
+    NodeDict,
     Predicate,
+    PredicateDict,
     SearchEntitiesResult,
     SearchRelationshipsResult,
     Triple,
@@ -144,7 +147,20 @@ class Neo4jClient(GraphClient):
         Clean a label to be used in a Cypher query.
         """
         return [
-            label.replace(" ", "_").upper().replace("-", "_").replace(".", "_")
+            label.replace(" ", "_")
+            .upper()
+            .replace("-", "_")
+            .replace(".", "_")
+            .replace(",", "_")
+            .replace(":", "_")
+            .replace(";", "_")
+            .replace("(", "_")
+            .replace(")", "_")
+            .replace("[", "_")
+            .replace("]", "_")
+            .replace("{", "_")
+            .replace("}", "_")
+            .replace("'", "_")
             for label in labels
         ]
 
@@ -190,7 +206,16 @@ class Neo4jClient(GraphClient):
         metadata: Optional[dict] = None,
     ) -> list[Node] | str:
         """
-        Add nodes to the graph.
+        Insert multiple nodes into the specified brain's graph and return representations of the created nodes.
+
+        Ensures the target database exists, merges or creates each node by its identification properties (at minimum the node's name), sets node properties and standard attributes (description, happened_at, last_updated, metadata, observations, polarity, and uuid), and retries on transient database-not-found errors.
+
+        Parameters:
+            identification_params (dict, optional): Additional property keys and values used to identify (MERGE) nodes besides name; keys will be normalized to property-style keys.
+            metadata (dict, optional): Metadata to attach to each node; this metadata is merged with any existing node.metadata for the returned Node objects.
+
+        Returns:
+            list[Node]: A list of Node objects representing the added nodes. Each returned Node preserves the original node fields and has its metadata set to the merge of the node's own metadata and the provided `metadata`.
         """
         results = []
         self.ensure_database(brain_id)
@@ -198,9 +223,10 @@ class Neo4jClient(GraphClient):
         for node in nodes:
             identification_dict = {"name": node.name}
 
+            merged_metadata = {**(metadata or {}), **(node.metadata or {})}
             all_properties = {
                 **(node.properties or {}),
-                **(metadata or {}),
+                "metadata": merged_metadata or None,
             }
 
             if identification_params:
@@ -217,8 +243,20 @@ class Neo4jClient(GraphClient):
 
             identification_set_str = f"{{{', '.join(identification_items)}}}"
 
-            if node.description is not None:
-                all_properties["description"] = node.description
+            attributes = [
+                "description",
+                "happened_at",
+                "last_updated",
+                "metadata",
+                "observations",
+                "polarity",
+            ]
+
+            for attr in attributes:
+                if attr == "metadata":
+                    continue
+                if getattr(node, attr, None) is not None:
+                    all_properties[attr] = getattr(node, attr)
 
             property_assignments = []
             for key, value in all_properties.items():
@@ -239,7 +277,6 @@ class Neo4jClient(GraphClient):
             try:
                 result = self._execute_query_with_retry(cypher_query, brain_id)
                 results.append(result)
-                log("Nodes added: ", results)
             except Exception as e:
                 print(f"Error adding node: {e} - {cypher_query}")
                 raise
@@ -250,7 +287,8 @@ class Neo4jClient(GraphClient):
                 labels=node.labels,
                 name=node.name,
                 description=node.description,
-                properties={**node.properties, **(metadata or {})},
+                properties=node.properties,
+                metadata={**(node.metadata or {}), **(metadata or {})},
             )
             for node in nodes
         ]
@@ -263,13 +301,49 @@ class Neo4jClient(GraphClient):
         brain_id: str,
     ) -> str:
         """
-        Add a relationship between two nodes to the graph.
+        Create or update a relationship of the given predicate type between two existing nodes and set relationship attributes.
+
+        Matches the source node by its labels and name (from `subject`) and the target node by its labels and name (from `to_object`), merges a relationship of type `predicate.name` between them, and sets relationship fields (including `uuid`, `description`, `v_id`, and any provided `properties`, `happened_at`, `flow_key`, `last_updated`) from the supplied `predicate`, `subject`, and `to_object` objects. Ensures the target database exists before executing the query.
+
+        Parameters:
+                subject (Node): Source node whose labels and `name` are used to find the relationship start.
+                predicate (Predicate): Relationship descriptor whose `name` determines the relationship type and whose fields supply relationship attributes to set.
+                to_object (Node): Target node whose labels and `name` are used to find the relationship end.
+                brain_id (str): Database name to run the query against.
+
+        Returns:
+                query_result: The raw result returned by the Neo4j driver for the executed Cypher query.
         """
+
+        objects = [subject, to_object, predicate]
+        attributes = [
+            "properties",
+            "description",
+            "happened_at",
+            "flow_key",
+            "last_updated",
+            "amount",
+        ]
+
+        extra_ops = ""
+        for obj in objects:
+            for attr in attributes:
+                value = getattr(obj, attr, None)
+                if value:
+                    extra_ops += f"""
+            SET r.{attr} = {self._format_value(value)}
+            """
+
         cypher_query = f"""
         MATCH (a:{":".join(self._clean_labels(subject.labels))}) WHERE a.name = {self._format_value(subject.name)}
         MATCH (b:{":".join(self._clean_labels(to_object.labels))}) WHERE b.name = {self._format_value(to_object.name)}
         MERGE (a)-[r:{":".join(self._clean_labels([predicate.name]))}]->(b)
-        ON CREATE SET r.description = {self._format_value(predicate.description)}, r.uuid = {self._format_value(predicate.uuid)}
+        ON CREATE 
+        SET r.description = {self._format_value(predicate.description)}, 
+        r.uuid = {self._format_value(predicate.uuid)}, 
+        r.v_id = {self._format_value(predicate.properties.get("v_id"))},
+        r.flow_key = {self._format_value(predicate.flow_key)}
+        {extra_ops}
         RETURN a, b
         """
 
@@ -427,11 +501,23 @@ class Neo4jClient(GraphClient):
 
     def get_by_uuid(self, uuid: str, brain_id: str) -> Node:
         """
-        Get a node by its UUID.
+        Retrieve a node by its UUID.
+
+        Deprecated: use `get_by_uuids` which returns richer node data and supports batching.
+
+        Parameters:
+            uuid (str): The UUID of the node to retrieve.
+            brain_id (str): Target database/brain identifier.
+
+        Returns:
+            Node or None: The matching node, or `None` if no node with the given UUID exists.
         """
         cypher_query = """
         MATCH (n) WHERE n.uuid = $uuid
-        RETURN n.uuid as uuid, n.name as name, labels(n) as labels, n.description as description, properties(n) as properties
+        RETURN n.uuid as uuid, n.name as name, labels(n) as labels, n.description as description,
+        properties(n) as properties,
+        n.polarity as polarity, n.happened_at as happened_at, n.last_updated as last_updated,
+        n.observations as observations, n.metadata as metadata
         """
         self.ensure_database(brain_id)
         result = self.driver.execute_query(
@@ -449,11 +535,21 @@ class Neo4jClient(GraphClient):
 
     def get_by_uuids(self, uuids: list[str], brain_id: str) -> list[Node]:
         """
-        Get nodes by their UUIDs.
+        Retrieve nodes that match the given UUIDs from the specified database.
+
+        Parameters:
+            uuids (list[str]): Node UUIDs to fetch.
+            brain_id (str): Name of the Neo4j database to query.
+
+        Returns:
+            list[Node]: Nodes with identifiers, names, labels, descriptions, and properties; includes, when available, polarity, happened_at, last_updated, observations, and metadata.
         """
         cypher_query = f"""
         MATCH (n) WHERE n.uuid IN ["{'","'.join(uuids)}"]
-        RETURN n.uuid as uuid, n.name as name, labels(n) as labels, n.description as description, properties(n) as properties
+        RETURN n.uuid as uuid, n.name as name, labels(n) as labels, n.description as description,
+        properties(n) as properties,
+        n.polarity as polarity, n.happened_at as happened_at, n.last_updated as last_updated,
+        n.observations as observations, n.metadata as metadata
         """
         self.ensure_database(brain_id)
         result = self.driver.execute_query(cypher_query, database_=brain_id)
@@ -464,6 +560,32 @@ class Neo4jClient(GraphClient):
                 labels=record.get("labels", []),
                 description=record.get("description", ""),
                 properties=record.get("properties", {}),
+                polarity=record.get("polarity", "neutral"),
+                **(
+                    {"happened_at": record.get("happened_at", None)}
+                    if record.get("happened_at", None) is not None
+                    else {}
+                ),
+                **(
+                    {
+                        "last_updated": record.get(
+                            "last_updated", datetime.now(timezone.utc)
+                        )
+                    }
+                    if record.get("last_updated", datetime.now(timezone.utc))
+                    is not None
+                    else {}
+                ),
+                **(
+                    {"observations": record.get("observations", [])}
+                    if record.get("observations", []) is not None
+                    else {}
+                ),
+                **(
+                    {"metadata": record.get("metadata", {})}
+                    if record.get("metadata", {}) is not None
+                    else {}
+                ),
             )
             for record in result.records
         ]
@@ -505,7 +627,10 @@ class Neo4jClient(GraphClient):
 
         cypher_query = f"""
         MATCH (n{labels_str}) {where_str}
-        RETURN n.uuid as uuid, n.name as name, labels(n) as labels, n.description as description, properties(n) as properties
+        RETURN n.uuid as uuid, n.name as name, labels(n) as labels, n.description as description,
+        properties(n) as properties,
+        n.polarity as polarity, n.happened_at as happened_at, n.last_updated as last_updated,
+        n.observations as observations, n.metadata as metadata
         """
 
         self.ensure_database(brain_id)
@@ -531,13 +656,19 @@ class Neo4jClient(GraphClient):
         of_types: Optional[list[str]] = None,
     ) -> Dict[str, List[Tuple[Predicate, Node]]]:
         """
-        Retrieve neighbor triples for the given node where the neighbor shares at least one label with the source node.
+        Retrieve neighboring nodes connected to each given node, grouped by source node UUID.
+
+        Parameters:
+            nodes (list[Node | str]): List of Node objects or node UUID strings to find neighbors for.
+            brain_id (str): Database identifier to query.
+            same_type_only (bool): If True, include only neighbors whose labels share at least one label with the source node.
+            limit (int | None): Optional maximum number of neighbor records to return (applies to the entire result set).
+            of_types (Optional[list[str]]): Optional list of node label names to filter neighbors by those labels.
 
         Returns:
-            list[Tuple[Node, Predicate, Node]]: A list of tuples (neighbor_node, predicate, intermediate_node) where
-                - neighbor_node is the matched neighbor (node m),
-                - predicate describes the relationship r2 between the intermediate node and the neighbor (including direction),
-                - intermediate_node is the connector node (c) through which the neighbor is reached.
+            Dict[str, List[Tuple[Predicate, Node]]]: Mapping from each source node UUID to a list of tuples (Predicate, Node),
+                where Predicate describes the relationship (including direction, properties, flow key, and UUID) between the source
+                and the neighbor, and Node represents the neighboring node (including its UUID, name, labels, description, and properties).
         """
         if len(nodes) == 0:
             return {}
@@ -564,12 +695,14 @@ class Neo4jClient(GraphClient):
             )
 
         cypher_query += """
-        RETURN n.uuid AS uuid, n.name AS name, labels(n) AS labels, n.description AS description, properties(n) AS properties, r AS rel,
-               CASE WHEN startNode(r) = n THEN 'out' ELSE 'in' END AS direction,
-               type(r) AS rel_type, r.description AS rel_description,
-               c.uuid AS c_uuid, c.name AS c_name, labels(c) AS c_labels, c.description AS c_description, properties(c) AS c_properties
+        RETURN n.uuid as uuid, n.name as name, labels(n) as labels, n.description as description,
+        properties(n) as properties,
+        n.polarity as polarity, n.happened_at as happened_at, n.last_updated as last_updated,
+        n.observations as observations, n.metadata as metadata, r AS rel,
+        CASE WHEN startNode(r) = n THEN 'out' ELSE 'in' END AS direction,
+        type(r) AS rel_type, r.description AS rel_description, properties(r) AS rel_properties, r.flow_key as rel_flowkey, r.uuid as rel_uuid,
+        c.uuid AS c_uuid, c.name AS c_name, labels(c) AS c_labels, c.description AS c_description, properties(c) AS c_properties
         """
-
         if limit:
             cypher_query += f" LIMIT {limit}"
 
@@ -587,6 +720,9 @@ class Neo4jClient(GraphClient):
                     name=record.get("rel_type", "") or "",
                     description=record.get("rel_description", "") or "",
                     direction=record.get("direction", "neutral"),
+                    properties=record.get("rel_properties", {}) or {},
+                    flow_key=record.get("rel_flowkey", "") or "",
+                    uuid=record.get("rel_uuid", "") or "",
                 ),
                 Node(
                     uuid=record.get("c_uuid", ""),
@@ -934,7 +1070,10 @@ class Neo4jClient(GraphClient):
         cypher_query = f"""
         MATCH (n)
         {"WHERE " + " AND ".join(filters) if filters else ""}
-        RETURN n.uuid as uuid, n.name as name, labels(n) as labels, n.description as description, properties(n) as properties
+        RETURN n.uuid as uuid, n.name as name, labels(n) as labels, n.description as description,
+        properties(n) as properties,
+        n.polarity as polarity, n.happened_at as happened_at, n.last_updated as last_updated,
+        n.observations as observations, n.metadata as metadata
         SKIP {skip}
         LIMIT {limit}
         """
@@ -1251,7 +1390,7 @@ class Neo4jClient(GraphClient):
         {set_clause}
         {remove_clause}
         {labels_clause}
-        RETURN n.uuid as uuid, n.name as name, labels(n) as labels, 
+        RETURN n.uuid as uuid, n.name as name, labels(n) as labels,
             n.description as description, properties(n) as properties
         """
 
@@ -1273,8 +1412,16 @@ class Neo4jClient(GraphClient):
 
     def get_schema(self, brain_id: str) -> dict:
         """
-        Get the schema/ontology of the graph.
-        Returns all node labels and relationship types in JSON format.
+        Retrieve the graph schema for the given brain, including node labels, relationship types, and event names.
+
+        Parameters:
+            brain_id (str): Identifier of the Neo4j database/brain to query.
+
+        Returns:
+            dict: A dictionary with keys:
+                - "labels": list of node label names (str).
+                - "relationships": list of relationship type names (str).
+                - "event_names": list of node names (str) for nodes labeled "EVENT".
         """
         self.ensure_database(brain_id)
 
@@ -1282,18 +1429,27 @@ class Neo4jClient(GraphClient):
         relationships_query = (
             "CALL db.relationshipTypes() YIELD relationshipType RETURN relationshipType"
         )
+        event_names_query = "MATCH (n) WHERE 'EVENT' IN labels(n) RETURN n.name as name"
 
         labels_result = self.driver.execute_query(labels_query, database_=brain_id)
         relationships_result = self.driver.execute_query(
             relationships_query, database_=brain_id
+        )
+        event_names_result = self.driver.execute_query(
+            event_names_query, database_=brain_id
         )
 
         labels = [record["label"] for record in labels_result.records]
         relationships = [
             record["relationshipType"] for record in relationships_result.records
         ]
+        event_names = [record["name"] for record in event_names_result.records]
 
-        return {"labels": labels, "relationships": relationships}
+        return {
+            "labels": labels,
+            "relationships": relationships,
+            "event_names": event_names,
+        }
 
     def get_2nd_degree_hops(
         self,
@@ -1302,9 +1458,436 @@ class Neo4jClient(GraphClient):
         vector_store_adapter: VectorStoreClient,
         brain_id: str,
     ) -> Dict[str, List[Tuple[Predicate, Node, List[Tuple[Predicate, Node]]]]]:
+        """
+        Retrieve second-degree neighbor nodes from the given starting nodes.
+
+        Parameters:
+            from_ (List[str]): List of node UUIDs to start the hop from.
+            flattened (bool): Whether to flatten the result structure.
+            vector_store_adapter (VectorStoreClient): Adapter to the vector store.
+            brain_id (str): Identifier of the brain or graph context.
+
+        Returns:
+            Dict[str, List[Tuple[Predicate, Node, List[Tuple[Predicate, Node]]]]]: Mapping from each starting node UUID to a list of tuples containing
+                a predicate to a neighbor node, the neighbor node itself, and a list of tuples for that neighbor's predicates and their connected nodes.
+        """
         return super().get_2nd_degree_hops(
             from_, flattened, vector_store_adapter, brain_id
         )
+
+    def check_node_existence(
+        self,
+        uuid: str,
+        name: str,
+        labels: list[str],
+        brain_id: str,
+    ) -> bool:
+        """
+        Determine whether a node with the given UUID, name, and labels exists in the specified database.
+
+        Parameters:
+            uuid (str): Node identifier to match.
+            name (str): Node name to match.
+            labels (list[str]): All labels the node must have.
+            brain_id (str): Target database name.
+
+        Returns:
+            bool: True if a node matching the UUID, name, and labels exists, False otherwise.
+        """
+        cypher_query = f"""
+        MATCH (n:{":".join(self._clean_labels(labels))})
+        WHERE n.name = $name
+        AND n.uuid = $uuid
+        RETURN n
+        """
+        self.ensure_database(brain_id)
+        result = self.driver.execute_query(
+            cypher_query, parameters_={"uuid": uuid, "name": name}, database_=brain_id
+        )
+        return len(result.records) > 0
+
+    def get_neighborhood(
+        self, node: Node | str, depth: int, brain_id: str
+    ) -> list[dict]:
+        """
+        Retrieve the neighborhood of a node up to a specified depth as a nested structure.
+
+        Parameters:
+            node (Node | str): The starting node or its UUID.
+            depth (int): Maximum number of hops to traverse; must be >= 1.
+            brain_id (str): Identifier for the brain/graph to scope the query.
+
+        Returns:
+            list[dict]: A list of neighbor dictionaries. Each dictionary contains the keys
+            `node` (the neighboring Node), `predicate` (the connecting Predicate),
+            `direction` (relationship direction relative to the starting node), and
+            `neighbors` (a list of child neighbor dictionaries with the same shape).
+        """
+        if depth < 1:
+            return []
+        node_uuid = node.uuid if isinstance(node, Node) else node
+        return self._get_neighborhood_recursive(node_uuid, depth, brain_id, set())
+
+    def _get_neighborhood_recursive(
+        self, node_uuid: str, depth: int, brain_id: str, path_visited: set[str]
+    ) -> list[dict]:
+        """
+        Recursively collects neighboring nodes and their connecting predicates up to the specified depth.
+
+        Parameters:
+            node_uuid (str): UUID of the node to start traversal from.
+            depth (int): Maximum number of hops to traverse; values less than 1 result in no neighbors.
+            brain_id (str): Database/brain identifier to run the query against.
+            path_visited (set[str]): Set of node UUIDs already visited in the current traversal path; used to prevent cycles.
+
+        Returns:
+            list[dict]: A list of neighbor entries. Each entry is a dict with keys:
+                - "predicate": a Predicate instance describing the relationship from the current node to the neighbor.
+                - "node": a Node instance representing the neighboring node.
+                - "neighbors": a list of nested neighbor entries (same structure) for further hops.
+        """
+        if depth < 1 or node_uuid in path_visited:
+            return []
+
+        path_visited = path_visited.copy()
+        path_visited.add(node_uuid)
+
+        cypher_query = """
+        MATCH (n)-[r]-(m)
+        WHERE n.uuid = $uuid
+        RETURN 
+            r as rel,
+            type(r) as rel_type,
+            r.description as rel_description,
+            properties(r) as rel_properties,
+            CASE WHEN startNode(r) = n THEN 'out' ELSE 'in' END AS direction,
+            m.uuid as m_uuid,
+            m.name as m_name,
+            labels(m) as m_labels,
+            m.description as m_description,
+            properties(m) as m_properties
+        """
+
+        self.ensure_database(brain_id)
+        result = self.driver.execute_query(
+            cypher_query,
+            parameters_={"uuid": node_uuid},
+            database_=brain_id,
+        )
+
+        neighbors = []
+        for record in result.records:
+            neighbor_node_uuid = record.get("m_uuid", "")
+            if neighbor_node_uuid in path_visited:
+                continue
+
+            neighbor_node = Node(
+                uuid=neighbor_node_uuid,
+                name=record.get("m_name", "") or "",
+                labels=record.get("m_labels", []) or [],
+                description=record.get("m_description", "") or "",
+                properties=record.get("m_properties", {}) or {},
+            )
+
+            predicate = Predicate(
+                name=record.get("rel_type", "") or "",
+                description=record.get("rel_description", "") or "",
+                direction=record.get("direction", "neutral"),
+                properties=record.get("rel_properties", {}) or {},
+            )
+
+            nested_neighbors = self._get_neighborhood_recursive(
+                neighbor_node_uuid, depth - 1, brain_id, path_visited
+            )
+
+            neighbors.append(
+                {
+                    "predicate": predicate,
+                    "node": neighbor_node,
+                    "neighbors": nested_neighbors,
+                }
+            )
+
+        return neighbors
+
+    def get_next_by_flow_key(
+        self, predicate_uuid: str, flow_key: str, brain_id: str
+    ) -> List[Tuple[Node, Predicate, Node]]:
+        """
+        Finds subsequent nodes in a flow that follow a relationship identified by a predicate UUID and share the given flow key.
+
+        Parameters:
+            predicate_uuid (str): UUID of the reference relationship whose adjacent segment is the starting point.
+            flow_key (str): Flow key used to match the subsequent relationship.
+            brain_id (str): Database name (brain) to execute the query against.
+
+        Returns:
+            List[Tuple[Node, Predicate, Node]]: A list of tuples each containing the middle node, the matching relationship (predicate) that has the flow_key, and the connected target node. Each tuple represents a directed hop from the middle node through the matched predicate to the target node; the predicate includes its direction and properties.
+        """
+        cypher_query = f"""
+        MATCH ()-[r]-(m)-[r2]-(b)
+        WHERE r.uuid = $predicate_uuid
+        AND r2.flow_key = $flow_key
+        RETURN
+            m.uuid as m_uuid, m.name as m_name, labels(m) as m_labels,
+            type(r2) as r2_type, r2.description as r2_description, properties(r2) as r2_properties,
+            CASE WHEN startNode(r2) = m THEN 'out' ELSE 'in' END AS r2_direction,
+            b.uuid as b_uuid, b.name as b_name, labels(b) as b_labels, b.description as b_description, properties(b) as b_properties
+        """
+        self.ensure_database(brain_id)
+        result = self.driver.execute_query(
+            cypher_query,
+            parameters_={
+                "predicate_uuid": predicate_uuid,
+                "flow_key": flow_key,
+            },
+            database_=brain_id,
+        )
+        return [
+            (
+                Node(
+                    uuid=record.get("m_uuid", "") or "",
+                    name=record.get("m_name", "") or "",
+                    labels=record.get("m_labels", []) or [],
+                ),
+                Predicate(
+                    name=record.get("r2_type", "") or "",
+                    description=record.get("r2_description", "") or "",
+                    direction=record.get("r2_direction", "neutral"),
+                    properties=record.get("r2_properties", {}) or {},
+                ),
+                Node(
+                    uuid=record.get("b_uuid", "") or "",
+                    name=record.get("b_name", "") or "",
+                    labels=record.get("b_labels", []) or [],
+                    description=record.get("b_description", "") or "",
+                    properties=record.get("b_properties", {}) or {},
+                ),
+            )
+            for record in result.records
+        ]
+
+    def get_triples_by_uuid(
+        self, uuids: list[str], brain_id: str
+    ) -> List[Tuple[Node, Predicate, Node]]:
+        """
+        Get triples by its UUID.
+        """
+        cypher_query = f"""
+        MATCH (n)-[r]-(m) WHERE r.uuid IN [{",".join([f'"{uuid}"' for uuid in uuids])}]
+        RETURN 
+            n.uuid as n_uuid, n.name as n_name, labels(n) as n_labels, n.description as n_description, properties(n) as n_properties,
+            r.uuid as r_uuid, type(r) as r_type, r.description as r_description, properties(r) as r_properties,
+            m.uuid as m_uuid, m.name as m_name, labels(m) as m_labels, m.description as m_description, properties(m) as m_properties
+        """
+        self.ensure_database(brain_id)
+        result = self.driver.execute_query(
+            cypher_query,
+            database_=brain_id,
+        )
+        return [
+            (
+                Node(
+                    uuid=record.get("n_uuid", "") or "",
+                    name=record.get("n_name", "") or "",
+                    labels=record.get("n_labels", []) or [],
+                    description=record.get("n_description", "") or "",
+                    properties=record.get("n_properties", {}) or {},
+                ),
+                Predicate(
+                    name=record.get("r_type", "") or "",
+                    description=record.get("r_description", "") or "",
+                    direction=record.get("r_direction", "neutral"),
+                    properties=record.get("r_properties", {}) or {},
+                ),
+                Node(
+                    uuid=record.get("m_uuid", "") or "",
+                    name=record.get("m_name", "") or "",
+                    labels=record.get("m_labels", []) or [],
+                    description=record.get("m_description", "") or "",
+                    properties=record.get("m_properties", {}) or {},
+                ),
+            )
+            for record in result.records
+        ]
+
+    def remove_nodes(self, uuids: list[str], brain_id: str) -> list[Node]:
+        """
+        Remove nodes from the graph.
+        """
+        cypher_query = f"""
+        MATCH (n) WHERE n.uuid IN [{",".join([f'"{uuid}"' for uuid in uuids])}]
+        WITH n, {{
+        uuid: n.uuid,
+        name: n.name,
+        labels: labels(n),
+        description: n.description,
+        properties: properties(n),
+        polarity: n.polarity,
+        metadata: n.metadata,
+        happened_at: n.happened_at,
+        last_updated: n.last_updated,
+        observations: n.observations
+        }} AS node
+        DELETE n
+        RETURN node
+        """
+        self.ensure_database(brain_id)
+        result = self.driver.execute_query(
+            cypher_query,
+            database_=brain_id,
+        )
+        return [Node(**record.get("node", {})) for record in result.records]
+
+    def remove_relationships(
+        self,
+        relationships: list[Tuple[NodeDict, PredicateDict, NodeDict]],
+        brain_id: str,
+    ) -> list[Tuple[Node, Predicate, Node]]:
+        """
+        Remove relationships from the graph. Matches each relationship either by
+        predicate uuid (r.uuid) or by tip/tail node identifiers (node uuid or
+        name + labels). Returns the list of deleted triples (tail, predicate, head).
+        """
+        self.ensure_database(brain_id)
+        deleted: list[Tuple[Node, Predicate, Node]] = []
+        by_rel_uuid: list[str] = []
+        by_tip_tail: list[Tuple[NodeDict, PredicateDict, NodeDict]] = []
+        for tail, pred, head in relationships:
+            if pred.get("uuid"):
+                by_rel_uuid.append(pred["uuid"])
+            else:
+                by_tip_tail.append((tail, pred, head))
+        with_fields = """
+            n.uuid AS n_uuid, n.name AS n_name, labels(n) AS n_labels, n.description AS n_description, properties(n) AS n_properties,
+            r.uuid AS r_uuid, type(r) AS r_type, r.description AS r_description, properties(r) AS r_properties,
+            m.uuid AS m_uuid, m.name AS m_name, labels(m) AS m_labels, m.description AS m_description, properties(m) AS m_properties
+        """
+        return_list = "n_uuid, n_name, n_labels, n_description, n_properties, r_uuid, r_type, r_description, r_properties, m_uuid, m_name, m_labels, m_description, m_properties"
+        if by_rel_uuid:
+            cypher = f"""
+            MATCH (n)-[r]-(m) WHERE r.uuid IN [{",".join([self._format_value(u) for u in by_rel_uuid])}]
+            WITH n, r, m, {with_fields.strip()}
+            DELETE r
+            RETURN {return_list}
+            """
+            result = self.driver.execute_query(cypher, database_=brain_id)
+            for record in result.records:
+                deleted.append(self._record_to_triple(record))
+        for tail, pred, head in by_tip_tail:
+            tail_match = self._node_match_cypher("n", tail)
+            head_match = self._node_match_cypher("m", head)
+            rel_type = pred.get("name")
+            if rel_type:
+                rel_part = f"[r:{':'.join(self._clean_labels([rel_type]))}]"
+            else:
+                rel_part = "[r]"
+            cypher = f"""
+            MATCH {tail_match}
+            MATCH {head_match}
+            MATCH (n){rel_part}-(m)
+            WITH n, r, m, {with_fields.strip()}
+            DELETE r
+            RETURN {return_list}
+            """
+            result = self.driver.execute_query(cypher, database_=brain_id)
+            for record in result.records:
+                deleted.append(self._record_to_triple(record))
+        return deleted
+
+    def _record_to_triple(self, record: Any) -> Tuple[Node, Predicate, Node]:
+        return (
+            Node(
+                uuid=record.get("n_uuid", "") or "",
+                name=record.get("n_name", "") or "",
+                labels=record.get("n_labels", []) or [],
+                description=record.get("n_description", "") or "",
+                properties=record.get("n_properties", {}) or {},
+            ),
+            Predicate(
+                uuid=record.get("r_uuid", "") or "",
+                name=record.get("r_type", "") or "",
+                description=record.get("r_description", "") or "",
+                direction="neutral",
+                properties=record.get("r_properties", {}) or {},
+            ),
+            Node(
+                uuid=record.get("m_uuid", "") or "",
+                name=record.get("m_name", "") or "",
+                labels=record.get("m_labels", []) or [],
+                description=record.get("m_description", "") or "",
+                properties=record.get("m_properties", {}) or {},
+            ),
+        )
+
+    def _node_match_cypher(self, alias: str, node: NodeDict) -> str:
+        if not node:
+            return f"({alias})"
+        if node.get("uuid"):
+            return f"({alias}) WHERE {alias}.uuid = {self._format_value(node['uuid'])}"
+        labels = node.get("labels") or []
+        name = node.get("name") or ""
+        if labels:
+            labels_part = ":".join(self._clean_labels(labels))
+            return f"({alias}:{labels_part}) WHERE {alias}.name = {self._format_value(name)}"
+        if name:
+            return f"({alias}) WHERE {alias}.name = {self._format_value(name)}"
+        return f"({alias})"
+
+    def list_relationships(
+        self, subject: str, object: str, brain_id: str
+    ) -> list[Tuple[Node, Predicate, Node]]:
+        """
+        List the relationships between the subject and object.
+        """
+        cypher_query = f"""
+        MATCH (n)-[r]-(m) WHERE n.uuid = {self._format_value(subject)} AND m.uuid = {self._format_value(object)}
+        RETURN n.uuid as n_uuid, n.name as n_name, labels(n) as n_labels, n.description as n_description, properties(n) as n_properties, n.polarity as n_polarity, n.metadata as n_metadata, n.happened_at as n_happened_at, n.last_updated as n_last_updated, n.observations as n_observations,
+        r.uuid as r_uuid, type(r) as r_type, r.description as r_description, properties(r) as r_properties, r.flow_key as r_flow_key, r.last_updated as r_last_updated, r.observations as r_observations, r.amount as r_amount,
+        m.uuid as m_uuid, m.name as m_name, labels(m) as m_labels, m.description as m_description, properties(m) as m_properties, m.polarity as m_polarity, m.metadata as m_metadata, m.happened_at as m_happened_at, m.last_updated as m_last_updated, m.observations as m_observations
+        """
+        self.ensure_database(brain_id)
+        result = self.driver.execute_query(cypher_query, database_=brain_id)
+        return [
+            (
+                Node(
+                    uuid=record.get("n_uuid", "") or "",
+                    name=record.get("n_name", "") or "",
+                    labels=record.get("n_labels", []) or [],
+                    description=record.get("n_description", "") or "",
+                    properties=record.get("n_properties", {}) or {},
+                    polarity=record.get("n_polarity", "neutral"),
+                    metadata=record.get("n_metadata", {}) or {},
+                    happened_at=record.get("n_happened_at", "") or "",
+                    last_updated=record.get("n_last_updated", "") or "",
+                    observations=record.get("n_observations", []) or [],
+                ),
+                Predicate(
+                    uuid=record.get("r_uuid", "") or "",
+                    name=record.get("r_type", "") or "",
+                    description=record.get("r_description", "") or "",
+                    direction="neutral",
+                    properties=record.get("r_properties", {}) or {},
+                    flow_key=record.get("r_flow_key", "") or "",
+                    last_updated=record.get("r_last_updated", "") or "",
+                    observations=record.get("r_observations", []) or [],
+                    amount=record.get("r_amount"),
+                ),
+                Node(
+                    uuid=record.get("m_uuid", "") or "",
+                    name=record.get("m_name", "") or "",
+                    labels=record.get("m_labels", []) or [],
+                    description=record.get("m_description", "") or "",
+                    properties=record.get("m_properties", {}) or {},
+                    polarity=record.get("m_polarity", "neutral"),
+                    metadata=record.get("m_metadata", {}) or {},
+                    happened_at=record.get("m_happened_at", "") or "",
+                    last_updated=record.get("m_last_updated", "") or "",
+                    observations=record.get("m_observations", []) or [],
+                ),
+            )
+            for record in result.records
+        ]
 
 
 _neo4j_client = Neo4jClient()

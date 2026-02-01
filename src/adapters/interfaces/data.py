@@ -3,8 +3,8 @@ File: /data.py
 Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Saturday December 13th 2025
-Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
+Last Modified: Monday January 12th 2026 8:26:26 pm
+Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
@@ -108,10 +108,25 @@ class DataClient(ABC):
 
     @abstractmethod
     def get_structured_data_list(
-        self, brain_id: str, limit: int = 10, skip: int = 0, types: list[str] = None, query_text: str = None
+        self,
+        brain_id: str,
+        limit: int = 10,
+        skip: int = 0,
+        types: list[str] = None,
+        query_text: str = None,
     ) -> list[StructuredData]:
         """
-        Get a list of structured data.
+        Retrieve structured data entries for a specific brain with optional filtering and pagination.
+        
+        Parameters:
+            brain_id (str): Identifier of the brain to query.
+            limit (int): Maximum number of items to return.
+            skip (int): Number of items to skip (offset) for pagination.
+            types (list[str] | None): If provided, restrict results to these structured data types.
+            query_text (str | None): If provided, filter entries that match the text query.
+        
+        Returns:
+            list[StructuredData]: List of matching StructuredData objects.
         """
         raise NotImplementedError("get_structured_data_list method not implemented")
 
@@ -131,41 +146,52 @@ class DataClient(ABC):
 
     @abstractmethod
     def get_observations_list(
-        self, 
-        brain_id: str, 
-        limit: int = 10, 
-        skip: int = 0, 
+        self,
+        brain_id: str,
+        limit: int = 10,
+        skip: int = 0,
         resource_id: str = None,
         labels: list[str] = None,
-        query_text: str = None
+        query_text: str = None,
     ) -> list[Observation]:
         """
-        Get a list of observations.
+        Retrieve a filtered, paginated list of observations for a specific brain.
+        
+        Parameters:
+            brain_id (str): Identifier of the brain to query.
+            limit (int): Maximum number of observations to return.
+            skip (int): Number of observations to skip (offset) for pagination.
+            resource_id (str | None): If provided, restrict results to observations for this resource.
+            labels (list[str] | None): If provided, include only observations that have at least one of these labels.
+            query_text (str | None): If provided, include only observations whose text matches this query.
+        
+        Returns:
+            observations (list[Observation]): A list of matching Observation objects ordered according to the backend's default sort.
         """
         raise NotImplementedError("get_observations_list method not implemented")
-    
+
     @abstractmethod
     def get_observation_labels(self, brain_id: str) -> list[str]:
         """
-        Return all unique observation labels for the specified brain.
+        Retrieve all unique observation labels for the specified brain.
         
         Parameters:
             brain_id (str): Identifier of the brain whose observation labels should be retrieved.
         
         Returns:
-            labels (list[str]): A list of unique label strings present in the brain's observations.
+            list[str]: Unique label strings present in the brain's observations.
         """
         raise NotImplementedError("get_observation_labels method not implemented")
-    
+
     @abstractmethod
     def get_changelog_by_id(self, id: str, brain_id: str) -> KGChanges:
         """
         Retrieve a changelog entry by its identifier within a brain.
-        
+
         Parameters:
             id (str): Identifier of the changelog to retrieve.
             brain_id (str): Identifier of the brain that contains the changelog.
-        
+
         Returns:
             KGChanges: The changelog entry matching the provided `id` in the specified `brain_id`.
         """
@@ -173,23 +199,23 @@ class DataClient(ABC):
 
     @abstractmethod
     def get_changelogs_list(
-        self, 
-        brain_id: str, 
-        limit: int = 10, 
-        skip: int = 0, 
+        self,
+        brain_id: str,
+        limit: int = 10,
+        skip: int = 0,
         types: list[str] = None,
-        query_text: str = None
+        query_text: str = None,
     ) -> list[KGChanges]:
         """
         Retrieve a paginated list of knowledge-graph changelogs for a brain.
-        
+
         Parameters:
             brain_id (str): Identifier of the brain whose changelogs to retrieve.
             limit (int): Maximum number of changelogs to return.
             skip (int): Number of changelogs to skip (offset) for pagination.
             types (list[str] | None): Optional list of changelog types to filter results by.
             query_text (str | None): Optional text to filter changelogs by relevance or content.
-        
+
         Returns:
             list[KGChanges]: A list of KGChanges matching the provided filters and pagination.
         """
@@ -198,12 +224,28 @@ class DataClient(ABC):
     @abstractmethod
     def get_changelog_types(self, brain_id: str) -> list[str]:
         """
-        Return the set of unique changelog types associated with the specified brain.
+        Return the unique changelog types present for the specified brain.
         
         Parameters:
-            brain_id (str): Identifier of the brain whose changelog types should be retrieved.
+            brain_id (str): Identifier of the brain to query.
         
         Returns:
-            list[str]: A list of unique changelog type names (order not guaranteed).
+            list[str]: List of unique changelog type names for the brain (order not guaranteed).
         """
         raise NotImplementedError("get_changelog_types method not implemented")
+
+    @abstractmethod
+    def update_structured_data(
+        self, structured_data: StructuredData, brain_id: str
+    ) -> StructuredData:
+        """
+        Update an existing StructuredData record for a specific brain.
+        
+        Parameters:
+            structured_data (StructuredData): StructuredData object containing the updated content and identifier of the record to update.
+            brain_id (str): Identifier of the brain that owns the structured data.
+        
+        Returns:
+            StructuredData: The stored StructuredData after the update.
+        """
+        raise NotImplementedError("update_structured_data method not implemented")

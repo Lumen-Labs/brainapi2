@@ -3,8 +3,8 @@ File: /client.py
 Created Date: Saturday October 25th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Saturday December 13th 2025
-Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
+Last Modified: Monday January 12th 2026 8:26:26 pm
+Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
@@ -396,6 +396,29 @@ class MongoClient(DataClient):
         pipeline = [{"$group": {"_id": "$type"}}, {"$sort": {"_id": 1}}]
         results = collection.aggregate(pipeline)
         return [result["_id"] for result in results]
+
+    def update_structured_data(
+        self, structured_data: StructuredData, brain_id: str
+    ) -> StructuredData:
+        """
+        Update an existing StructuredData record in the specified brain's structured_data collection.
+        
+        Parameters:
+            structured_data (StructuredData): The structured data object whose stored record will be updated; its `id` is used to locate the document.
+            brain_id (str): Identifier of the brain (database) containing the structured_data collection to update.
+        
+        Returns:
+            StructuredData: The same `structured_data` object that was passed in.
+        
+        Notes:
+            The function updates the document matching `structured_data.id` by setting its fields to those from `structured_data`. If no matching document exists, no document is inserted.
+        """
+        collection = self.get_collection("structured_data", database=brain_id)
+        collection.update_one(
+            {"id": structured_data.id},
+            {"$set": structured_data.model_dump(mode="json")},
+        )
+        return structured_data
 
 
 _mongo_client = MongoClient()

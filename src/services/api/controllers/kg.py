@@ -4,7 +4,7 @@ Created Date: Wednesday December 31st 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
 Last Modified: Wednesday December 31st 2025 7:45:55 pm
-Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
+Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
@@ -21,6 +21,8 @@ async def get_hops(
 ):
     """
     Get the hops in the graph for a given query.
+
+    Currently only supports 2nd degree hops.
     """
     text_embeddings = embeddings_adapter.embed_text(query)
     data_vectors = vector_store_adapter.search_vectors(
@@ -37,5 +39,6 @@ async def get_hops(
         flattened=flattened,
         vector_store_adapter=vector_store_adapter,
         brain_id=brain_id,
+        similarity_threshold=0.0,
     )
     return hops
