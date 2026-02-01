@@ -174,7 +174,7 @@ class KGAgentRemoveRelationshipTool(BaseTool):
             return f"Error removing relationship: {e}"
 
         if len(removed_relationships) > 0:
-            v_ids = [r for _, r, _ in removed_relationships if r.properties.get("v_id")]
+            v_ids = [r.properties.get("v_id") for _, r, _ in removed_relationships if r.properties.get("v_id")]
             if len(v_ids) > 0:
                 self.vector_store.remove_vectors(
                     v_ids, store="relationships", brain_id=self.brain_id
