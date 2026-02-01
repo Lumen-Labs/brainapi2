@@ -4,7 +4,7 @@ Project: controllers
 Created Date: Sunday January 18th 2026
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Sunday January 18th 2026 9:38:31 pm
+Last Modified: Thursday January 29th 2026 8:43:59 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
@@ -29,13 +29,13 @@ async def get_entity_info(
 ) -> GetEntityInfoResponse:
     """
     Retrieve matching event paths for a target and query up to a specified traversal depth.
-    
+
     Parameters:
         target (str): The entity identifier or text to locate.
         query (str): The query text used to find relevant event matches.
         max_depth (int): Maximum path traversal depth to consider when retrieving matches.
         brain_id (str): Brain/workspace identifier to scope the retrieval.
-    
+
     Returns:
         GetEntityInfoResponse: Contains the located target node (`target_node`) and the retrieved paths (`path`).
     """
@@ -50,12 +50,12 @@ async def get_entity_context(
 ) -> GetEntityContextResponse:
     """
     Retrieve contextual information for the specified entity target.
-    
+
     Parameters:
         target (str): The entity identifier or text to retrieve context for.
         context_depth (int): Maximum graph depth (number of hops) to include in the neighborhood.
         brain_id (str): Identifier of the brain/workspace to query.
-    
+
     Returns:
         GetEntityContextResponse: Response with the following fields:
             target_node: The node representing the target entity.
@@ -82,18 +82,22 @@ async def get_entity_sibilings(
 ) -> GetEntitySibilingsResponse:
     """
     Retrieve sibling entities (synergies) for a target entity.
-    
+
     Parameters:
         polarity (Literal["same", "opposite"]): Which polarity of siblings to return — "same" for similar entities, "opposite" for contrasted entities.
-    
+
     Returns:
         GetEntitySibilingsResponse: Object containing the resolved target node and its list of synergies.
     """
     entity_sibilings = EntitySinergyRetriever(brain_id)
-    target_node, synergies = entity_sibilings.retrieve_sibilings(target, polarity)
+    target_node, synergies, seed_nodes, potential_anchors = (
+        entity_sibilings.retrieve_sibilings(target, polarity)
+    )
     return GetEntitySibilingsResponse(
         target_node=target_node,
         synergies=synergies,
+        anchors=seed_nodes,
+        potential_anchors=potential_anchors,
     )
 
 
@@ -104,12 +108,12 @@ async def get_entity_status(
 ) -> GetEntityStatusResponse:
     """
     Retrieve status information for an entity matching the provided target text.
-    
+
     Parameters:
         target (str): Text used to locate the entity.
         types (List[str]): Optional list of node label types to filter matches; if provided, the first matching node whose labels intersect `types` is chosen.
         brain_id (str): Identifier of the brain/workspace to query.
-    
+
     Returns:
         GetEntityStatusResponse: Response containing the matched node (or `None` if not found), `exists` indicating presence, `has_relationships` indicating whether the node has neighbors, `relationships` listing neighbor tuples, and `observations` associated with the node. When no matching node is found, `exists` is `False` and `relationships` and `observations` are empty.
     """

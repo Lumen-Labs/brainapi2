@@ -140,6 +140,9 @@ class RetrievedNeighborNode(BaseModel):
     neighbor: Node
     relationship: Predicate
     most_common: Node
+    similarity_score: float = Field(
+        0.0, description="The similarity score of the neighbor to the main node."
+    )
 
 
 class RetrieveNeighborsRequestResponse(BaseModel):
@@ -261,6 +264,8 @@ class GetEntitySibilingsResponse(BaseModel):
 
     target_node: Node
     synergies: List[EntitySynergy]
+    anchors: List[Node]
+    potential_anchors: List[Node]
 
 
 class GetEntityStatusResponse(BaseModel):

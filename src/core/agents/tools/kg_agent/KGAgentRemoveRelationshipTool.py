@@ -133,6 +133,8 @@ class KGAgentRemoveRelationshipTool(BaseTool):
                 if "tail" in args_uuid and "head" in args_uuid:
                     _tail = args_uuid.get("tail", {})
                     _head = args_uuid.get("head", {})
+                if "relationship_name" in args_uuid:
+                    _relationship_name = args_uuid.get("relationship_name", "")
             elif isinstance(args_uuid, list) and len(args_uuid) > 0:
                 first_arg = args_uuid[0]
                 if isinstance(first_arg, dict):

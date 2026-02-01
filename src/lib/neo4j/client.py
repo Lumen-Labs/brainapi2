@@ -3,7 +3,7 @@ File: /client.py
 Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Thursday January 29th 2026 8:44:06 pm
+Last Modified: Monday February 2nd 2026 10:02:37 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Literal, Optional, Tuple, TypedDict
 from neo4j import GraphDatabase
 from neo4j.exceptions import ClientError
 from src.adapters.interfaces.embeddings import VectorStoreClient
-from src.adapters.interfaces.graph import GraphClient
+from src.adapters.interfaces.graph import GraphClient, PredicateWithFlowKey
 from src.config import config
 from src.constants.kg import (
     IdentificationParams,
@@ -42,6 +42,8 @@ class Neo4jClient(GraphClient):
             connection_timeout=30,
             max_connection_lifetime=300,
             connection_acquisition_timeout=60,
+            warn_notification_severity="OFF",
+            notifications_min_severity="OFF",
         )
 
     def execute_operation(self, operation: str, brain_id: str) -> str:
@@ -264,7 +266,7 @@ class Neo4jClient(GraphClient):
                 escaped_value = self._format_value(value)
                 property_assignments.append(f"n.{cypher_key} = {escaped_value}")
 
-            property_assignments.append(f"n.uuid = '{node.uuid}'")
+            property_assignments.append(f"n['uuid'] = '{node.uuid}'")
 
             properties_set = f"{', '.join(property_assignments)}"
 
@@ -331,18 +333,18 @@ class Neo4jClient(GraphClient):
                 value = getattr(obj, attr, None)
                 if value:
                     extra_ops += f"""
-            SET r.{attr} = {self._format_value(value)}
+            SET r['{attr}'] = {self._format_value(value)}
             """
 
         cypher_query = f"""
-        MATCH (a:{":".join(self._clean_labels(subject.labels))}) WHERE a.name = {self._format_value(subject.name)}
-        MATCH (b:{":".join(self._clean_labels(to_object.labels))}) WHERE b.name = {self._format_value(to_object.name)}
+        MATCH (a:{":".join(self._clean_labels(subject.labels))}) WHERE a['name'] = {self._format_value(subject.name)}
+        MATCH (b:{":".join(self._clean_labels(to_object.labels))}) WHERE b['name'] = {self._format_value(to_object.name)}
         MERGE (a)-[r:{":".join(self._clean_labels([predicate.name]))}]->(b)
         ON CREATE 
-        SET r.description = {self._format_value(predicate.description)}, 
-        r.uuid = {self._format_value(predicate.uuid)}, 
-        r.v_id = {self._format_value(predicate.properties.get("v_id"))},
-        r.flow_key = {self._format_value(predicate.flow_key)}
+        SET r['description'] = {self._format_value(predicate.description)}, 
+        r['uuid'] = {self._format_value(predicate.uuid)}, 
+        r['v_id'] = {self._format_value(predicate.properties.get("v_id"))},
+        r['flow_key'] = {self._format_value(predicate.flow_key)}
         {extra_ops}
         RETURN a, b
         """
@@ -360,7 +362,7 @@ class Neo4jClient(GraphClient):
 
         queries = []
         for node in nodes:
-            query = f"""MATCH (n:{":".join(self._clean_labels(node.labels))}) WHERE n.name = {self._format_value(node.name)}
+            query = f"""MATCH (n:{":".join(self._clean_labels(node.labels))}) WHERE n['name'] = {self._format_value(node.name)}
     OPTIONAL MATCH (n)-[r*1]-(m)
     RETURN n, r, m"""
             queries.append(query)
@@ -376,7 +378,7 @@ class Neo4jClient(GraphClient):
         """
         cypher_query = f"""
         MATCH (n) 
-        WHERE toLower(n.name) CONTAINS toLower({self._format_value(text)})
+        WHERE toLower(n['name']) CONTAINS toLower({self._format_value(text)})
         RETURN n
         """
         self.ensure_database(brain_id)
@@ -405,7 +407,7 @@ class Neo4jClient(GraphClient):
         Get nodes by their UUIDs with optional relationships.
         """
         cypher_query = f"""
-        MATCH (n) WHERE n.uuid IN ["{'","'.join(uuids)}"]
+        MATCH (n) WHERE n['uuid'] IN ["{'","'.join(uuids)}"]
         """
 
         if with_relationships:
@@ -429,11 +431,11 @@ class Neo4jClient(GraphClient):
 
         cypher_query += """
         RETURN 
-            n.uuid as uuid, n.name as name, labels(n) as labels, n.description as description, properties(n) as properties
+            n['uuid'] as uuid, n['name'] as name, labels(n) as labels, n['description'] as description, properties(n) as properties
         """
 
         if with_relationships:
-            cypher_query += ", r, m.uuid as m_uuid, m.name as m_name, labels(m) as m_labels, m.description as m_description, properties(m) as m_properties"
+            cypher_query += ", r, m['uuid'] as m_uuid, m['name'] as m_name, labels(m) as m_labels, m['description'] as m_description, properties(m) as m_properties"
 
         self.ensure_database(brain_id)
         result = self.driver.execute_query(cypher_query, database_=brain_id)
@@ -513,11 +515,11 @@ class Neo4jClient(GraphClient):
             Node or None: The matching node, or `None` if no node with the given UUID exists.
         """
         cypher_query = """
-        MATCH (n) WHERE n.uuid = $uuid
-        RETURN n.uuid as uuid, n.name as name, labels(n) as labels, n.description as description,
+        MATCH (n) WHERE n['uuid'] = $uuid
+        RETURN n['uuid'] as uuid, n['name'] as name, labels(n) as labels, n['description'] as description,
         properties(n) as properties,
-        n.polarity as polarity, n.happened_at as happened_at, n.last_updated as last_updated,
-        n.observations as observations, n.metadata as metadata
+        n['polarity'] as polarity, n['happened_at'] as happened_at, n['last_updated'] as last_updated,
+        n['observations'] as observations, n['metadata'] as metadata
         """
         self.ensure_database(brain_id)
         result = self.driver.execute_query(
@@ -545,11 +547,11 @@ class Neo4jClient(GraphClient):
             list[Node]: Nodes with identifiers, names, labels, descriptions, and properties; includes, when available, polarity, happened_at, last_updated, observations, and metadata.
         """
         cypher_query = f"""
-        MATCH (n) WHERE n.uuid IN ["{'","'.join(uuids)}"]
-        RETURN n.uuid as uuid, n.name as name, labels(n) as labels, n.description as description,
+        MATCH (n) WHERE n['uuid'] IN ["{'","'.join(uuids)}"]
+        RETURN n['uuid'] as uuid, n['name'] as name, labels(n) as labels, n['description'] as description,
         properties(n) as properties,
-        n.polarity as polarity, n.happened_at as happened_at, n.last_updated as last_updated,
-        n.observations as observations, n.metadata as metadata
+        n['polarity'] as polarity, n['happened_at'] as happened_at, n['last_updated'] as last_updated,
+        n['observations'] as observations, n['metadata'] as metadata
         """
         self.ensure_database(brain_id)
         result = self.driver.execute_query(cypher_query, database_=brain_id)
@@ -627,10 +629,10 @@ class Neo4jClient(GraphClient):
 
         cypher_query = f"""
         MATCH (n{labels_str}) {where_str}
-        RETURN n.uuid as uuid, n.name as name, labels(n) as labels, n.description as description,
+        RETURN n['uuid'] as uuid, n['name'] as name, labels(n) as labels, n['description'] as description,
         properties(n) as properties,
-        n.polarity as polarity, n.happened_at as happened_at, n.last_updated as last_updated,
-        n.observations as observations, n.metadata as metadata
+        n['polarity'] as polarity, n['happened_at'] as happened_at, n['last_updated'] as last_updated,
+        n['observations'] as observations, n['metadata'] as metadata
         """
 
         self.ensure_database(brain_id)
@@ -681,7 +683,7 @@ class Neo4jClient(GraphClient):
         uuids_list = '", "'.join(node_uuids)
         cypher_query = f"""
         MATCH (n)-[r]-(c)
-        WHERE n.uuid IN ["{uuids_list}"]
+        WHERE n['uuid'] IN ["{uuids_list}"]
         """
 
         if same_type_only:
@@ -695,13 +697,13 @@ class Neo4jClient(GraphClient):
             )
 
         cypher_query += """
-        RETURN n.uuid as uuid, n.name as name, labels(n) as labels, n.description as description,
+        RETURN n['uuid'] as uuid, n['name'] as name, labels(n) as labels, n['description'] as description,
         properties(n) as properties,
-        n.polarity as polarity, n.happened_at as happened_at, n.last_updated as last_updated,
-        n.observations as observations, n.metadata as metadata, r AS rel,
+        n['polarity'] as polarity, n['happened_at'] as happened_at, n['last_updated'] as last_updated,
+        n['observations'] as observations, n['metadata'] as metadata, r AS rel,
         CASE WHEN startNode(r) = n THEN 'out' ELSE 'in' END AS direction,
-        type(r) AS rel_type, r.description AS rel_description, properties(r) AS rel_properties, r.flow_key as rel_flowkey, r.uuid as rel_uuid,
-        c.uuid AS c_uuid, c.name AS c_name, labels(c) AS c_labels, c.description AS c_description, properties(c) AS c_properties
+        type(r) AS rel_type, r['description'] AS rel_description, properties(r) AS rel_properties, r['flow_key'] as rel_flowkey, r['uuid'] as rel_uuid,
+        c['uuid'] AS c_uuid, c['name'] AS c_name, labels(c) AS c_labels, c['description'] AS c_description, properties(c) AS c_properties
         """
         if limit:
             cypher_query += f" LIMIT {limit}"
@@ -753,12 +755,12 @@ class Neo4jClient(GraphClient):
         b_uuids_str = ",".join([f'"{nid}"' for nid in b_uuids])
         cypher_query = f"""
         MATCH (n)-[r]-(m)
-        WHERE n.uuid = '{a_uuid}' AND m.uuid IN [{b_uuids_str}]
+        WHERE n['uuid'] = '{a_uuid}' AND m['uuid'] IN [{b_uuids_str}]
         RETURN
-            n.uuid as n_uuid, n.name as n_name, labels(n) as n_labels,
-            n.description as n_description, properties(n) as n_properties,
-            m.uuid as m_uuid, m.name as m_name, labels(m) as m_labels,
-            m.description as m_description, properties(m) as m_properties, r as rel
+            n['uuid'] as n_uuid, n['name'] as n_name, labels(n) as n_labels,
+            n['description'] as n_description, properties(n) as n_properties,
+            m['uuid'] as m_uuid, m['name'] as m_name, labels(m) as m_labels,
+            m['description'] as m_description, properties(m) as m_properties, r as rel
         """
         self.ensure_database(brain_id)
         result = self.driver.execute_query(cypher_query, database_=brain_id)
@@ -841,18 +843,18 @@ class Neo4jClient(GraphClient):
             labels_str = f"AND ANY(l IN labels(m) WHERE l IN [{labels_list}])"
         identification_str = ""
         if node:
-            identification_str = f"WHERE n.uuid = '{node.uuid}'"
+            identification_str = f"WHERE n['uuid'] = '{node.uuid}'"
         elif uuids:
             uuids_str = ",".join([f'"{uuid}"' for uuid in uuids])
-            identification_str = f"WHERE n.uuid IN [{uuids_str}]"
+            identification_str = f"WHERE n['uuid'] IN [{uuids_str}]"
         cypher_query = f"""
         MATCH (n)-[r]-(m)
         {identification_str}
         {labels_str}
         RETURN
-            m.uuid as uuid, m.name as name, labels(m) as labels, m.description as description, properties(m) as properties,
-            r as rel, type(r) as rel_type, r.description as rel_description,
-            n.uuid as n_uuid, n.name as n_name, labels(n) as n_labels, n.description as n_description, properties(n) as n_properties,
+            m['uuid'] as uuid, m['name'] as name, labels(m) as labels, m['description'] as description, properties(m) as properties,
+            r as rel, type(r) as rel_type, r['description'] as rel_description,
+            n['uuid'] as n_uuid, n['name'] as n_name, labels(n) as n_labels, n['description'] as n_description, properties(n) as n_properties,
             CASE WHEN startNode(r) = n THEN 'out' ELSE 'in' END AS direction
         """
         self.ensure_database(brain_id)
@@ -918,31 +920,31 @@ class Neo4jClient(GraphClient):
             )
         if relationship_uuids:
             filters.append(
-                "r.uuid IN [" + ",".join(f"'{u}'" for u in relationship_uuids) + "]"
+                "r['uuid'] IN [" + ",".join(f"'{u}'" for u in relationship_uuids) + "]"
             )
         if query_text:
             if query_search_target == "all":
                 filters.append(
-                    f"(toLower(coalesce(n.name, n.name, '')) CONTAINS toLower('{query_text}') OR "
-                    f"toLower(coalesce(m.name, m.name, '')) CONTAINS toLower('{query_text}') OR "
-                    f"toLower(coalesce(r.description, r.description, '')) CONTAINS toLower('{query_text}'))"
+                    f"(toLower(coalesce(n['name'], n['name'], '')) CONTAINS toLower('{query_text}') OR "
+                    f"toLower(coalesce(m['name'], m['name'], '')) CONTAINS toLower('{query_text}') OR "
+                    f"toLower(coalesce(r['description'], r['description'], '')) CONTAINS toLower('{query_text}'))"
                 )
             elif query_search_target == "node_name":
-                filters.append(f"toLower(n.name) CONTAINS toLower('{query_text}')")
+                filters.append(f"toLower(n['name']) CONTAINS toLower('{query_text}')")
             elif query_search_target == "relationship_description":
                 filters.append(
-                    f"toLower(r.description) CONTAINS toLower('{query_text}')"
+                    f"toLower(r['description']) CONTAINS toLower('{query_text}')"
                 )
             elif query_search_target == "relationship_name":
-                filters.append(f"toLower(r.name) CONTAINS toLower('{query_text}')")
+                filters.append(f"toLower(r['name']) CONTAINS toLower('{query_text}')")
         cypher_query = f"""
         MATCH (n)-[r]->(m)
         {"WHERE " + " AND ".join(filters) if filters else ""}
-        RETURN n.uuid AS n_uuid, n.name AS n_name, labels(n) AS n_labels,
-            n.description AS n_description, properties(n) AS n_properties,
-            r AS rel, type(r) AS rel_type, r.description AS rel_description,
-            m.uuid AS m_uuid, m.name AS m_name, labels(m) AS m_labels,
-            m.description AS m_description, properties(m) AS m_properties
+        RETURN n['uuid'] AS n_uuid, n['name'] AS n_name, labels(n) AS n_labels,
+            n['description'] AS n_description, properties(n) AS n_properties,
+            r AS rel, type(r) AS rel_type, r['description'] AS rel_description,
+            m['uuid'] AS m_uuid, m['name'] AS m_name, labels(m) AS m_labels,
+            m['description'] AS m_description, properties(m) AS m_properties
         SKIP {skip}
         LIMIT {limit}
         """
@@ -1062,18 +1064,18 @@ class Neo4jClient(GraphClient):
                 + "])"
             )
         if node_uuids:
-            filters.append(f"n.uuid IN [{','.join(node_uuids)}]")
+            filters.append(f"n['uuid'] IN [{','.join(node_uuids)}]")
         if query_text:
             filters.append(
-                f"(toLower(coalesce(n.name, n.name, '')) CONTAINS toLower({self._format_value(query_text)}))"
+                f"(toLower(coalesce(n['name'], n['name'], '')) CONTAINS toLower({self._format_value(query_text)}))"
             )
         cypher_query = f"""
         MATCH (n)
         {"WHERE " + " AND ".join(filters) if filters else ""}
-        RETURN n.uuid as uuid, n.name as name, labels(n) as labels, n.description as description,
+        RETURN n['uuid'] as uuid, n['name'] as name, labels(n) as labels, n['description'] as description,
         properties(n) as properties,
-        n.polarity as polarity, n.happened_at as happened_at, n.last_updated as last_updated,
-        n.observations as observations, n.metadata as metadata
+        n['polarity'] as polarity, n['happened_at'] as happened_at, n['last_updated'] as last_updated,
+        n['observations'] as observations, n['metadata'] as metadata
         SKIP {skip}
         LIMIT {limit}
         """
@@ -1128,13 +1130,13 @@ class Neo4jClient(GraphClient):
         Deprecate a relationship from the graph.
         """
         cypher_query = f"""
-        MATCH (a:{":".join(self._clean_labels(subject.labels))}) WHERE a.name = '{subject.name}'
-        MATCH (b:{":".join(self._clean_labels(object.labels))}) WHERE b.name = '{object.name}'
+        MATCH (a:{":".join(self._clean_labels(subject.labels))}) WHERE a['name'] = '{subject.name}'
+        MATCH (b:{":".join(self._clean_labels(object.labels))}) WHERE b['name'] = '{object.name}'
         MATCH (a)-[r:{":".join(self._clean_labels([predicate.name]))}]->(b)
-        SET r.deprecated = true
-        RETURN a.uuid as a_uuid, a.name as a_name, labels(a) as a_labels, a.description as a_description, properties(a) as a_properties,
-            b.uuid as b_uuid, b.name as b_name, labels(b) as b_labels, b.description as b_description, properties(b) as b_properties,
-            r.uuid as r_uuid, type(r) as r_type, r.description as r_description, properties(r) as r_properties
+        SET r['deprecated'] = true
+        RETURN a['uuid'] as a_uuid, a['name'] as a_name, labels(a) as a_labels, a['description'] as a_description, properties(a) as a_properties,
+            b['uuid'] as b_uuid, b['name'] as b_name, labels(b) as b_labels, b['description'] as b_description, properties(b) as b_properties,
+            r['uuid'] as r_uuid, type(r) as r_type, r['description'] as r_description, properties(r) as r_properties
         """
         self.ensure_database(brain_id)
         result = self.driver.execute_query(cypher_query, database_=brain_id)
@@ -1189,13 +1191,15 @@ class Neo4jClient(GraphClient):
         property_set_operations = []
         for property, value in new_properties.items():
             cypher_key = self._format_property_key(property)
+            key_str = cypher_key.strip("`")
             formatted_value = self._format_value(value)
-            property_set_operations.append(f"t.{cypher_key} = {formatted_value}")
+            property_set_operations.append(f"t['{key_str}'] = {formatted_value}")
 
         property_remove_operations = []
         for property in properties_to_remove:
             cypher_key = self._format_property_key(property)
-            property_remove_operations.append(f"t.{cypher_key}")
+            key_str = cypher_key.strip("`")
+            property_remove_operations.append(f"t['{key_str}']")
 
         properties_set_op = (
             f"SET {', '.join(property_set_operations)}"
@@ -1210,17 +1214,17 @@ class Neo4jClient(GraphClient):
 
         if updating == "node":
             cypher_query = f"""
-            MATCH (t) WHERE t.uuid = $uuid
+            MATCH (t) WHERE t['uuid'] = $uuid
             {properties_set_op}
             {properties_remove_op}
-            RETURN t.uuid as uuid, t.name as name, labels(t) as labels, t.description as description, properties(t) as properties
+            RETURN t['uuid'] as uuid, t['name'] as name, labels(t) as labels, t['description'] as description, properties(t) as properties
             """
         elif updating == "relationship":
             cypher_query = f"""
-            MATCH ()-[t]->() WHERE t.uuid = $uuid
+            MATCH ()-[t]->() WHERE t['uuid'] = $uuid
             {properties_set_op}
             {properties_remove_op}
-            RETURN t, type(t) AS rel_type, t.description AS rel_description, properties(t) as properties
+            RETURN t, type(t) AS rel_type, t['description'] AS rel_description, properties(t) as properties
             """
 
         self.ensure_database(brain_id)
@@ -1334,10 +1338,12 @@ class Neo4jClient(GraphClient):
                 return None
 
         if new_name:
-            operations.append(f"n.name = {self._format_value(new_name)}")
+            operations.append(f"n['name'] = {self._format_value(new_name)}")
 
         if new_description:
-            operations.append(f"n.description = {self._format_value(new_description)}")
+            operations.append(
+                f"n['description'] = {self._format_value(new_description)}"
+            )
 
         if new_properties and existing_node:
             existing_properties = existing_node.properties or {}
@@ -1349,21 +1355,22 @@ class Neo4jClient(GraphClient):
                     property_key not in existing_properties
                     or existing_value != new_value
                 ):
-                    cypher_key = self._format_property_key(property_key)
+                    key_str = self._clean_property_key(property_key)
                     formatted_value = self._format_value(new_value)
-                    operations.append(f"n.{cypher_key} = {formatted_value}")
+                    operations.append(f"n['{key_str}'] = {formatted_value}")
         elif new_properties:
             for property_key, value in new_properties.items():
-                cypher_key = self._format_property_key(property_key)
+                key_str = self._clean_property_key(property_key)
                 formatted_value = self._format_value(value)
-                operations.append(f"n.{cypher_key} = {formatted_value}")
+                operations.append(f"n['{key_str}'] = {formatted_value}")
 
         set_clause = f"SET {', '.join(operations)}" if operations else ""
 
         remove_clause = ""
         if properties_to_remove:
             remove_operations = [
-                f"n.{self._format_property_key(prop)}" for prop in properties_to_remove
+                f"n['{self._clean_property_key(prop)}']"
+                for prop in properties_to_remove
             ]
             remove_clause = f"REMOVE {', '.join(remove_operations)}"
 
@@ -1386,12 +1393,12 @@ class Neo4jClient(GraphClient):
 
         cypher_query = f"""
         MATCH (n)
-        WHERE n.uuid = $uuid
+        WHERE n['uuid'] = $uuid
         {set_clause}
         {remove_clause}
         {labels_clause}
-        RETURN n.uuid as uuid, n.name as name, labels(n) as labels,
-            n.description as description, properties(n) as properties
+        RETURN n['uuid'] as uuid, n['name'] as name, labels(n) as labels,
+            n['description'] as description, properties(n) as properties
         """
 
         self.ensure_database(brain_id)
@@ -1496,8 +1503,8 @@ class Neo4jClient(GraphClient):
         """
         cypher_query = f"""
         MATCH (n:{":".join(self._clean_labels(labels))})
-        WHERE n.name = $name
-        AND n.uuid = $uuid
+        WHERE n['name'] = $name
+        AND n['uuid'] = $uuid
         RETURN n
         """
         self.ensure_database(brain_id)
@@ -1554,17 +1561,17 @@ class Neo4jClient(GraphClient):
 
         cypher_query = """
         MATCH (n)-[r]-(m)
-        WHERE n.uuid = $uuid
+        WHERE n['uuid'] = $uuid
         RETURN 
             r as rel,
             type(r) as rel_type,
-            r.description as rel_description,
+            r['description'] as rel_description,
             properties(r) as rel_properties,
             CASE WHEN startNode(r) = n THEN 'out' ELSE 'in' END AS direction,
-            m.uuid as m_uuid,
-            m.name as m_name,
+            m['uuid'] as m_uuid,
+            m['name'] as m_name,
             labels(m) as m_labels,
-            m.description as m_description,
+            m['description'] as m_description,
             properties(m) as m_properties
         """
 
@@ -1610,62 +1617,81 @@ class Neo4jClient(GraphClient):
 
         return neighbors
 
-    def get_next_by_flow_key(
-        self, predicate_uuid: str, flow_key: str, brain_id: str
+    def get_nexts_by_flow_key(
+        self, predicates: list[PredicateWithFlowKey], brain_id: str
     ) -> List[Tuple[Node, Predicate, Node]]:
         """
-        Finds subsequent nodes in a flow that follow a relationship identified by a predicate UUID and share the given flow key.
+        Retrieve the next connected node tuple(s) for a relationship identified by a flow key, grouped by the predicate UUID.
 
         Parameters:
-            predicate_uuid (str): UUID of the reference relationship whose adjacent segment is the starting point.
-            flow_key (str): Flow key used to match the subsequent relationship.
+            predicates (list[PredicateWithFlowKey]): A list of predicates with their flow keys.
             brain_id (str): Database name (brain) to execute the query against.
 
         Returns:
-            List[Tuple[Node, Predicate, Node]]: A list of tuples each containing the middle node, the matching relationship (predicate) that has the flow_key, and the connected target node. Each tuple represents a directed hop from the middle node through the matched predicate to the target node; the predicate includes its direction and properties.
+            Dict[str, List[Tuple[Node, Predicate, Node]]]: A dictionary mapping predicate UUIDs to lists of (subject node, predicate, object node) tuples that are the next nodes matching the provided flow key; empty dictionary if none are found for any predicate UUID.
         """
-        cypher_query = f"""
-        MATCH ()-[r]-(m)-[r2]-(b)
-        WHERE r.uuid = $predicate_uuid
-        AND r2.flow_key = $flow_key
-        RETURN
-            m.uuid as m_uuid, m.name as m_name, labels(m) as m_labels,
-            type(r2) as r2_type, r2.description as r2_description, properties(r2) as r2_properties,
-            CASE WHEN startNode(r2) = m THEN 'out' ELSE 'in' END AS r2_direction,
-            b.uuid as b_uuid, b.name as b_name, labels(b) as b_labels, b.description as b_description, properties(b) as b_properties
-        """
-        self.ensure_database(brain_id)
-        result = self.driver.execute_query(
-            cypher_query,
-            parameters_={
-                "predicate_uuid": predicate_uuid,
-                "flow_key": flow_key,
-            },
-            database_=brain_id,
-        )
-        return [
-            (
-                Node(
-                    uuid=record.get("m_uuid", "") or "",
-                    name=record.get("m_name", "") or "",
-                    labels=record.get("m_labels", []) or [],
-                ),
-                Predicate(
-                    name=record.get("r2_type", "") or "",
-                    description=record.get("r2_description", "") or "",
-                    direction=record.get("r2_direction", "neutral"),
-                    properties=record.get("r2_properties", {}) or {},
-                ),
-                Node(
-                    uuid=record.get("b_uuid", "") or "",
-                    name=record.get("b_name", "") or "",
-                    labels=record.get("b_labels", []) or [],
-                    description=record.get("b_description", "") or "",
-                    properties=record.get("b_properties", {}) or {},
-                ),
+        res = {}
+        for predicate in predicates:
+            cypher_query = f"""
+            MATCH ()-[r]-(m)-[r2]-(b)
+            WHERE r['uuid'] = $predicate_uuid
+            AND r2['flow_key'] = $flow_key
+            RETURN
+                m['uuid'] as m_uuid, m['name'] as m_name, labels(m) as m_labels, m['description'] as m_description, properties(m) as m_properties, m['polarity'] as m_polarity, m['metadata'] as m_metadata, m['happened_at'] as m_happened_at, m['last_updated'] as m_last_updated, m['observations'] as m_observations,
+                r2['uuid'] as r2_uuid, type(r2) as r2_type, r2['description'] as r2_description, properties(r2) as r2_properties, r2['flow_key'] as r2_flow_key, r2['last_updated'] as r2_last_updated, r2['observations'] as r2_observations, r2['amount'] as r2_amount,
+                CASE WHEN startNode(r2) = m THEN 'out' ELSE 'in' END AS r2_direction,
+                b['uuid'] as b_uuid, b['name'] as b_name, labels(b) as b_labels, b['description'] as b_description, properties(b) as b_properties, b['polarity'] as b_polarity, b['metadata'] as b_metadata, b['happened_at'] as b_happened_at, b['last_updated'] as b_last_updated, b['observations'] as b_observations
+            """
+            self.ensure_database(brain_id)
+            result = self.driver.execute_query(
+                cypher_query,
+                parameters_={
+                    "predicate_uuid": predicate["predicate_uuid"],
+                    "flow_key": predicate["flow_key"],
+                },
+                database_=brain_id,
             )
-            for record in result.records
-        ]
+            res[predicate["predicate_uuid"]] = [
+                (
+                    Node(
+                        uuid=record.get("m_uuid", "") or "",
+                        name=record.get("m_name", "") or "",
+                        labels=record.get("m_labels", []) or [],
+                        description=record.get("m_description", "") or "",
+                        properties=record.get("m_properties", {}) or {},
+                        polarity=record.get("m_polarity", "neutral"),
+                        metadata=record.get("m_metadata", {}) or {},
+                        happened_at=record.get("m_happened_at", "") or "",
+                        last_updated=record.get("m_last_updated", "") or "",
+                        observations=record.get("m_observations", []) or [],
+                    ),
+                    Predicate(
+                        uuid=record.get("r2_uuid", "") or "",
+                        name=record.get("r2_type", "") or "",
+                        description=record.get("r2_description", "") or "",
+                        direction=record.get("r2_direction", "neutral"),
+                        properties=record.get("r2_properties", {}) or {},
+                        flow_key=record.get("r2_flow_key", "") or "",
+                        last_updated=record.get("r2_last_updated", "") or "",
+                        observations=record.get("r2_observations", []) or [],
+                        amount=record.get("r2_amount"),
+                    ),
+                    Node(
+                        uuid=record.get("b_uuid", "") or "",
+                        name=record.get("b_name", "") or "",
+                        labels=record.get("b_labels", []) or [],
+                        description=record.get("b_description", "") or "",
+                        properties=record.get("b_properties", {}) or {},
+                        polarity=record.get("b_polarity", "neutral"),
+                        metadata=record.get("b_metadata", {}) or {},
+                        happened_at=record.get("b_happened_at", "") or "",
+                        last_updated=record.get("b_last_updated", "") or "",
+                        observations=record.get("b_observations", []) or [],
+                    ),
+                )
+                for record in result.records
+            ]
+        return res
 
     def get_triples_by_uuid(
         self, uuids: list[str], brain_id: str
@@ -1674,11 +1700,11 @@ class Neo4jClient(GraphClient):
         Get triples by its UUID.
         """
         cypher_query = f"""
-        MATCH (n)-[r]-(m) WHERE r.uuid IN [{",".join([f'"{uuid}"' for uuid in uuids])}]
+        MATCH (n)-[r]-(m) WHERE r['uuid'] IN [{",".join([f'"{uuid}"' for uuid in uuids])}]
         RETURN 
-            n.uuid as n_uuid, n.name as n_name, labels(n) as n_labels, n.description as n_description, properties(n) as n_properties,
-            r.uuid as r_uuid, type(r) as r_type, r.description as r_description, properties(r) as r_properties,
-            m.uuid as m_uuid, m.name as m_name, labels(m) as m_labels, m.description as m_description, properties(m) as m_properties
+            n['uuid'] as n_uuid, n['name'] as n_name, labels(n) as n_labels, n['description'] as n_description, properties(n) as n_properties,
+            r['uuid'] as r_uuid, type(r) as r_type, r['description'] as r_description, properties(r) as r_properties,
+            m['uuid'] as m_uuid, m['name'] as m_name, labels(m) as m_labels, m['description'] as m_description, properties(m) as m_properties
         """
         self.ensure_database(brain_id)
         result = self.driver.execute_query(
@@ -1716,18 +1742,18 @@ class Neo4jClient(GraphClient):
         Remove nodes from the graph.
         """
         cypher_query = f"""
-        MATCH (n) WHERE n.uuid IN [{",".join([f'"{uuid}"' for uuid in uuids])}]
+        MATCH (n) WHERE n['uuid'] IN [{",".join([f'"{uuid}"' for uuid in uuids])}]
         WITH n, {{
-        uuid: n.uuid,
-        name: n.name,
+        uuid: n['uuid'],
+        name: n['name'],
         labels: labels(n),
-        description: n.description,
+        description: n['description'],
         properties: properties(n),
-        polarity: n.polarity,
-        metadata: n.metadata,
-        happened_at: n.happened_at,
-        last_updated: n.last_updated,
-        observations: n.observations
+        polarity: n['polarity'],
+        metadata: n['metadata'],
+        happened_at: n['happened_at'],
+        last_updated: n['last_updated'],
+        observations: n['observations']
         }} AS node
         DELETE n
         RETURN node
@@ -1759,14 +1785,14 @@ class Neo4jClient(GraphClient):
             else:
                 by_tip_tail.append((tail, pred, head))
         with_fields = """
-            n.uuid AS n_uuid, n.name AS n_name, labels(n) AS n_labels, n.description AS n_description, properties(n) AS n_properties,
-            r.uuid AS r_uuid, type(r) AS r_type, r.description AS r_description, properties(r) AS r_properties,
-            m.uuid AS m_uuid, m.name AS m_name, labels(m) AS m_labels, m.description AS m_description, properties(m) AS m_properties
+            n['uuid'] AS n_uuid, n['name'] AS n_name, labels(n) AS n_labels, n['description'] AS n_description, properties(n) AS n_properties,
+            r['uuid'] AS r_uuid, type(r) AS r_type, r['description'] AS r_description, properties(r) AS r_properties,
+            m['uuid'] AS m_uuid, m['name'] AS m_name, labels(m) AS m_labels, m['description'] AS m_description, properties(m) AS m_properties
         """
         return_list = "n_uuid, n_name, n_labels, n_description, n_properties, r_uuid, r_type, r_description, r_properties, m_uuid, m_name, m_labels, m_description, m_properties"
         if by_rel_uuid:
             cypher = f"""
-            MATCH (n)-[r]-(m) WHERE r.uuid IN [{",".join([self._format_value(u) for u in by_rel_uuid])}]
+            MATCH (n)-[r]-(m) WHERE r['uuid'] IN [{",".join([self._format_value(u) for u in by_rel_uuid])}]
             WITH n, r, m, {with_fields.strip()}
             DELETE r
             RETURN {return_list}
@@ -1824,14 +1850,16 @@ class Neo4jClient(GraphClient):
         if not node:
             return f"({alias})"
         if node.get("uuid"):
-            return f"({alias}) WHERE {alias}.uuid = {self._format_value(node['uuid'])}"
+            return (
+                f"({alias}) WHERE {alias}['uuid'] = {self._format_value(node['uuid'])}"
+            )
         labels = node.get("labels") or []
         name = node.get("name") or ""
         if labels:
             labels_part = ":".join(self._clean_labels(labels))
-            return f"({alias}:{labels_part}) WHERE {alias}.name = {self._format_value(name)}"
+            return f"({alias}:{labels_part}) WHERE {alias}['name'] = {self._format_value(name)}"
         if name:
-            return f"({alias}) WHERE {alias}.name = {self._format_value(name)}"
+            return f"({alias}) WHERE {alias}['name'] = {self._format_value(name)}"
         return f"({alias})"
 
     def list_relationships(
@@ -1841,10 +1869,10 @@ class Neo4jClient(GraphClient):
         List the relationships between the subject and object.
         """
         cypher_query = f"""
-        MATCH (n)-[r]-(m) WHERE n.uuid = {self._format_value(subject)} AND m.uuid = {self._format_value(object)}
-        RETURN n.uuid as n_uuid, n.name as n_name, labels(n) as n_labels, n.description as n_description, properties(n) as n_properties, n.polarity as n_polarity, n.metadata as n_metadata, n.happened_at as n_happened_at, n.last_updated as n_last_updated, n.observations as n_observations,
-        r.uuid as r_uuid, type(r) as r_type, r.description as r_description, properties(r) as r_properties, r.flow_key as r_flow_key, r.last_updated as r_last_updated, r.observations as r_observations, r.amount as r_amount,
-        m.uuid as m_uuid, m.name as m_name, labels(m) as m_labels, m.description as m_description, properties(m) as m_properties, m.polarity as m_polarity, m.metadata as m_metadata, m.happened_at as m_happened_at, m.last_updated as m_last_updated, m.observations as m_observations
+        MATCH (n)-[r]-(m) WHERE n['uuid'] = {self._format_value(subject)} AND m['uuid'] = {self._format_value(object)}
+        RETURN n['uuid'] as n_uuid, n['name'] as n_name, labels(n) as n_labels, n['description'] as n_description, properties(n) as n_properties, n['polarity'] as n_polarity, n['metadata'] as n_metadata, n['happened_at'] as n_happened_at, n['last_updated'] as n_last_updated, n['observations'] as n_observations,
+        r['uuid'] as r_uuid, type(r) as r_type, r['description'] as r_description, properties(r) as r_properties, r['flow_key'] as r_flow_key, r['last_updated'] as r_last_updated, r['observations'] as r_observations, r['amount'] as r_amount,
+        m['uuid'] as m_uuid, m['name'] as m_name, labels(m) as m_labels, m['description'] as m_description, properties(m) as m_properties, m['polarity'] as m_polarity, m['metadata'] as m_metadata, m['happened_at'] as m_happened_at, m['last_updated'] as m_last_updated, m['observations'] as m_observations
         """
         self.ensure_database(brain_id)
         result = self.driver.execute_query(cypher_query, database_=brain_id)

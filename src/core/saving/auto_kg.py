@@ -107,7 +107,7 @@ def _enrich_kg_impl(input: str, targeting, brain_id: str, ingestion_session_id: 
         entities.entities,
         targeting=targeting,
         brain_id=brain_id,
-        timeout=360 * len(input),
+        timeout=20000,
         ingestion_session_id=ingestion_session_id,
     )
     token_details.append(
