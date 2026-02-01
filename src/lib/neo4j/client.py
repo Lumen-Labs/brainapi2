@@ -1429,7 +1429,7 @@ class Neo4jClient(GraphClient):
         relationships_query = (
             "CALL db.relationshipTypes() YIELD relationshipType RETURN relationshipType"
         )
-        event_names_query = "MATCH (n) WHERE labels(n) CONTAINS 'EVENT' RETURN n.name"
+        event_names_query = "MATCH (n) WHERE 'EVENT' IN labels(n) RETURN n.name as name"
 
         labels_result = self.driver.execute_query(labels_query, database_=brain_id)
         relationships_result = self.driver.execute_query(
