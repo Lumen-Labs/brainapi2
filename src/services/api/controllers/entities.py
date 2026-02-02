@@ -10,6 +10,8 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 """
 
 from typing import List, Literal
+
+from starlette.responses import JSONResponse
 from src.core.search.entity_context import EntityContext
 from src.core.search.entity_info import EventSynergyRetriever
 from src.services.api.constants.requests import (
@@ -78,6 +80,9 @@ async def get_entity_context(
 async def get_entity_sibilings(
     target: str,
     polarity: Literal["same", "opposite"] = "same",
+    do: bool = False,
+    pa: bool = False,
+    ppa: bool = False,
     brain_id: str = "default",
 ) -> GetEntitySibilingsResponse:
     """
@@ -85,19 +90,36 @@ async def get_entity_sibilings(
 
     Parameters:
         polarity (Literal["same", "opposite"]): Which polarity of siblings to return — "same" for similar entities, "opposite" for contrasted entities.
+        do (bool): If True, only direct synergies are returned.
+        pa (bool): If True, potential anchors are returned.
+        ppa (bool): If True, potential positive anchors are returned.
 
     Returns:
         GetEntitySibilingsResponse: Object containing the resolved target node and its list of synergies.
     """
     entity_sibilings = EntitySinergyRetriever(brain_id)
     target_node, synergies, seed_nodes, potential_anchors = (
-        entity_sibilings.retrieve_sibilings(target, polarity)
+        entity_sibilings.retrieve_sibilings(target, polarity, do, pa, ppa)
     )
-    return GetEntitySibilingsResponse(
-        target_node=target_node,
-        synergies=synergies,
-        anchors=seed_nodes,
-        potential_anchors=potential_anchors,
+    return JSONResponse(
+        content={
+            "target_node": target_node.model_dump(mode="json"),
+            "synergies": [synergy.model_dump(mode="json") for synergy in synergies],
+            **(
+                {"anchors": [anchor.model_dump(mode="json") for anchor in seed_nodes]}
+                if ppa and seed_nodes
+                else {}
+            ),
+            **(
+                {
+                    "potential_anchors": [
+                        anchor.model_dump(mode="json") for anchor in potential_anchors
+                    ]
+                }
+                if pa and potential_anchors
+                else {}
+            ),
+        }
     )
 
 

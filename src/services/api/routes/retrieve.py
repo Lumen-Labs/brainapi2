@@ -3,7 +3,7 @@ File: /retrieve.py
 Created Date: Saturday October 25th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Monday January 12th 2026 8:26:26 pm
+Last Modified: Thursday January 29th 2026 8:43:59 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
@@ -113,13 +113,13 @@ async def get_neighbors_ai_mode(
 ):
     """
     Retrieve neighboring entities using AI-mode identification parameters.
-    
+
     Parameters:
         request (RetrieveNeighborsAiModeRequestBody): Request body containing:
             - identification_params: parameters that identify the target entity or entities.
             - looking_for: description of the desired neighbors or relation types.
             - limit: maximum number of neighbor results to return.
-    
+
     Returns:
         list: Neighboring entities that match the AI-mode identification and search criteria.
     """
@@ -132,10 +132,10 @@ async def get_neighbors_ai_mode(
 async def get_context(request):
     """
     Handle an HTTP request to retrieve an entity's contextual information.
-    
+
     Parameters:
         request: The incoming FastAPI request containing the parameters (query string or body) used to identify the target entity and any context options.
-    
+
     Returns:
         The HTTP response payload to be returned to the client containing the entity context.
     """
@@ -154,7 +154,7 @@ async def get_relationships(
 ):
     """
     Retrieve relationships filtered by types, node labels, and query criteria.
-    
+
     Parameters:
         relationship_types (Optional[str]): Comma-separated relationship types to include.
         from_node_labels (Optional[str]): Comma-separated source node labels to filter.
@@ -164,7 +164,7 @@ async def get_relationships(
         limit (int): Maximum number of relationships to return.
         skip (int): Number of relationships to skip.
         brain_id (str): Brain (dataset) identifier.
-        
+
     Returns:
         List of relationship records matching the filters.
     """
@@ -195,12 +195,12 @@ async def get_entities(
 ):
     """
     Retrieve entities matching optional label and text filters with pagination.
-    
+
     Parameters:
         node_labels (Optional[str]): Comma-separated node labels to filter by (e.g. "Person,Company"); when provided, only entities with any of these labels are returned.
         query_text (Optional[str]): Free-text filter to match entity properties or content.
         brain_id (str): Identifier of the brain/knowledge store to query.
-    
+
     Returns:
         list: A list of entity records that match the provided filters and pagination parameters.
     """
@@ -325,11 +325,11 @@ async def get_changelog_by_id(
 ):
     """
     Retrieve a changelog entry by its unique identifier.
-    
+
     Parameters:
         id (str): Unique identifier of the changelog entry.
         brain_id (str): Brain identifier to query. Defaults to "default".
-    
+
     Returns:
         The changelog entry corresponding to the specified identifier.
     """
@@ -370,13 +370,13 @@ async def get_hops(
 ):  # noqa: F821
     """
     Compute graph hops for the given query.
-    
+
     Parameters:
         query (str): Search text or entity identifier to start hop traversal from.
         degrees (int): Maximum number of hop degrees to traverse (default 2).
         flattened (bool): If True, return a flattened list of hops; otherwise preserve nested hop structure.
         brain_id (str): Identifier of the brain (knowledge graph) to query.
-    
+
     Returns:
         list: Hops (paths) connecting matching entities up to the specified degree; the exact structure varies based on `flattened`.
     """
@@ -392,13 +392,13 @@ async def get_entity_info(
 ):
     """
     Retrieve detailed information for an entity identified by the given target and query.
-    
+
     Parameters:
         target (str): Identifier or name of the target entity to retrieve.
         query (str): Query text used to refine or disambiguate the requested entity information.
         max_depth (int): Maximum graph depth to traverse when collecting related information.
         brain_id (str): Identifier of the brain/namespace to query.
-    
+
     Returns:
         dict: A mapping containing the entity's attributes and related contextual information.
     """
@@ -413,12 +413,12 @@ async def get_entity_context(
 ):
     """
     Retrieve contextual information for an entity identified by `target`.
-    
+
     Parameters:
         target (str): Identifier or name of the target entity.
         context_depth (int): Maximum depth of related context to include.
         brain_id (str): Identifier of the brain/knowledge graph to query.
-    
+
     Returns:
         dict: A mapping containing the entity's contextual information.
     """
@@ -429,20 +429,28 @@ async def get_entity_context(
 async def get_entity_synergies(
     target: str,
     polarity: Literal["same", "opposite"] = "same",
+    do: bool = False,
+    pa: bool = False,
+    ppa: bool = False,
     brain_id: str = "default",
 ):
     """
     Retrieve synergies for a specified entity.
-    
+
     Parameters:
         target (str): Identifier or name of the target entity.
         polarity (Literal["same", "opposite"]): Which type of synergies to return: "same" for similar/aligned synergies, "opposite" for contrasting/opposing synergies.
         brain_id (str): Identifier of the knowledge brain to query.
-    
+        do (bool): If True, only direct synergies are returned.
+        pa (bool): If True, potential anchors are returned.
+        ppa (bool): If True, potential positive anchors are returned.
+
     Returns:
         list: A list of synergy records for the target entity matching the requested polarity.
     """
-    return await get_entity_sibilings_controller(target, polarity, brain_id)
+    return await get_entity_sibilings_controller(
+        target, polarity, do, pa, ppa, brain_id
+    )
 
 
 @retrieve_router.get(path="/entity/status")
@@ -453,13 +461,13 @@ async def get_entity_status(
 ):
     """
     Retrieve status information for a specified entity.
-    
+
     Parameters:
-    	target (str): Identifier or name of the entity to inspect.
-    	types (Optional[List[str]]): Optional list of entity types to filter the status computation.
-    	brain_id (str): Identifier of the brain (knowledge graph) to query.
-    
+        target (str): Identifier or name of the entity to inspect.
+        types (Optional[List[str]]): Optional list of entity types to filter the status computation.
+        brain_id (str): Identifier of the brain (knowledge graph) to query.
+
     Returns:
-    	status (dict): A dictionary containing the entity's status details.
+        status (dict): A dictionary containing the entity's status details.
     """
     return await get_entity_status_controller(target, types, brain_id)

@@ -264,8 +264,8 @@ class GetEntitySibilingsResponse(BaseModel):
 
     target_node: Node
     synergies: List[EntitySynergy]
-    anchors: List[Node]
-    potential_anchors: List[Node]
+    anchors: Optional[List[Node]] = None
+    potential_anchors: Optional[List[Node]] = None
 
 
 class GetEntityStatusResponse(BaseModel):
