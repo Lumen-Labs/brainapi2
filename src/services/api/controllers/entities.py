@@ -4,12 +4,14 @@ Project: controllers
 Created Date: Sunday January 18th 2026
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Sunday January 18th 2026 9:38:31 pm
+Last Modified: Thursday January 29th 2026 8:43:59 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
 from typing import List, Literal
+
+from starlette.responses import JSONResponse
 from src.core.search.entity_context import EntityContext
 from src.core.search.entity_info import EventSynergyRetriever
 from src.services.api.constants.requests import (
@@ -29,13 +31,13 @@ async def get_entity_info(
 ) -> GetEntityInfoResponse:
     """
     Retrieve matching event paths for a target and query up to a specified traversal depth.
-    
+
     Parameters:
         target (str): The entity identifier or text to locate.
         query (str): The query text used to find relevant event matches.
         max_depth (int): Maximum path traversal depth to consider when retrieving matches.
         brain_id (str): Brain/workspace identifier to scope the retrieval.
-    
+
     Returns:
         GetEntityInfoResponse: Contains the located target node (`target_node`) and the retrieved paths (`path`).
     """
@@ -50,12 +52,12 @@ async def get_entity_context(
 ) -> GetEntityContextResponse:
     """
     Retrieve contextual information for the specified entity target.
-    
+
     Parameters:
         target (str): The entity identifier or text to retrieve context for.
         context_depth (int): Maximum graph depth (number of hops) to include in the neighborhood.
         brain_id (str): Identifier of the brain/workspace to query.
-    
+
     Returns:
         GetEntityContextResponse: Response with the following fields:
             target_node: The node representing the target entity.
@@ -78,22 +80,51 @@ async def get_entity_context(
 async def get_entity_sibilings(
     target: str,
     polarity: Literal["same", "opposite"] = "same",
+    do: bool = False,
+    pa: bool = False,
+    ppa: bool = False,
     brain_id: str = "default",
 ) -> GetEntitySibilingsResponse:
     """
     Retrieve sibling entities (synergies) for a target entity.
-    
+
     Parameters:
         polarity (Literal["same", "opposite"]): Which polarity of siblings to return — "same" for similar entities, "opposite" for contrasted entities.
-    
+        do (bool): If True, only direct synergies are returned.
+        pa (bool): If True, potential anchors are returned.
+        ppa (bool): If True, potential positive anchors are returned.
+
     Returns:
         GetEntitySibilingsResponse: Object containing the resolved target node and its list of synergies.
     """
     entity_sibilings = EntitySinergyRetriever(brain_id)
-    target_node, synergies = entity_sibilings.retrieve_sibilings(target, polarity)
-    return GetEntitySibilingsResponse(
-        target_node=target_node,
-        synergies=synergies,
+    target_node, synergies, seed_nodes, potential_anchors = (
+        entity_sibilings.retrieve_sibilings(target, polarity, do, pa, ppa)
+    )
+    if target_node is None:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": "No entity found matching the target."},
+        )
+    return JSONResponse(
+        content={
+            "target_node": target_node.model_dump(mode="json"),
+            "synergies": [synergy.model_dump(mode="json") for synergy in synergies],
+            **(
+                {"anchors": [anchor.model_dump(mode="json") for anchor in seed_nodes]}
+                if ppa and seed_nodes
+                else {}
+            ),
+            **(
+                {
+                    "potential_anchors": [
+                        anchor.model_dump(mode="json") for anchor in potential_anchors
+                    ]
+                }
+                if pa and potential_anchors
+                else {}
+            ),
+        }
     )
 
 
@@ -104,12 +135,12 @@ async def get_entity_status(
 ) -> GetEntityStatusResponse:
     """
     Retrieve status information for an entity matching the provided target text.
-    
+
     Parameters:
         target (str): Text used to locate the entity.
         types (List[str]): Optional list of node label types to filter matches; if provided, the first matching node whose labels intersect `types` is chosen.
         brain_id (str): Identifier of the brain/workspace to query.
-    
+
     Returns:
         GetEntityStatusResponse: Response containing the matched node (or `None` if not found), `exists` indicating presence, `has_relationships` indicating whether the node has neighbors, `relationships` listing neighbor tuples, and `observations` associated with the node. When no matching node is found, `exists` is `False` and `relationships` and `observations` are empty.
     """

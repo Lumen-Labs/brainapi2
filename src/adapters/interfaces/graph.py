@@ -9,7 +9,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict, List, Literal, Optional, Tuple
+from typing import Dict, List, Literal, Optional, Tuple, TypedDict
 
 from src.constants.kg import (
     IdentificationParams,
@@ -21,6 +21,11 @@ from src.constants.kg import (
     SearchRelationshipsResult,
 )
 from src.adapters.interfaces.embeddings import VectorStoreClient
+
+
+class PredicateWithFlowKey(TypedDict):
+    predicate_uuid: str
+    flow_key: str
 
 
 class GraphClient(ABC):
@@ -434,16 +439,20 @@ class GraphClient(ABC):
         raise NotImplementedError("get_neighborhood method not implemented")
 
     @abstractmethod
-    def get_next_by_flow_key(
-        self, predicate_uuid: str, flow_key: str, brain_id: str
-    ) -> List[Tuple[Node, Predicate, Node]]:
+    def get_nexts_by_flow_key(
+        self, predicates: list[PredicateWithFlowKey], brain_id: str
+    ) -> Dict[str, List[Tuple[Node, Predicate, Node]]]:
         """
-        Retrieve the next connected node and the relationship identified by a flow key for a given predicate.
+        Retrieve the next connected node tuple(s) for a relationship identified by a flow key, grouped by the predicate UUID.
+
+        Parameters:
+            predicates: list[PredicateWithFlowKey]: A list of predicates with their flow keys.
+            brain_id (str): Identifier of the brain/graph to query.
 
         Returns:
-            List[Tuple[Node, Predicate, Node]]: A list of triples where each triple is (connected node to the predicate, relationship that matches the provided flow_key, next node reached via that relationship).
+            Dict[str, List[Tuple[Node, Predicate, Node]]]: A dictionary mapping predicate UUIDs to lists of (subject node, predicate, object node) tuples that are the next nodes matching the provided flow key; empty dictionary if none are found for any predicate UUID.
         """
-        raise NotImplementedError("get_next_by_flow_key method not implemented")
+        raise NotImplementedError("get_nexts_by_flow_key method not implemented")
 
     @abstractmethod
     def get_triples_by_uuid(

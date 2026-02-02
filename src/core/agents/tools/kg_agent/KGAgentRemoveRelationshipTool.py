@@ -133,6 +133,8 @@ class KGAgentRemoveRelationshipTool(BaseTool):
                 if "tail" in args_uuid and "head" in args_uuid:
                     _tail = args_uuid.get("tail", {})
                     _head = args_uuid.get("head", {})
+                if "relationship_name" in args_uuid:
+                    _relationship_name = args_uuid.get("relationship_name", "")
             elif isinstance(args_uuid, list) and len(args_uuid) > 0:
                 first_arg = args_uuid[0]
                 if isinstance(first_arg, dict):
@@ -147,6 +149,22 @@ class KGAgentRemoveRelationshipTool(BaseTool):
         print(
             f"[DEBUG (kg_agent_remove_relationship)]: Removing relationship: {_rel_uuid} - {_tail} - {_head} - {_relationship_name}"
         )
+        if _relationship_name:
+            if not _tail or not _head:
+                return (
+                    "Error: when removing by relationship name, both tail and head nodes must be provided and non-empty; "
+                    "one or both are missing. Aborting to prevent invalid or broad deletions."
+                )
+            if isinstance(_tail, dict) and len(_tail) == 0:
+                return (
+                    "Error: tail node cannot be empty when relationship name is provided. "
+                    "Provide tail uuid or name and labels."
+                )
+            if isinstance(_head, dict) and len(_head) == 0:
+                return (
+                    "Error: head node cannot be empty when relationship name is provided. "
+                    "Provide head uuid or name and labels."
+                )
         try:
             removed_relationships = self.kg.remove_relationships(
                 relationships=[
@@ -174,7 +192,11 @@ class KGAgentRemoveRelationshipTool(BaseTool):
             return f"Error removing relationship: {e}"
 
         if len(removed_relationships) > 0:
-            v_ids = [r.properties.get("v_id") for _, r, _ in removed_relationships if r.properties.get("v_id")]
+            v_ids = [
+                r.properties.get("v_id")
+                for _, r, _ in removed_relationships
+                if r.properties.get("v_id")
+            ]
             if len(v_ids) > 0:
                 self.vector_store.remove_vectors(
                     v_ids, store="relationships", brain_id=self.brain_id

@@ -9,7 +9,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 """
 
 from typing import Dict, List, Literal, Optional, Tuple
-from src.adapters.interfaces.graph import GraphClient
+from src.adapters.interfaces.graph import GraphClient, PredicateWithFlowKey
 from src.constants.embeddings import Vector
 from src.constants.kg import (
     IdentificationParams,
@@ -627,21 +627,22 @@ class GraphAdapter:
         """
         return self.graph.get_neighborhood(node, depth, brain_id)
 
-    def get_next_by_flow_key(
-        self, predicate_uuid: str, flow_key: str, brain_id: str = "default"
-    ) -> List[Tuple[Node, Predicate, Node]]:
+    def get_nexts_by_flow_key(
+        self,
+        predicates: list[PredicateWithFlowKey],
+        brain_id: str = "default",
+    ) -> Dict[str, List[Tuple[Node, Predicate, Node]]]:
         """
-        Retrieve the next connected node tuple(s) for a relationship identified by a flow key.
+        Retrieve the next connected node tuple(s) for a relationship identified by a flow key, grouped by the predicate UUID.
 
         Parameters:
-            predicate_uuid (str): UUID of the predicate (relationship) to search from.
-            flow_key (str): Flow key value used to select the next relationship target.
+            predicates (list[PredicateWithFlowKey]): A list of predicates with their flow keys.
             brain_id (str): Identifier of the brain/graph namespace to query.
 
         Returns:
-            List[Tuple[Node, Predicate, Node]]: A list of (subject node, predicate, object node) tuples that are the next nodes matching the provided flow key; empty list if none are found.
+            Dict[str, List[Tuple[Node, Predicate, Node]]]: A dictionary mapping predicate UUIDs to lists of (subject node, predicate, object node) tuples that are the next nodes matching the provided flow key; empty dictionary if none are found for any predicate UUID.
         """
-        return self.graph.get_next_by_flow_key(predicate_uuid, flow_key, brain_id)
+        return self.graph.get_nexts_by_flow_key(predicates, brain_id)
 
     def get_triples_by_uuid(
         self, uuids: list[str], brain_id: str
