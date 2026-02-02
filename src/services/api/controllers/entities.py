@@ -101,6 +101,11 @@ async def get_entity_sibilings(
     target_node, synergies, seed_nodes, potential_anchors = (
         entity_sibilings.retrieve_sibilings(target, polarity, do, pa, ppa)
     )
+    if target_node is None:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": "No entity found matching the target."},
+        )
     return JSONResponse(
         content={
             "target_node": target_node.model_dump(mode="json"),

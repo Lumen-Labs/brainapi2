@@ -1064,7 +1064,9 @@ class Neo4jClient(GraphClient):
                 + "])"
             )
         if node_uuids:
-            filters.append(f"n['uuid'] IN [{','.join(node_uuids)}]")
+            filters.append(
+                f"n['uuid'] IN [{','.join(self._format_value(u) for u in node_uuids)}]"
+            )
         if query_text:
             filters.append(
                 f"(toLower(coalesce(n['name'], n['name'], '')) CONTAINS toLower({self._format_value(query_text)}))"

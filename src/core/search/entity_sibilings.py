@@ -298,11 +298,11 @@ class EntitySinergyRetriever:
             brain_id=self.brain_id,
         )
         if not target_node_vs:
-            return None, [], []
+            return None, [], [], []
         target_node_id = target_node_vs[0].metadata.get("uuid")
         target_node = graph_adapter.get_by_uuid(target_node_id, brain_id=self.brain_id)
         if not target_node:
-            return None, [], []
+            return None, [], [], []
 
         _neighbors = graph_adapter.get_neighbors(
             [target_node_id], brain_id=self.brain_id
@@ -330,6 +330,7 @@ class EntitySinergyRetriever:
             all_seed_nodes.extend(seed_nodes_for_neighbor)
 
             for seed_node in seed_nodes_for_neighbor:
+                similar_seeds = []
                 if ppa or not do:
                     seed_vid = seed_node.properties.get("v_id")
                     if seed_vid:
