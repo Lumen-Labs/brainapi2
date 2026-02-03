@@ -220,7 +220,8 @@ services:
       - .env
     command: >
       /app/.venv/bin/celery
-      -A src.workers.app worker
+      -A src.workers.app:ingestion_app worker
+      -Q ingest_data,process_architect_relationships,ingest_structured_data,consolidate_graph
       --loglevel=info
       --concurrency=10
       --max-tasks-per-child=50
@@ -248,7 +249,7 @@ services:
           cpus: "0.9"
           memory: 1408m
     healthcheck:
-      test: ["CMD", "celery", "-A", "src.workers.app", "inspect", "ping"]
+      test: ["CMD", "celery", "-A", "src.workers.app:ingestion_app", "inspect", "ping"]
       interval: 30s
       timeout: 5s
       retries: 3
