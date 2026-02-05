@@ -274,5 +274,5 @@ class GetEntityStatusResponse(BaseModel):
     node: Node
     exists: bool
     has_relationships: bool
-    relationships: List[Tuple[Relationship, Node]]
+    relationships: List[Tuple[Predicate, Node]]
     observations: List[Observation]

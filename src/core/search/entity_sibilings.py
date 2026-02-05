@@ -3,12 +3,12 @@ File: /entity_sibilings.py
 Created Date: Monday January 12th 2026
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Thursday January 29th 2026 8:43:59 pm
+Last Modified: Monday February 2nd 2026 10:04:06 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
-from typing import Dict, List, Literal, Tuple
+from typing import Dict, List, Literal, Optional, Tuple
 import numpy as np
 
 from src.adapters.interfaces.graph import PredicateWithFlowKey
@@ -70,15 +70,22 @@ class EntitySinergyRetriever:
                 - connections (List[EntitySynergy]): a list of EntitySynergy entries representing related entities; may be empty.
         """
 
+        _embedding_cache: Dict[Tuple[str, str], Optional[np.ndarray]] = {}
+
         def _get_first_embedding(ids: List[str], store: str):
-            _embeddings = vector_store_adapter.get_by_ids(
-                ids,
-                store=store,
-                brain_id=self.brain_id,
-            )
-            if not _embeddings:
+            if not ids:
                 return None
-            return _embeddings[0].embeddings
+            key = (ids[0], store)
+            if key not in _embedding_cache:
+                _embeddings = vector_store_adapter.get_by_ids(
+                    ids,
+                    store=store,
+                    brain_id=self.brain_id,
+                )
+                _embedding_cache[key] = (
+                    _embeddings[0].embeddings if _embeddings else None
+                )
+            return _embedding_cache[key]
 
         def _association_score(tn_score, rel_score, multiplier):
             return (
@@ -95,6 +102,11 @@ class EntitySinergyRetriever:
                     association_score=score,
                 )
             else:
+                if seed_node.uuid in (
+                    n.uuid
+                    for n in positivep_connections[neighbor_node.uuid].connected_by
+                ):
+                    return
                 pas = positivep_connections[neighbor_node.uuid].association_score
                 nas = score
                 n_association_score = wmean([pas, nas], FACTORS_INCREMENTAL_WEIGHT)
@@ -128,17 +140,30 @@ class EntitySinergyRetriever:
                     ],
                     brain_id=self.brain_id,
                 )
-                collected_embeddings = []
+                rel_v_ids = []
+                next_tuples = []
                 for t in next_rels[neighbor[0].uuid]:
                     if target_node.uuid in [t[2].uuid, t[0].uuid]:
                         continue
                     v_id = t[1].properties.get("v_id")
                     if not v_id:
                         continue
-                    target_embedding_for_edge = _get_first_embedding(
-                        [v_id],
+                    rel_v_ids.append(v_id)
+                    next_tuples.append((v_id, t))
+                rel_embeddings_map = {}
+                if rel_v_ids:
+                    rel_vectors = vector_store_adapter.get_by_ids(
+                        rel_v_ids,
                         store="relationships",
+                        brain_id=self.brain_id,
                     )
+                    for vid, v in zip(rel_v_ids, rel_vectors):
+                        if v.embeddings is not None:
+                            _embedding_cache[(vid, "relationships")] = v.embeddings
+                            rel_embeddings_map[vid] = v.embeddings
+                collected_embeddings = []
+                for v_id, t in next_tuples:
+                    target_embedding_for_edge = rel_embeddings_map.get(v_id)
                     if not target_embedding_for_edge:
                         continue
                     collected_embeddings.append(target_embedding_for_edge)
@@ -185,6 +210,48 @@ class EntitySinergyRetriever:
                 ],
                 brain_id=self.brain_id,
             )
+
+            rel_ids_to_fetch = []
+            node_ids_to_fetch = []
+            for edge_uuid, n in _neighbors_event.items():
+                for e in n:
+                    if e[2].uuid != target_node.uuid and set(e[2].labels).intersection(
+                        target_node.labels
+                    ):
+                        edge_vid = edges_map[edge_uuid].properties.get("v_id")
+                        if edge_vid:
+                            rel_ids_to_fetch.append(edge_vid)
+                            en_vid = e[1].properties.get("v_id")
+                            if en_vid:
+                                rel_ids_to_fetch.append(en_vid)
+                            neighbor_node_vid = e[2].properties.get("v_id")
+                            if neighbor_node_vid:
+                                node_ids_to_fetch.append(neighbor_node_vid)
+            for dn in _neighbors_direct[seed_node.uuid]:
+                if dn[1].uuid != target_node.uuid:
+                    n_vid = dn[0].properties.get("v_id")
+                    if n_vid:
+                        rel_ids_to_fetch.append(n_vid)
+            unique_rel_ids = list(dict.fromkeys(rel_ids_to_fetch))
+            if unique_rel_ids:
+                rel_vectors = vector_store_adapter.get_by_ids(
+                    unique_rel_ids,
+                    store="relationships",
+                    brain_id=self.brain_id,
+                )
+                for vid, v in zip(unique_rel_ids, rel_vectors):
+                    if v.embeddings is not None:
+                        _embedding_cache[(vid, "relationships")] = v.embeddings
+            unique_node_ids = list(dict.fromkeys(node_ids_to_fetch))
+            if unique_node_ids:
+                node_vectors = vector_store_adapter.get_by_ids(
+                    unique_node_ids,
+                    store="nodes",
+                    brain_id=self.brain_id,
+                )
+                for vid, v in zip(unique_node_ids, node_vectors):
+                    if v.embeddings is not None:
+                        _embedding_cache[(vid, "nodes")] = v.embeddings
 
             _neighbors = []
             for edge_uuid, n in _neighbors_event.items():
@@ -233,9 +300,6 @@ class EntitySinergyRetriever:
                                         rel_score = cosine_similarity(
                                             found_embeddings,
                                             target_embeddings,
-                                        )
-                                        print(
-                                            f"[{seed_node.name}] -> {tn_score} {rel_score}"
                                         )
                         _neighbors.append(
                             (
