@@ -218,15 +218,13 @@ services:
     container_name: brainapi-worker
     env_file:
       - .env
+    environment:
+      CELERY_WORKER_CONCURRENCY: ${CELERY_WORKER_CONCURRENCY:-4}
     command: >
       /app/.venv/bin/celery
       -A src.workers.app:ingestion_app worker
       -Q ingest_data,process_architect_relationships,ingest_structured_data,consolidate_graph
       --loglevel=info
-      --concurrency=10
-      --max-tasks-per-child=50
-      --time-limit=3600
-      --soft-time-limit=3000
       --prefetch-multiplier=1
       --optimization=fair
     depends_on:

@@ -10,6 +10,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 
 import json
 import re
+from typing import Any
 
 
 def str_to_json(text: str | None, empty_fallback: bool = False) -> list[str]:
@@ -37,3 +38,23 @@ def str_to_json(text: str | None, empty_fallback: bool = False) -> list[str]:
             if empty_fallback:
                 return []
             raise Exception(f"Invalid JSON string: {text}")
+
+
+def always_dict(obj: Any) -> dict:
+    """
+    Convert a string or object to a dict.
+    """
+    if not obj:
+        return {}
+    if isinstance(obj, dict):
+        return obj
+    if isinstance(obj, str):
+        try:
+            return json.loads(obj)
+        except Exception:
+            try:
+                return json.loads(obj)
+            except Exception:
+                print(f"Invalid JSON string: {obj}")
+                return {}
+    return {}
