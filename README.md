@@ -7,7 +7,7 @@
 <h1 align="center">🧠 BrainAPI</h1>
 
 <p align="center">
-  <strong>A cognitive memory layer for AI applications</strong>
+  <strong>A cognitive reasoning memory layer for modern applications</strong>
   <br/>
   <em>Transform unstructured data into actionable knowledge with human-inspired retrieval</em>
 </p>
