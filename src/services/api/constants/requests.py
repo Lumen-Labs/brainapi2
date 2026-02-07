@@ -3,7 +3,7 @@ File: /requests.py
 Created Date: Monday October 20th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Monday January 12th 2026 8:26:26 pm
+Last Modified: Monday February 2nd 2026 10:04:06 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
@@ -276,3 +276,16 @@ class GetEntityStatusResponse(BaseModel):
     has_relationships: bool
     relationships: List[Tuple[Predicate, Node]]
     observations: List[Observation]
+
+
+class GetContextRequestBody(BaseModel):
+    """Request body for the get context endpoint."""
+
+    text: str
+    brain_id: str = "default"
+
+
+class GetContextResponse(BaseModel):
+    """Response for the get context endpoint."""
+
+    text_context: str

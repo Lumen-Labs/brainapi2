@@ -3,7 +3,7 @@ File: /config.py
 Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Tuesday December 23rd 2025 9:24:20 pm
+Last Modified: Thursday January 29th 2026 8:43:59 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
@@ -164,9 +164,9 @@ class CeleryConfig:
     def __init__(self):
         """
         Initialize CeleryConfig by loading the worker concurrency setting from the environment.
-        
+
         Sets `self.worker_concurrency` from the `CELERY_WORKER_CONCURRENCY` environment variable and validates its presence.
-        
+
         Raises:
             ValueError: If `CELERY_WORKER_CONCURRENCY` is not set.
         """
@@ -183,7 +183,7 @@ class PricingConfig:
     def __init__(self):
         """
         Initialize pricing configuration from environment variables.
-        
+
         Attributes:
             input_token_price (float): Price per input token from INPUT_TOKEN_PRICE, defaults to 0.0 if unset.
             output_token_price (float): Price per output token from OUTPUT_TOKEN_PRICE, defaults to 0.0 if unset.
@@ -200,9 +200,9 @@ class Config:
     def __init__(self):
         """
         Initialize the application's central configuration by composing environment-backed sub-configurations and loading runtime flags.
-        
+
         This constructor instantiates Azure, Redis, Neo4j, Milvus, Embeddings, Mongo, GCP, Celery, and Pricing configuration objects, reads the RUN_GRAPH_CONSOLIDATOR flag into `run_graph_consolidator`, and loads the `BRAINPAT_TOKEN` into `brainpat_token`.
-        
+
         Raises:
             ValueError: If `BRAINPAT_TOKEN` is not set in the environment.
         """
@@ -219,6 +219,10 @@ class Config:
         self.run_graph_consolidator = (
             os.getenv("RUN_GRAPH_CONSOLIDATOR", "true") == "true"
         )
+        self.docparser_endpoint = os.getenv("DOCPARSER_ENDPOINT")
+        self.docparser_token = os.getenv("DOCPARSER_TOKEN")
+        self.app_host = os.getenv("APP_HOST")
+
         self.brainpat_token = os.getenv("BRAINPAT_TOKEN")
 
         if not self.brainpat_token:

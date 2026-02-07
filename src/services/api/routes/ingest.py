@@ -3,20 +3,23 @@ File: /ingest.py
 Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Sunday October 19th 2025 12:41:30 pm
-Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
+Last Modified: Monday January 5th 2026 7:57:27 pm
+Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
 import json
 import asyncio
-from fastapi import APIRouter, HTTPException
+import requests
+from uuid import uuid4
+from fastapi import APIRouter, HTTPException, Request
 from typing import Literal
 from typing_extensions import Annotated
-from fastapi import Form, UploadFile
+from fastapi import File, Form, UploadFile
 from starlette.responses import JSONResponse
 from celery.exceptions import OperationalError
 
+from src.config import config
 from src.services.api.constants.requests import (
     IngestionRequestBody,
     IngestionStructuredRequestBody,
@@ -34,14 +37,24 @@ ingest_router = APIRouter(prefix="/ingest", tags=["ingest"])
 
 
 @ingest_router.post(path="/")
-async def ingest_data(data: IngestionRequestBody):
+async def ingest_data(data: IngestionRequestBody, request: Request):
     """
     Ingest data to the processing pipeline and save to the memory.
     """
+
+    flow_task_identifier = None
+
+    if request.headers.get("Task-Identifier"):
+        flow_task_identifier = request.headers.get("Task-Identifier")
+
     task = None
     for attempt in range(MAX_TASK_RETRIES):
         try:
-            task = ingest_data_task.delay(data.model_dump())
+            kwargs = {"args": [data.model_dump()]}
+            if flow_task_identifier:
+                kwargs["task_id"] = flow_task_identifier
+
+            task = ingest_data_task.apply_async(**kwargs)
             break
         except OperationalError:
             if attempt == MAX_TASK_RETRIES - 1:
@@ -89,14 +102,44 @@ async def ingest_structured_data(data: IngestionStructuredRequestBody):
 
 @ingest_router.post(path="/file")
 async def ingest_file(
-    file: Annotated[UploadFile, Form()],
+    file: Annotated[UploadFile, File()],
     brain_id: str = Form(default="default"),
-    understanding_level: str = Annotated[
-        Literal["basic", "deep"], Form(default="deep")
-    ],
 ):
     """
     Ingest a file into the processing pipeline and save to the memory.
     """
 
-    return JSONResponse(content={"message": "File ingested successfully"})
+    task = str(uuid4())
+
+    cache_adapter.set(
+        key=f"task:{task}",
+        value=json.dumps({"status": "queued", "task_id": task}),
+        brain_id=brain_id,
+        expires_in=3600 * 24 * 7,
+    )
+
+    try:
+        file.file.seek(0)
+
+        # We are forwarding to the DocParser API to convert files into markdown text
+        # and by forwarding the webhook (our app host) and the task identifier,
+        # we can be called back from the DocParser API to start the ingestion process
+        # with the created markdown text.
+        response = requests.post(
+            f"{config.docparser_endpoint}/ingest",
+            files={"file": (file.filename or "file", file.file, file.content_type)},
+            data={
+                "brain_id": brain_id,
+                "webhook_callback": config.app_host,
+                "identifier": task,
+            },
+            headers={"Authorization": f"Bearer {config.docparser_token}"},
+        )
+        if response.status_code != 200:
+            raise HTTPException(status_code=500, detail=response.text)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return JSONResponse(
+        content={"message": "File ingested successfully", "task_id": task}
+    )

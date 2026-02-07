@@ -3,7 +3,7 @@ File: /retrieve.py
 Created Date: Saturday October 25th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Thursday January 29th 2026 8:43:59 pm
+Last Modified: Monday February 2nd 2026 10:04:06 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
@@ -11,6 +11,8 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 from typing import List, Literal, Optional
 from fastapi import APIRouter, Body, Query
 from src.services.api.constants.requests import (
+    GetContextRequestBody,
+    GetContextResponse,
     RetrieveNeighborsAiModeRequestBody,
     RetrieveNeighborsWithIdentificationParamsRequestBody,
     RetrieveRequestResponse,
@@ -21,6 +23,7 @@ from src.services.api.controllers.retrieve import (
     retrieve_neighbors_ai_mode as retrieve_neighbors_ai_mode_controller,
     get_relationships as retrieve_get_relationships_controller,
     get_entities as retrieve_get_entities_controller,
+    get_context as retrieve_get_context_controller,
 )
 from src.services.api.controllers.kg import get_hops as get_hops_controller
 from src.services.api.controllers.retrieve import (
@@ -128,17 +131,21 @@ async def get_neighbors_ai_mode(
     )
 
 
-@retrieve_router.get("/context")
-async def get_context(request):
+@retrieve_router.post("/context")
+async def get_context(request: GetContextRequestBody) -> GetContextResponse:
     """
     Handle an HTTP request to retrieve an entity's contextual information.
 
     Parameters:
-        request: The incoming FastAPI request containing the parameters (query string or body) used to identify the target entity and any context options.
+        request (GetContextRequestBody): Request body containing:
+            - text: The text to search context for.
+            - brain_id: The brain/workspace identifier to query.
 
     Returns:
-        The HTTP response payload to be returned to the client containing the entity context.
+        GetContextResponse: Response containing the context information.
     """
+
+    return await retrieve_get_context_controller(request)
 
 
 @retrieve_router.get(path="/relationships")

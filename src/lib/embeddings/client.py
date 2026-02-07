@@ -4,7 +4,7 @@ Created Date: Friday October 24th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
 Last Modified: Friday October 24th 2025 7:11:17 pm
-Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
+Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
@@ -119,7 +119,9 @@ class EmbeddingsClient(EmbeddingsClient):
             raise EmbeddingError(error_msg) from e
         except RequestException as e:
             error_msg = f"Request error during embedding: {e}"
-            print(f"Embedding encoding failed: {error_msg}")
+            print(
+                f"Embedding encoding failed: {error_msg} -- input was: {type(text)} - {len(text) if isinstance(text, str) else "not a string"}"
+            )
             raise EmbeddingError(error_msg) from e
         except Exception as e:
             error_msg = f"Unexpected error during embedding: {e}"
