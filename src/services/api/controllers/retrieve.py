@@ -21,6 +21,7 @@ from src.core.search.relationships import search_relationships
 from src.services.api.constants.requests import (
     GetContextRequestBody,
     GetContextResponse,
+    GetContextTriple,
     RetrieveRequestResponse,
     RetrieveNeighborsRequestResponse,
     RetrievedNeighborNode,
@@ -383,10 +384,12 @@ async def get_context(request: GetContextRequestBody) -> GetContextResponse:
     """
 
     embeddings_map = {}
-    embeddings_futures = []
+    futures = []
 
     elements = _entity_extractor.extract_elements(request.text)
     relationships = []
+    historical_context = []
+    historical_context_futures = []
     text_context = ""
 
     def _find_vs_nodes(text: str):
@@ -402,21 +405,53 @@ async def get_context(request: GetContextRequestBody) -> GetContextResponse:
         )
         if len(neighbors) > 0:
             for n, r, m, r2, b in neighbors:
-                embeddings_map[text] = (n, r, m, r2, b)
-                relationships.append((n, r, m, r2, b))
+                embeddings_map[text] = (text, n, r, m, r2, b)
+                relationships.append((text, n, r, m, r2, b))
                 text_context += (
                     "\n".join(
                         f"{item.name}: {item.description}" for item in (n, r, m, r2, b)
                     )
                     + "\n"
                 )
-                return (n, r, m, r2, b)
+                return GetContextTriple(identified_entity=text, triple=(n, r, m, r2, b))
         return ()
 
-    embeddings_futures.append(asyncio.to_thread(_find_vs_nodes, request.text))
+    async def _get_historical_context():
+        nonlocal historical_context
+        _futures = []
+        _futures.append(
+            asyncio.to_thread(
+                data_adapter.get_last_text_chunks,
+                brain_id=request.brain_id,
+                limit=request.historical_limit,
+            )
+        )
+        _futures.append(
+            asyncio.to_thread(
+                data_adapter.get_last_structured_data,
+                brain_id=request.brain_id,
+                limit=request.historical_limit,
+            )
+        )
+        historical_context = await asyncio.gather(*_futures)
+        historical_context = [text_chunk.text for text_chunk in historical_context]
+        return historical_context
+
+    futures.append(asyncio.to_thread(_find_vs_nodes, request.text))
+    historical_context_futures.append(asyncio.to_thread(_get_historical_context))
     for chunk in elements.tokens:
-        embeddings_futures.append(asyncio.to_thread(_find_vs_nodes, chunk["text"]))
+        futures.append(asyncio.to_thread(_find_vs_nodes, chunk["text"]))
 
-    await asyncio.gather(*embeddings_futures)
+    await asyncio.gather(*futures)
 
-    return GetContextResponse(text_context=text_context, triples=relationships)
+    return GetContextResponse(
+        text_context=text_context,
+        triples=[
+            GetContextTriple(
+                identified_entity=t[0],
+                triple=(t[1], t[2], t[3], t[4], t[5]),
+            )
+            for t in relationships
+        ],
+        historical_context=historical_context,
+    )

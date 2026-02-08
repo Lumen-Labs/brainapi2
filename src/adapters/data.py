@@ -3,7 +3,7 @@ File: /data.py
 Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Monday January 12th 2026 8:26:26 pm
+Last Modified: Thursday January 29th 2026 8:43:59 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
@@ -158,10 +158,10 @@ class DataAdapter:
     def get_observation_labels(self, brain_id: str = "default") -> list[str]:
         """
         Get all unique observation labels for the specified brain.
-        
+
         Parameters:
             brain_id (str): Identifier of the brain to query.
-        
+
         Returns:
             list[str]: A list of unique observation label strings for the specified brain.
         """
@@ -226,14 +226,30 @@ class DataAdapter:
     ) -> StructuredData:
         """
         Update an existing structured data entry.
-        
+
         Parameters:
-        	structured_data (StructuredData): The structured data object with updated information.
-        	brain_id (str): Identifier of the brain context for the update.
-        
+                structured_data (StructuredData): The structured data object with updated information.
+                brain_id (str): Identifier of the brain context for the update.
+
         Returns:
-        	StructuredData: The updated structured data object.
+                StructuredData: The updated structured data object.
         """
         return self.data.update_structured_data(
             structured_data=structured_data, brain_id=brain_id
         )
+
+    def get_last_text_chunks(
+        self, brain_id: str = "default", limit: int = 10
+    ) -> list[TextChunk]:
+        """
+        Get the last text chunks from the data client.
+        """
+        return self.data.get_last_text_chunks(brain_id=brain_id, limit=limit)
+
+    def get_last_structured_data(
+        self, brain_id: str = "default", limit: int = 10
+    ) -> list[StructuredData]:
+        """
+        Get the last structured data from the data client.
+        """
+        return self.data.get_last_structured_data(brain_id=brain_id, limit=limit)
