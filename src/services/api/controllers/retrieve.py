@@ -9,6 +9,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 """
 
 import asyncio
+import json
 from typing import Optional
 
 from fastapi import HTTPException
@@ -389,7 +390,6 @@ async def get_context(request: GetContextRequestBody) -> GetContextResponse:
     elements = _entity_extractor.extract_elements(request.text)
     relationships = []
     historical_context = []
-    historical_context_futures = []
     text_context = ""
 
     def _find_vs_nodes(text: str):
@@ -433,14 +433,18 @@ async def get_context(request: GetContextRequestBody) -> GetContextResponse:
                 limit=request.historical_limit,
             )
         )
-        historical_context = await asyncio.gather(*_futures)
-        historical_context = [text_chunk.text for text_chunk in historical_context]
+        text_chunks, structured_data = await asyncio.gather(*_futures)
+        historical_context = [text_chunk.text for text_chunk in text_chunks] + [
+            json.dumps(structured_data.data)
+            for structured_data in structured_data
+            if len(structured_data.data.items()) > 0
+        ]
         return historical_context
 
     futures.append(asyncio.to_thread(_find_vs_nodes, request.text))
-    historical_context_futures.append(asyncio.to_thread(_get_historical_context))
     for chunk in elements.tokens:
         futures.append(asyncio.to_thread(_find_vs_nodes, chunk["text"]))
+    futures.append(_get_historical_context())
 
     await asyncio.gather(*futures)
 
