@@ -1640,6 +1640,104 @@ class Neo4jClient(GraphClient):
 
         return neighbors
 
+    def get_event_centric_neighbors(
+        self,
+        nodes: list[Node | str],
+        brain_id: str,
+    ) -> List[Tuple[Node, Predicate, Node, Predicate, Node]]:
+        """
+        Retrieve the event-centric neighbors of a node.
+        """
+        if len(nodes) == 0:
+            return []
+        if isinstance(nodes[0], str):
+            node_uuids = nodes
+        else:
+            node_uuids = [node.uuid for node in nodes]
+        uuids_list = '", "'.join(node_uuids)
+        cypher_query = f"""
+        MATCH (n)-[r]-(m)-[r2]-(b)
+        WHERE n['uuid'] IN ["{uuids_list}"]
+        AND r2['flow_key'] = r['flow_key']
+        RETURN
+            n['uuid'] as n_uuid, n['name'] as n_name, labels(n) as n_labels, n['description'] as n_description, properties(n) as n_properties, n['polarity'] as n_polarity, n['metadata'] as n_metadata, n['happened_at'] as n_happened_at, n['last_updated'] as n_last_updated, n['observations'] as n_observations,
+            r['uuid'] as r_uuid, type(r) as r_type, r['description'] as r_description, properties(r) as r_properties, r['flow_key'] as r_flow_key, r['last_updated'] as r_last_updated, r['observations'] as r_observations, r['amount'] as r_amount,
+            CASE WHEN startNode(r) = n THEN 'out' ELSE 'in' END AS r_direction,
+            m['uuid'] as m_uuid, m['name'] as m_name, labels(m) as m_labels, m['description'] as m_description, properties(m) as m_properties, m['polarity'] as m_polarity, m['metadata'] as m_metadata, m['happened_at'] as m_happened_at, m['last_updated'] as m_last_updated, m['observations'] as m_observations,
+            r2['uuid'] as r2_uuid, type(r2) as r2_type, r2['description'] as r2_description, properties(r2) as r2_properties, r2['flow_key'] as r2_flow_key, r2['last_updated'] as r2_last_updated, r2['observations'] as r2_observations, r2['amount'] as r2_amount,
+            CASE WHEN startNode(r2) = m THEN 'out' ELSE 'in' END AS r2_direction,
+            b['uuid'] as b_uuid, b['name'] as b_name, labels(b) as b_labels, b['description'] as b_description, properties(b) as b_properties, b['polarity'] as b_polarity, b['metadata'] as b_metadata, b['happened_at'] as b_happened_at, b['last_updated'] as b_last_updated, b['observations'] as b_observations
+        """
+        self.ensure_database(brain_id)
+        result = self.driver.execute_query(
+            cypher_query,
+            parameters_={"node_uuids": node_uuids},
+            database_=brain_id,
+        )
+        return [
+            (
+                Node(
+                    uuid=record.get("n_uuid", "") or "",
+                    name=record.get("n_name", "") or "",
+                    labels=record.get("n_labels", []) or [],
+                    description=record.get("n_description", "") or "",
+                    properties=always_dict(record.get("n_properties", {})),
+                    polarity=record.get("n_polarity", "neutral"),
+                    metadata=always_dict(record.get("n_metadata", {})),
+                    happened_at=record.get("n_happened_at", "") or "",
+                    last_updated=record.get("n_last_updated", "") or "",
+                    observations=record.get("n_observations", []) or [],
+                ),
+                Predicate(
+                    uuid=record.get("r_uuid", "") or "",
+                    name=record.get("r_type", "") or "",
+                    description=record.get("r_description", "") or "",
+                    direction=record.get("r_direction", "neutral"),
+                    properties=always_dict(record.get("r_properties", {})),
+                    flow_key=record.get("r_flow_key", "") or "",
+                    last_updated=record.get("r_last_updated", "") or "",
+                    observations=record.get("r_observations", []) or [],
+                    amount=record.get("r_amount"),
+                ),
+                Node(
+                    uuid=record.get("m_uuid", "") or "",
+                    name=record.get("m_name", "") or "",
+                    labels=record.get("m_labels", []) or [],
+                    description=record.get("m_description", "") or "",
+                    properties=always_dict(record.get("m_properties", {})),
+                    polarity=record.get("m_polarity", "neutral"),
+                    metadata=always_dict(record.get("m_metadata", {})),
+                    happened_at=record.get("m_happened_at", "") or "",
+                    last_updated=record.get("m_last_updated", "") or "",
+                    observations=record.get("m_observations", []) or [],
+                ),
+                Predicate(
+                    uuid=record.get("r2_uuid", "") or "",
+                    name=record.get("r2_type", "") or "",
+                    description=record.get("r2_description", "") or "",
+                    direction=record.get("r2_direction", "neutral"),
+                    properties=always_dict(record.get("r2_properties", {})),
+                    flow_key=record.get("r2_flow_key", "") or "",
+                    last_updated=record.get("r2_last_updated", "") or "",
+                    observations=record.get("r2_observations", []) or [],
+                    amount=record.get("r2_amount"),
+                ),
+                Node(
+                    uuid=record.get("b_uuid", "") or "",
+                    name=record.get("b_name", "") or "",
+                    labels=record.get("b_labels", []) or [],
+                    description=record.get("b_description", "") or "",
+                    properties=always_dict(record.get("b_properties", {})),
+                    polarity=record.get("b_polarity", "neutral"),
+                    metadata=always_dict(record.get("b_metadata", {})),
+                    happened_at=record.get("b_happened_at", "") or "",
+                    last_updated=record.get("b_last_updated", "") or "",
+                    observations=record.get("b_observations", []) or [],
+                ),
+            )
+            for record in result.records
+        ]
+
     def get_nexts_by_flow_key(
         self, predicates: list[PredicateWithFlowKey], brain_id: str
     ) -> List[Tuple[Node, Predicate, Node]]:

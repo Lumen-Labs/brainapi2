@@ -192,6 +192,17 @@ class PricingConfig:
         self.output_token_price = float(os.getenv("OUTPUT_TOKEN_PRICE", 0))
 
 
+class SpacyConfig:
+    """
+    Configuration class for the Spacy configuration.
+    """
+
+    def __init__(self):
+        self.keep_models_in_memory = (
+            os.getenv("SPACY_KEEP_MODELS_IN_MEMORY", "false") == "true"
+        )
+
+
 class Config:
     """
     Configuration class for the application.
@@ -215,6 +226,7 @@ class Config:
         self.gcp = GCPConfig()
         self.celery = CeleryConfig()
         self.pricing = PricingConfig()
+        self.spacy = SpacyConfig()
 
         self.run_graph_consolidator = (
             os.getenv("RUN_GRAPH_CONSOLIDATOR", "true") == "true"

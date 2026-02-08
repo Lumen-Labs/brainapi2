@@ -19,6 +19,8 @@ from src.constants.kg import IdentificationParams, Node, Predicate
 from src.core.search.entities import search_entities
 from src.core.search.relationships import search_relationships
 from src.services.api.constants.requests import (
+    GetContextRequestBody,
+    GetContextResponse,
     RetrieveRequestResponse,
     RetrieveNeighborsRequestResponse,
     RetrievedNeighborNode,
@@ -27,6 +29,7 @@ from src.services.kg_agent.main import graph_adapter, kg_agent
 from src.services.data.main import data_adapter
 from src.services.kg_agent.main import embeddings_adapter, vector_store_adapter
 from src.utils.similarity.vectors import cosine_similarity
+from src.utils.nlp.ner import _entity_extractor
 
 
 async def retrieve_data(
@@ -366,8 +369,54 @@ async def get_entities(
     )
 
 
-async def get_context(request):
+async def get_context(request: GetContextRequestBody) -> GetContextResponse:
     """
-    Retrieve contextual information for an entity identified by `target`.
+    Retrieve contextual information for a text.
+
+    Parameters:
+        request (GetContextRequestBody): Request body containing:
+            - text: The text to search context for.
+            - brain_id: The brain/workspace identifier to query.
+
+    Returns:
+        GetContextResponse: Response containing the context information.
     """
-    return JSONResponse(content={"message": "Context retrieved successfully"})
+
+    embeddings_map = {}
+    embeddings_futures = []
+
+    elements = _entity_extractor.extract_elements(request.text)
+    relationships = []
+    text_context = ""
+
+    def _find_vs_nodes(text: str):
+        nonlocal text_context, relationships
+        if text in embeddings_map:
+            return embeddings_map[text]
+        text_embeddings = embeddings_adapter.embed_text(text)
+        data_vectors = vector_store_adapter.search_vectors(
+            text_embeddings.embeddings, store="nodes", brain_id=request.brain_id
+        )
+        neighbors = graph_adapter.get_event_centric_neighbors(
+            [v.metadata.get("uuid") for v in data_vectors], brain_id=request.brain_id
+        )
+        if len(neighbors) > 0:
+            for n, r, m, r2, b in neighbors:
+                embeddings_map[text] = (n, r, m, r2, b)
+                relationships.append((n, r, m, r2, b))
+                text_context += (
+                    "\n".join(
+                        f"{item.name}: {item.description}" for item in (n, r, m, r2, b)
+                    )
+                    + "\n"
+                )
+                return (n, r, m, r2, b)
+        return ()
+
+    embeddings_futures.append(asyncio.to_thread(_find_vs_nodes, request.text))
+    for chunk in elements.tokens:
+        embeddings_futures.append(asyncio.to_thread(_find_vs_nodes, chunk["text"]))
+
+    await asyncio.gather(*embeddings_futures)
+
+    return GetContextResponse(text_context=text_context, triples=relationships)

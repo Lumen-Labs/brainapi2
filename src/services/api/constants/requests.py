@@ -289,3 +289,4 @@ class GetContextResponse(BaseModel):
     """Response for the get context endpoint."""
 
     text_context: str
+    triples: List[Tuple[Node, Predicate, Node, Predicate, Node]]
