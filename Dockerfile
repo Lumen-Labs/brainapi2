@@ -18,7 +18,7 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     curl \
     && rm -rf /var/lib/apt/lists/* && \
-    pip install poetry==1.8.3 && \
+    pip install poetry==2.1.3 && \
     groupadd -r appuser && useradd -r -g appuser -m appuser
 
 WORKDIR /app
@@ -28,7 +28,7 @@ COPY --chown=appuser:appuser src/ ./src/
 COPY --chown=appuser:appuser entrypoint.sh ./
 
 RUN chmod +x /app/entrypoint.sh && \
-    mkdir -p /app/.venv /app/.cache && \
+    mkdir -p /app/.cache && \
     chown -R appuser:appuser /app
 
 USER appuser
