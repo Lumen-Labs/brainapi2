@@ -120,7 +120,7 @@ class EmbeddingsClient(EmbeddingsClient):
         except RequestException as e:
             error_msg = f"Request error during embedding: {e}"
             print(
-                f"Embedding encoding failed: {error_msg} -- input was: {type(text)} - {len(text) if isinstance(text, str) else "not a string"}"
+                f"Embedding encoding failed: {error_msg} -- input was: {type(text)} - {len(text) if isinstance(text, str) else 'not a string'}"
             )
             raise EmbeddingError(error_msg) from e
         except Exception as e:
