@@ -617,7 +617,10 @@ def ingest_structured_data(self, args: dict):
                 vector_store_adapter.add_vectors(vectors=[vector], store="nodes")
                 new_structured_data = StructuredData(
                     id=uuid,
-                    data=element.json_data,
+                    data={
+                        **(element.json_data if element.json_data else {}),
+                        **(element.textual_data if element.textual_data else {}),
+                    },
                     types=element.types,
                     metadata=element.metadata,
                     brain_version=BRAIN_VERSION,

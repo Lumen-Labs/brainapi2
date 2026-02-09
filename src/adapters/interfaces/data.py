@@ -3,7 +3,7 @@ File: /data.py
 Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Monday January 12th 2026 8:26:26 pm
+Last Modified: Thursday January 29th 2026 8:43:59 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
@@ -117,14 +117,14 @@ class DataClient(ABC):
     ) -> list[StructuredData]:
         """
         Retrieve structured data entries for a specific brain with optional filtering and pagination.
-        
+
         Parameters:
             brain_id (str): Identifier of the brain to query.
             limit (int): Maximum number of items to return.
             skip (int): Number of items to skip (offset) for pagination.
             types (list[str] | None): If provided, restrict results to these structured data types.
             query_text (str | None): If provided, filter entries that match the text query.
-        
+
         Returns:
             list[StructuredData]: List of matching StructuredData objects.
         """
@@ -156,7 +156,7 @@ class DataClient(ABC):
     ) -> list[Observation]:
         """
         Retrieve a filtered, paginated list of observations for a specific brain.
-        
+
         Parameters:
             brain_id (str): Identifier of the brain to query.
             limit (int): Maximum number of observations to return.
@@ -164,7 +164,7 @@ class DataClient(ABC):
             resource_id (str | None): If provided, restrict results to observations for this resource.
             labels (list[str] | None): If provided, include only observations that have at least one of these labels.
             query_text (str | None): If provided, include only observations whose text matches this query.
-        
+
         Returns:
             observations (list[Observation]): A list of matching Observation objects ordered according to the backend's default sort.
         """
@@ -174,10 +174,10 @@ class DataClient(ABC):
     def get_observation_labels(self, brain_id: str) -> list[str]:
         """
         Retrieve all unique observation labels for the specified brain.
-        
+
         Parameters:
             brain_id (str): Identifier of the brain whose observation labels should be retrieved.
-        
+
         Returns:
             list[str]: Unique label strings present in the brain's observations.
         """
@@ -225,10 +225,10 @@ class DataClient(ABC):
     def get_changelog_types(self, brain_id: str) -> list[str]:
         """
         Return the unique changelog types present for the specified brain.
-        
+
         Parameters:
             brain_id (str): Identifier of the brain to query.
-        
+
         Returns:
             list[str]: List of unique changelog type names for the brain (order not guaranteed).
         """
@@ -240,12 +240,28 @@ class DataClient(ABC):
     ) -> StructuredData:
         """
         Update an existing StructuredData record for a specific brain.
-        
+
         Parameters:
             structured_data (StructuredData): StructuredData object containing the updated content and identifier of the record to update.
             brain_id (str): Identifier of the brain that owns the structured data.
-        
+
         Returns:
             StructuredData: The stored StructuredData after the update.
         """
         raise NotImplementedError("update_structured_data method not implemented")
+
+    @abstractmethod
+    def get_last_text_chunks(self, brain_id: str, limit: int = 10) -> list[TextChunk]:
+        """
+        Get the last text chunks from the data client.
+        """
+        raise NotImplementedError("get_last_text_chunks method not implemented")
+
+    @abstractmethod
+    def get_last_structured_data(
+        self, brain_id: str, limit: int = 10
+    ) -> list[StructuredData]:
+        """
+        Get the last structured data from the data client.
+        """
+        raise NotImplementedError("get_last_structured_data method not implemented")

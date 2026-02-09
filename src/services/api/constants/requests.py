@@ -283,9 +283,19 @@ class GetContextRequestBody(BaseModel):
 
     text: str
     brain_id: str = "default"
+    historical_limit: int = 10
+
+
+class GetContextTriple(BaseModel):
+    """Triple for the get context endpoint."""
+
+    identified_entity: str
+    triple: Tuple[Node, Predicate, Node, Predicate, Node]
 
 
 class GetContextResponse(BaseModel):
     """Response for the get context endpoint."""
 
     text_context: str
+    triples: List[GetContextTriple]
+    historical_context: List[str] = []

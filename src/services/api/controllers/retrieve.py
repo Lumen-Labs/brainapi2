@@ -9,6 +9,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 """
 
 import asyncio
+import json
 from typing import Optional
 
 from fastapi import HTTPException
@@ -19,6 +20,9 @@ from src.constants.kg import IdentificationParams, Node, Predicate
 from src.core.search.entities import search_entities
 from src.core.search.relationships import search_relationships
 from src.services.api.constants.requests import (
+    GetContextRequestBody,
+    GetContextResponse,
+    GetContextTriple,
     RetrieveRequestResponse,
     RetrieveNeighborsRequestResponse,
     RetrievedNeighborNode,
@@ -27,6 +31,7 @@ from src.services.kg_agent.main import graph_adapter, kg_agent
 from src.services.data.main import data_adapter
 from src.services.kg_agent.main import embeddings_adapter, vector_store_adapter
 from src.utils.similarity.vectors import cosine_similarity
+from src.utils.nlp.ner import _entity_extractor
 
 
 async def retrieve_data(
@@ -366,8 +371,91 @@ async def get_entities(
     )
 
 
-async def get_context(request):
+async def get_context(request: GetContextRequestBody) -> GetContextResponse:
     """
-    Retrieve contextual information for an entity identified by `target`.
+    Retrieve contextual information for a text.
+
+    Parameters:
+        request (GetContextRequestBody): Request body containing:
+            - text: The text to search context for.
+            - brain_id: The brain/workspace identifier to query.
+
+    Returns:
+        GetContextResponse: Response containing the context information.
     """
-    return JSONResponse(content={"message": "Context retrieved successfully"})
+
+    embeddings_map = {}
+    futures = []
+
+    elements = _entity_extractor.extract_elements(request.text)
+    relationships = []
+    historical_context = []
+    text_context = ""
+
+    def _find_vs_nodes(text: str):
+        nonlocal text_context, relationships
+        if text in embeddings_map:
+            return embeddings_map[text]
+        text_embeddings = embeddings_adapter.embed_text(text)
+        data_vectors = vector_store_adapter.search_vectors(
+            text_embeddings.embeddings, store="nodes", brain_id=request.brain_id
+        )
+        neighbors = graph_adapter.get_event_centric_neighbors(
+            [v.metadata.get("uuid") for v in data_vectors], brain_id=request.brain_id
+        )
+        if len(neighbors) > 0:
+            for n, r, m, r2, b in neighbors:
+                embeddings_map[text] = (text, n, r, m, r2, b)
+                relationships.append((text, n, r, m, r2, b))
+                text_context += (
+                    "\n".join(
+                        f"{item.name}: {item.description}" for item in (n, r, m, r2, b)
+                    )
+                    + "\n"
+                )
+                return GetContextTriple(identified_entity=text, triple=(n, r, m, r2, b))
+        return ()
+
+    async def _get_historical_context():
+        nonlocal historical_context
+        _futures = []
+        _futures.append(
+            asyncio.to_thread(
+                data_adapter.get_last_text_chunks,
+                brain_id=request.brain_id,
+                limit=request.historical_limit,
+            )
+        )
+        _futures.append(
+            asyncio.to_thread(
+                data_adapter.get_last_structured_data,
+                brain_id=request.brain_id,
+                limit=request.historical_limit,
+            )
+        )
+        text_chunks, structured_data = await asyncio.gather(*_futures)
+        historical_context = [text_chunk.text for text_chunk in text_chunks] + [
+            json.dumps(structured_data.data)
+            for structured_data in structured_data
+            if len(structured_data.data.items()) > 0
+        ]
+        return historical_context
+
+    futures.append(asyncio.to_thread(_find_vs_nodes, request.text))
+    for chunk in elements.tokens:
+        futures.append(asyncio.to_thread(_find_vs_nodes, chunk["text"]))
+    futures.append(_get_historical_context())
+
+    await asyncio.gather(*futures)
+
+    return GetContextResponse(
+        text_context=text_context,
+        triples=[
+            GetContextTriple(
+                identified_entity=t[0],
+                triple=(t[1], t[2], t[3], t[4], t[5]),
+            )
+            for t in relationships
+        ],
+        historical_context=historical_context,
+    )

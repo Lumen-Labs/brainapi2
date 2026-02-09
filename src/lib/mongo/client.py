@@ -3,7 +3,7 @@ File: /client.py
 Created Date: Saturday October 25th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Monday January 12th 2026 8:26:26 pm
+Last Modified: Thursday January 29th 2026 8:43:59 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
@@ -402,14 +402,14 @@ class MongoClient(DataClient):
     ) -> StructuredData:
         """
         Update an existing StructuredData record in the specified brain's structured_data collection.
-        
+
         Parameters:
             structured_data (StructuredData): The structured data object whose stored record will be updated; its `id` is used to locate the document.
             brain_id (str): Identifier of the brain (database) containing the structured_data collection to update.
-        
+
         Returns:
             StructuredData: The same `structured_data` object that was passed in.
-        
+
         Notes:
             The function updates the document matching `structured_data.id` by setting its fields to those from `structured_data`. If no matching document exists, no document is inserted.
         """
@@ -419,6 +419,34 @@ class MongoClient(DataClient):
             {"$set": structured_data.model_dump(mode="json")},
         )
         return structured_data
+
+    def get_last_text_chunks(self, brain_id: str, limit: int = 10) -> list[TextChunk]:
+        collection = self.get_collection("text_chunks", database=brain_id)
+        results = collection.find().sort("inserted_at", -1).limit(limit)
+        return [
+            TextChunk(
+                id=result["id"],
+                text=result["text"],
+                metadata=result.get("metadata", None),
+            )
+            for result in results
+        ]
+
+    def get_last_structured_data(
+        self, brain_id: str, limit: int = 10
+    ) -> list[StructuredData]:
+        collection = self.get_collection("structured_data", database=brain_id)
+        results = collection.find().sort("inserted_at", -1).limit(limit)
+        return [
+            StructuredData(
+                id=result["id"],
+                data=result["data"],
+                types=result["types"],
+                metadata=result.get("metadata", None),
+                inserted_at=result.get("inserted_at", None),
+            )
+            for result in results
+        ]
 
 
 _mongo_client = MongoClient()

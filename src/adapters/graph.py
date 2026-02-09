@@ -3,7 +3,7 @@ File: /graph.py
 Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Thursday January 29th 2026 8:44:06 pm
+Last Modified: Monday February 2nd 2026 10:02:37 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
@@ -196,6 +196,16 @@ class GraphAdapter:
             limit=limit,
             of_types=of_types,
         )
+
+    def get_event_centric_neighbors(
+        self,
+        nodes: list[Node | str],
+        brain_id: str = "default",
+    ) -> List[Tuple[Node, Predicate, Node, Predicate, Node]]:
+        """
+        Get the event-centric neighbors of a node.
+        """
+        return self.graph.get_event_centric_neighbors(nodes, brain_id)
 
     def get_node_with_rel_by_uuid(
         self, rel_ids_with_node_ids: list[tuple[str, str]], brain_id: str = "default"

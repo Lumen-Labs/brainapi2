@@ -3,7 +3,7 @@ File: /graph.py
 Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Thursday January 29th 2026 8:43:59 pm
+Last Modified: Monday February 2nd 2026 10:02:37 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
@@ -189,6 +189,17 @@ class GraphClient(ABC):
         Get the neighbors of a node with their relationships.
         """
         raise NotImplementedError("get_neighbors method not implemented")
+
+    @abstractmethod
+    def get_event_centric_neighbors(
+        self,
+        nodes: list[Node | str],
+        brain_id: str,
+    ) -> List[Tuple[Node, Predicate, Node, Predicate, Node]]:
+        """
+        Get the event-centric neighbors of a node.
+        """
+        raise NotImplementedError("get_event_centric_neighbors method not implemented")
 
     @abstractmethod
     def get_node_with_rel_by_uuid(

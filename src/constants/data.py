@@ -4,7 +4,7 @@ Created Date: Saturday October 25th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
 Last Modified: Saturday October 25th 2025 11:48:51 am
-Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
+Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
@@ -49,6 +49,7 @@ class StructuredData(BaseModel):
     )
     brain_version: str = Field(
         description="The version of the brain when the structured data was inserted.",
+        default="0.0.0",
     )
 
 
