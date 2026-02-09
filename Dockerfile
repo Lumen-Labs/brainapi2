@@ -12,7 +12,9 @@ ENV PYTHONUNBUFFERED=1 \
     TRANSFORMERS_CACHE=/app/.cache \
     SENTENCE_TRANSFORMERS_HOME=/app/.cache \
     POETRY_NO_INTERACTION=1 \
-    POETRY_VENV_IN_PROJECT=1
+    POETRY_VENV_IN_PROJECT=1 \
+    PIP_RETRIES=5 \
+    PIP_TIMEOUT=300
 
 RUN apt-get update && apt-get install -y \
     build-essential \
