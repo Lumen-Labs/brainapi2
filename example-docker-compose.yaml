@@ -175,22 +175,15 @@ services:
       - "8000:8000"
     env_file:
       - .env
-    command:
-      - "-m"
-      - "uvicorn"
-      - "src.services.api.app:app"
-      - "--host"
-      - "0.0.0.0"
-      - "--port"
-      - "8000"
-      - "--workers"
-      - "4"
-      - "--timeout-keep-alive"
-      - "30"
-      - "--limit-concurrency"
-      - "200"
-      - "--backlog"
-      - "2048"
+    command: >
+      /app/.venv/bin/python
+      src.services.api.app:app
+      --host 0.0.0.0
+      --port 8000
+      --workers 4
+      --timeout-keep-alive 30
+      --limit-concurrency 200
+      --backlog 2048
     depends_on:
       redis:
         condition: service_healthy
