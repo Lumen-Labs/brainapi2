@@ -4,7 +4,7 @@ set -e
 if [ ! -f "/app/.venv/bin/python" ] || ! /app/.venv/bin/python -c "import torch; import sentence_transformers" 2>/dev/null; then
     echo "Installing dependencies..."
     poetry config virtualenvs.in-project true
-    poetry lock --no-update
+    poetry lock
     poetry install --no-root --sync
 fi
 
