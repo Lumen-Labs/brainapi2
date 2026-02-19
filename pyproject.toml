@@ -1,6 +1,6 @@
 [project]
 name = "brainapi2"
-version = "2.7.1-dev"
+version = "2.7.2-dev"
 description = "Version 2.x.x of the BrainAPI memory layer."
 authors = [
     {name = "Christian",email = "alch.infoemail@gmail.com"}
@@ -66,6 +66,8 @@ python-multipart = ">=0.0.20,<0.0.21"
 sympy = ">=1.12.1,<1.14.0"
 spacy = ">=3.0.0,<4.0.0"
 spacy_langdetect = ">=0.1.2,<0.2.0"
+langid = ">=1.1.6,<2.0.0"
+mcp = ">=1.26.0,<2.0.0"
 
 [tool.pylint.messages_control]
 enable = ["abstract-method"]
