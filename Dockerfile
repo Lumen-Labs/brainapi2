@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.4
 FROM python:3.11-slim
 
 ARG BUILD_DATE
@@ -26,15 +27,19 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 COPY --chown=appuser:appuser pyproject.toml poetry.lock ./
+
+RUN --mount=type=cache,target=/root/.cache/pypoetry \
+    --mount=type=cache,target=/root/.cache/pip \
+    poetry config virtualenvs.in-project true && \
+    mkdir -p .cache && \
+    poetry lock --no-update && \
+    poetry sync --no-root && \
+    chown -R appuser:appuser /app
+
 COPY --chown=appuser:appuser src/ ./src/
 COPY --chown=appuser:appuser entrypoint.sh ./
 
-RUN chmod +x /app/entrypoint.sh && \
-    mkdir -p /app/.cache && \
-    poetry config virtualenvs.in-project true && \
-    poetry lock && \
-    poetry sync --no-root && \
-    chown -R appuser:appuser /app
+RUN chmod +x /app/entrypoint.sh
 
 USER appuser
 

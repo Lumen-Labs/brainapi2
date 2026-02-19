@@ -176,8 +176,7 @@ services:
     env_file:
       - .env
     command: >
-      /app/.venv/bin/python
-      src.services.api.app:app
+      -m uvicorn src.services.api.app:app
       --host 0.0.0.0
       --port 8000
       --workers 4
