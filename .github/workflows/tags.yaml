@@ -16,6 +16,17 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Poetry
+        run: pip install poetry==2.1.3
+
+      - name: Refresh poetry.lock
+        run: poetry lock
+
       - name: Get version
         id: version
         run: echo "VERSION=$(grep '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')" >> $GITHUB_OUTPUT
