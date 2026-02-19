@@ -45,6 +45,9 @@ jobs:
         id: version
         run: echo "VERSION=$(grep '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')" >> $GITHUB_OUTPUT
 
+      - name: Sync poetry.lock with pyproject.toml
+        run: poetry lock --no-update
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
