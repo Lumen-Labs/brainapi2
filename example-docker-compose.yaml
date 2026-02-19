@@ -253,6 +253,39 @@ services:
       retries: 3
       start_period: 60s
 
+  brainapi-mcp:
+    image: ghcr.io/lumen-labs/brainapi:latest
+    container_name: brainapi-mcp
+    ports:
+      - "8001:8001"
+    env_file:
+      - .env
+    command: >
+      -m uvicorn src.services.mcp.app:app
+      --host 0.0.0.0
+      --port 8001
+      --timeout-keep-alive 30
+    depends_on:
+      redis:
+        condition: service_healthy
+      neo4j:
+        condition: service_started
+      mongo:
+        condition: service_healthy
+      milvus:
+        condition: service_healthy
+    networks:
+      - appnet
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.5
+    healthcheck:
+      test: ["CMD-SHELL", "code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8001/); test \"$code\" = '200' || test \"$code\" = '405'"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
 networks:
   appnet:
     driver: bridge
