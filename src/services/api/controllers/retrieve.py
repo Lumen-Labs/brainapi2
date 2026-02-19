@@ -159,7 +159,9 @@ async def retrieve_neighbors(
                 [node.uuid], limit=limit, brain_id=brain_id
             )
             fd_v_neighbors_ids = [
-                fd[1].properties["v_id"] for fd in fd_neighbors[node.uuid]
+                fd[1].properties.get("v_id")
+                for fd in fd_neighbors[node.uuid]
+                if fd[1].properties.get("v_id") is not None
             ]
             if look_for:
                 fd_v_neighbors_embeddings = vector_store_adapter.get_by_ids(
@@ -201,10 +203,11 @@ async def retrieve_neighbors(
             await asyncio.gather(*fd_v_similar_node_futures)
         )
         fd_similar_node_ids = [
-            v.metadata["uuid"]
+            v.metadata.get("uuid")
             for result_dict in fd_v_similar_nodes_results
             for vectors in result_dict.values()
             for v in vectors
+            if v.metadata.get("uuid") is not None
         ]
         fd_similar_nodes = await asyncio.to_thread(
             graph_adapter.get_by_uuids, fd_similar_node_ids, brain_id
