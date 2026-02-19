@@ -32,7 +32,7 @@ COPY --chown=appuser:appuser entrypoint.sh ./
 RUN chmod +x /app/entrypoint.sh && \
     mkdir -p /app/.cache && \
     poetry config virtualenvs.in-project true && \
-    poetry install --no-root --sync && \
+    poetry sync --no-root && \
     chown -R appuser:appuser /app
 
 USER appuser
