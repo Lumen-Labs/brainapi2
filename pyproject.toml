@@ -1,6 +1,6 @@
 [project]
 name = "brainapi2"
-version = "2.7.2-dev"
+version = "2.7.3-dev"
 description = "Version 2.x.x of the BrainAPI memory layer."
 authors = [
     {name = "Christian",email = "alch.infoemail@gmail.com"}
