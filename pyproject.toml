@@ -30,6 +30,7 @@ dependencies = [
     "sentence-transformers (>=2.2.0,<3.0.0)",
     "tenacity (>=8.2.3,<10.0.0)",
     "sympy (>=1.12.1,<1.14.0)",
+    "numpy (>=1.26.0,<2.0.0)",
     "spacy (>=3.0.0,<4.0.0)",
     "spacy_langdetect (>=0.1.2,<0.2.0)",
     "langid (>=1.1.6,<2.0.0)",
@@ -64,6 +65,7 @@ sentence-transformers = ">=2.2.0,<3.0.0"
 tenacity = ">=8.2.3,<10.0.0"
 python-multipart = ">=0.0.20,<0.0.21"
 sympy = ">=1.12.1,<1.14.0"
+numpy = ">=1.26.0,<2.0.0"
 spacy = ">=3.0.0,<4.0.0"
 spacy_langdetect = ">=0.1.2,<0.2.0"
 langid = ">=1.1.6,<2.0.0"
