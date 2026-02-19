@@ -4,7 +4,7 @@ Created Date: Thursday November 27th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
 Last Modified: Thursday November 27th 2025 10:20:03 pm
-Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
+Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
@@ -27,6 +27,12 @@ class BrainPATMiddleware(BaseHTTPMiddleware):
         brainpat = request.headers.get("BrainPAT") or getattr(
             request.state, "pat", None
         )
+        if not brainpat:
+            brainpat = request.headers.get("Authorization")
+            if brainpat:
+                brainpat = brainpat.split(" ")[1]
+                if brainpat:
+                    brainpat = brainpat.rstrip()
         system_pat = os.getenv("BRAINPAT_TOKEN")
 
         if request.url.path.startswith("/system") or request.url.path == "/":

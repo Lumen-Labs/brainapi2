@@ -51,10 +51,16 @@ delete-mongo-volumes:
 	docker compose -f src/lib/mongo/docker-compose.yaml down -v --remove-orphans
 
 start-api:
-	ENV=development poetry run uvicorn src.services.api.app:app --host 0.0.0.0 --port 8000 --access-log --log-level info --reload
+	ENV=development poetry run python -m uvicorn src.services.api.app:app --host 0.0.0.0 --port 8000 --access-log --log-level info --reload
 
 stop-api:
-	pkill -f uvicorn
+	pkill -f "uvicorn src.services.api.app"
+
+start-mcp:
+	ENV=development poetry run python -m uvicorn src.services.mcp.app:app --host 0.0.0.0 --port 8001 --access-log --log-level info --reload
+
+stop-mcp:
+	pkill -f "uvicorn src.services.mcp.app"
 
 DEBUG_ENVS := LANGCHAIN_DEBUG="true" LANGCHAIN_VERBOSE="true" DEBUG="true"
 
@@ -66,16 +72,18 @@ start-all:
 		$(MAKE) start-redis DEBUG=true & \
 		$(MAKE) start-neo4j DEBUG=true & \
 		$(MAKE) start-mongo DEBUG=true & \
+		$(MAKE) start-mcp DEBUG=true & \
 		ENV="development" $(MAKE) start-api DEBUG=true & \
-		bash -c "export $(DEBUG_ENVS) ENV="development" && poetry run celery -A src.workers.app worker --loglevel=info --pool=threads --concurrency=10"; \
+		bash -c "export $(DEBUG_ENVS) ENV="development" && poetry run celery -A src.workers.app worker --loglevel=info --pool=threads"; \
 	else \
 		$(MAKE) start-milvus & \
 		$(MAKE) start-rabbitmq & \
 		$(MAKE) start-redis & \
 		$(MAKE) start-neo4j & \
 		$(MAKE) start-mongo & \
+		$(MAKE) start-mcp & \
 		ENV="development" $(MAKE) start-api & \
-		ENV="development" poetry run celery -A src.workers.app worker --loglevel=info --pool=threads --concurrency=10; \
+		ENV="development" poetry run celery -A src.workers.app worker --loglevel=info --pool=threads; \
 	fi
 
 debug:
@@ -88,6 +96,7 @@ stop-all:
 	make stop-neo4j
 	make stop-mongo
 	make stop-api
+	make stop-mcp
 	pkill -f celery
 
 clear-all-volumes:

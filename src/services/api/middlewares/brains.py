@@ -4,7 +4,7 @@ Created Date: Monday December 1st 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
 Last Modified: Monday December 1st 2025 9:06:30 pm
-Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
+Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 

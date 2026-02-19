@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://discord.gg/VTngQTaeDf"><img src="https://img.shields.io/badge/Discord-Join%20Lumen%20Brain-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"/></a>
-  <img src="https://img.shields.io/badge/version-2.6.6--dev-blue?style=for-the-badge" alt="Version"/>
+  <img src="https://img.shields.io/badge/version-2.7.1--dev-blue?style=for-the-badge" alt="Version"/>
   <img src="https://img.shields.io/badge/python-3.11+-green?style=for-the-badge&logo=python&logoColor=white" alt="Python"/>
   <img src="https://img.shields.io/badge/license-AGPLv3%20%2B%20Commons%20Clause-purple?style=for-the-badge" alt="License"/>
 </p>
@@ -53,7 +53,28 @@ You can run **BrainAPI2 locally** in two main ways:
   make start-all
   ```
 
----
+#### Connecting Claude Desktop to the MCP server
+
+The MCP server runs as a **separate process** on port **8001** (Streamable HTTP at `http://localhost:8001/mcp`) to avoid ASGI nesting issues. Use the stdio adapter so Claude Desktop can connect by URL.
+
+1. Start the MCP server (in addition to the API if you need it): `make start-mcp`. Keep it running.
+2. Open Claude Desktop **Settings → Developer → Edit Config** (edit `claude_desktop_config.json`).
+3. For the **brainapi-local** (or your chosen name) server, add it under `mcpServers`. Example:
+
+   ```json
+   "brainapi-local": {
+     "command": "/path/to/your/node/version/v22.19.0/bin/npx",
+     "args": ["-y", "@pyroprompts/mcp-stdio-to-streamable-http-adapter"],
+     "env": {
+       "URI": "http://localhost:8001/mcp",
+       "MCP_NAME": "brainapi-local",
+       "PATH": "/path/to/your/node/version/v22.19.0/bin:/usr/local/bin:/usr/bin:/bin",
+       "BEARER_TOKEN": "your-pat-here"
+     }
+   }
+   ```
+
+4. Ensure the MCP server is running (`make start-mcp`) and that URL-based MCP servers are enabled in Claude Desktop.
 
 ### 2. Run Using the Container Image
 
