@@ -32,7 +32,6 @@ RUN --mount=type=cache,target=/root/.cache/pypoetry \
     --mount=type=cache,target=/root/.cache/pip \
     poetry config virtualenvs.in-project true && \
     mkdir -p .cache && \
-    poetry lock --no-update && \
     poetry sync --no-root && \
     chown -R appuser:appuser /app
 
