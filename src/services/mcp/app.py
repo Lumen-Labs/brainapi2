@@ -8,7 +8,7 @@ dotenv.load_dotenv(_project_root / ".env")
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
-from starlette.routing import Route
+from starlette.routing import Mount
 from starlette.types import Receive, Scope, Send
 from src.services.mcp.main import mcp
 
@@ -26,13 +26,14 @@ session_manager = StreamableHTTPSessionManager(
 mcp._session_manager = session_manager
 
 
-async def handle_mcp(scope: Scope, receive: Receive, send: Send) -> None:
-    await session_manager.handle_request(scope, receive, send)
+class MCPApp:
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        await session_manager.handle_request(scope, receive, send)
 
 
 app = Starlette(
     routes=[
-        Route("/mcp", endpoint=handle_mcp, methods=["GET", "POST", "DELETE"]),
+        Mount("/mcp", app=MCPApp()),
     ],
     lifespan=lambda _: session_manager.run(),
 )
