@@ -9,8 +9,8 @@ from contextlib import asynccontextmanager
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
-from starlette.routing import Mount
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.routing import Route
+from starlette.types import Receive, Scope, Send
 from src.services.mcp.main import mcp
 
 transport_security = TransportSecuritySettings(
@@ -27,7 +27,7 @@ session_manager = StreamableHTTPSessionManager(
 mcp._session_manager = session_manager
 
 
-class MCPHandler:
+class MCPEndpoint:
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         await session_manager.handle_request(scope, receive, send)
 
@@ -38,9 +38,11 @@ async def lifespan(app: Starlette):
         yield
 
 
+mcp_handler = MCPEndpoint()
+
 app = Starlette(
     routes=[
-        Mount("/", app=MCPHandler()),
+        Route("/mcp", app=mcp_handler, methods=["GET", "POST", "DELETE"]),
     ],
     lifespan=lifespan,
 )
