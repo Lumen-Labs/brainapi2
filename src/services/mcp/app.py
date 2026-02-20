@@ -12,4 +12,8 @@ transport_security = TransportSecuritySettings(
     enable_dns_rebinding_protection=False,
 )
 
-app = mcp.streamable_http_app(transport_security=transport_security)
+app = mcp._mcp_server.streamable_http_app(
+    transport_security=transport_security,
+    stateless_http=mcp.settings.stateless_http,
+    json_response=mcp.settings.json_response,
+)
