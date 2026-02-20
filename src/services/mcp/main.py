@@ -16,7 +16,7 @@ from src.lib.neo4j.client import _neo4j_client
 from src.services.data.main import data_adapter
 from src.services.kg_agent.main import graph_adapter
 
-mcp = FastMCP("brainapi-mcp", stateless_http=True)
+mcp = FastMCP("brainapi-mcp", stateless_http=True, host="0.0.0.0")
 
 
 @mcp.tool()
