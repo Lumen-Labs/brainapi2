@@ -59,6 +59,17 @@ stop-api:
 start-mcp:
 	ENV=development poetry run python -m uvicorn src.services.mcp.app:app --host 0.0.0.0 --port 8001 --access-log --log-level info --reload
 
+MCP_BRIDGE_DIR := mcp-stdio-http-bridge
+
+build-mcp-bridge:
+	cd $(MCP_BRIDGE_DIR) && cargo build --release
+
+build-mcp-bridge-x86:
+	cd $(MCP_BRIDGE_DIR) && cargo build --release --target x86_64-apple-darwin
+
+start-nginx:
+	docker compose -f src/services/webserver/docker-compose.yaml up -d --force-recreate
+
 stop-mcp:
 	pkill -f "uvicorn src.services.mcp.app"
 
