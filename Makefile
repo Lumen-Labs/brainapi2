@@ -60,12 +60,30 @@ start-mcp:
 	ENV=development poetry run python -m uvicorn src.services.mcp.app:app --host 0.0.0.0 --port 8001 --access-log --log-level info --reload
 
 MCP_BRIDGE_DIR := mcp-stdio-http-bridge
+MCP_BRIDGE_VERSION := $(shell grep '^version = ' $(MCP_BRIDGE_DIR)/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+MCP_BRIDGE_TAG := mcp-bridge-v$(MCP_BRIDGE_VERSION)
+MCP_BRIDGE_TOOLCHAIN := $(shell grep 'channel = ' $(MCP_BRIDGE_DIR)/rust-toolchain.toml | sed 's/.*"\(.*\)"/\1/')
 
 build-mcp-bridge:
 	cd $(MCP_BRIDGE_DIR) && cargo build --release
 
-build-mcp-bridge-x86:
+install-mcp-bridge-targets:
+	rustup target add x86_64-apple-darwin --toolchain $(MCP_BRIDGE_TOOLCHAIN)
+
+build-mcp-bridge-x86: install-mcp-bridge-targets
 	cd $(MCP_BRIDGE_DIR) && cargo build --release --target x86_64-apple-darwin
+
+build-mcp-bridge-all: build-mcp-bridge build-mcp-bridge-x86
+
+push-mcp-bridge-packages: build-mcp-bridge-all
+	@mkdir -p $(MCP_BRIDGE_DIR)/dist && \
+	cp $(MCP_BRIDGE_DIR)/target/release/mcp-stdio-http-bridge $(MCP_BRIDGE_DIR)/dist/mcp-stdio-http-bridge-aarch64-apple-darwin && \
+	cp $(MCP_BRIDGE_DIR)/target/x86_64-apple-darwin/release/mcp-stdio-http-bridge $(MCP_BRIDGE_DIR)/dist/mcp-stdio-http-bridge-x86_64-apple-darwin && \
+	gh release create $(MCP_BRIDGE_TAG) \
+		$(MCP_BRIDGE_DIR)/dist/mcp-stdio-http-bridge-aarch64-apple-darwin \
+		$(MCP_BRIDGE_DIR)/dist/mcp-stdio-http-bridge-x86_64-apple-darwin \
+		--title "MCP stdio-http bridge $(MCP_BRIDGE_VERSION)" \
+		--notes "Binary builds for macOS (Apple Silicon and Intel)."
 
 start-nginx:
 	docker compose -f src/services/webserver/docker-compose.yaml up -d --force-recreate
