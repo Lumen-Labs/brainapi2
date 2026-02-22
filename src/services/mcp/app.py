@@ -24,11 +24,12 @@ async def _mcp_info(_request):
     )
 
 
+_custom_routes = [
+    Route("/", _health, methods=["GET"]),
+    Route("/mcp", _mcp_info, methods=["GET"]),
+    Route("/mcp/info", _mcp_info, methods=["GET"]),
+]
 app = Starlette(
-    routes=[
-        Route("/", _health, methods=["GET"]),
-        Route("/mcp", _mcp_info, methods=["GET"]),
-        *_mcp_app.routes,
-    ],
+    routes=_custom_routes + list(_mcp_app.routes),
     lifespan=_mcp_app.router.lifespan_context,
 )
