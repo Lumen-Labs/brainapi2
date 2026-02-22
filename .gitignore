@@ -14,16 +14,5 @@ gcp_credentials.json
 .favorites.json
 .DS_Store
 
-mcp-stdio-http-bridge/target/*
-
-!mcp-stdio-http-bridge/target/aarch64-apple-darwin/
-mcp-stdio-http-bridge/target/aarch64-apple-darwin/*
-!mcp-stdio-http-bridge/target/aarch64-apple-darwin/release/
-mcp-stdio-http-bridge/target/aarch64-apple-darwin/release/*
-!mcp-stdio-http-bridge/target/aarch64-apple-darwin/release/mcp-stdio-http-bridge
-
-!mcp-stdio-http-bridge/target/x86_64-apple-darwin/
-mcp-stdio-http-bridge/target/x86_64-apple-darwin/*
-!mcp-stdio-http-bridge/target/x86_64-apple-darwin/release/
-mcp-stdio-http-bridge/target/x86_64-apple-darwin/release/*
-!mcp-stdio-http-bridge/target/x86_64-apple-darwin/release/mcp-stdio-http-bridge
+mcp-stdio-http-bridge/target/
+mcp-stdio-http-bridge/dist/
