@@ -3,7 +3,7 @@ File: /janitor_agent.py
 Created Date: Sunday December 21st 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Thursday January 29th 2026 8:43:59 pm
+Last Modified: Thursday February 19th 2026 7:45:12 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
@@ -28,6 +28,7 @@ from tenacity import (
 from src.adapters.embeddings import EmbeddingsAdapter, VectorStoreAdapter
 from src.adapters.graph import GraphAdapter
 from src.adapters.llm import LLMAdapter
+from src.config import config
 from src.constants.agents import AtomicJanitorAgentInputOutput, GraphConsolidatorOutput
 from src.constants.kg import Node, Predicate
 from src.constants.prompts.janitor_agent import (
@@ -42,6 +43,7 @@ from src.core.agents.architect_agent import (
     ArchitectAgentRelationship,
     ArchitectAgentNew,
 )
+from src.core.agents.core.agent_base import AgentBase
 from src.core.agents.scout_agent import ScoutEntity
 from src.core.agents.tools.janitor_agent import (
     JanitorAgentGetSchemaTool,
@@ -207,13 +209,22 @@ class JanitorAgent:
             else:
                 response_format = output_schema
 
-        self.agent = create_agent(
-            model=self.llm_adapter.llm.langchain_model,
-            tools=(tools if tools else self._get_tools(brain_id)),
-            system_prompt=system_prompt,
-            response_format=response_format,
-            debug=os.environ.get("DEBUG", "false").lower() == "true",
-        )
+        if config.agentic_architecture == "custom":
+            self.agent = AgentBase(
+                model=self.llm_adapter.llm.langchain_model,
+                tools=(tools if tools else self._get_tools(brain_id)),
+                system_prompt=system_prompt,
+                output_schema=response_format,
+                debug=os.environ.get("DEBUG", "false").lower() == "true",
+            )
+        else:
+            self.agent = create_agent(
+                model=self.llm_adapter.llm.langchain_model,
+                tools=(tools if tools else self._get_tools(brain_id)),
+                system_prompt=system_prompt,
+                response_format=response_format,
+                debug=os.environ.get("DEBUG", "false").lower() == "true",
+            )
 
     def _content_only_history(
         self, messages: Optional[list], keep_last: Optional[int] = None

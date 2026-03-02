@@ -8,14 +8,38 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
+import json
 import os
+from email import policy
+from email.parser import BytesParser
+
 from fastapi import Request
 from fastapi.responses import JSONResponse
+from pymongo.errors import OperationFailure, ServerSelectionTimeoutError
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette import status
 
 from src.services.data.main import data_adapter
 from src.services.kg_agent.main import cache_adapter
+
+
+def _brain_id_from_multipart(body: bytes, content_type: str) -> str | None:
+    try:
+        message_bytes = (
+            f"Content-Type: {content_type}\r\n\r\n".encode("utf-8", errors="replace")
+            + body
+        )
+        msg = BytesParser(policy=policy.HTTP).parsebytes(message_bytes)
+        for part in msg.iter_parts():
+            if part.get_content_disposition() != "form-data":
+                continue
+            name = part.get_param("name", header="content-disposition")
+            if name == "brain_id":
+                raw = part.get_content_text()
+                return raw.rstrip() if raw else None
+    except Exception:
+        pass
+    return None
 
 
 class BrainMiddleware(BaseHTTPMiddleware):
@@ -34,11 +58,10 @@ class BrainMiddleware(BaseHTTPMiddleware):
                     brain_id = brain_id.rstrip()
 
             if brain_id is None and request.method in ("POST", "PUT", "PATCH"):
+                content_type = request.headers.get("content-type", "") or ""
                 body = await request.body()
-                if body:
+                if "application/json" in content_type and body:
                     try:
-                        import json
-
                         body_data = json.loads(body)
                         if isinstance(body_data, dict):
                             brain_id = body_data.get("brain_id")
@@ -46,13 +69,20 @@ class BrainMiddleware(BaseHTTPMiddleware):
                                 brain_id = brain_id.rstrip()
                     except (json.JSONDecodeError, ValueError):
                         pass
+                elif "multipart/form-data" in content_type and body:
+                    form_brain_id = _brain_id_from_multipart(body, content_type)
+                    if form_brain_id:
+                        brain_id = form_brain_id
 
-                if body:
+                body_sent = [False]
 
-                    async def receive():
-                        return {"type": "http.request", "body": body}
+                async def receive():
+                    if not body_sent[0]:
+                        body_sent[0] = True
+                        return {"type": "http.request", "body": body, "more_body": False}
+                    return {"type": "http.request", "body": b"", "more_body": False}
 
-                    request._receive = receive
+                request._receive = receive
             request.state.brain_id = brain_id
             return brain_id
 
@@ -78,42 +108,50 @@ class BrainMiddleware(BaseHTTPMiddleware):
                 content={"detail": "Brain ID must be alphanumeric."},
             )
 
-        # Brains logic -------------------------------------------
-        if brain_id and not cached_brain_id:
-            stored_brain = data_adapter.get_brain(name_key=brain_id)
+        try:
+            if brain_id and not cached_brain_id:
+                stored_brain = data_adapter.get_brain(name_key=brain_id)
 
-            request.state.brain_id = brain_id
+                request.state.brain_id = brain_id
 
-            if not stored_brain and brain_creation_allowed:
-                new_brain = data_adapter.create_brain(name_key=brain_id)
-                cache_adapter.set(
-                    key=f"brain:{brain_id}",
-                    value=new_brain.id,
-                    brain_id="system",
-                )
-            elif stored_brain:
-                cache_adapter.set(
-                    key=f"brain:{brain_id}",
-                    value=stored_brain.id,
-                    brain_id="system",
-                )
-        elif not brain_id and default_brain_fallback:
-            default_brain = data_adapter.get_brain(name_key="default")
-            if not default_brain:
-                default_brain = data_adapter.create_brain(name_key="default")
-                cache_adapter.set(
-                    key="brain:default",
-                    value=default_brain.id,
-                    brain_id="system",
-                )
-                request.state.brain_id = "default"
-            else:
-                cache_adapter.set(
-                    key="brain:default",
-                    value=default_brain.id,
-                    brain_id="system",
-                )
-                request.state.brain_id = "default"
+                if not stored_brain and brain_creation_allowed:
+                    new_brain = data_adapter.create_brain(name_key=brain_id)
+                    cache_adapter.set(
+                        key=f"brain:{brain_id}",
+                        value=new_brain.id,
+                        brain_id="system",
+                    )
+                elif stored_brain:
+                    cache_adapter.set(
+                        key=f"brain:{brain_id}",
+                        value=stored_brain.id,
+                        brain_id="system",
+                    )
+            elif not brain_id and default_brain_fallback:
+                default_brain = data_adapter.get_brain(name_key="default")
+                if not default_brain:
+                    default_brain = data_adapter.create_brain(name_key="default")
+                    cache_adapter.set(
+                        key="brain:default",
+                        value=default_brain.id,
+                        brain_id="system",
+                    )
+                    request.state.brain_id = "default"
+                else:
+                    cache_adapter.set(
+                        key="brain:default",
+                        value=default_brain.id,
+                        brain_id="system",
+                    )
+                    request.state.brain_id = "default"
+        except (OperationFailure, ServerSelectionTimeoutError) as e:
+            return JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content={
+                    "detail": "Database unavailable. Check MongoDB connection and credentials (e.g. MONGO_* or MONGO_CONNECTION_STRING).",
+                    "error": str(e),
+                },
+            )
 
         if getattr(request.state, "brain_id", None) is None:
             return JSONResponse(

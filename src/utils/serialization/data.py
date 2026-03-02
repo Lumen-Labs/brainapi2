@@ -3,7 +3,7 @@ File: /data.py
 Created Date: Friday October 24th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Friday October 24th 2025 6:52:20 pm
+Last Modified: Thursday February 19th 2026 7:45:12 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
@@ -11,6 +11,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 import json
 import re
 from typing import Any
+import uuid
 
 
 def str_to_json(text: str | None, empty_fallback: bool = False) -> list[str]:
@@ -58,3 +59,13 @@ def always_dict(obj: Any) -> dict:
                 print(f"Invalid JSON string: {obj}")
                 return {}
     return {}
+
+def is_uuid(text: str) -> bool:
+    """
+    Check if a string is a valid UUID.
+    """
+    try:
+        uuid.UUID(text.strip())
+        return True
+    except Exception:
+        return False

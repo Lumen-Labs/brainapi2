@@ -3,13 +3,14 @@ File: /ArchitectAgentCreateRelationshipTool.py
 Created Date: Wednesday January 14th 2026
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Thursday January 29th 2026 8:44:06 pm
+Last Modified: Thursday February 19th 2026 7:45:12 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
+import json
 import uuid
 from langchain.tools import BaseTool
 
@@ -32,54 +33,20 @@ from src.services.input.agents import (
 from src.lib.neo4j.client import _neo4j_client
 from src.utils.cleanup import strip_properties
 from src.utils.nlp.names import levenshtein_similarity
+from src.utils.serialization.data import is_uuid
 from src.utils.similarity.vectors import cosine_similarity
 from src.utils.tokens import merge_token_details, token_detail_from_token_counts
 
 
 class ArchitectAgentCreateRelationshipTool(BaseTool):
     name: str = "architect_agent_create_relationship"
-    args_schema: dict = {
-        "type": "object",
-        "properties": {
-            "relationships": {
-                "type": "array",
-                "description": "A list of relationships to create",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "subject": {
-                            "type": "string",
-                            "description": "The uuid of the subject",
-                        },
-                        "predicate": {
-                            "type": "string",
-                            "description": "The generic name of the relationship (eg: 'TARGET_PRODUCT_OBJECT_CROISSANTS' = wrong, 'TARGETED' = correct)",
-                        },
-                        "object": {
-                            "type": "string",
-                            "description": "The uuid of the object",
-                        },
-                        "description": {
-                            "type": "string",
-                            "description": "The description of the relationship",
-                        },
-                        "amount": {
-                            "type": "number",
-                            "description": "The amount of the relationship (eg: 12 for 'John knew 12 new friends in New York City')",
-                        },
-                    },
-                    "required": ["subject", "predicate", "object", "description"],
-                },
-            },
-        },
-        "required": ["relationships"],
-    }
     architect_agent: object
     kg: GraphAdapter
     entities: Dict[str, ScoutEntity]
     brain_id: str = "default"
     targeting: Optional[Node] = None
     text: str
+    mode: Literal["granular", "coarse"] = "granular"
 
     def __init__(
         self,
@@ -89,6 +56,7 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
         kg: GraphAdapter,
         brain_id: str = "default",
         targeting: Optional[Node] = None,
+        mode: Literal["granular", "coarse"] = "granular",
     ):
         """
         Initialize the tool for creating a set of relationships between entities for a single phrase.
@@ -109,6 +77,51 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
             "Returns a summary of the created relationships to review them before creating them."
         )
         entities_dict = entities if entities is not None else {}
+        
+        args_schema: dict = {
+            "type": "object",
+            "properties": {
+                "relationships": {
+                    "type": "array",
+                    "description": """
+                    A list of relationships to create. If you want to connect an entity to another concept that is not in the entities list, you can use a TYPE:NAME string to represent the entity, where TYPE is the type of the entity and NAME is the name of the entity, separated by a colon.
+                    If you use an uuid for the predicate or the object it must be a valid uuid format (4-8-4-4-12 hexadecimal character strings) that is present in the entities list.
+                    """,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "subject": {
+                                "type": "string",
+                                "description": "The uuid of the subject" 
+                                + """ OR a TYPE:NAME that you want to use if the element is missing in the entities list, it must only be a valid uuid or a TYPE:NAME string""" 
+                                if mode == "coarse" else "",
+                            },
+                            "predicate": {
+                                "type": "string",
+                                "description": "The generic name of the relationship (eg: 'TARGET_PRODUCT_OBJECT_CROISSANTS' = wrong, 'TARGETED' = correct)",
+                            },
+                            "object": {
+                                "type": "string",
+                                "description": "The uuid of the object" 
+                                + """ OR a TYPE:NAME that you want to use if the element is missing in the entities list, it must only be a valid uuid or a TYPE:NAME string"""
+                                if mode == "coarse" else "",
+                            },
+                            "description": {
+                                "type": "string",
+                                "description": "The description of the relationship",
+                            },
+                            "amount": {
+                                "type": "number",
+                                "description": "The amount of the relationship (eg: 12 for 'John knew 12 new friends in New York City')",
+                            },
+                        },
+                        "required": ["subject", "predicate", "object", "description"],
+                    },
+                },
+            },
+            "required": ["relationships"],
+        }
+        
         super().__init__(
             architect_agent=architect_agent,
             description=description,
@@ -117,6 +130,8 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
             brain_id=brain_id,
             targeting=targeting,
             text=text,
+            mode=mode,
+            args_schema=args_schema,
         )
 
     @dataclass
@@ -201,12 +216,31 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
         else:
             return "Error: relationships parameter is required"
 
+        if isinstance(relationships, str):
+            try:
+                relationships = json.loads(relationships)
+            except (json.JSONDecodeError, TypeError):
+                return "Error: relationships could not be parsed"
+        if isinstance(relationships, dict):
+            relationships = [relationships]
+        if not isinstance(relationships, list):
+            return "Error: relationships must be a list"
+
         print(
             "[DEBUG (architect_agent_create_relationship)]: Relationships: ",
             relationships,
         )
 
         for rel in relationships:
+            newly_created_nodes = []
+            if not isinstance(rel, dict):
+                if isinstance(rel, str):
+                    try:
+                        rel = json.loads(rel)
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+                if not isinstance(rel, dict):
+                    continue
             subject = rel.get("subject")
             predicate = rel.get("predicate")
             object = rel.get("object")
@@ -226,10 +260,26 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
                 object = object.strip()
 
             def _resolve_entity(ref: str):
-                entity = self.entities.get(ref)
+                if not is_uuid(ref) and ":" in ref:
+                    scout_entity = ScoutEntity(
+                        uuid=str(uuid.uuid4()),
+                        name=ref.split(":")[1],
+                        type=ref.split(":")[0],
+                        description="",
+                        properties={},
+                    )
+                    self.entities[scout_entity.uuid] = scout_entity
+                    self.architect_agent.entities.update(
+                        {scout_entity.uuid: scout_entity}
+                    )
+                    newly_created_nodes.append(scout_entity.model_dump(mode="json"))
+                    return scout_entity
+                elif not is_uuid(ref):
+                    return None
+                entity = self.entities.get(ref.lower())
                 if entity:
                     return entity
-                entity = self.architect_agent.used_entities_dict.get(ref)
+                entity = self.architect_agent.used_entities_dict.get(ref.lower())
                 if entity:
                     return entity
                 all_ents = list(self.entities.values()) + list(
@@ -322,95 +372,104 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
         #     ]
         # )
 
-        from src.core.agents.janitor_agent import JanitorAgent
-
-        janitor_agent = getattr(self.architect_agent, "janitor_agent", None)
-        janitor_agent_brain_id = getattr(
-            self.architect_agent, "_janitor_agent_brain_id", None
-        )
-        if janitor_agent is None or janitor_agent_brain_id != self.brain_id:
-            janitor_agent = JanitorAgent(
-                llm_small_adapter,
-                kg=graph_adapter,
-                vector_store=vector_store_adapter,
-                embeddings=embeddings_adapter,
-                database_desc=_neo4j_client.graphdb_description,
-            )
-            self.architect_agent.janitor_agent = janitor_agent
-            self.architect_agent._janitor_agent_brain_id = self.brain_id
-        start_input_tokens = janitor_agent.input_tokens
-        start_output_tokens = janitor_agent.output_tokens
-        start_cached_tokens = janitor_agent.cached_tokens
-        start_reasoning_tokens = janitor_agent.reasoning_tokens
-
-        janitor_response: AtomicJanitorAgentInputOutput = (
-            janitor_agent.run_atomic_janitor(
-                input_relationships=input_rels,
-                text=self.text,
-                targeting=self.targeting,
-                brain_id=self.brain_id,
-                timeout=300,
-                max_retries=3,
-            )
-        )
-
-        print(
-            "[DEBUG (architect_agent_create_relationship)]: Janitor response: ",
-            janitor_response,
-        )
-
-        janitor_token_detail = token_detail_from_token_counts(
-            janitor_agent.input_tokens - start_input_tokens,
-            janitor_agent.output_tokens - start_output_tokens,
-            janitor_agent.cached_tokens - start_cached_tokens,
-            janitor_agent.reasoning_tokens - start_reasoning_tokens,
-            "janitor_agent",
-        )
-        self.architect_agent.token_detail = merge_token_details(
-            [self.architect_agent.token_detail, janitor_token_detail]
-        )
-
-        required_new_nodes = getattr(janitor_response, "required_new_nodes", [])
-        newly_created_nodes = []
-        if required_new_nodes:
-            for node in required_new_nodes:
-                scout_entity = ScoutEntity(
-                    uuid=node.uuid,
-                    name=node.name,
-                    type=node.type,
-                    description=node.description,
-                    properties=node.properties,
-                )
-                self.entities[scout_entity.uuid] = scout_entity
-                self.architect_agent.entities.update({scout_entity.uuid: scout_entity})
-                newly_created_nodes.append(scout_entity.model_dump(mode="json"))
-
+        fixed_relationships = []
         fixed_rels_sets = set()
-        fixed_relationships = getattr(janitor_response, "fixed_relationships", []) or []
+        janitor_response = None
 
-        if fixed_relationships:
-            fixed_rels_sets = set(
-                frozenset((fr.tip.uuid, fr.tail.uuid, fr.name))
-                for fr in fixed_relationships
+        if self.mode == "granular":
+            from src.core.agents.janitor_agent import JanitorAgent
+
+            janitor_agent = getattr(self.architect_agent, "janitor_agent", None)
+            janitor_agent_brain_id = getattr(
+                self.architect_agent, "_janitor_agent_brain_id", None
             )
-            output_rels.extend(
-                [
-                    ArchitectAgentRelationship(
-                        flow_key=rel_key,
-                        tip=rel.tip,
-                        name=rel.name,
-                        description=rel.description,
-                        tail=rel.tail,
-                        properties=getattr(rel, "properties", {}),
-                        **(
-                            {"amount": getattr(rel, "amount", None)}
-                            if getattr(rel, "amount", None)
-                            else {}
-                        ),
+            if janitor_agent is None or janitor_agent_brain_id != self.brain_id:
+                janitor_agent = JanitorAgent(
+                    llm_small_adapter,
+                    kg=graph_adapter,
+                    vector_store=vector_store_adapter,
+                    embeddings=embeddings_adapter,
+                    database_desc=_neo4j_client.graphdb_description,
+                )
+                self.architect_agent.janitor_agent = janitor_agent
+                self.architect_agent._janitor_agent_brain_id = self.brain_id
+            start_input_tokens = janitor_agent.input_tokens
+            start_output_tokens = janitor_agent.output_tokens
+            start_cached_tokens = janitor_agent.cached_tokens
+            start_reasoning_tokens = janitor_agent.reasoning_tokens
+
+            janitor_response: AtomicJanitorAgentInputOutput = (
+                janitor_agent.run_atomic_janitor(
+                    input_relationships=input_rels,
+                    text=self.text,
+                    targeting=self.targeting,
+                    brain_id=self.brain_id,
+                    timeout=300,
+                    max_retries=3,
+                )
+            )
+
+            print(
+                "[DEBUG (architect_agent_create_relationship)]: Janitor response: ",
+                janitor_response,
+            )
+
+            janitor_token_detail = token_detail_from_token_counts(
+                janitor_agent.input_tokens - start_input_tokens,
+                janitor_agent.output_tokens - start_output_tokens,
+                janitor_agent.cached_tokens - start_cached_tokens,
+                janitor_agent.reasoning_tokens - start_reasoning_tokens,
+                "janitor_agent",
+            )
+            self.architect_agent.token_detail = merge_token_details(
+                [self.architect_agent.token_detail, janitor_token_detail]
+            )
+
+            required_new_nodes = getattr(janitor_response, "required_new_nodes", [])
+            
+            if required_new_nodes:
+                for node in required_new_nodes:
+                    scout_entity = ScoutEntity(
+                        uuid=node.uuid,
+                        name=node.name,
+                        type=node.type,
+                        description=node.description,
+                        properties=node.properties,
                     )
-                    for rel in fixed_relationships
-                ]
+                    self.entities[scout_entity.uuid] = scout_entity
+                    self.architect_agent.entities.update(
+                        {scout_entity.uuid: scout_entity}
+                    )
+                    newly_created_nodes.append(scout_entity.model_dump(mode="json"))
+
+            fixed_rels_sets = set()
+            fixed_relationships = (
+                getattr(janitor_response, "fixed_relationships", []) or []
             )
+
+            if fixed_relationships:
+                fixed_rels_sets = set(
+                    frozenset((fr.tip.uuid, fr.tail.uuid, fr.name))
+                    for fr in fixed_relationships
+                )
+                output_rels.extend(
+                    [
+                        ArchitectAgentRelationship(
+                            flow_key=rel_key,
+                            tip=rel.tip,
+                            name=rel.name,
+                            description=rel.description,
+                            tail=rel.tail,
+                            properties=getattr(rel, "properties", {}),
+                            **(
+                                {"amount": getattr(rel, "amount", None)}
+                                if getattr(rel, "amount", None)
+                                else {}
+                            ),
+                        )
+                        for rel in fixed_relationships
+                    ]
+                )
 
         # Batch embed texts for similarity comparison
         texts_to_embed = set()
@@ -496,7 +555,10 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
             for rel in output_rels
             if isinstance(rel, ArchitectAgentRelationship)
         ]
-
+        print(
+            "[DEBUG (architect_agent_create_relationship)]: Relationships data: ",
+            relationships_data,
+        )
         if relationships_data:
             from src.workers.tasks.ingestion import process_architect_relationships
             from src.lib.redis.client import _redis_client
@@ -527,7 +589,6 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
         session_id = getattr(self.architect_agent, "session_id", None)
         if session_id and output_rels:
             from src.lib.redis.client import _redis_client
-            import json
 
             relationships_data = [
                 rel.model_dump(mode="json")

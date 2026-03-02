@@ -3,21 +3,21 @@ File: /ingest.py
 Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Monday January 5th 2026 7:57:27 pm
+Last Modified: Thursday February 19th 2026 7:45:12 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
-import json
 import asyncio
-import requests
+import base64
+import json
 from uuid import uuid4
-from fastapi import APIRouter, HTTPException, Request
-from typing import Literal
-from typing_extensions import Annotated
-from fastapi import File, Form, UploadFile
-from starlette.responses import JSONResponse
+
+import requests
 from celery.exceptions import OperationalError
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from starlette.responses import JSONResponse
+from typing_extensions import Annotated
 
 from src.config import config
 from src.services.api.constants.requests import (
@@ -26,6 +26,7 @@ from src.services.api.constants.requests import (
 )
 from src.services.input.agents import cache_adapter
 from src.workers.tasks.ingestion import ingest_data as ingest_data_task
+from src.workers.tasks.ingestion import ingest_file as ingest_file_task
 from src.workers.tasks.ingestion import (
     ingest_structured_data as ingest_structured_data_task,
 )
@@ -111,35 +112,61 @@ async def ingest_file(
 
     task = str(uuid4())
 
-    cache_adapter.set(
-        key=f"task:{task}",
-        value=json.dumps({"status": "queued", "task_id": task}),
-        brain_id=brain_id,
-        expires_in=3600 * 24 * 7,
-    )
-
     try:
         file.file.seek(0)
 
-        # We are forwarding to the DocParser API to convert files into markdown text
-        # and by forwarding the webhook (our app host) and the task identifier,
-        # we can be called back from the DocParser API to start the ingestion process
-        # with the created markdown text.
-        response = requests.post(
-            f"{config.docparser_endpoint}/ingest",
-            files={"file": (file.filename or "file", file.file, file.content_type)},
-            data={
-                "brain_id": brain_id,
-                "webhook_callback": config.app_host,
-                "identifier": task,
-            },
-            headers={"Authorization": f"Bearer {config.docparser_token}"},
-        )
-        if response.status_code != 200:
-            raise HTTPException(status_code=500, detail=response.text)
+        if config.ocr_mode == "docling":
+            content_b64 = base64.b64encode(file.file.read()).decode("ascii")
+            filename = file.filename or "file"
+            for attempt in range(MAX_TASK_RETRIES):
+                try:
+                    ingest_file_task.apply_async(
+                        args=[content_b64, filename, brain_id],
+                        task_id=task,
+                    )
+                    break
+                except OperationalError:
+                    if attempt == MAX_TASK_RETRIES - 1:
+                        raise HTTPException(
+                            status_code=503, detail="Task queue unavailable"
+                        )
+                    await asyncio.sleep(RETRY_DELAY_BASE * (attempt + 1))
+            cache_adapter.set(
+                key=f"task:{task}",
+                value=json.dumps({"status": "queued", "task_id": task}),
+                brain_id=brain_id,
+                expires_in=3600 * 24 * 7,
+            )
+            response_content = {
+                "message": "File ingested successfully",
+                "task_id": task,
+            }
+        else:
+            cache_adapter.set(
+                key=f"task:{task}",
+                value=json.dumps({"status": "queued", "task_id": task}),
+                brain_id=brain_id,
+                expires_in=3600 * 24 * 7,
+            )
+            response = requests.post(
+                f"{config.docparser_endpoint}/ingest",
+                files={"file": (file.filename or "file", file.file, file.content_type)},
+                data={
+                    "brain_id": brain_id,
+                    "webhook_callback": config.app_host,
+                    "identifier": task,
+                },
+                headers={"Authorization": f"Bearer {config.docparser_token}"},
+            )
+            if response.status_code != 200:
+                raise HTTPException(status_code=500, detail=response.text)
+            response_content = {
+                "message": "File ingested successfully",
+                "task_id": task,
+            }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-    return JSONResponse(
-        content={"message": "File ingested successfully", "task_id": task}
-    )
+    return JSONResponse(content=response_content)
