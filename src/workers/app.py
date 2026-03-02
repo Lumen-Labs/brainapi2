@@ -3,18 +3,25 @@ File: /celery.py
 Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Sunday October 19th 2025 9:16:36 am
+Last Modified: Thursday February 19th 2026 7:45:12 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
 import os
+import warnings
 from pathlib import Path
 
 import dotenv
 
 _project_root = Path(__file__).resolve().parent.parent.parent
 dotenv.load_dotenv(_project_root / ".env")
+
+warnings.filterwarnings(
+    "ignore",
+    message=r"Unrecognized FinishReason enum value",
+    category=UserWarning,
+)
 
 from celery import Celery
 from kombu import Queue
@@ -48,6 +55,7 @@ TASK_QUEUES = (
     ),
     Queue("ingest_structured_data", routing_key="ingest_structured_data"),
     Queue("consolidate_graph", routing_key="consolidate_graph"),
+    Queue("ingest_file", routing_key="ingest_file"),
 )
 
 TASK_ROUTES = {
@@ -61,6 +69,7 @@ TASK_ROUTES = {
     "src.workers.tasks.ingestion.consolidate_graph_async": {
         "queue": "consolidate_graph"
     },
+    "src.workers.tasks.ingestion.ingest_file": {"queue": "ingest_file"},
 }
 
 ingestion_app.conf.update(

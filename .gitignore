@@ -1,6 +1,6 @@
 .vscode
 .env
-volumes
+volume*
 __pycache__
 *.excalidraw
 dist

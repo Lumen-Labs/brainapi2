@@ -3,13 +3,17 @@ File: /ingestion.py
 Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Thursday January 29th 2026 8:44:06 pm
+Last Modified: Thursday February 19th 2026 7:45:12 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
+import base64
 import datetime
 import json
+import os
+import tempfile
+import time
 import tomllib
 from pathlib import Path
 from uuid import uuid4
@@ -19,6 +23,7 @@ from concurrent.futures import (
     ThreadPoolExecutor,
     TimeoutError as FutureTimeoutError,
 )
+from src.config import config
 from src.constants.data import (
     KGChangeLogPredicateUpdatedProperty,
     KGChanges,
@@ -47,6 +52,7 @@ from src.workers.app import ingestion_app
 from src.constants.tasks.ingestion import (
     IngestionTaskArgs,
     IngestionTaskDataType,
+    IngestionTaskTextArgs,
 )
 from src.services.kg_agent.main import cache_adapter
 
@@ -79,6 +85,7 @@ def ingest_data(self, args: dict):
     Returns:
         task_id (str): The identifier of the ingestion task (Celery request id) that was created/updated.
     """
+
     payload = None
     try:
         payload = IngestionTaskArgs(**args)
@@ -126,6 +133,7 @@ def ingest_data(self, args: dict):
             brain_id=payload.brain_id,
         )
         text_chunk_vector = embeddings_adapter.embed_text(text_chunk.text)
+
         text_chunk_vector.metadata = {
             **(payload.meta_keys if payload.meta_keys else {}),
             "resource_id": text_chunk.id,
@@ -135,28 +143,32 @@ def ingest_data(self, args: dict):
             "data",
         )
 
-        # ================================================
-        # --------------- Observations -------------------
-        # ================================================
-        observations = observations_agent.observe(
-            text=(
-                payload.data.text_data
-                if payload.data.data_type == IngestionTaskDataType.TEXT.value
-                else json.dumps(payload.data.json_data)
-            ),
-            observate_for=payload.observate_for,
-        )
+        if config.pipeline_mode == "lightweight":
+            print("[DEBUG (ingest_data)]: Lightweight pipeline mode selected")
 
-        data_adapter.save_observations(
-            [
-                Observation(
-                    text=observation,
-                    metadata=payload.meta_keys,
-                    resource_id=text_chunk.id,
-                )
-                for observation in observations
-            ]
-        )
+        if config.pipeline_mode == "accurate":
+            # ================================================
+            # --------------- Observations -------------------
+            # ================================================
+            observations = observations_agent.observe(
+                text=(
+                    payload.data.text_data
+                    if payload.data.data_type == IngestionTaskDataType.TEXT.value
+                    else json.dumps(payload.data.json_data)
+                ),
+                observate_for=payload.observate_for,
+            )
+
+            data_adapter.save_observations(
+                [
+                    Observation(
+                        text=observation,
+                        metadata=payload.meta_keys,
+                        resource_id=text_chunk.id,
+                    )
+                    for observation in observations
+                ]
+            )
 
         # ================================================
         # ------------ Triplet Extraction ----------------
@@ -800,3 +812,87 @@ def consolidate_graph_async(
             f"[DEBUG (consolidate_graph_async)]: Consolidation failed for session {session_id}: {e}"
         )
         raise
+
+
+FILE_INGEST_MAX_RETRIES = 3
+FILE_INGEST_RETRY_DELAY = 0.1
+
+
+@ingestion_app.task(bind=True)
+def ingest_file(self, content_b64: str, filename: str, brain_id: str):
+    """
+    Ingest a file via Docling: convert to markdown (per page), enqueue one
+    ingest_data task per page.
+    """
+    from celery.exceptions import OperationalError
+    from docling.document_converter import DocumentConverter
+
+    cache_adapter.set(
+        key=f"task:{self.request.id}",
+        value=json.dumps({"status": "started", "task_id": self.request.id}),
+        brain_id=brain_id,
+        expires_in=3600 * 24 * 7,
+    )
+    content = base64.b64decode(content_b64)
+    suffix = ""
+    if filename:
+        for ext in (".pdf", ".docx", ".pptx", ".html", ".htm"):
+            if filename.lower().endswith(ext):
+                suffix = ext
+                break
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+    try:
+        converter = DocumentConverter()
+        result = converter.convert(tmp_path)
+        num_pages = len(result.document.pages)
+        if num_pages == 0:
+            markdown = result.document.export_to_markdown()
+            page_markdowns = [markdown] if markdown.strip() else []
+        else:
+            page_markdowns = [
+                result.document.export_to_markdown(page_no=p)
+                for p in range(1, num_pages + 1)
+            ]
+    finally:
+        os.unlink(tmp_path)
+    task_ids = [str(uuid4()) for _ in page_markdowns]
+    for page_task_id in task_ids:
+        cache_adapter.set(
+            key=f"task:{page_task_id}",
+            value=json.dumps({"status": "queued", "task_id": page_task_id}),
+            brain_id=brain_id,
+            expires_in=3600 * 24 * 7,
+        )
+    for page_task_id, markdown in zip(task_ids, page_markdowns):
+        payload = {
+            "data": IngestionTaskTextArgs(
+                data_type="text", text_data=markdown
+            ).model_dump(),
+            "brain_id": brain_id,
+        }
+        for attempt in range(FILE_INGEST_MAX_RETRIES):
+            try:
+                ingest_data.apply_async(
+                    args=[payload],
+                    task_id=page_task_id,
+                )
+                break
+            except OperationalError:
+                if attempt == FILE_INGEST_MAX_RETRIES - 1:
+                    raise
+                time.sleep(FILE_INGEST_RETRY_DELAY * (attempt + 1))
+    cache_adapter.set(
+        key=f"task:{self.request.id}",
+        value=json.dumps(
+            {
+                "status": "completed",
+                "task_id": self.request.id,
+                "task_ids": task_ids,
+            }
+        ),
+        brain_id=brain_id,
+        expires_in=3600 * 24 * 7,
+    )
+    return {"task_id": self.request.id, "task_ids": task_ids}

@@ -3,7 +3,7 @@ File: /architect_agent.py
 Created Date: Sunday December 21st 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Thursday January 29th 2026 8:44:06 pm
+Last Modified: Thursday February 19th 2026 7:45:12 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
@@ -25,13 +25,17 @@ from src.adapters.embeddings import EmbeddingsAdapter, VectorStoreAdapter
 from src.adapters.cache import CacheAdapter
 from src.adapters.graph import GraphAdapter
 from src.adapters.llm import LLMAdapter
+from src.config import config
 from src.constants.kg import Node, Predicate
 from src.constants.prompts.architect_agent import (
+    ARCHITECT_AGENT_COARSE_TOOLER_CREATE_RELATIONSHIPS_PROMPT,
+    ARCHITECT_AGENT_TOOLER_COARSE_SYSTEM_PROMPT,
     ARCHITECT_AGENT_TOOLER_CREATE_RELATIONSHIPS_PROMPT,
     ARCHITECT_AGENT_TOOLER_SYSTEM_PROMPT,
     ARCHITECT_AGENT_SYSTEM_PROMPT,
     ARCHITECT_AGENT_CREATE_RELATIONSHIPS_PROMPT,
 )
+from src.core.agents.core.agent_base import AgentBase
 from src.core.agents.scout_agent import ScoutEntity
 from src.constants.agents import (
     _ArchitectAgentResponse,
@@ -120,6 +124,7 @@ class ArchitectAgent:
         entities: Optional[Dict[str, ScoutEntity]] = None,
         brain_id: str = "default",
         targeting: Optional[Node] = None,
+        mode: Literal["granular", "coarse"] = "granular",
     ) -> List[BaseTool]:
         """
         Builds the set of tools the agent uses for relationship creation and entity tracking.
@@ -145,6 +150,7 @@ class ArchitectAgent:
                 kg=self.kg,
                 brain_id=brain_id,
                 targeting=targeting,
+                mode=mode,
             ),
             ArchitectAgentGetRemainingEntitiesToProcessTool(
                 self,
@@ -194,6 +200,7 @@ class ArchitectAgent:
         entities: Optional[Dict[str, ScoutEntity]] = None,
         brain_id: str = "default",
         targeting: Optional[Node] = None,
+        mode: Literal["granular", "coarse"] = "granular",
     ):
         """
         Configure and create the internal LangChain agent and store it on self.agent.
@@ -211,39 +218,61 @@ class ArchitectAgent:
         Side effects:
             Creates an agent via create_agent and assigns it to self.agent.
         """
+
+        system_prompt = ""
+
         if type_ == "single":
             system_prompt = ARCHITECT_AGENT_SYSTEM_PROMPT.format(
-                extra_system_prompt=extra_system_prompt if extra_system_prompt else ""
+                extra_system_prompt=(extra_system_prompt if extra_system_prompt else "")
             )
         elif type_ == "tooler":
-            system_prompt = ARCHITECT_AGENT_TOOLER_SYSTEM_PROMPT.format(
-                extra_system_prompt=extra_system_prompt if extra_system_prompt else ""
-            )
-
-        self.agent = create_agent(
-            model=self.llm_adapter.llm.langchain_model,
-            tools=(
-                (
-                    tools
-                    if tools
-                    else self._get_tools(
-                        entities=entities,
-                        brain_id=brain_id,
-                        targeting=targeting,
-                        text=text,
+            if mode == "granular":
+                system_prompt = ARCHITECT_AGENT_TOOLER_SYSTEM_PROMPT.format(
+                    extra_system_prompt=(
+                        extra_system_prompt if extra_system_prompt else ""
                     )
                 )
-                if type_ == "tooler"
-                else []
-            ),
-            system_prompt=system_prompt,
-            response_format=(
-                (output_schema if output_schema else None)
-                if type_ == "single"
-                else None
-            ),
-            debug=os.environ.get("DEBUG", "false").lower() == "true",
+            if mode == "coarse":
+                system_prompt = ARCHITECT_AGENT_TOOLER_COARSE_SYSTEM_PROMPT.format(
+                    extra_system_prompt=(
+                        extra_system_prompt if extra_system_prompt else ""
+                    )
+                )
+        tools = (
+            (
+                tools
+                if tools
+                else self._get_tools(
+                    entities=entities,
+                    brain_id=brain_id,
+                    targeting=targeting,
+                    text=text,
+                    mode=mode,
+                )
+            )
+            if type_ == "tooler"
+            else []
         )
+        response_format = (
+            (output_schema if output_schema else None) if type_ == "single" else None
+        )
+
+        if mode == "granular":
+            self.agent = create_agent(
+                model=self.llm_adapter.llm.langchain_model,
+                tools=tools,
+                system_prompt=system_prompt,
+                response_format=response_format,
+                debug=os.environ.get("DEBUG", "false").lower() == "true",
+            )
+        if mode == "coarse" or config.agentic_architecture == "custom":
+            self.agent = AgentBase(
+                model=self.llm_adapter.llm.langchain_model,
+                tools=tools,
+                system_prompt=system_prompt,
+                output_schema=response_format,
+                debug=os.environ.get("DEBUG", "false").lower() == "true",
+            )
 
     def run(
         self,
@@ -535,6 +564,7 @@ class ArchitectAgent:
         timeout: int = 3600,
         max_retries: int = 3,
         ingestion_session_id: Optional[str] = None,
+        mode: Literal["granular", "coarse"] = "granular",
     ) -> List[ArchitectAgentRelationship]:
         """
         Drive the architect agent in "tooler" mode to iteratively discover relationships using available tools and collect the results.
@@ -573,6 +603,7 @@ class ArchitectAgent:
             brain_id=brain_id,
             entities=entities_dict,
             targeting=targeting,
+            mode=mode,
         )
 
         accumulated_messages = []
@@ -591,13 +622,12 @@ class ArchitectAgent:
             messages_list = self._content_only_history(
                 previous_messages, keep_last=HISTORY_MAX_MESSAGES_DELETE
             )
-            messages_list.append(
-                {
-                    "role": "user",
-                    "content": ARCHITECT_AGENT_TOOLER_CREATE_RELATIONSHIPS_PROMPT.format(
-                        text=text,
-                        targeting=(
-                            f"""
+            content = ""
+            if mode == "granular":
+                content = ARCHITECT_AGENT_TOOLER_CREATE_RELATIONSHIPS_PROMPT.format(
+                    text=text,
+                    targeting=(
+                        f"""
                     The information is related to the following node:
                     Name: {targeting.name}
                     UUID: {targeting.uuid}
@@ -605,10 +635,30 @@ class ArchitectAgent:
                     Description: {targeting.description}
                     {targeting.properties}
                     """
-                            if targeting
-                            else ""
-                        ),
+                        if targeting
+                        else ""
                     ),
+                )
+            if mode == "coarse":
+                content = ARCHITECT_AGENT_COARSE_TOOLER_CREATE_RELATIONSHIPS_PROMPT.format(
+                    text=text,
+                    targeting=(
+                        f"""
+                    The information is related to the following node:
+                    Name: {targeting.name}
+                    UUID: {targeting.uuid}
+                    Type: {targeting.labels}
+                    Description: {targeting.description}
+                    {targeting.properties}
+                    """
+                        if targeting
+                        else ""
+                    ),
+                )
+            messages_list.append(
+                {
+                    "role": "user",
+                    "content": content,
                 }
             )
 

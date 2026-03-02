@@ -3,7 +3,7 @@ File: /client_small.py
 Created Date: Sunday December 21st 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Tuesday December 23rd 2025 9:24:20 pm
+Last Modified: Thursday February 19th 2026 7:45:12 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
@@ -91,19 +91,21 @@ class LLMClientSmall(LLM):
                     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = (
                         config.gcp.credentials_path
                     )
-                    self._langchain_model = ChatVertexAI(
-                        model_name=self.model,
-                        project=config.gcp.project_id,
-                        max_retries=5,
-                        location="global",
-                        request_timeout=120,
-                        streaming=False,
-                        wait_exponential_kwargs={
+                    kwargs = {
+                        "model_name": self.model,
+                        "project": config.gcp.project_id,
+                        "max_retries": 5,
+                        "location": "global",
+                        "request_timeout": 120,
+                        "streaming": False,
+                        "wait_exponential_kwargs": {
                             "multiplier": 1,
                             "min": 2,
                             "max": 60,
                         },
-                    )
+                    }
+                    kwargs["max_output_tokens"] = 65000
+                    self._langchain_model = ChatVertexAI(**kwargs)
         return self._langchain_model
 
     def generate_text(

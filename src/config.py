@@ -3,7 +3,7 @@ File: /config.py
 Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Thursday January 29th 2026 8:43:59 pm
+Last Modified: Thursday February 19th 2026 7:45:12 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
@@ -11,6 +11,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 # pylint: disable=too-few-public-methods
 
 import os
+from typing import Literal
 import dotenv
 from pathlib import Path
 
@@ -126,14 +127,58 @@ class EmbeddingsConfig:
     Configuration class for the Embeddings configuration.
     """
 
-    def __init__(self):
+    def __init__(self, mode: str):
         self.full_endpoint = os.getenv("EMBEDDINGS_FULL_ENDPOINT")
         self.key = os.getenv("EMBEDDINGS_KEY")
-
+        self.local_model = os.getenv("EMBEDDINGS_LOCAL_MODEL")
         self.small_model = os.getenv("EMBEDDINGS_SMALL_MODEL")
 
-        if [self.full_endpoint, self.key, self.small_model].count(None) > 0:
-            raise ValueError("Embeddings configuration is not complete")
+        self.embedding_nodes_dimension = (
+            int(os.getenv("EMBEDDING_NODES_DIMENSION"))
+            if os.getenv("EMBEDDING_NODES_DIMENSION")
+            else None
+        )
+        self.embedding_triplets_dimension = os.getenv("EMBEDDING_TRIPLETS_DIMENSION")
+        self.embedding_observations_dimension = (
+            int(os.getenv("EMBEDDING_OBSERVATIONS_DIMENSION"))
+            if os.getenv("EMBEDDING_OBSERVATIONS_DIMENSION")
+            else None
+        )
+        self.embedding_data_dimension = (
+            int(os.getenv("EMBEDDING_DATA_DIMENSION"))
+            if os.getenv("EMBEDDING_DATA_DIMENSION")
+            else None
+        )
+        self.embedding_relationships_dimension = (
+            int(os.getenv("EMBEDDING_RELATIONSHIPS_DIMENSION"))
+            if os.getenv("EMBEDDING_RELATIONSHIPS_DIMENSION")
+            else None
+        )
+
+        if mode == "local":
+            if [
+                self.local_model,
+                self.small_model,
+                self.embedding_nodes_dimension,
+                self.embedding_triplets_dimension,
+                self.embedding_observations_dimension,
+                self.embedding_data_dimension,
+                self.embedding_relationships_dimension,
+            ].count(None) > 0:
+                raise ValueError("Embeddings configuration is not complete (local)")
+        else:
+            if [
+                self.full_endpoint,
+                self.key,
+                self.local_model,
+                self.small_model,
+                self.embedding_nodes_dimension,
+                self.embedding_triplets_dimension,
+                self.embedding_observations_dimension,
+                self.embedding_data_dimension,
+                self.embedding_relationships_dimension,
+            ].count(None) > 0:
+                raise ValueError("Embeddings configuration is not complete")
 
 
 class MongoConfig:
@@ -175,6 +220,22 @@ class CeleryConfig:
             raise ValueError("Celery configuration is not complete")
 
 
+class OllamaConfig:
+    """
+    Configuration class for the Ollama configuration.
+    """
+
+    def __init__(self):
+        self.host = os.getenv("OLLAMA_HOST")
+        self.port = os.getenv("OLLAMA_PORT")
+        self.llm_small_model = os.getenv("OLLAMA_LLM_SMALL_MODEL")
+        self.llm_large_model = os.getenv("OLLAMA_LLM_LARGE_MODEL")
+        if [self.host, self.port, self.llm_small_model, self.llm_large_model].count(
+            None
+        ) > 0:
+            raise ValueError("Ollama configuration is not complete")
+
+
 class PricingConfig:
     """
     Configuration class for the Pricing configuration.
@@ -203,6 +264,9 @@ class SpacyConfig:
         )
 
 
+_MODES = ("local", "remote")
+
+
 class Config:
     """
     Configuration class for the application.
@@ -217,16 +281,31 @@ class Config:
         Raises:
             ValueError: If `BRAINPAT_TOKEN` is not set in the environment.
         """
-        self.azure = AzureConfig()
+        self.brainpat_token = os.getenv("BRAINPAT_TOKEN")
+        if not self.brainpat_token:
+            raise ValueError("BrainPAT token is not set")
+
+        self.models_mode = os.getenv("MODELS_MODE")
+        if self.models_mode not in _MODES:
+            raise ValueError(f"Invalid MODELS_MODE: {self.models_mode}")
+
+        if self.models_mode == "local":
+            self.azure = None
+            self.gcp = None
+            self.embeddings = EmbeddingsConfig(mode="local")
+        else:
+            self.azure = AzureConfig()
+            self.gcp = GCPConfig()
+            self.embeddings = EmbeddingsConfig(mode="remote")
+
         self.redis = RedisConfig()
         self.neo4j = Neo4jConfig()
         self.milvus = MilvusConfig()
-        self.embeddings = EmbeddingsConfig()
         self.mongo = MongoConfig()
-        self.gcp = GCPConfig()
         self.celery = CeleryConfig()
         self.pricing = PricingConfig()
         self.spacy = SpacyConfig()
+        self.ollama = OllamaConfig()
 
         self.run_graph_consolidator = (
             os.getenv("RUN_GRAPH_CONSOLIDATOR", "true") == "true"
@@ -234,11 +313,15 @@ class Config:
         self.docparser_endpoint = os.getenv("DOCPARSER_ENDPOINT")
         self.docparser_token = os.getenv("DOCPARSER_TOKEN")
         self.app_host = os.getenv("APP_HOST")
-
-        self.brainpat_token = os.getenv("BRAINPAT_TOKEN")
-
-        if not self.brainpat_token:
-            raise ValueError("BrainPAT token is not set")
+        self.pipeline_mode: Literal["lightweight", "accurate"] = os.getenv(
+            "PIPELINE_MODE"
+        )
+        self.ocr_mode: Literal["docling", "docparser"] = os.getenv(
+            "OCR_MODE", "docling"
+        )
+        self.agentic_architecture: Literal["custom", "langchain"] = os.getenv(
+            "AGENTIC_ARCHITECTURE", "custom"
+        )
 
 
 config = Config()

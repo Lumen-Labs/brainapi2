@@ -3,12 +3,12 @@ File: /scout_agent.py
 Created Date: Sunday December 21st 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Monday January 5th 2026 9:57:30 pm
+Last Modified: Thursday February 19th 2026 7:45:12 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
-from typing import List, Literal, Optional
+from typing import Dict, List, Literal, Optional
 import uuid
 from langchain.agents import create_agent
 from langchain.tools import BaseTool
@@ -26,11 +26,15 @@ from src.adapters.embeddings import EmbeddingsAdapter, VectorStoreAdapter
 from src.adapters.cache import CacheAdapter
 from src.adapters.graph import GraphAdapter
 from src.adapters.llm import LLMAdapter
+from src.config import config
 from src.constants.kg import Node
 from src.constants.prompts.scout_agent import (
+    SCOUT_AGENT_COARSE_EXTRACT_ENTITIES_PROMPT,
+    SCOUT_AGENT_COARSE_SYSTEM_PROMPT,
     SCOUT_AGENT_EXTRACT_ENTITIES_PROMPT,
     SCOUT_AGENT_SYSTEM_PROMPT,
 )
+from src.core.agents.core.agent_base import AgentBase, parse_structured_from_messages
 from src.utils.tokens import token_detail_from_token_counts
 
 
@@ -124,27 +128,43 @@ class ScoutAgent:
         output_schema: Optional[BaseModel] = None,
         extra_system_prompt: Optional[dict] = None,
         brain_id: str = "default",
+        mode: Literal["granular", "coarse"] = "granular",
     ):
-        system_prompt = SCOUT_AGENT_SYSTEM_PROMPT.format(
-            extra_system_prompt=extra_system_prompt if extra_system_prompt else ""
-        )
+        if mode == "granular":
+            system_prompt = SCOUT_AGENT_SYSTEM_PROMPT.format(
+                extra_system_prompt=extra_system_prompt if extra_system_prompt else ""
+            )
+        if mode == "coarse":
+            system_prompt = SCOUT_AGENT_COARSE_SYSTEM_PROMPT.format(
+                extra_system_prompt=extra_system_prompt if extra_system_prompt else ""
+            )
 
-        self.agent = create_agent(
-            model=self.llm_adapter.llm.langchain_model,
-            tools=(tools if tools else self._get_tools(brain_id)),
-            system_prompt=system_prompt,
-            response_format=output_schema if output_schema else None,
-            debug=os.environ.get("DEBUG", "false").lower() == "true",
-        )
+        if mode == "granular":
+            self.agent = create_agent(
+                model=self.llm_adapter.llm.langchain_model,
+                tools=(tools if tools else self._get_tools(brain_id)),
+                system_prompt=system_prompt,
+                response_format=output_schema if output_schema else None,
+                debug=os.environ.get("DEBUG", "false").lower() == "true",
+            )
+        if mode == "coarse" or config.agentic_architecture == "custom":
+            self.agent = AgentBase(
+                model=self.llm_adapter.llm.langchain_model,
+                tools=(tools if tools else self._get_tools(brain_id)),
+                system_prompt=system_prompt,
+                output_schema=output_schema if output_schema else None,
+                debug=os.environ.get("DEBUG", "false").lower() == "true",
+            )
 
     def run(
         self,
         text: str,
         targeting: Optional[Node] = None,
         brain_id: str = "default",
-        timeout: int = 90,
+        timeout: int = 300,
         max_retries: int = 3,
         ingestion_session_id: Optional[str] = None,
+        mode: Literal["granular", "coarse"] = "granular",
     ) -> ScoutAgentResponse:
         """
         Extract entities from the provided text using the Scout agent and return a structured response containing the entities and token usage.
@@ -157,7 +177,8 @@ class ScoutAgent:
             brain_id: Identifier for the agent/brain configuration to use.
             timeout: Maximum seconds to wait for a single agent invocation before treating it as a timeout.
             max_retries: Maximum number of retry attempts for timed-out invocations using exponential backoff.
-
+            ingestion_session_id: Identifier for the ingestion session to use.
+            mode: Mode to use for the scout agent. "granular" for a more granular extraction, "coarse" to extract the most important entities only.
         Returns:
             A ScoutAgentResponse containing:
                 - entities: list of extracted ScoutEntity objects.
@@ -167,11 +188,31 @@ class ScoutAgent:
         Raises:
             TimeoutError: If a single invocation exceeds `timeout`, or if all retry attempts fail due to timeouts.
         """
-
         self._get_agent(
             output_schema=_ScoutAgentResponse,
             brain_id=brain_id,
+            mode=mode,
         )
+
+        targeting_str = (
+            f"""
+                                The information is related to:
+                                "{targeting.name}": {targeting.description}
+                                {targeting.properties}
+                                """
+            if targeting
+            else ""
+        )
+        if mode == "granular":
+            prompt = SCOUT_AGENT_EXTRACT_ENTITIES_PROMPT.format(
+                text=text,
+                targeting=targeting_str,
+            )
+        if mode == "coarse":
+            prompt = SCOUT_AGENT_COARSE_EXTRACT_ENTITIES_PROMPT.format(
+                text=text,
+                targeting=targeting_str,
+            )
 
         def _invoke_agent():
             return self.agent.invoke(
@@ -179,18 +220,7 @@ class ScoutAgent:
                     "messages": [
                         {
                             "role": "user",
-                            "content": SCOUT_AGENT_EXTRACT_ENTITIES_PROMPT.format(
-                                text=text,
-                                targeting=(
-                                    f"""
-                                The information is related to:
-                                "{targeting.name}": {targeting.description}
-                                {targeting.properties}
-                                """
-                                    if targeting
-                                    else ""
-                                ),
-                            ),
+                            "content": prompt,
                         }
                     ],
                 },
@@ -256,10 +286,24 @@ class ScoutAgent:
         except TimeoutError:
             raise
 
+        structured = response.get("structured_response")
+        if isinstance(structured, dict):
+            try:
+                structured = _ScoutAgentResponse.model_validate(structured)
+            except Exception:
+                structured = None
+        if structured is None or not getattr(structured, "entities", None):
+            fallback = parse_structured_from_messages(
+                response.get("messages", []), _ScoutAgentResponse
+            )
+            if fallback is not None and getattr(fallback, "entities", None):
+                structured = fallback
+        if structured is None:
+            structured = _ScoutAgentResponse(entities=[])
         return ScoutAgentResponse(
             entities=[
                 ScoutEntity(**entity.model_dump(mode="json"))
-                for entity in response.get("structured_response", []).entities
+                for entity in structured.entities
             ],
             input_tokens=self.input_tokens,
             output_tokens=self.output_tokens,
