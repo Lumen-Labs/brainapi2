@@ -283,6 +283,7 @@ class EntitySinergyRetriever:
                                             axis=0,
                                         )
                                         neighbor_node_vid = e[2].properties.get("v_id")
+                                        tn_score = None
                                         if neighbor_node_vid:
                                             neighbor_node_embedding = (
                                                 _get_first_embedding(
@@ -290,13 +291,14 @@ class EntitySinergyRetriever:
                                                     store="nodes",
                                                 )
                                             )
-                                        tn_score = wsim(
-                                            cosine_similarity(
-                                                neighbor_node_embedding,
-                                                target_embedding,
-                                            ),
-                                            NODE_SIM_DESC_INCREMENTAL_WEIGHT,
-                                        )
+                                            if neighbor_node_embedding is not None:
+                                                tn_score = wsim(
+                                                    cosine_similarity(
+                                                        neighbor_node_embedding,
+                                                        target_embedding,
+                                                    ),
+                                                    NODE_SIM_DESC_INCREMENTAL_WEIGHT,
+                                                )
                                         rel_score = cosine_similarity(
                                             found_embeddings,
                                             target_embeddings,
