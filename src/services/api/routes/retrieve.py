@@ -3,7 +3,7 @@ File: /retrieve.py
 Created Date: Saturday October 25th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Monday February 2nd 2026 10:04:06 pm
+Last Modified: Thursday February 19th 2026 7:45:12 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
@@ -189,6 +189,7 @@ async def get_relationships(
         to_node_labels,
         query_text,
         query_search_target,
+        brain_id,
     )
 
 
