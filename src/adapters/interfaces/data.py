@@ -3,7 +3,7 @@ File: /data.py
 Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Thursday January 29th 2026 8:43:59 pm
+Last Modified: Thursday February 19th 2026 7:45:12 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
@@ -63,6 +63,15 @@ class DataClient(ABC):
         raise NotImplementedError("get_by_ids method not implemented")
 
     @abstractmethod
+    def get_text_chunks(
+        self, brain_id: str, limit: int = 10, skip: int = 0, query_text: str = None
+    ) -> Tuple[List[TextChunk], int]:
+        """
+        Get text chunks with pagination and a query text.
+        """
+        raise NotImplementedError("get_text_chunks method not implemented")
+
+    @abstractmethod
     def save_structured_data(
         self, structured_data: StructuredData, brain_id: str
     ) -> StructuredData:
@@ -114,7 +123,7 @@ class DataClient(ABC):
         skip: int = 0,
         types: list[str] = None,
         query_text: str = None,
-    ) -> list[StructuredData]:
+    ) -> Tuple[list[StructuredData], int]:
         """
         Retrieve structured data entries for a specific brain with optional filtering and pagination.
 
@@ -126,7 +135,7 @@ class DataClient(ABC):
             query_text (str | None): If provided, filter entries that match the text query.
 
         Returns:
-            list[StructuredData]: List of matching StructuredData objects.
+            Tuple[list[StructuredData], int]: Tuple containing the list of matching StructuredData objects and the total count of matching objects.
         """
         raise NotImplementedError("get_structured_data_list method not implemented")
 

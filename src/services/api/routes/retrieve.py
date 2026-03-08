@@ -10,6 +10,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 
 from typing import List, Literal, Optional
 from fastapi import APIRouter, Body, Query
+from fastapi.responses import JSONResponse
 from src.services.api.constants.requests import (
     GetContextRequestBody,
     GetContextResponse,
@@ -33,6 +34,7 @@ from src.services.api.controllers.structured_data import (
     get_structured_data_by_id as get_structured_data_by_id_controller,
     get_structured_data_list as get_structured_data_list_controller,
     get_structured_data_types as get_structured_data_types_controller,
+    get_text_chunks as get_text_chunks_controller,
 )
 from src.services.api.controllers.observations import (
     get_observation_by_id as get_observation_by_id_controller,
@@ -255,6 +257,27 @@ async def get_structured_data_list(
         types = types.split(",")
     return await get_structured_data_list_controller(
         limit, skip, types, query_text, brain_id
+    )
+
+
+@retrieve_router.get(path="/text-chunks")
+async def get_text_chunks(
+    brain_id: str = "default",
+    limit: int = 10,
+    skip: int = 0,
+    query_text: Optional[str] = None,
+):
+    """
+    Get text chunks by a query text.
+    """
+    results, total = await get_text_chunks_controller(brain_id, limit, skip, query_text)
+
+    return JSONResponse(
+        content={
+            "message": "Text chunks retrieved successfully",
+            "data": results,
+            "total": total,
+        }
     )
 
 
