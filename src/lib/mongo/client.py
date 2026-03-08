@@ -3,12 +3,12 @@ File: /client.py
 Created Date: Saturday October 25th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Thursday January 29th 2026 8:43:59 pm
+Last Modified: Thursday February 19th 2026 7:45:12 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
-from typing import List
+from typing import List, Tuple
 from pymongo import MongoClient as PyMongoClient
 from pymongo.database import Database
 from pymongo.collection import Collection
@@ -188,7 +188,7 @@ class MongoClient(DataClient):
         skip: int = 0,
         types: list[str] = None,
         query_text: str = None,
-    ) -> list[StructuredData]:
+    ) -> Tuple[list[StructuredData], int]:
         collection = self.get_collection("structured_data", database=brain_id)
         query = {}
         if types:
@@ -202,16 +202,39 @@ class MongoClient(DataClient):
             ]
 
         results = collection.find(query).skip(skip).limit(limit)
-        return [
-            StructuredData(
-                id=result["id"],
-                data=result["data"],
-                types=result["types"],
-                metadata=result.get("metadata", None),
-                inserted_at=result.get("inserted_at", None),
-            )
-            for result in results
-        ]
+        total = collection.count_documents(query)
+        return (
+            [
+                StructuredData(
+                    id=result["id"],
+                    data=result["data"],
+                    types=result["types"],
+                    metadata=result.get("metadata", None),
+                    inserted_at=result.get("inserted_at", None),
+                )
+                for result in results
+            ],
+            total,
+        )
+
+    def get_text_chunks(
+        self, brain_id: str, limit: int = 10, skip: int = 0, query_text: str = None
+    ) -> Tuple[List[TextChunk], int]:
+        collection = self.get_collection("structured_data", database=brain_id)
+        query = {}
+
+        if query_text:
+            query["$or"] = [
+                {"text": {"$regex": query_text, "$options": "i"}},
+                {"metadata": {"$regex": query_text, "$options": "i"}},
+            ]
+
+        results = collection.find(query).skip(skip).limit(limit)
+        total = collection.count_documents(query)
+        return (
+            [TextChunk(**result) for result in results],
+            total,
+        )
 
     def get_structured_data_types(self, brain_id: str) -> list[str]:
         collection = self.get_collection("structured_data", database=brain_id)

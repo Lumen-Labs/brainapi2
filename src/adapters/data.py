@@ -3,7 +3,7 @@ File: /data.py
 Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Thursday January 29th 2026 8:43:59 pm
+Last Modified: Thursday February 19th 2026 7:45:12 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
@@ -59,6 +59,20 @@ class DataAdapter:
             ids=ids, with_observations=with_observations, brain_id=brain_id
         )
 
+    def get_text_chunks(
+        self,
+        brain_id: str = "default",
+        limit: int = 10,
+        skip: int = 0,
+        query_text: str = None,
+    ) -> Tuple[List[TextChunk], int]:
+        """
+        Get text chunks with pagination and a query text.
+        """
+        return self.data.get_text_chunks(
+            brain_id=brain_id, limit=limit, skip=skip, query_text=query_text
+        )
+
     def save_structured_data(
         self, structured_data: StructuredData, brain_id: str = "default"
     ) -> StructuredData:
@@ -110,7 +124,7 @@ class DataAdapter:
         skip: int = 0,
         types: list[str] = None,
         query_text: str = None,
-    ) -> list[StructuredData]:
+    ) -> Tuple[list[StructuredData], int]:
         """
         Get a list of structured data.
         """
