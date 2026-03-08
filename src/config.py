@@ -3,7 +3,7 @@ File: /config.py
 Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Thursday February 19th 2026 7:45:12 pm
+Last Modified: Wednesday March 4th 2026 9:35:41 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
@@ -60,12 +60,13 @@ class GCPConfig:
             credentials_path = os.path.expanduser(credentials_path)
             if not os.path.isabs(credentials_path):
                 credentials_path = str(Path(__file__).parent.parent / credentials_path)
+
         if not os.path.exists(credentials_path):
             raise FileNotFoundError(
                 f"Credentials file not found at: {credentials_path}. "
                 "Please set GCP_CREDENTIALS_PATH environment variable or place gcp_credentials.json in the project root."
             )
-
+        print("[GCPConfig] credentials_path: ", credentials_path)
         self.credentials_path = credentials_path
         self.project_id = os.getenv("GCP_PROJECT_ID")
         self.small_llm_model = os.getenv("GCP_SMALL_LLM_MODEL")

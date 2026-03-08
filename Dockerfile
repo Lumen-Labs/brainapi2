@@ -10,6 +10,7 @@ LABEL build_date="${BUILD_DATE}" \
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PATH="/app/.venv/bin:$PATH" \
+    HF_HOME=/app/.cache \
     TRANSFORMERS_CACHE=/app/.cache \
     SENTENCE_TRANSFORMERS_HOME=/app/.cache \
     POETRY_NO_INTERACTION=1 \
