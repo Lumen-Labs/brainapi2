@@ -56,6 +56,9 @@ class LLMClientSmall(LLM):
                 if self._client is None:
                     from google import genai
 
+                    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = (
+                        config.gcp.credentials_path
+                    )
                     self._client = genai.Client(
                         vertexai=True,
                         project=config.gcp.project_id,
