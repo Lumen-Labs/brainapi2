@@ -14,13 +14,13 @@
 </p>
 
 <p align="center">
-  <a href="#-usecases">Use Cases</a> •
+  <a href="https://brainapi.lumen-labs.ai/">BrainAPI Cloud</a> •
+  <a href="https://brainapi.lumen-labs.ai/docs/v2/use-cases">Use Cases</a> •
   <a href="#-what-is-brainapi">Overview</a> •
   <a href="#-core-philosophy-the-triangle-of-attribution">Core Philosophy</a> •
   <a href="#-the-agentic-swarm">Agents</a> •
-  <a href="#-sdks--packages">SDKs</a> •
-  <a href="https://brainapi.lumen-labs.ai/docs/quickstart">Quick Start ↗</a> •
-  <a href="https://brainapi.lumen-labs.ai/docs/rest">API Docs ↗</a>
+  <a href="https://brainapi.lumen-labs.ai/docs/v2/installation">SDKs</a> •
+  <a href="https://brainapi.lumen-labs.ai/docs/v2">API Docs ↗</a>
 </p>
 
 <p align="center">
