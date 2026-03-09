@@ -275,7 +275,7 @@ async def get_text_chunks(
     return JSONResponse(
         content={
             "message": "Text chunks retrieved successfully",
-            "data": results,
+            "data": [r.model_dump(mode="json") for r in results],
             "total": total,
         }
     )

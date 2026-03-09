@@ -220,7 +220,7 @@ class MongoClient(DataClient):
     def get_text_chunks(
         self, brain_id: str, limit: int = 10, skip: int = 0, query_text: str = None
     ) -> Tuple[List[TextChunk], int]:
-        collection = self.get_collection("structured_data", database=brain_id)
+        collection = self.get_collection("text_chunks", database=brain_id)
         query = {}
 
         if query_text:
@@ -229,10 +229,10 @@ class MongoClient(DataClient):
                 {"metadata": {"$regex": query_text, "$options": "i"}},
             ]
 
-        results = collection.find(query).skip(skip).limit(limit)
+        results = list(collection.find(query).skip(skip).limit(limit))
         total = collection.count_documents(query)
         return (
-            [TextChunk(**result) for result in results],
+            [TextChunk(**{k: v for k, v in r.items() if k != "_id"}) for r in results],
             total,
         )
 
