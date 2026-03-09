@@ -108,6 +108,7 @@ class LLMClientSmall(LLM):
                         },
                     }
                     kwargs["max_output_tokens"] = 65000
+                    kwargs["thinking_budget"] = 0
                     self._langchain_model = ChatVertexAI(**kwargs)
         return self._langchain_model
 
@@ -211,20 +212,29 @@ class LLMClientSmall(LLM):
         timeout = timeout or self.default_timeout
         from google.genai.types import GenerateContentConfig
 
+        try:
+            from google.genai.types import ThinkingConfig
+            _thinking_config = ThinkingConfig(thinking_budget=0)
+        except ImportError:
+            _thinking_config = None
+
         def _generate():
             """
             Generate JSON content from the model based on the given prompt.
-            
+
             Returns:
                 dict: The parsed JSON response generated from the prompt.
             """
+            config_kw = {
+                "response_mime_type": "application/json",
+                **({"max_output_tokens": max_new_tokens} if max_new_tokens else {}),
+            }
+            if _thinking_config is not None:
+                config_kw["thinking_config"] = _thinking_config
             _response = self.client.models.generate_content(
                 model=self.model,
                 contents=[prompt],
-                config=GenerateContentConfig(
-                    response_mime_type="application/json",
-                    **({"max_output_tokens": max_new_tokens} if max_new_tokens else {}),
-                ),
+                config=GenerateContentConfig(**config_kw),
             )
             _response = _response.text.strip("").strip("```")
             return json.loads(_response)
