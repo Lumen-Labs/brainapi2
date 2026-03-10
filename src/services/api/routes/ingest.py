@@ -143,7 +143,9 @@ async def ingest_file(
                 "task_id": task,
             }
         else:
-            app_host = str(request.base_url).rstrip("/")
+            forwarded_proto = request.headers.get("X-Forwarded-Proto") or request.url.scheme
+            forwarded_host = request.headers.get("X-Forwarded-Host") or request.headers.get("Host") or request.base_url.netloc
+            app_host = f"{forwarded_proto}://{forwarded_host}".rstrip("/")
             cache_adapter.set(
                 key=f"task:{task}",
                 value=json.dumps({"status": "queued", "task_id": task}),
