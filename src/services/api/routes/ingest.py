@@ -3,7 +3,7 @@ File: /ingest.py
 Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Thursday February 19th 2026 7:45:12 pm
+Last Modified: Wednesday March 4th 2026 9:35:41 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
@@ -103,6 +103,7 @@ async def ingest_structured_data(data: IngestionStructuredRequestBody):
 
 @ingest_router.post(path="/file")
 async def ingest_file(
+    request: Request,
     file: Annotated[UploadFile, File()],
     brain_id: str = Form(default="default"),
 ):
@@ -142,6 +143,7 @@ async def ingest_file(
                 "task_id": task,
             }
         else:
+            app_host = str(request.base_url).rstrip("/")
             cache_adapter.set(
                 key=f"task:{task}",
                 value=json.dumps({"status": "queued", "task_id": task}),
@@ -153,7 +155,7 @@ async def ingest_file(
                 files={"file": (file.filename or "file", file.file, file.content_type)},
                 data={
                     "brain_id": brain_id,
-                    "webhook_callback": config.app_host,
+                    "webhook_callback": f"{app_host}/ingest",
                     "identifier": task,
                 },
                 headers={"Authorization": f"Bearer {config.docparser_token}"},
