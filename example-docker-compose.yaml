@@ -183,6 +183,8 @@ services:
       --timeout-keep-alive 30
       --limit-concurrency 200
       --backlog 2048
+    tmpfs:
+      - /tmp:size=512M
     depends_on:
       redis:
         condition: service_healthy
@@ -220,12 +222,14 @@ services:
     environment:
       CELERY_WORKER_CONCURRENCY: ${CELERY_WORKER_CONCURRENCY:-4}
     command: >
-      /app/.venv/bin/celery
+      -m celery
       -A src.workers.app:ingestion_app worker
       -Q ingest_data,process_architect_relationships,ingest_structured_data,consolidate_graph
       --loglevel=info
       --prefetch-multiplier=1
       --optimization=fair
+    tmpfs:
+      - /tmp:size=512M
     depends_on:
       redis:
         condition: service_healthy
@@ -264,6 +268,8 @@ services:
       --host 0.0.0.0
       --port 8001
       --timeout-keep-alive 30
+    tmpfs:
+      - /tmp:size=512M
     depends_on:
       redis:
         condition: service_healthy
