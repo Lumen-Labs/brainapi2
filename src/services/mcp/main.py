@@ -4,17 +4,21 @@ Project: mcp
 Created Date: Tuesday February 10th 2026
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Tuesday February 10th 2026 8:30:11 pm
+Last Modified: Sunday February 22nd 2026 5:21:48 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
+from contextvars import ContextVar
 from typing import Any
 from mcp.server import FastMCP
 from pydantic import BaseModel
 from src.lib.neo4j.client import _neo4j_client
 from src.services.data.main import data_adapter
 from src.services.kg_agent.main import graph_adapter
+from src.services.mcp.utils import guard_brainpat
+
+auth_token_var: ContextVar[str | None] = ContextVar("auth_token", default=None)
 
 mcp = FastMCP("brainapi-mcp", stateless_http=True, host="0.0.0.0")
 
@@ -50,6 +54,8 @@ def search_memory(db_query: str, brain_id: str) -> Any:
     - brain_id: str: the brain to search in.
     """
     try:
+        if not guard_brainpat(auth_token_var.get(), brain_id):
+            return "Unauthorized"
         return graph_adapter.execute_operation(db_query, brain_id)
     except Exception as e:
         return f"Error executing graph operation: {e}"
@@ -60,5 +66,14 @@ def list_brains() -> list[str]:
     """
     This tool lists all the brains/memory stores available
     """
+    brain_key = guard_brainpat(auth_token_var.get())
+    if not brain_key:
+        return "Unauthorized"
+
+    # Returns only the brain which has the pat
+    if type(brain_key) == str:
+        return [brain_key]
+
+    # Gets all the brains
     brains = data_adapter.get_brains_list()
     return [brain.name_key for brain in brains]
