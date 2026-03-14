@@ -10,14 +10,15 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 
 import json
 from src.utils.logging import log
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+from src.services.api.dependencies import get_brain_id
 from src.services.kg_agent.main import cache_adapter
 
 tasks_router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 
 @tasks_router.get("/")
-async def get_tasks(brain_id: str = "default"):
+async def get_tasks(brain_id: str = Depends(get_brain_id)):
     try:
         task_keys = cache_adapter.get_task_keys(brain_id)
         results = []
@@ -44,7 +45,7 @@ async def get_tasks(brain_id: str = "default"):
 
 
 @tasks_router.get("/{task_id}")
-async def get_task(task_id: str, brain_id: str = "default"):
+async def get_task(task_id: str, brain_id: str = Depends(get_brain_id)):
     """
     Get the result of a task by its ID.
     """

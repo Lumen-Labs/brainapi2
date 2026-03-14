@@ -9,8 +9,9 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 """
 
 from typing import List, Literal, Optional
-from fastapi import APIRouter, Body, Query
+from fastapi import APIRouter, Body, Depends, Query
 from fastapi.responses import JSONResponse
+from src.services.api.dependencies import get_brain_id
 from src.services.api.constants.requests import (
     GetContextRequestBody,
     GetContextResponse,
@@ -64,7 +65,7 @@ async def retrieve(
         ...,
         description="The entities to prioritize in the relationships, separated by commas.",
     ),
-    brain_id: str = "default",
+    brain_id: str = Depends(get_brain_id),
 ):
     """
     Retrieve data from the knowledge graph and data store.
@@ -82,7 +83,7 @@ async def get_neighbors(
         None,
         description="The description of what in the neighbors should share with the target.",
     ),
-    brain_id: str = "default",
+    brain_id: str = Depends(get_brain_id),
 ):
     """
     Get the neighbors of an entity.
@@ -97,10 +98,12 @@ async def get_neighbors(
 )
 async def get_neighbors_with_identification_params(
     request: RetrieveNeighborsWithIdentificationParamsRequestBody,
+    brain_id: str = Depends(get_brain_id),
 ):
     """
     Get the neighbors of an entity.
     """
+    request.brain_id = brain_id
     return await retrieve_neighbors_controller(
         identification_params=request.identification_params,
         limit=request.limit,
@@ -134,7 +137,10 @@ async def get_neighbors_ai_mode(
 
 
 @retrieve_router.post("/context")
-async def get_context(request: GetContextRequestBody) -> GetContextResponse:
+async def get_context(
+    request: GetContextRequestBody,
+    brain_id: str = Depends(get_brain_id),
+) -> GetContextResponse:
     """
     Handle an HTTP request to retrieve an entity's contextual information.
 
@@ -146,7 +152,7 @@ async def get_context(request: GetContextRequestBody) -> GetContextResponse:
     Returns:
         GetContextResponse: Response containing the context information.
     """
-
+    request.brain_id = brain_id
     return await retrieve_get_context_controller(request)
 
 
@@ -159,7 +165,7 @@ async def get_relationships(
     to_node_labels: Optional[str] = None,
     query_text: Optional[str] = None,
     query_search_target: Optional[str] = "all",
-    brain_id: str = "default",
+    brain_id: str = Depends(get_brain_id),
 ):
     """
     Retrieve relationships filtered by types, node labels, and query criteria.
@@ -201,7 +207,7 @@ async def get_entities(
     skip: int = 0,
     node_labels: Optional[str] = None,
     query_text: Optional[str] = None,
-    brain_id: str = "default",
+    brain_id: str = Depends(get_brain_id),
 ):
     """
     Retrieve entities matching optional label and text filters with pagination.
@@ -223,7 +229,7 @@ async def get_entities(
 
 @retrieve_router.get(path="/structured-data/types")
 async def get_structured_data_types(
-    brain_id: str = "default",
+    brain_id: str = Depends(get_brain_id),
 ):
     """
     Get all unique types from structured data.
@@ -234,7 +240,7 @@ async def get_structured_data_types(
 @retrieve_router.get(path="/structured-data/{id}")
 async def get_structured_data_by_id(
     id: str,
-    brain_id: str = "default",
+    brain_id: str = Depends(get_brain_id),
 ):
     """
     Get structured data by ID.
@@ -248,7 +254,7 @@ async def get_structured_data_list(
     skip: int = 0,
     types: Optional[str] = None,
     query_text: Optional[str] = None,
-    brain_id: str = "default",
+    brain_id: str = Depends(get_brain_id),
 ):
     """
     Get a list of structured data.
@@ -262,7 +268,7 @@ async def get_structured_data_list(
 
 @retrieve_router.get(path="/text-chunks")
 async def get_text_chunks(
-    brain_id: str = "default",
+    brain_id: str = Depends(get_brain_id),
     limit: int = 10,
     skip: int = 0,
     query_text: Optional[str] = None,
@@ -283,7 +289,7 @@ async def get_text_chunks(
 
 @retrieve_router.get(path="/observations/labels")
 async def get_observation_labels(
-    brain_id: str = "default",
+    brain_id: str = Depends(get_brain_id),
 ):
     """
     Get all unique labels from observations.
@@ -294,7 +300,7 @@ async def get_observation_labels(
 @retrieve_router.get(path="/observations/{id}")
 async def get_observation_by_id(
     id: str,
-    brain_id: str = "default",
+    brain_id: str = Depends(get_brain_id),
 ):
     """
     Get observation by ID.
@@ -309,7 +315,7 @@ async def get_observations_list(
     resource_id: Optional[str] = None,
     labels: Optional[str] = None,
     query_text: Optional[str] = None,
-    brain_id: str = "default",
+    brain_id: str = Depends(get_brain_id),
 ):
     """
     Retrieve a list of observations filtered by the provided parameters.
@@ -335,7 +341,7 @@ async def get_observations_list(
 
 @retrieve_router.get(path="/changelogs/types")
 async def get_changelog_types(
-    brain_id: str = "default",
+    brain_id: str = Depends(get_brain_id),
 ):
     """
     Retrieve all unique changelog types for the specified brain.
@@ -352,7 +358,7 @@ async def get_changelog_types(
 @retrieve_router.get(path="/changelogs/{id}")
 async def get_changelog_by_id(
     id: str,
-    brain_id: str = "default",
+    brain_id: str = Depends(get_brain_id),
 ):
     """
     Retrieve a changelog entry by its unique identifier.
@@ -373,7 +379,7 @@ async def get_changelogs_list(
     skip: int = 0,
     types: Optional[str] = None,
     query_text: Optional[str] = None,
-    brain_id: str = "default",
+    brain_id: str = Depends(get_brain_id),
 ):
     """
     Retrieve a paginated list of changelogs.
@@ -397,7 +403,7 @@ async def get_hops(
     query: str,
     degrees: Literal[2] = 2,
     flattened: bool = True,
-    brain_id: str = "default",
+    brain_id: str = Depends(get_brain_id),
 ):  # noqa: F821
     """
     Compute graph hops for the given query.
@@ -419,7 +425,7 @@ async def get_entity_info(
     target: str,
     query: str,
     max_depth: int = 3,
-    brain_id: str = "default",
+    brain_id: str = Depends(get_brain_id),
 ):
     """
     Retrieve detailed information for an entity identified by the given target and query.
@@ -440,7 +446,7 @@ async def get_entity_info(
 async def get_entity_context(
     target: str,
     context_depth: int = 3,
-    brain_id: str = "default",
+    brain_id: str = Depends(get_brain_id),
 ):
     """
     Retrieve contextual information for an entity identified by `target`.
@@ -463,7 +469,7 @@ async def get_entity_synergies(
     do: bool = False,
     pa: bool = False,
     ppa: bool = False,
-    brain_id: str = "default",
+    brain_id: str = Depends(get_brain_id),
 ):
     """
     Retrieve synergies for a specified entity.
@@ -488,7 +494,7 @@ async def get_entity_synergies(
 async def get_entity_status(
     target: str,
     types: Optional[List[str]] = [],
-    brain_id: str = "default",
+    brain_id: str = Depends(get_brain_id),
 ):
     """
     Retrieve status information for a specified entity.

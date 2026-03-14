@@ -3,7 +3,7 @@ File: /brains.py
 Created Date: Monday December 1st 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Monday December 1st 2025 9:06:30 pm
+Last Modified: Wednesday March 4th 2026 9:35:41 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
@@ -105,7 +105,7 @@ class BrainMiddleware(BaseHTTPMiddleware):
         if brain_id and not brain_id.isalnum():
             return JSONResponse(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                content={"detail": "Brain ID must be alphanumeric."},
+                content={"detail": "Brain ID must be alphanumeric.", "value": brain_id},
             )
 
         try:

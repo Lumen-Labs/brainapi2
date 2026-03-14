@@ -15,11 +15,12 @@ from uuid import uuid4
 
 import requests
 from celery.exceptions import OperationalError
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from starlette.responses import JSONResponse
 from typing_extensions import Annotated
 
 from src.config import config
+from src.services.api.dependencies import get_brain_id
 from src.services.api.constants.requests import (
     IngestionRequestBody,
     IngestionStructuredRequestBody,
@@ -38,10 +39,16 @@ ingest_router = APIRouter(prefix="/ingest", tags=["ingest"])
 
 
 @ingest_router.post(path="/")
-async def ingest_data(data: IngestionRequestBody, request: Request):
+async def ingest_data(
+    data: IngestionRequestBody,
+    request: Request,
+    brain_id: str = Depends(get_brain_id),
+):
     """
     Ingest data to the processing pipeline and save to the memory.
     """
+    data.brain_id = brain_id
+    print("[Ingest] received task for brain: ", brain_id)
 
     flow_task_identifier = None
 
@@ -75,10 +82,15 @@ async def ingest_data(data: IngestionRequestBody, request: Request):
 
 
 @ingest_router.post(path="/structured")
-async def ingest_structured_data(data: IngestionStructuredRequestBody):
+async def ingest_structured_data(
+    data: IngestionStructuredRequestBody,
+    brain_id: str = Depends(get_brain_id),
+):
     """
     Ingest structured data to the processing pipeline and save to the memory.
     """
+    data.brain_id = brain_id
+    print("[IngestStructured] received task for brain: ", brain_id)
     task = None
     for attempt in range(MAX_TASK_RETRIES):
         try:
@@ -105,11 +117,12 @@ async def ingest_structured_data(data: IngestionStructuredRequestBody):
 async def ingest_file(
     request: Request,
     file: Annotated[UploadFile, File()],
-    brain_id: str = Form(default="default"),
+    brain_id: str = Depends(get_brain_id),
 ):
     """
     Ingest a file into the processing pipeline and save to the memory.
     """
+    print("[IngestFile] received task for brain: ", brain_id)
 
     task = str(uuid4())
 
@@ -143,9 +156,16 @@ async def ingest_file(
                 "task_id": task,
             }
         else:
-            forwarded_proto = request.headers.get("X-Forwarded-Proto") or request.url.scheme
-            forwarded_host = request.headers.get("X-Forwarded-Host") or request.headers.get("Host") or request.base_url.netloc
+            forwarded_proto = (
+                request.headers.get("X-Forwarded-Proto") or request.url.scheme
+            )
+            forwarded_host = (
+                request.headers.get("X-Forwarded-Host")
+                or request.headers.get("Host")
+                or request.base_url.netloc
+            )
             app_host = f"{forwarded_proto}://{forwarded_host}".rstrip("/")
+            print(f"app_host: {app_host}")
             cache_adapter.set(
                 key=f"task:{task}",
                 value=json.dumps({"status": "queued", "task_id": task}),

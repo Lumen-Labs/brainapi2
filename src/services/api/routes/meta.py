@@ -8,8 +8,9 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 -----
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from src.services.api.dependencies import get_brain_id
 from src.services.api.controllers.meta import (
     get_entities_labels as get_entities_labels_controller,
     get_relationships_properties as get_relationships_properties_controller,
@@ -20,7 +21,7 @@ meta_router = APIRouter(prefix="/meta", tags=["meta"])
 
 @meta_router.get(path="/relationships-properties")
 async def get_relationships_properties(
-    brain_id: str = "default",
+    brain_id: str = Depends(get_brain_id),
 ):
     """
     Retrieve all unique relationship types present in the graph for the specified brain.
@@ -35,7 +36,7 @@ async def get_relationships_properties(
 
 @meta_router.get(path="/entity-labels")
 async def get_entities_labels(
-    brain_id: str = "default",
+    brain_id: str = Depends(get_brain_id),
 ):
     """
     Retrieve all unique node labels present in the graph.
@@ -50,7 +51,7 @@ async def get_entities_labels(
 
 @meta_router.get(path="/entity-properties")
 async def get_entity_properties(
-    brain_id: str = "default",
+    brain_id: str = Depends(get_brain_id),
 ):
     """
     Retrieve all unique property keys used by entities in the specified brain/graph.
