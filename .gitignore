@@ -16,3 +16,6 @@ gcp_credentials.json
 
 mcp-stdio-http-bridge/target/
 mcp-stdio-http-bridge/dist/
+
+plugins/**
+docs/**
