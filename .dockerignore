@@ -7,7 +7,7 @@
 README.md
 *.md
 
-# Python
+# Python caches
 __pycache__/
 *.py[cod]
 *$py.class
@@ -31,7 +31,6 @@ wheels/
 MANIFEST
 
 # Virtual environments
-.env
 .venv
 env/
 venv/
@@ -39,9 +38,14 @@ ENV/
 env.bak/
 venv.bak/
 
+# Cache directories
+.cache/
+.ruff_cache/
+
 # IDE
 .vscode/
 .idea/
+.cursor/
 *.swp
 *.swo
 *~
@@ -58,11 +62,14 @@ Thumbs.db
 # Docker
 Dockerfile*
 docker-compose*.yml
+docker-compose*.yaml
+example-docker-compose.yaml
 .dockerignore
 
-# Development files
+# Development / CI files
 Makefile
 *.excalidraw
+.github/
 
 # Logs
 *.log
@@ -74,7 +81,7 @@ logs/
 .tmp/
 .temp/
 
-# Coverage reports
+# Coverage / Testing
 htmlcov/
 .coverage
 .coverage.*
@@ -92,9 +99,6 @@ coverage.xml
 # pipenv
 Pipfile.lock
 
-# Poetry
-# poetry.lock - needed for reproducible builds
-
 # Celery
 celerybeat-schedule
 celerybeat.pid
@@ -102,25 +106,29 @@ celerybeat.pid
 # SageMath parsed files
 *.sage.py
 
-# Environments
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
+# Environment files (secrets)
+.env
+.env.*
 
-# Database volumes
+# Database volumes (local dev)
 src/lib/*/volumes/
 src/lib/*/docker-compose.yaml
 
-# Terraform
-deploy/terraform/
+# Terraform / Infrastructure
+deploy/
+infra/
 *.tfstate
 *.tfstate.*
 .terraform/
 
+# Credentials
 gcp_credentials.json
+*.pem
+*.key
+
+# Misc
+.favorites.json
 READMEP.md
 Untitled-1.excalidraw
-.favorites.json
-.env
-.env*
+mcp-stdio-http-bridge/
+agent-transcripts/
