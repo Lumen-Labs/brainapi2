@@ -11,6 +11,7 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 from typing import List, Optional
 from src.adapters.llm import LLMAdapter
 from src.constants.prompts.observations_agent import OBSERVATIONS_AGENT_SYSTEM_PROMPT
+from src.core.plugins.prompts import prompt_registry
 from src.utils.serialization.data import str_to_json
 
 
@@ -28,7 +29,9 @@ class ObservationsAgent:
         """
         return str_to_json(
             self.llm_adapter.generate_text(
-                OBSERVATIONS_AGENT_SYSTEM_PROMPT.format(
+                prompt_registry.get(
+                    "OBSERVATIONS_AGENT_SYSTEM_PROMPT", OBSERVATIONS_AGENT_SYSTEM_PROMPT
+                ).format(
                     text=text, observate_for=observate_for
                 )
             ),

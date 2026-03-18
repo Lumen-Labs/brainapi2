@@ -36,6 +36,7 @@ from src.constants.prompts.architect_agent import (
     ARCHITECT_AGENT_CREATE_RELATIONSHIPS_PROMPT,
 )
 from src.core.agents.core.agent_base import AgentBase
+from src.core.plugins.prompts import prompt_registry
 from src.core.agents.scout_agent import ScoutEntity
 from src.constants.agents import (
     _ArchitectAgentResponse,
@@ -222,18 +223,24 @@ class ArchitectAgent:
         system_prompt = ""
 
         if type_ == "single":
-            system_prompt = ARCHITECT_AGENT_SYSTEM_PROMPT.format(
+            system_prompt = prompt_registry.get(
+                "ARCHITECT_AGENT_SYSTEM_PROMPT", ARCHITECT_AGENT_SYSTEM_PROMPT
+            ).format(
                 extra_system_prompt=(extra_system_prompt if extra_system_prompt else "")
             )
         elif type_ == "tooler":
             if mode == "granular":
-                system_prompt = ARCHITECT_AGENT_TOOLER_SYSTEM_PROMPT.format(
+                system_prompt = prompt_registry.get(
+                    "ARCHITECT_AGENT_TOOLER_SYSTEM_PROMPT", ARCHITECT_AGENT_TOOLER_SYSTEM_PROMPT
+                ).format(
                     extra_system_prompt=(
                         extra_system_prompt if extra_system_prompt else ""
                     )
                 )
             if mode == "coarse":
-                system_prompt = ARCHITECT_AGENT_TOOLER_COARSE_SYSTEM_PROMPT.format(
+                system_prompt = prompt_registry.get(
+                    "ARCHITECT_AGENT_TOOLER_COARSE_SYSTEM_PROMPT", ARCHITECT_AGENT_TOOLER_COARSE_SYSTEM_PROMPT
+                ).format(
                     extra_system_prompt=(
                         extra_system_prompt if extra_system_prompt else ""
                     )
@@ -335,7 +342,9 @@ class ArchitectAgent:
             messages_list.append(
                 {
                     "role": "user",
-                    "content": ARCHITECT_AGENT_CREATE_RELATIONSHIPS_PROMPT.format(
+                    "content": prompt_registry.get(
+                        "ARCHITECT_AGENT_CREATE_RELATIONSHIPS_PROMPT", ARCHITECT_AGENT_CREATE_RELATIONSHIPS_PROMPT
+                    ).format(
                         text=text,
                         entities=[entity.model_dump(mode="json") for entity in ent],
                         previously_created_relationships=(
@@ -624,7 +633,10 @@ class ArchitectAgent:
             )
             content = ""
             if mode == "granular":
-                content = ARCHITECT_AGENT_TOOLER_CREATE_RELATIONSHIPS_PROMPT.format(
+                content = prompt_registry.get(
+                    "ARCHITECT_AGENT_TOOLER_CREATE_RELATIONSHIPS_PROMPT",
+                    ARCHITECT_AGENT_TOOLER_CREATE_RELATIONSHIPS_PROMPT,
+                ).format(
                     text=text,
                     targeting=(
                         f"""
@@ -640,7 +652,10 @@ class ArchitectAgent:
                     ),
                 )
             if mode == "coarse":
-                content = ARCHITECT_AGENT_COARSE_TOOLER_CREATE_RELATIONSHIPS_PROMPT.format(
+                content = prompt_registry.get(
+                    "ARCHITECT_AGENT_COARSE_TOOLER_CREATE_RELATIONSHIPS_PROMPT",
+                    ARCHITECT_AGENT_COARSE_TOOLER_CREATE_RELATIONSHIPS_PROMPT,
+                ).format(
                     text=text,
                     targeting=(
                         f"""

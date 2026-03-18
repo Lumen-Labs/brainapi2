@@ -80,6 +80,9 @@ accelerate = ">=1.0.0,<2.0.0"
 [tool.pylint.messages_control]
 enable = ["abstract-method"]
 
+[tool.poetry.scripts]
+brainapi = "src.core.plugins.cli:app"
+
 [tool.pylint.design]
 max-args = 10
 max-locals = 15

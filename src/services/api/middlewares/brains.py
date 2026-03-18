@@ -43,7 +43,12 @@ def _brain_id_from_multipart(body: bytes, content_type: str) -> str | None:
 
 
 class BrainMiddleware(BaseHTTPMiddleware):
+    excluded_prefixes: set[str] = set()
+
     async def dispatch(self, request: Request, call_next):
+        if any(request.url.path.startswith(p) for p in self.excluded_prefixes):
+            return await call_next(request)
+
         async def _get_brain_id():
             brain_id = None
 

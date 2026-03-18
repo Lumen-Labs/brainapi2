@@ -29,7 +29,6 @@ from src.constants.agents import (
     TokenDetail,
 )
 from src.constants.kg import Node, Predicate
-from src.constants.prompts.janitor_agent import JANITOR_AGENT_GRAPH_NORMALIZATOR_PROMPT
 from src.core.agents.architect_agent import ArchitectAgentRelationship
 from src.core.agents.janitor_agent import (
     JanitorAgent,

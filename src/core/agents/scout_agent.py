@@ -35,6 +35,7 @@ from src.constants.prompts.scout_agent import (
     SCOUT_AGENT_SYSTEM_PROMPT,
 )
 from src.core.agents.core.agent_base import AgentBase, parse_structured_from_messages
+from src.core.plugins.prompts import prompt_registry
 from src.utils.tokens import token_detail_from_token_counts
 
 
@@ -131,11 +132,15 @@ class ScoutAgent:
         mode: Literal["granular", "coarse"] = "granular",
     ):
         if mode == "granular":
-            system_prompt = SCOUT_AGENT_SYSTEM_PROMPT.format(
+            system_prompt = prompt_registry.get(
+                "SCOUT_AGENT_SYSTEM_PROMPT", SCOUT_AGENT_SYSTEM_PROMPT
+            ).format(
                 extra_system_prompt=extra_system_prompt if extra_system_prompt else ""
             )
         if mode == "coarse":
-            system_prompt = SCOUT_AGENT_COARSE_SYSTEM_PROMPT.format(
+            system_prompt = prompt_registry.get(
+                "SCOUT_AGENT_COARSE_SYSTEM_PROMPT", SCOUT_AGENT_COARSE_SYSTEM_PROMPT
+            ).format(
                 extra_system_prompt=extra_system_prompt if extra_system_prompt else ""
             )
 
@@ -204,12 +209,16 @@ class ScoutAgent:
             else ""
         )
         if mode == "granular":
-            prompt = SCOUT_AGENT_EXTRACT_ENTITIES_PROMPT.format(
+            prompt = prompt_registry.get(
+                "SCOUT_AGENT_EXTRACT_ENTITIES_PROMPT", SCOUT_AGENT_EXTRACT_ENTITIES_PROMPT
+            ).format(
                 text=text,
                 targeting=targeting_str,
             )
         if mode == "coarse":
-            prompt = SCOUT_AGENT_COARSE_EXTRACT_ENTITIES_PROMPT.format(
+            prompt = prompt_registry.get(
+                "SCOUT_AGENT_COARSE_EXTRACT_ENTITIES_PROMPT", SCOUT_AGENT_COARSE_EXTRACT_ENTITIES_PROMPT
+            ).format(
                 text=text,
                 targeting=targeting_str,
             )

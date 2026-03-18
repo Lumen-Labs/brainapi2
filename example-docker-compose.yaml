@@ -1,6 +1,28 @@
 version: "3.8"
 
 services:
+  nginx:
+    image: nginx:stable-alpine
+    container_name: brainapi-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /srv/nginx/conf/nginx.conf:/etc/nginx/nginx.conf:ro
+      - /srv/nginx/conf/conf.d:/etc/nginx/conf.d:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - /srv/nginx/logs:/var/log/nginx
+    networks:
+      - appnet
+    restart: unless-stopped
+    depends_on:
+      - redis
+      - mongo
+      - neo4j
+      - milvus
+    mem_limit: 128m
+    cpus: 0.2
+
   redis:
     image: redis:7-alpine
     container_name: brainapi-redis
@@ -11,17 +33,17 @@ services:
     command: >
       redis-server
       --appendonly yes
-      --maxmemory 2gb
-      --maxmemory-policy volatile-lru
+      --maxmemory 1500mb
+      --maxmemory-policy allkeys-lru
       --save 900 1
       --save 300 10
       --save 60 10000
       --tcp-backlog 511
-      --timeout 0
+      --timeout 300
     networks:
       - appnet
     restart: unless-stopped
-    mem_limit: 512m
+    mem_limit: 2048m
     cpus: 0.5
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -41,7 +63,7 @@ services:
       - neo4j-plugins:/plugins
       - ./src/config/neo4j:/var/lib/neo4j/conf
     environment:
-      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-your_password}
+      - NEO4J_AUTH=neo4j/your_password
       - NEO4J_ACCEPT_LICENSE_AGREEMENT=yes
       - NEO4J_PLUGINS=["apoc"]
       - NEO4J_server_memory_heap_max__size=2g
@@ -145,8 +167,8 @@ services:
     ports:
       - "27017:27017"
     environment:
-      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME:-root}
-      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-password}
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: password
     volumes:
       - mongo-data:/data/db
       - mongo-config:/data/configdb
@@ -168,23 +190,40 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
   brainapi:
-    image: ghcr.io/lumen-labs/brainapi:latest
+    image: ghcr.io/lumen-labs/brainapi:v2.9.7-dev
     container_name: brainapi-api
     ports:
       - "8000:8000"
     env_file:
-      - .env
-    command: >
-      -m uvicorn src.services.api.app:app
-      --host 0.0.0.0
-      --port 8000
-      --workers 4
-      --timeout-keep-alive 30
-      --limit-concurrency 200
-      --backlog 2048
-    tmpfs:
-      - /tmp:size=512M
+      - /root/.env
+    environment:
+      PLUGIN_REGISTRY_URL: ${PLUGIN_REGISTRY_URL:-}
+      PLUGIN_PUBLISHER_ID: ${PLUGIN_PUBLISHER_ID:-}
+      PLUGIN_PUBLISHER_API_KEY: ${PLUGIN_PUBLISHER_API_KEY:-}
+      BRAINAPI_PLUGINS: my-plugin:1.0.0,analytics-plugin
+    volumes:
+      - /root/gcp_credentials.json:/app/gcp_credentials.json
+      - brainapi-plugins:/app/plugins
+    command:
+      [
+        "-m",
+        "uvicorn",
+        "src.services.api.app:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000",
+        "--workers",
+        "1",
+        "--timeout-keep-alive",
+        "30",
+        "--limit-concurrency",
+        "200",
+        "--backlog",
+        "2048",
+      ]
     depends_on:
       redis:
         condition: service_healthy
@@ -197,8 +236,8 @@ services:
     networks:
       - appnet
     restart: unless-stopped
-    mem_limit: 1024m
-    cpus: 0.9
+    mem_limit: 4g
+    cpus: 2
     healthcheck:
       test:
         [
@@ -211,25 +250,32 @@ services:
         ]
       interval: 30s
       timeout: 10s
-      retries: 3
-      start_period: 60s
+      retries: 5
+      start_period: 900s
+      start_interval: 30s
 
   brainapi-worker:
-    image: ghcr.io/lumen-labs/brainapi:latest
+    image: ghcr.io/lumen-labs/brainapi:v2.9.7-dev
     container_name: brainapi-worker
     env_file:
-      - .env
+      - /root/.env
     environment:
-      CELERY_WORKER_CONCURRENCY: ${CELERY_WORKER_CONCURRENCY:-4}
-    command: >
-      -m celery
-      -A src.workers.app:ingestion_app worker
-      -Q ingest_data,process_architect_relationships,ingest_structured_data,consolidate_graph
-      --loglevel=info
-      --prefetch-multiplier=1
-      --optimization=fair
-    tmpfs:
-      - /tmp:size=512M
+      BRAINAPI_PLUGINS: ${BRAINAPI_PLUGINS:-}
+      PLUGIN_REGISTRY_URL: ${PLUGIN_REGISTRY_URL:-}
+      PLUGIN_PUBLISHER_ID: ${PLUGIN_PUBLISHER_ID:-}
+      PLUGIN_PUBLISHER_API_KEY: ${PLUGIN_PUBLISHER_API_KEY:-}
+    volumes:
+      - /root/gcp_credentials.json:/app/gcp_credentials.json
+      - brainapi-plugins:/app/plugins
+    command:
+      [
+        "-m",
+        "celery",
+        "-A",
+        "src.workers.app",
+        "worker",
+        "--loglevel=info",
+      ]
     depends_on:
       redis:
         condition: service_healthy
@@ -242,34 +288,43 @@ services:
     networks:
       - appnet
     restart: unless-stopped
-    mem_limit: 1408m
-    cpus: 0.9
-    deploy:
-      resources:
-        limits:
-          cpus: "0.9"
-          memory: 1408m
+    mem_limit: 4g
+    cpus: 2
     healthcheck:
-      test: ["CMD", "celery", "-A", "src.workers.app:ingestion_app", "inspect", "ping"]
+      test: ["CMD", "celery", "-A", "src.workers.app", "inspect", "ping"]
       interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 60s
+      timeout: 10s
+      retries: 5
+      start_period: 900s
+      start_interval: 30s
 
   brainapi-mcp:
-    image: ghcr.io/lumen-labs/brainapi:latest
+    image: ghcr.io/lumen-labs/brainapi:v2.9.7-dev
     container_name: brainapi-mcp
     ports:
       - "8001:8001"
     env_file:
-      - .env
-    command: >
-      -m uvicorn src.services.mcp.app:app
-      --host 0.0.0.0
-      --port 8001
-      --timeout-keep-alive 30
-    tmpfs:
-      - /tmp:size=512M
+      - /root/.env
+    environment:
+      BRAINAPI_PLUGINS: ${BRAINAPI_PLUGINS:-}
+      PLUGIN_REGISTRY_URL: ${PLUGIN_REGISTRY_URL:-}
+      PLUGIN_PUBLISHER_ID: ${PLUGIN_PUBLISHER_ID:-}
+      PLUGIN_PUBLISHER_API_KEY: ${PLUGIN_PUBLISHER_API_KEY:-}
+    volumes:
+      - /root/gcp_credentials.json:/app/gcp_credentials.json
+      - brainapi-plugins:/app/plugins
+    command:
+      [
+        "-m",
+        "uvicorn",
+        "src.services.mcp.app:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8001",
+        "--timeout-keep-alive",
+        "30",
+      ]
     depends_on:
       redis:
         condition: service_healthy
@@ -282,10 +337,14 @@ services:
     networks:
       - appnet
     restart: unless-stopped
-    mem_limit: 512m
-    cpus: 0.5
+    mem_limit: 4g
+    cpus: 2
     healthcheck:
-      test: ["CMD-SHELL", "code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8001/); test \"$code\" = '200' || test \"$code\" = '405'"]
+      test:
+        [
+          "CMD-SHELL",
+          'code=$(curl -s -o /dev/null -w ''%{http_code}'' http://localhost:8001/); test "$code" = ''200'' || test "$code" = ''405''',
+        ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -294,26 +353,15 @@ services:
 networks:
   appnet:
     driver: bridge
-    ipam:
-      config:
-        - subnet: 172.20.0.0/16
 
 volumes:
   redis-data:
-    driver: local
   neo4j-data:
-    driver: local
   neo4j-logs:
-    driver: local
   neo4j-plugins:
-    driver: local
   etcd-data:
-    driver: local
   minio-data:
-    driver: local
   milvus-data:
-    driver: local
   mongo-data:
-    driver: local
   mongo-config:
-    driver: local
+  brainapi-plugins:

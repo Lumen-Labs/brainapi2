@@ -38,6 +38,7 @@ from src.constants.prompts.kg_agent import (
     KG_AGENT_UPDATE_STRUCTURED_PROMPT,
 )
 from src.core.agents.core.agent_base import AgentBase
+from src.core.plugins.prompts import prompt_registry
 from src.core.agents.tools.kg_agent import (
     KGAgentAddTripletsTool,
     KGAgentDeleteRelationshipTool,
@@ -179,11 +180,15 @@ class KGAgent:
         """
         system_prompt = None
         if type_ == "normal":
-            system_prompt = KG_AGENT_SYSTEM_PROMPT.format(
+            system_prompt = prompt_registry.get(
+                "KG_AGENT_SYSTEM_PROMPT", KG_AGENT_SYSTEM_PROMPT
+            ).format(
                 extra_system_prompt=extra_system_prompt if extra_system_prompt else ""
             )
         elif type_ == "graph-consolidator":
-            system_prompt = KG_AGENT_GRAPH_CONSOLIDATOR_SYSTEM_PROMPT.format(
+            system_prompt = prompt_registry.get(
+                "KG_AGENT_GRAPH_CONSOLIDATOR_SYSTEM_PROMPT", KG_AGENT_GRAPH_CONSOLIDATOR_SYSTEM_PROMPT
+            ).format(
                 extra_system_prompt=extra_system_prompt if extra_system_prompt else ""
             )
 
@@ -244,7 +249,9 @@ class KGAgent:
                 "messages": [
                     {
                         "role": "user",
-                        "content": KG_AGENT_UPDATE_PROMPT.format(
+                        "content": prompt_registry.get(
+                            "KG_AGENT_UPDATE_PROMPT", KG_AGENT_UPDATE_PROMPT
+                        ).format(
                             information=information,
                             preferred_entities=(
                                 preferred_entities_prompt if preferred_entities else ""
@@ -287,7 +294,9 @@ class KGAgent:
                 "messages": [
                     {
                         "role": "user",
-                        "content": KG_AGENT_UPDATE_STRUCTURED_PROMPT.format(
+                        "content": prompt_registry.get(
+                            "KG_AGENT_UPDATE_STRUCTURED_PROMPT", KG_AGENT_UPDATE_STRUCTURED_PROMPT
+                        ).format(
                             textual_data=textual_data,
                             main_node=main_node,
                         ),
@@ -367,7 +376,9 @@ class KGAgent:
                 "messages": [
                     {
                         "role": "user",
-                        "content": KG_AGENT_RETRIEVE_NEIGHBORS_PROMPT.format(
+                        "content": prompt_registry.get(
+                            "KG_AGENT_RETRIEVE_NEIGHBORS_PROMPT", KG_AGENT_RETRIEVE_NEIGHBORS_PROMPT
+                        ).format(
                             main_node=node, looking_for=looking_for_prompt, limit=limit
                         ),
                     }
@@ -469,7 +480,9 @@ class KGAgent:
                     "messages": [
                         {
                             "role": "user",
-                            "content": KG_AGENT_GRAPH_CONSOLIDATOR_PROMPT.format(
+                            "content": prompt_registry.get(
+                                "KG_AGENT_GRAPH_CONSOLIDATOR_PROMPT", KG_AGENT_GRAPH_CONSOLIDATOR_PROMPT
+                            ).format(
                                 task=task
                             ),
                         }

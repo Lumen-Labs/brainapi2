@@ -83,6 +83,9 @@ COPY entrypoint.sh ./
 
 RUN chmod +x /app/entrypoint.sh
 
+RUN mkdir -p /app/plugins && chown appuser:appuser /app/plugins
+VOLUME ["/app/plugins"]
+
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=30s --start-period=120s --retries=5 \
