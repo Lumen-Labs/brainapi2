@@ -13,6 +13,7 @@ from contextvars import ContextVar
 from typing import Any
 from mcp.server import FastMCP
 from pydantic import BaseModel
+from src.core.instances import embeddings_adapter, vector_store_adapter
 from src.lib.neo4j.client import _neo4j_client
 from src.services.data.main import data_adapter
 from src.services.kg_agent.main import graph_adapter
@@ -57,6 +58,31 @@ def search_memory(db_query: str, brain_id: str) -> Any:
         if not guard_brainpat(auth_token_var.get(), brain_id):
             return "Unauthorized"
         return graph_adapter.execute_operation(db_query, brain_id)
+    except Exception as e:
+        return f"Error executing graph operation: {e}"
+    
+    
+@mcp.tool()
+def search_semantically(query: str, brain_id: str) -> Any:
+    """
+    Search information semantically, given a query and a brain to search in,
+    this tool will return a list of graph nodes that are semantically related to the query.
+    
+    This tool is useful to search into the graph for information without knowing names or labels.
+    
+    Input must be a JSON object with the following fields:
+    - query: str: the query to search for.
+    - brain_id: str: the brain to search in.
+    """
+    try:
+        if not guard_brainpat(auth_token_var.get(), brain_id):
+            return "Unauthorized"
+        query_embedding = embeddings_adapter.embed_text(query)
+        data_vectors = vector_store_adapter.search_vectors(
+            query_embedding.embeddings, store="nodes", brain_id=brain_id, k=5
+        )
+        triplets = graph_adapter.get_event_centric_neighbors([v.metadata.get("uuid") for v in data_vectors], brain_id=brain_id)
+        return triplets
     except Exception as e:
         return f"Error executing graph operation: {e}"
 
