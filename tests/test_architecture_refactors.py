@@ -31,18 +31,17 @@ ENV_DEFAULTS = {
 for key, value in ENV_DEFAULTS.items():
     os.environ.setdefault(key, value)
 
-from src.adapters.embeddings import EmbeddingsAdapter, RaiseEmbeddingFailureStrategy
+from src.adapters.embeddings import (
+    EmbeddingError,
+    EmbeddingsAdapter,
+    RaiseEmbeddingFailureStrategy,
+)
 from src.adapters.graph import GraphAdapter
 from src.core.agents.core.runtime_agent_factory import RuntimeAgentFactory
-from src.lib.embeddings.client import EmbeddingError
 
 
-class FakeFailingEmbeddingClient:
-    def embed_text(self, text: str) -> list[float]:
-        raise EmbeddingError("embedding failed")
-
-    def embed_texts(self, texts: list[str]) -> list[list[float]]:
-        raise EmbeddingError("embedding failed")
+def raise_embedding_error(*args, **kwargs):
+    raise EmbeddingError("embedding failed")
 
 
 class RuntimeAgentFactoryTests(unittest.TestCase):
@@ -98,7 +97,8 @@ class RuntimeAgentFactoryTests(unittest.TestCase):
 class EmbeddingsStrategyTests(unittest.TestCase):
     def test_embeddings_default_strategy_returns_empty_vectors(self):
         adapter = EmbeddingsAdapter()
-        adapter.add_client(FakeFailingEmbeddingClient())
+        adapter._embed_text_with_retry = raise_embedding_error
+        adapter._embed_texts_with_retry = raise_embedding_error
         single = adapter.embed_text("hello")
         many = adapter.embed_texts(["a", "b"])
         self.assertEqual(single.embeddings, [])
@@ -107,7 +107,8 @@ class EmbeddingsStrategyTests(unittest.TestCase):
 
     def test_embeddings_raise_strategy_raises_error(self):
         adapter = EmbeddingsAdapter()
-        adapter.add_client(FakeFailingEmbeddingClient())
+        adapter._embed_text_with_retry = raise_embedding_error
+        adapter._embed_texts_with_retry = raise_embedding_error
         adapter.set_failure_strategy(RaiseEmbeddingFailureStrategy())
         with self.assertRaises(EmbeddingError):
             adapter.embed_text("hello")

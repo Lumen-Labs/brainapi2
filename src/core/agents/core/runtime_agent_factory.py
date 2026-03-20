@@ -1,20 +1,20 @@
 from typing import Any
 
-from langchain.agents import create_agent
-from langchain_core.language_models import BaseChatModel
+def _default_create_agent(**kwargs):
+    from langchain.agents import create_agent
 
-from .agent_base import AgentBase
+    return create_agent(**kwargs)
 
 
 class RuntimeAgentFactory:
-    def __init__(self, create_agent_fn=create_agent, custom_agent_cls=AgentBase):
-        self._create_agent_fn = create_agent_fn
+    def __init__(self, create_agent_fn=None, custom_agent_cls=None):
+        self._create_agent_fn = create_agent_fn or _default_create_agent
         self._custom_agent_cls = custom_agent_cls
 
     def build(
         self,
         *,
-        model: BaseChatModel,
+        model: Any,
         tools: list[Any],
         system_prompt: str,
         output_schema: Any = None,
@@ -23,7 +23,12 @@ class RuntimeAgentFactory:
         use_custom_backend: bool = False,
     ):
         if use_custom_backend or architecture == "custom":
-            return self._custom_agent_cls(
+            custom_agent_cls = self._custom_agent_cls
+            if custom_agent_cls is None:
+                from .agent_base import AgentBase
+
+                custom_agent_cls = AgentBase
+            return custom_agent_cls(
                 model=model,
                 tools=tools,
                 system_prompt=system_prompt,
