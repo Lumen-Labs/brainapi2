@@ -20,15 +20,45 @@ from src.constants.embeddings import Vector
 from src.lib.embeddings.client import EmbeddingError
 
 
+class EmbeddingFailureStrategy:
+    def on_single_failure(self, error: EmbeddingError) -> Vector:
+        raise NotImplementedError
+
+    def on_batch_failure(self, error: EmbeddingError, count: int) -> list[Vector]:
+        raise NotImplementedError
+
+
+class ReturnEmptyVectorStrategy(EmbeddingFailureStrategy):
+    def on_single_failure(self, error: EmbeddingError) -> Vector:
+        print(f"Embedding failed in adapter, returning empty vector: {error}")
+        return Vector(id=str(uuid.uuid4()), embeddings=[], metadata={})
+
+    def on_batch_failure(self, error: EmbeddingError, count: int) -> list[Vector]:
+        print(f"Embedding failed in adapter, returning empty vectors: {error}")
+        return [Vector(id=str(uuid.uuid4()), embeddings=[], metadata={}) for _ in range(count)]
+
+
+class RaiseEmbeddingFailureStrategy(EmbeddingFailureStrategy):
+    def on_single_failure(self, error: EmbeddingError) -> Vector:
+        raise error
+
+    def on_batch_failure(self, error: EmbeddingError, count: int) -> list[Vector]:
+        raise error
+
+
 class EmbeddingsAdapter:
-    def __init__(self):
+    def __init__(self, failure_strategy: EmbeddingFailureStrategy | None = None):
         self.embeddings = None
+        self.failure_strategy = failure_strategy or ReturnEmptyVectorStrategy()
 
     def add_client(self, client: EmbeddingsClient) -> None:
         """
         Add a embeddings client to the adapter.
         """
         self.embeddings = client
+
+    def set_failure_strategy(self, strategy: EmbeddingFailureStrategy) -> None:
+        self.failure_strategy = strategy
 
     @retry(
         stop=stop_after_attempt(5),
@@ -54,8 +84,7 @@ class EmbeddingsAdapter:
             embeddings = self._embed_text_with_retry(text)
             return Vector(id=str(uuid.uuid4()), embeddings=embeddings, metadata={})
         except EmbeddingError as e:
-            print(f"Embedding failed in adapter, returning empty vector: {e}")
-            return Vector(id=str(uuid.uuid4()), embeddings=[], metadata={})
+            return self.failure_strategy.on_single_failure(e)
 
     def embed_texts(self, texts: list[str]) -> list[Vector]:
         """
@@ -68,10 +97,7 @@ class EmbeddingsAdapter:
                 for embeddings in embeddings_list
             ]
         except EmbeddingError as e:
-            print(f"Embedding failed in adapter, returning empty vectors: {e}")
-            return [
-                Vector(id=str(uuid.uuid4()), embeddings=[], metadata={}) for _ in texts
-            ]
+            return self.failure_strategy.on_batch_failure(e, len(texts))
 
 
 class VectorStoreAdapter:

@@ -389,6 +389,32 @@ class GraphAdapter:
         """
         return self.graph.get_schema(brain_id)
 
+    def _reduce_neighbor_vectors(
+        self,
+        vectors_with_desc: list[dict],
+        averaged_vector: list[float],
+        similarity_threshold: float,
+        description: Optional[str],
+    ) -> set[str]:
+        reduced_vectors = vectors_with_desc
+        if description:
+            reduced_vectors = reduce_list(
+                vectors_with_desc,
+                access_key="embeddings",
+                similarity_threshold=0.8,
+                by_vector=averaged_vector,
+                rerank={
+                    "local": "description",
+                    "with_": description,
+                },
+            )
+        return {
+            vector["metadata"]["uuid"]
+            for vector in reduced_vectors
+            if cosine_similarity(averaged_vector, vector["embeddings"])
+            >= similarity_threshold
+        }
+
     def get_2nd_degree_hops(
         self,
         from_uuids: List[str],
@@ -490,34 +516,12 @@ class GraphAdapter:
                 if fd[1].uuid in fd_vs_by_uuid
             ]
             from_node = nodes_by_uuid[node_uuid]
-            filtered_uuids = []
-            if from_node.description:
-                filtered = reduce_list(
-                    fd_vs_with_desc,
-                    access_key="embeddings",
-                    similarity_threshold=0.8,
-                    by_vector=averaged_vector,
-                    rerank={
-                        "local": "description",
-                        "with_": from_node.description,
-                    },
-                )
-                filtered_uuids = {
-                    v["metadata"]["uuid"]
-                    for v in filtered
-                    if cosine_similarity(averaged_vector, v["embeddings"])
-                    >= similarity_threshold
-                }
-            else:
-                filtered_uuids = {
-                    fd[1].uuid
-                    for fd in fd_list
-                    if fd[1].uuid in fd_vs_by_uuid
-                    and cosine_similarity(
-                        averaged_vector, fd_vs_by_uuid[fd[1].uuid].embeddings
-                    )
-                    >= similarity_threshold
-                }
+            filtered_uuids = self._reduce_neighbor_vectors(
+                vectors_with_desc=fd_vs_with_desc,
+                averaged_vector=averaged_vector,
+                similarity_threshold=similarity_threshold,
+                description=from_node.description,
+            )
             filtered_fd_by_origin[node_uuid] = [
                 fd for fd in fd_list if fd[1].uuid in filtered_uuids
             ]
@@ -565,31 +569,12 @@ class GraphAdapter:
                     if sd[1].uuid in sd_vs_by_uuid
                 ]
 
-                reduced_uuids = []
-                if from_node.description:
-                    reduced = reduce_list(
-                        sd_vs_with_desc,
-                        access_key="embeddings",
-                        similarity_threshold=0.8,
-                        by_vector=averaged_vector,
-                        rerank={
-                            "local": "description",
-                            "with_": from_node.description,
-                        },
-                    )
-                    reduced_uuids = {
-                        v["metadata"]["uuid"]
-                        for v in reduced
-                        if cosine_similarity(averaged_vector, v["embeddings"])
-                        >= similarity_threshold
-                    }
-                else:
-                    reduced_uuids = {
-                        sd["metadata"]["uuid"]
-                        for sd in sd_vs_with_desc
-                        if cosine_similarity(averaged_vector, sd["embeddings"])
-                        >= similarity_threshold
-                    }
+                reduced_uuids = self._reduce_neighbor_vectors(
+                    vectors_with_desc=sd_vs_with_desc,
+                    averaged_vector=averaged_vector,
+                    similarity_threshold=similarity_threshold,
+                    description=from_node.description,
+                )
 
                 second_degree = [
                     (flatten_pred(sd[0]), flatten_node(sd[1]))

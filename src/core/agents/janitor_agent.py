@@ -12,7 +12,6 @@ import json
 import os
 from functools import reduce
 from typing import List, Literal, Optional, Tuple, Union
-from langchain.agents import create_agent
 from langchain.agents.structured_output import ToolStrategy
 from langchain.tools import BaseTool
 from pydantic import BaseModel
@@ -44,7 +43,7 @@ from src.core.agents.architect_agent import (
     ArchitectAgentRelationship,
     ArchitectAgentNew,
 )
-from src.core.agents.core.agent_base import AgentBase
+from src.core.agents.core import runtime_agent_factory
 from src.core.agents.scout_agent import ScoutEntity
 from src.core.agents.tools.janitor_agent import (
     JanitorAgentGetSchemaTool,
@@ -216,22 +215,14 @@ class JanitorAgent:
             else:
                 response_format = output_schema
 
-        if config.agentic_architecture == "custom":
-            self.agent = AgentBase(
-                model=self.llm_adapter.llm.langchain_model,
-                tools=(tools if tools else self._get_tools(brain_id)),
-                system_prompt=system_prompt,
-                output_schema=response_format,
-                debug=os.environ.get("DEBUG", "false").lower() == "true",
-            )
-        else:
-            self.agent = create_agent(
-                model=self.llm_adapter.llm.langchain_model,
-                tools=(tools if tools else self._get_tools(brain_id)),
-                system_prompt=system_prompt,
-                response_format=response_format,
-                debug=os.environ.get("DEBUG", "false").lower() == "true",
-            )
+        self.agent = runtime_agent_factory.build(
+            model=self.llm_adapter.llm.langchain_model,
+            tools=(tools if tools else self._get_tools(brain_id)),
+            system_prompt=system_prompt,
+            output_schema=response_format,
+            debug=os.environ.get("DEBUG", "false").lower() == "true",
+            architecture=config.agentic_architecture,
+        )
 
     def _content_only_history(
         self, messages: Optional[list], keep_last: Optional[int] = None

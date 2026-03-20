@@ -9,7 +9,6 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 """
 
 from typing import Dict, List, Literal, Optional, Tuple
-from langchain.agents import create_agent
 from langchain.tools import BaseTool
 from pydantic import BaseModel
 import os
@@ -35,7 +34,7 @@ from src.constants.prompts.architect_agent import (
     ARCHITECT_AGENT_SYSTEM_PROMPT,
     ARCHITECT_AGENT_CREATE_RELATIONSHIPS_PROMPT,
 )
-from src.core.agents.core.agent_base import AgentBase
+from src.core.agents.core import runtime_agent_factory
 from src.core.plugins.prompts import prompt_registry
 from src.core.agents.scout_agent import ScoutEntity
 from src.constants.agents import (
@@ -237,7 +236,7 @@ class ArchitectAgent:
                         extra_system_prompt if extra_system_prompt else ""
                     )
                 )
-            if mode == "coarse":
+            elif mode == "coarse":
                 system_prompt = prompt_registry.get(
                     "ARCHITECT_AGENT_TOOLER_COARSE_SYSTEM_PROMPT", ARCHITECT_AGENT_TOOLER_COARSE_SYSTEM_PROMPT
                 ).format(
@@ -245,6 +244,8 @@ class ArchitectAgent:
                         extra_system_prompt if extra_system_prompt else ""
                     )
                 )
+            else:
+                raise ValueError(f"Invalid mode for architect agent: {mode}")
         tools = (
             (
                 tools
@@ -264,22 +265,15 @@ class ArchitectAgent:
             (output_schema if output_schema else None) if type_ == "single" else None
         )
 
-        if mode == "granular":
-            self.agent = create_agent(
-                model=self.llm_adapter.llm.langchain_model,
-                tools=tools,
-                system_prompt=system_prompt,
-                response_format=response_format,
-                debug=os.environ.get("DEBUG", "false").lower() == "true",
-            )
-        if mode == "coarse" or config.agentic_architecture == "custom":
-            self.agent = AgentBase(
-                model=self.llm_adapter.llm.langchain_model,
-                tools=tools,
-                system_prompt=system_prompt,
-                output_schema=response_format,
-                debug=os.environ.get("DEBUG", "false").lower() == "true",
-            )
+        self.agent = runtime_agent_factory.build(
+            model=self.llm_adapter.llm.langchain_model,
+            tools=tools,
+            system_prompt=system_prompt,
+            output_schema=response_format,
+            debug=os.environ.get("DEBUG", "false").lower() == "true",
+            architecture=config.agentic_architecture,
+            use_custom_backend=(mode == "coarse"),
+        )
 
     def run(
         self,

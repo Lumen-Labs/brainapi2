@@ -10,5 +10,11 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 """
 
 from .agent_base import AgentBase, parse_structured_from_messages
+from .runtime_agent_factory import RuntimeAgentFactory, runtime_agent_factory
 
-__all__ = ["AgentBase", "parse_structured_from_messages"]
+__all__ = [
+    "AgentBase",
+    "parse_structured_from_messages",
+    "RuntimeAgentFactory",
+    "runtime_agent_factory",
+]
