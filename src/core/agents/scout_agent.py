@@ -10,7 +10,6 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 
 from typing import Dict, List, Literal, Optional
 import uuid
-from langchain.agents import create_agent
 from langchain.tools import BaseTool
 from pydantic import BaseModel, Field
 import os
@@ -34,7 +33,8 @@ from src.constants.prompts.scout_agent import (
     SCOUT_AGENT_EXTRACT_ENTITIES_PROMPT,
     SCOUT_AGENT_SYSTEM_PROMPT,
 )
-from src.core.agents.core.agent_base import AgentBase, parse_structured_from_messages
+from src.core.agents.core import parse_structured_from_messages, runtime_agent_factory
+from src.core.plugins.prompts import prompt_registry
 from src.utils.tokens import token_detail_from_token_counts
 
 
@@ -131,30 +131,29 @@ class ScoutAgent:
         mode: Literal["granular", "coarse"] = "granular",
     ):
         if mode == "granular":
-            system_prompt = SCOUT_AGENT_SYSTEM_PROMPT.format(
+            system_prompt = prompt_registry.get(
+                "SCOUT_AGENT_SYSTEM_PROMPT", SCOUT_AGENT_SYSTEM_PROMPT
+            ).format(
                 extra_system_prompt=extra_system_prompt if extra_system_prompt else ""
             )
-        if mode == "coarse":
-            system_prompt = SCOUT_AGENT_COARSE_SYSTEM_PROMPT.format(
+        elif mode == "coarse":
+            system_prompt = prompt_registry.get(
+                "SCOUT_AGENT_COARSE_SYSTEM_PROMPT", SCOUT_AGENT_COARSE_SYSTEM_PROMPT
+            ).format(
                 extra_system_prompt=extra_system_prompt if extra_system_prompt else ""
             )
+        else:
+            raise ValueError(f"Invalid mode for scout agent: {mode}")
 
-        if mode == "granular":
-            self.agent = create_agent(
-                model=self.llm_adapter.llm.langchain_model,
-                tools=(tools if tools else self._get_tools(brain_id)),
-                system_prompt=system_prompt,
-                response_format=output_schema if output_schema else None,
-                debug=os.environ.get("DEBUG", "false").lower() == "true",
-            )
-        if mode == "coarse" or config.agentic_architecture == "custom":
-            self.agent = AgentBase(
-                model=self.llm_adapter.llm.langchain_model,
-                tools=(tools if tools else self._get_tools(brain_id)),
-                system_prompt=system_prompt,
-                output_schema=output_schema if output_schema else None,
-                debug=os.environ.get("DEBUG", "false").lower() == "true",
-            )
+        self.agent = runtime_agent_factory.build(
+            model=self.llm_adapter.llm.langchain_model,
+            tools=(tools if tools else self._get_tools(brain_id)),
+            system_prompt=system_prompt,
+            output_schema=output_schema if output_schema else None,
+            debug=os.environ.get("DEBUG", "false").lower() == "true",
+            architecture=config.agentic_architecture,
+            use_custom_backend=(mode == "coarse"),
+        )
 
     def run(
         self,
@@ -204,15 +203,21 @@ class ScoutAgent:
             else ""
         )
         if mode == "granular":
-            prompt = SCOUT_AGENT_EXTRACT_ENTITIES_PROMPT.format(
+            prompt = prompt_registry.get(
+                "SCOUT_AGENT_EXTRACT_ENTITIES_PROMPT", SCOUT_AGENT_EXTRACT_ENTITIES_PROMPT
+            ).format(
                 text=text,
                 targeting=targeting_str,
             )
-        if mode == "coarse":
-            prompt = SCOUT_AGENT_COARSE_EXTRACT_ENTITIES_PROMPT.format(
+        elif mode == "coarse":
+            prompt = prompt_registry.get(
+                "SCOUT_AGENT_COARSE_EXTRACT_ENTITIES_PROMPT", SCOUT_AGENT_COARSE_EXTRACT_ENTITIES_PROMPT
+            ).format(
                 text=text,
                 targeting=targeting_str,
             )
+        else:
+            raise ValueError(f"Invalid mode for scout agent: {mode}")
 
         def _invoke_agent():
             return self.agent.invoke(

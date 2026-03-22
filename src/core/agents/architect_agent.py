@@ -9,7 +9,6 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 """
 
 from typing import Dict, List, Literal, Optional, Tuple
-from langchain.agents import create_agent
 from langchain.tools import BaseTool
 from pydantic import BaseModel
 import os
@@ -35,7 +34,8 @@ from src.constants.prompts.architect_agent import (
     ARCHITECT_AGENT_SYSTEM_PROMPT,
     ARCHITECT_AGENT_CREATE_RELATIONSHIPS_PROMPT,
 )
-from src.core.agents.core.agent_base import AgentBase
+from src.core.agents.core import runtime_agent_factory
+from src.core.plugins.prompts import prompt_registry
 from src.core.agents.scout_agent import ScoutEntity
 from src.constants.agents import (
     _ArchitectAgentResponse,
@@ -222,22 +222,30 @@ class ArchitectAgent:
         system_prompt = ""
 
         if type_ == "single":
-            system_prompt = ARCHITECT_AGENT_SYSTEM_PROMPT.format(
+            system_prompt = prompt_registry.get(
+                "ARCHITECT_AGENT_SYSTEM_PROMPT", ARCHITECT_AGENT_SYSTEM_PROMPT
+            ).format(
                 extra_system_prompt=(extra_system_prompt if extra_system_prompt else "")
             )
         elif type_ == "tooler":
             if mode == "granular":
-                system_prompt = ARCHITECT_AGENT_TOOLER_SYSTEM_PROMPT.format(
+                system_prompt = prompt_registry.get(
+                    "ARCHITECT_AGENT_TOOLER_SYSTEM_PROMPT", ARCHITECT_AGENT_TOOLER_SYSTEM_PROMPT
+                ).format(
                     extra_system_prompt=(
                         extra_system_prompt if extra_system_prompt else ""
                     )
                 )
-            if mode == "coarse":
-                system_prompt = ARCHITECT_AGENT_TOOLER_COARSE_SYSTEM_PROMPT.format(
+            elif mode == "coarse":
+                system_prompt = prompt_registry.get(
+                    "ARCHITECT_AGENT_TOOLER_COARSE_SYSTEM_PROMPT", ARCHITECT_AGENT_TOOLER_COARSE_SYSTEM_PROMPT
+                ).format(
                     extra_system_prompt=(
                         extra_system_prompt if extra_system_prompt else ""
                     )
                 )
+            else:
+                raise ValueError(f"Invalid mode for architect agent: {mode}")
         tools = (
             (
                 tools
@@ -257,22 +265,15 @@ class ArchitectAgent:
             (output_schema if output_schema else None) if type_ == "single" else None
         )
 
-        if mode == "granular":
-            self.agent = create_agent(
-                model=self.llm_adapter.llm.langchain_model,
-                tools=tools,
-                system_prompt=system_prompt,
-                response_format=response_format,
-                debug=os.environ.get("DEBUG", "false").lower() == "true",
-            )
-        if mode == "coarse" or config.agentic_architecture == "custom":
-            self.agent = AgentBase(
-                model=self.llm_adapter.llm.langchain_model,
-                tools=tools,
-                system_prompt=system_prompt,
-                output_schema=response_format,
-                debug=os.environ.get("DEBUG", "false").lower() == "true",
-            )
+        self.agent = runtime_agent_factory.build(
+            model=self.llm_adapter.llm.langchain_model,
+            tools=tools,
+            system_prompt=system_prompt,
+            output_schema=response_format,
+            debug=os.environ.get("DEBUG", "false").lower() == "true",
+            architecture=config.agentic_architecture,
+            use_custom_backend=(mode == "coarse"),
+        )
 
     def run(
         self,
@@ -335,7 +336,9 @@ class ArchitectAgent:
             messages_list.append(
                 {
                     "role": "user",
-                    "content": ARCHITECT_AGENT_CREATE_RELATIONSHIPS_PROMPT.format(
+                    "content": prompt_registry.get(
+                        "ARCHITECT_AGENT_CREATE_RELATIONSHIPS_PROMPT", ARCHITECT_AGENT_CREATE_RELATIONSHIPS_PROMPT
+                    ).format(
                         text=text,
                         entities=[entity.model_dump(mode="json") for entity in ent],
                         previously_created_relationships=(
@@ -624,7 +627,10 @@ class ArchitectAgent:
             )
             content = ""
             if mode == "granular":
-                content = ARCHITECT_AGENT_TOOLER_CREATE_RELATIONSHIPS_PROMPT.format(
+                content = prompt_registry.get(
+                    "ARCHITECT_AGENT_TOOLER_CREATE_RELATIONSHIPS_PROMPT",
+                    ARCHITECT_AGENT_TOOLER_CREATE_RELATIONSHIPS_PROMPT,
+                ).format(
                     text=text,
                     targeting=(
                         f"""
@@ -640,7 +646,10 @@ class ArchitectAgent:
                     ),
                 )
             if mode == "coarse":
-                content = ARCHITECT_AGENT_COARSE_TOOLER_CREATE_RELATIONSHIPS_PROMPT.format(
+                content = prompt_registry.get(
+                    "ARCHITECT_AGENT_COARSE_TOOLER_CREATE_RELATIONSHIPS_PROMPT",
+                    ARCHITECT_AGENT_COARSE_TOOLER_CREATE_RELATIONSHIPS_PROMPT,
+                ).format(
                     text=text,
                     targeting=(
                         f"""

@@ -37,6 +37,7 @@ from src.constants.data import (
 from src.constants.kg import Node, Predicate
 from src.constants.agents import ArchitectAgentRelationship
 from src.constants.prompts.misc import NODE_DESCRIPTION_PROMPT
+from src.core.plugins.prompts import prompt_registry
 from src.core.saving.auto_kg import enrich_kg_from_input
 from src.core.saving.ingestion_manager import IngestionManager
 from src.services.api.constants.requests import IngestionStructuredRequestBody
@@ -523,7 +524,9 @@ def ingest_structured_data(self, args: dict):
             uuid = str(uuid4())
             _element = element.model_dump(mode="json")
             description = llm_small_adapter.generate_text(
-                prompt=NODE_DESCRIPTION_PROMPT.format(
+                prompt=prompt_registry.get(
+                    "NODE_DESCRIPTION_PROMPT", NODE_DESCRIPTION_PROMPT
+                ).format(
                     element=json.dumps(
                         {
                             **_element.get("json_data", {}),

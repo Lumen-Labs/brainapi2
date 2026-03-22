@@ -12,7 +12,6 @@ import json
 import os
 from functools import reduce
 from typing import List, Literal, Optional, Tuple, Union
-from langchain.agents import create_agent
 from langchain.agents.structured_output import ToolStrategy
 from langchain.tools import BaseTool
 from pydantic import BaseModel
@@ -39,11 +38,12 @@ from src.constants.prompts.janitor_agent import (
     JANITOR_AGENT_GRAPH_NORMALIZATOR_PROMPT,
     JANITOR_AGENT_GRAPH_NORMALIZATOR_SYSTEM_PROMPT,
 )
+from src.core.plugins.prompts import prompt_registry
 from src.core.agents.architect_agent import (
     ArchitectAgentRelationship,
     ArchitectAgentNew,
 )
-from src.core.agents.core.agent_base import AgentBase
+from src.core.agents.core import runtime_agent_factory
 from src.core.agents.scout_agent import ScoutEntity
 from src.core.agents.tools.janitor_agent import (
     JanitorAgentGetSchemaTool,
@@ -171,15 +171,21 @@ class JanitorAgent:
         """
         system_prompt = None
         if type_ == "janitor":
-            system_prompt = JANITOR_AGENT_SYSTEM_PROMPT.format(
+            system_prompt = prompt_registry.get(
+                "JANITOR_AGENT_SYSTEM_PROMPT", JANITOR_AGENT_SYSTEM_PROMPT
+            ).format(
                 extra_system_prompt=extra_system_prompt if extra_system_prompt else ""
             )
         elif type_ == "graph-janitor":
-            system_prompt = JANITOR_AGENT_GRAPH_NORMALIZATOR_SYSTEM_PROMPT.format(
+            system_prompt = prompt_registry.get(
+                "JANITOR_AGENT_GRAPH_NORMALIZATOR_SYSTEM_PROMPT", JANITOR_AGENT_GRAPH_NORMALIZATOR_SYSTEM_PROMPT
+            ).format(
                 extra_system_prompt=extra_system_prompt if extra_system_prompt else "",
             )
         elif type_ == "atomic-janitor":
-            system_prompt = ATOMIC_JANITOR_AGENT_SYSTEM_PROMPT.format(
+            system_prompt = prompt_registry.get(
+                "ATOMIC_JANITOR_AGENT_SYSTEM_PROMPT", ATOMIC_JANITOR_AGENT_SYSTEM_PROMPT
+            ).format(
                 extra_system_prompt=extra_system_prompt if extra_system_prompt else ""
             )
         else:
@@ -209,22 +215,14 @@ class JanitorAgent:
             else:
                 response_format = output_schema
 
-        if config.agentic_architecture == "custom":
-            self.agent = AgentBase(
-                model=self.llm_adapter.llm.langchain_model,
-                tools=(tools if tools else self._get_tools(brain_id)),
-                system_prompt=system_prompt,
-                output_schema=response_format,
-                debug=os.environ.get("DEBUG", "false").lower() == "true",
-            )
-        else:
-            self.agent = create_agent(
-                model=self.llm_adapter.llm.langchain_model,
-                tools=(tools if tools else self._get_tools(brain_id)),
-                system_prompt=system_prompt,
-                response_format=response_format,
-                debug=os.environ.get("DEBUG", "false").lower() == "true",
-            )
+        self.agent = runtime_agent_factory.build(
+            model=self.llm_adapter.llm.langchain_model,
+            tools=(tools if tools else self._get_tools(brain_id)),
+            system_prompt=system_prompt,
+            output_schema=response_format,
+            debug=os.environ.get("DEBUG", "false").lower() == "true",
+            architecture=config.agentic_architecture,
+        )
 
     def _content_only_history(
         self, messages: Optional[list], keep_last: Optional[int] = None
@@ -323,7 +321,9 @@ class JanitorAgent:
             messages_list.append(
                 {
                     "role": "user",
-                    "content": JANITOR_AGENT_GRAPH_NORMALIZATOR_PROMPT.format(
+                    "content": prompt_registry.get(
+                        "JANITOR_AGENT_GRAPH_NORMALIZATOR_PROMPT", JANITOR_AGENT_GRAPH_NORMALIZATOR_PROMPT
+                    ).format(
                         snapshot_json=json.dumps(hops),
                         units=json.dumps(
                             strip_properties(
@@ -480,7 +480,9 @@ class JanitorAgent:
             messages_list.append(
                 {
                     "role": "user",
-                    "content": JANITOR_AGENT_NORMALIZE_INSERTION_PROMPT.format(
+                    "content": prompt_registry.get(
+                        "JANITOR_AGENT_NORMALIZE_INSERTION_PROMPT", JANITOR_AGENT_NORMALIZE_INSERTION_PROMPT
+                    ).format(
                         unit_of_work=input_output.model_dump_json(),
                         text=text,
                         targeting=(
@@ -648,7 +650,9 @@ class JanitorAgent:
             messages_list.append(
                 {
                     "role": "user",
-                    "content": ATOMIC_JANITOR_AGENT_PROMPT.format(
+                    "content": prompt_registry.get(
+                        "ATOMIC_JANITOR_AGENT_PROMPT", ATOMIC_JANITOR_AGENT_PROMPT
+                    ).format(
                         units_of_work=json.dumps(
                             strip_properties(
                                 [

@@ -3,7 +3,7 @@ File: /auth.py
 Created Date: Thursday November 27th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Thursday November 27th 2025 10:20:03 pm
+Last Modified: Thursday February 19th 2026 7:45:12 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
@@ -19,8 +19,13 @@ from src.services.data.main import data_adapter
 
 
 class BrainPATMiddleware(BaseHTTPMiddleware):
+    excluded_prefixes: set[str] = set()
+
     async def dispatch(self, request: Request, call_next):
         if request.method == "OPTIONS":
+            return await call_next(request)
+
+        if any(request.url.path.startswith(p) for p in self.excluded_prefixes):
             return await call_next(request)
 
         # Variables ----------------------------------------------
@@ -34,7 +39,7 @@ class BrainPATMiddleware(BaseHTTPMiddleware):
                 if brainpat:
                     brainpat = brainpat.rstrip()
         system_pat = os.getenv("BRAINPAT_TOKEN")
-
+        print(brainpat, system_pat)
         if request.url.path.startswith("/system") or request.url.path == "/":
             if brainpat == system_pat:
                 return await call_next(request)

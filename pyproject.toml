@@ -1,6 +1,6 @@
 [project]
 name = "brainapi2"
-version = "2.9.7-dev"
+version = "2.10.2-dev"
 description = "Version 2.x.x of the BrainAPI memory layer."
 authors = [
     {name = "Christian",email = "alch.infoemail@gmail.com"}
@@ -79,6 +79,9 @@ accelerate = ">=1.0.0,<2.0.0"
 
 [tool.pylint.messages_control]
 enable = ["abstract-method"]
+
+[tool.poetry.scripts]
+brainapi = "src.core.plugins.cli:app"
 
 [tool.pylint.design]
 max-args = 10
