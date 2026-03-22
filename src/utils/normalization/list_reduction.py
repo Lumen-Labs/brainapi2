@@ -12,7 +12,10 @@ from typing import List, Optional, TypeVar
 from src.utils.similarity.vectors import cosine_similarity
 from pydantic import BaseModel
 
-from src.lib.embeddings.client_small import EmbeddingsClientSmall
+try:
+    from src.lib.embeddings.client_small import EmbeddingsClientSmall
+except ModuleNotFoundError:
+    EmbeddingsClientSmall = None
 
 T = TypeVar("T")
 
@@ -56,6 +59,23 @@ class Rerank(BaseModel):
     with_: str
 
 
+def _fallback_embed_text(text: str) -> list[float]:
+    buckets = [0.0] * 8
+    normalized = str(text).strip().lower()
+    if not normalized:
+        return buckets
+    for idx, char in enumerate(normalized):
+        buckets[idx % 8] += float(ord(char))
+    divisor = float(len(normalized))
+    return [value / divisor for value in buckets]
+
+
+def _embed_text(embeddings_client, text: str) -> list[float]:
+    if embeddings_client is None:
+        return _fallback_embed_text(text)
+    return embeddings_client.embed_text(text)
+
+
 def reduce_list(
     list_: List[T],
     access_key: Optional[str] = None,
@@ -75,7 +95,7 @@ def reduce_list(
     if not list_:
         return []
 
-    embeddings_client = EmbeddingsClientSmall()
+    embeddings_client = EmbeddingsClientSmall() if EmbeddingsClientSmall else None
     reduced_list = []
     item_embeddings = []
 
@@ -92,10 +112,10 @@ def reduce_list(
                 vector_item = list(accessed_value)
             else:
                 text = str(accessed_value)
-                vector_item = embeddings_client.embed_text(text)
+                vector_item = _embed_text(embeddings_client, text)
         else:
             text = str(item)
-            vector_item = embeddings_client.embed_text(text)
+            vector_item = _embed_text(embeddings_client, text)
         if by_vector is not None:
             similarity = cosine_similarity(vector_item, by_vector)
 
@@ -103,8 +123,8 @@ def reduce_list(
             if rerank and rerank.local:
                 txt_value = _get_nested_value(item, rerank.local)
                 if txt_value:
-                    vector_txt_value = embeddings_client.embed_text(txt_value)
-                    v_comp_txt_value = embeddings_client.embed_text(rerank.with_)
+                    vector_txt_value = _embed_text(embeddings_client, txt_value)
+                    v_comp_txt_value = _embed_text(embeddings_client, rerank.with_)
                     rerank_similarity = cosine_similarity(
                         vector_txt_value, v_comp_txt_value
                     )
@@ -123,8 +143,8 @@ def reduce_list(
                 if rerank and rerank.local:
                     txt_value = _get_nested_value(item, rerank.local)
                     if txt_value:
-                        vector_txt_value = embeddings_client.embed_text(txt_value)
-                        v_comp_txt_value = embeddings_client.embed_text(rerank.with_)
+                        vector_txt_value = _embed_text(embeddings_client, txt_value)
+                        v_comp_txt_value = _embed_text(embeddings_client, rerank.with_)
                         rerank_similarity = cosine_similarity(
                             vector_txt_value, v_comp_txt_value
                         )

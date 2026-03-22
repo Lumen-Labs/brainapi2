@@ -10,7 +10,6 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 
 import os
 from typing import Iterable, List, Literal, Optional, Union
-from langchain.agents import create_agent
 from langchain.tools import BaseTool
 from pydantic import BaseModel
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
@@ -37,7 +36,7 @@ from src.constants.prompts.kg_agent import (
     KG_AGENT_UPDATE_PROMPT,
     KG_AGENT_UPDATE_STRUCTURED_PROMPT,
 )
-from src.core.agents.core.agent_base import AgentBase
+from src.core.agents.core import runtime_agent_factory
 from src.core.plugins.prompts import prompt_registry
 from src.core.agents.tools.kg_agent import (
     KGAgentAddTripletsTool,
@@ -192,26 +191,18 @@ class KGAgent:
                 extra_system_prompt=extra_system_prompt if extra_system_prompt else ""
             )
 
-        if config.agentic_architecture == "custom":
-            self.agent = AgentBase(
-                model=self.llm_adapter.llm.langchain_model,
-                tools=(tools if tools else self._get_tools(identification_params, metadata, brain_id)),
-                system_prompt=system_prompt,
-                output_schema=output_schema if output_schema else None,
-                debug=os.environ.get("DEBUG", "false").lower() == "true",
-            )
-        else:
-            self.agent = create_agent(
-                model=self.llm_adapter.llm.langchain_model,
-                tools=(
-                    tools
-                    if tools
-                    else self._get_tools(identification_params, metadata, brain_id)
-                ),
-                system_prompt=system_prompt,
-                response_format=output_schema if output_schema else None,
-                debug=os.environ.get("DEBUG", "false").lower() == "true",
-            )
+        self.agent = runtime_agent_factory.build(
+            model=self.llm_adapter.llm.langchain_model,
+            tools=(
+                tools
+                if tools
+                else self._get_tools(identification_params, metadata, brain_id)
+            ),
+            system_prompt=system_prompt,
+            output_schema=output_schema if output_schema else None,
+            debug=os.environ.get("DEBUG", "false").lower() == "true",
+            architecture=config.agentic_architecture,
+        )
         self._agent_type = type_
         self._agent_brain_id = brain_id
 
