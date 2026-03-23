@@ -8,6 +8,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
+from abc import ABC, abstractmethod
 from typing import Dict, List, Literal, Optional, Tuple
 from src.adapters.interfaces.graph import GraphClient, PredicateWithFlowKey
 from src.constants.embeddings import Vector
@@ -25,13 +26,67 @@ from src.utils.normalization.list_reduction import reduce_list
 from src.utils.similarity.vectors import cosine_similarity
 
 
+class NeighborVectorReductionStrategy(ABC):
+    @abstractmethod
+    def prefilter(
+        self,
+        vectors_with_desc: list[dict],
+        averaged_vector: list[float],
+        description: Optional[str],
+    ) -> list[dict]:
+        raise NotImplementedError
+
+
+class SimilarityOnlyReductionStrategy(NeighborVectorReductionStrategy):
+    def prefilter(
+        self,
+        vectors_with_desc: list[dict],
+        averaged_vector: list[float],
+        description: Optional[str],
+    ) -> list[dict]:
+        return vectors_with_desc
+
+
+class DescriptionAwareReductionStrategy(NeighborVectorReductionStrategy):
+    def prefilter(
+        self,
+        vectors_with_desc: list[dict],
+        averaged_vector: list[float],
+        description: Optional[str],
+    ) -> list[dict]:
+        if not description:
+            return vectors_with_desc
+        return reduce_list(
+            vectors_with_desc,
+            access_key="embeddings",
+            similarity_threshold=0.8,
+            by_vector=averaged_vector,
+            rerank={
+                "local": "description",
+                "with_": description,
+            },
+        )
+
+
+class NeighborVectorReductionStrategyFactory:
+    def create(self, description: Optional[str]) -> NeighborVectorReductionStrategy:
+        if description:
+            return DescriptionAwareReductionStrategy()
+        return SimilarityOnlyReductionStrategy()
+
+
 class GraphAdapter:
     """
     Adapter for the graph client.
     """
 
-    def __init__(self):
+    def __init__(
+        self, reduction_strategy_factory: Optional[NeighborVectorReductionStrategyFactory] = None
+    ):
         self.graph = None
+        self._reduction_strategy_factory = (
+            reduction_strategy_factory or NeighborVectorReductionStrategyFactory()
+        )
 
     @property
     def graphdb_type(self) -> str:
@@ -298,8 +353,8 @@ class GraphAdapter:
         uuid: str,
         updating: Literal["node", "relationship"],
         brain_id: str = "default",
-        new_properties: dict = {},
-        properties_to_remove: list[str] = [],
+        new_properties: Optional[dict] = None,
+        properties_to_remove: Optional[list[str]] = None,
     ) -> Node | Predicate | None:
         """
         Update properties on a graph node or relationship.
@@ -314,6 +369,10 @@ class GraphAdapter:
         Returns:
                 Node | Predicate | None: The updated entity, or `None` if the entity was not found.
         """
+        if new_properties is None:
+            new_properties = {}
+        if properties_to_remove is None:
+            properties_to_remove = []
         return self.graph.update_properties(
             uuid, updating, brain_id, new_properties, properties_to_remove
         )
@@ -396,24 +455,46 @@ class GraphAdapter:
         similarity_threshold: float,
         description: Optional[str],
     ) -> set[str]:
-        reduced_vectors = vectors_with_desc
-        if description:
-            reduced_vectors = reduce_list(
-                vectors_with_desc,
-                access_key="embeddings",
-                similarity_threshold=0.8,
-                by_vector=averaged_vector,
-                rerank={
-                    "local": "description",
-                    "with_": description,
-                },
-            )
-        return {
-            vector["metadata"]["uuid"]
-            for vector in reduced_vectors
-            if cosine_similarity(averaged_vector, vector["embeddings"])
-            >= similarity_threshold
-        }
+        if not vectors_with_desc or not averaged_vector:
+            return set()
+        strategy = self._reduction_strategy_factory.create(description)
+        reduced_vectors = strategy.prefilter(
+            vectors_with_desc=vectors_with_desc,
+            averaged_vector=averaged_vector,
+            description=description,
+        )
+        filtered_uuids = set()
+        for vector in reduced_vectors:
+            vector_uuid = vector.get("metadata", {}).get("uuid")
+            embeddings = vector.get("embeddings")
+            if (
+                not vector_uuid
+                or not embeddings
+                or not isinstance(embeddings, list)
+                or len(embeddings) != len(averaged_vector)
+            ):
+                continue
+            if cosine_similarity(averaged_vector, embeddings) >= similarity_threshold:
+                filtered_uuids.add(vector_uuid)
+        return filtered_uuids
+
+    def _average_embeddings(self, vectors: list[Vector]) -> list[float]:
+        valid_embeddings = [
+            vector.embeddings for vector in vectors if isinstance(vector.embeddings, list) and vector.embeddings
+        ]
+        if not valid_embeddings:
+            return []
+        dimension = len(valid_embeddings[0])
+        same_dimension_embeddings = [
+            embedding for embedding in valid_embeddings if len(embedding) == dimension
+        ]
+        if not same_dimension_embeddings:
+            return []
+        return [
+            sum(embedding[i] for embedding in same_dimension_embeddings)
+            / len(same_dimension_embeddings)
+            for i in range(dimension)
+        ]
 
     def get_2nd_degree_hops(
         self,
@@ -479,10 +560,10 @@ class GraphAdapter:
             print("[ ! ] No vectors found for nodes:", from_uuids)
             return []
 
-        averaged_vector = [
-            sum(v.embeddings[i] for v in vs) / len(vs)
-            for i in range(len(vs[0].embeddings))
-        ]
+        averaged_vector = self._average_embeddings(vs)
+        if len(averaged_vector) == 0:
+            print("[ ! ] No valid embeddings found for nodes:", from_uuids)
+            return []
 
         all_fd_nodes = self.get_neighbors(list(nodes_by_uuid.keys()), brain_id=brain_id)
 
@@ -492,12 +573,14 @@ class GraphAdapter:
             for fd in fds
             if fd[1].properties.get("v_id") is not None
         ]  # TODO: [missing_property] check why sometime v_id is not present
-        all_fd_vs = vector_store_adapter.get_by_ids(
-            all_fd_v_ids, brain_id=brain_id, store="nodes"
+        all_fd_vs = (
+            vector_store_adapter.get_by_ids(all_fd_v_ids, brain_id=brain_id, store="nodes")
+            if len(all_fd_v_ids) > 0
+            else []
         )
         fd_vs_by_uuid: Dict[str, Vector] = {v.metadata["uuid"]: v for v in all_fd_vs}
 
-        all_filtered_fd_uuids = []
+        all_filtered_fd_uuids: set[str] = set()
         filtered_fd_by_origin: Dict[str, List[Tuple[Predicate, Node]]] = {}
 
         for node_uuid, fd_list in all_fd_nodes.items():
@@ -525,9 +608,13 @@ class GraphAdapter:
             filtered_fd_by_origin[node_uuid] = [
                 fd for fd in fd_list if fd[1].uuid in filtered_uuids
             ]
-            all_filtered_fd_uuids.extend(filtered_uuids)
+            all_filtered_fd_uuids.update(filtered_uuids)
 
-        all_sd_nodes = self.get_neighbors(all_filtered_fd_uuids, brain_id=brain_id)
+        all_sd_nodes = (
+            self.get_neighbors(list(all_filtered_fd_uuids), brain_id=brain_id)
+            if len(all_filtered_fd_uuids) > 0
+            else {}
+        )
 
         all_sd_v_ids: List[str] = [
             getattr(sd[1], "properties", {}).get("v_id")
@@ -537,8 +624,10 @@ class GraphAdapter:
                 "v_id"
             )  # TODO: [missing_property] check why sometime v_id is not present
         ]
-        all_sd_vs = vector_store_adapter.get_by_ids(
-            all_sd_v_ids, brain_id=brain_id, store="nodes"
+        all_sd_vs = (
+            vector_store_adapter.get_by_ids(all_sd_v_ids, brain_id=brain_id, store="nodes")
+            if len(all_sd_v_ids) > 0
+            else []
         )
         sd_vs_by_uuid = {v.metadata["uuid"]: v for v in all_sd_vs}
 

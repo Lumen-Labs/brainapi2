@@ -130,7 +130,7 @@ async def get_entity_sibilings(
 
 async def get_entity_status(
     target: str,
-    types: List[str] = [],
+    types: List[str] | None = None,
     brain_id: str = "default",
 ) -> GetEntityStatusResponse:
     """
@@ -145,6 +145,9 @@ async def get_entity_status(
         GetEntityStatusResponse: Response containing the matched node (or `None` if not found), `exists` indicating presence, `has_relationships` indicating whether the node has neighbors, `relationships` listing neighbor tuples, and `observations` associated with the node. When no matching node is found, `exists` is `False` and `relationships` and `observations` are empty.
     """
 
+    if types is None:
+        types = []
+
     target_embeddings = embeddings_adapter.embed_text(target)
     target_node_vs = vector_store_adapter.search_vectors(
         target_embeddings.embeddings, store="nodes", brain_id=brain_id
@@ -154,7 +157,10 @@ async def get_entity_status(
 
     for target_node_v in target_node_vs:
         target_node_id = target_node_v.metadata.get("uuid")
-        target_node = graph_adapter.get_by_uuids([target_node_id], brain_id=brain_id)[0]
+        nodes = graph_adapter.get_by_uuids([target_node_id], brain_id=brain_id)
+        if len(nodes) == 0:
+            continue
+        target_node = nodes[0]
 
         if len(types) > 0:
             if set(target_node.labels).intersection(set(types)):

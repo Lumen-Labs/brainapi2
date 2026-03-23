@@ -37,7 +37,9 @@ from src.adapters.embeddings import (
     RaiseEmbeddingFailureStrategy,
 )
 from src.adapters.graph import GraphAdapter
+from src.constants.embeddings import Vector
 from src.core.agents.core.runtime_agent_factory import RuntimeAgentFactory
+from src.services.api.controllers.entities import get_entity_status
 
 
 def raise_embedding_error(*args, **kwargs):
@@ -146,6 +148,62 @@ class GraphAdapterReductionTests(unittest.TestCase):
             )
         reduced.assert_called_once()
         self.assertEqual(result, {"b"})
+
+    def test_reduce_neighbor_vectors_skips_invalid_embeddings(self):
+        adapter = GraphAdapter()
+        vectors = [
+            {"metadata": {"uuid": "a"}, "embeddings": [1.0, 0.0]},
+            {"metadata": {"uuid": "b"}, "embeddings": [1.0]},
+            {"metadata": {"uuid": "c"}, "embeddings": None},
+            {"metadata": {}, "embeddings": [1.0, 0.0]},
+        ]
+        reduced = adapter._reduce_neighbor_vectors(
+            vectors_with_desc=vectors,
+            averaged_vector=[1.0, 0.0],
+            similarity_threshold=0.5,
+            description=None,
+        )
+        self.assertEqual(reduced, {"a"})
+
+    def test_average_embeddings_ignores_invalid_and_mismatched_dimensions(self):
+        adapter = GraphAdapter()
+        vectors = [
+            Vector(id="1", embeddings=[1.0, 2.0], metadata={}),
+            Vector(id="2", embeddings=[3.0, 4.0], metadata={}),
+            Vector(id="3", embeddings=[10.0], metadata={}),
+            Vector(id="4", embeddings=None, metadata={}),
+            Vector(id="5", embeddings=[], metadata={}),
+        ]
+        averaged = adapter._average_embeddings(vectors)
+        self.assertEqual(averaged, [2.0, 3.0])
+
+
+class EntityStatusControllerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_get_entity_status_skips_missing_graph_nodes(self):
+        fake_vector = type(
+            "FakeVector",
+            (),
+            {"metadata": {"uuid": "missing-node"}, "embeddings": [0.1, 0.2]},
+        )()
+        with (
+            patch(
+                "src.services.api.controllers.entities.embeddings_adapter.embed_text",
+                return_value=Vector(id="q", embeddings=[0.1, 0.2], metadata={}),
+            ),
+            patch(
+                "src.services.api.controllers.entities.vector_store_adapter.search_vectors",
+                return_value=[fake_vector],
+            ),
+            patch(
+                "src.services.api.controllers.entities.graph_adapter.get_by_uuids",
+                return_value=[],
+            ),
+        ):
+            response = await get_entity_status("target", types=None, brain_id="default")
+        self.assertFalse(response.exists)
+        self.assertFalse(response.has_relationships)
+        self.assertEqual(response.relationships, [])
+        self.assertEqual(response.observations, [])
 
 
 if __name__ == "__main__":
