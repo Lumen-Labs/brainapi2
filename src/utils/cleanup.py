@@ -51,7 +51,11 @@ def _extract_json_array_after_key(text: str, key: str):
     return None
 
 
-def strip_properties(objs: list[dict], pop_also: list[str] = []) -> list[dict]:
+def strip_properties(
+    objs: list[dict], pop_also: list[str] | None = None
+) -> list[dict]:
+    if pop_also is None:
+        pop_also = []
     cleaned_objs = []
     for obj in objs:
         if not isinstance(obj, dict):

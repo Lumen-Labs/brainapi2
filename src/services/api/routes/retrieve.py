@@ -493,7 +493,7 @@ async def get_entity_synergies(
 @retrieve_router.get(path="/entity/status")
 async def get_entity_status(
     target: str,
-    types: Optional[List[str]] = [],
+    types: Optional[List[str]] = None,
     brain_id: str = Depends(get_brain_id),
 ):
     """
@@ -507,4 +507,4 @@ async def get_entity_status(
     Returns:
         status (dict): A dictionary containing the entity's status details.
     """
-    return await get_entity_status_controller(target, types, brain_id)
+    return await get_entity_status_controller(target, types or [], brain_id)
