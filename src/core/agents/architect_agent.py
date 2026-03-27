@@ -8,7 +8,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
-from typing import Dict, List, Literal, Optional, Tuple
+from typing import Callable, Dict, List, Literal, Optional, Tuple
 from langchain.tools import BaseTool
 from pydantic import BaseModel
 import os
@@ -72,6 +72,21 @@ class ArchitectAgent:
     """
     Architect agent.
     """
+    _SYSTEM_PROMPT_BUILDERS: dict[tuple[str, str], Callable[[str], str]] = {
+        ("single", "granular"): lambda extra: prompt_registry.get(
+            "ARCHITECT_AGENT_SYSTEM_PROMPT", ARCHITECT_AGENT_SYSTEM_PROMPT
+        ).format(extra_system_prompt=extra),
+        ("single", "coarse"): lambda extra: prompt_registry.get(
+            "ARCHITECT_AGENT_SYSTEM_PROMPT", ARCHITECT_AGENT_SYSTEM_PROMPT
+        ).format(extra_system_prompt=extra),
+        ("tooler", "granular"): lambda extra: prompt_registry.get(
+            "ARCHITECT_AGENT_TOOLER_SYSTEM_PROMPT", ARCHITECT_AGENT_TOOLER_SYSTEM_PROMPT
+        ).format(extra_system_prompt=extra),
+        ("tooler", "coarse"): lambda extra: prompt_registry.get(
+            "ARCHITECT_AGENT_TOOLER_COARSE_SYSTEM_PROMPT",
+            ARCHITECT_AGENT_TOOLER_COARSE_SYSTEM_PROMPT,
+        ).format(extra_system_prompt=extra),
+    }
 
     entities: Dict[str, ScoutEntity]
 
@@ -218,34 +233,7 @@ class ArchitectAgent:
         Side effects:
             Creates an agent via create_agent and assigns it to self.agent.
         """
-
-        system_prompt = ""
-
-        if type_ == "single":
-            system_prompt = prompt_registry.get(
-                "ARCHITECT_AGENT_SYSTEM_PROMPT", ARCHITECT_AGENT_SYSTEM_PROMPT
-            ).format(
-                extra_system_prompt=(extra_system_prompt if extra_system_prompt else "")
-            )
-        elif type_ == "tooler":
-            if mode == "granular":
-                system_prompt = prompt_registry.get(
-                    "ARCHITECT_AGENT_TOOLER_SYSTEM_PROMPT", ARCHITECT_AGENT_TOOLER_SYSTEM_PROMPT
-                ).format(
-                    extra_system_prompt=(
-                        extra_system_prompt if extra_system_prompt else ""
-                    )
-                )
-            elif mode == "coarse":
-                system_prompt = prompt_registry.get(
-                    "ARCHITECT_AGENT_TOOLER_COARSE_SYSTEM_PROMPT", ARCHITECT_AGENT_TOOLER_COARSE_SYSTEM_PROMPT
-                ).format(
-                    extra_system_prompt=(
-                        extra_system_prompt if extra_system_prompt else ""
-                    )
-                )
-            else:
-                raise ValueError(f"Invalid mode for architect agent: {mode}")
+        system_prompt = self._resolve_system_prompt(type_, mode, extra_system_prompt)
         tools = (
             (
                 tools
@@ -274,6 +262,22 @@ class ArchitectAgent:
             architecture=config.agentic_architecture,
             use_custom_backend=(mode == "coarse"),
         )
+
+    def _resolve_system_prompt(
+        self,
+        type_: Literal["single", "tooler"],
+        mode: Literal["granular", "coarse"],
+        extra_system_prompt: Optional[dict] = None,
+    ) -> str:
+        resolved_extra_system_prompt = extra_system_prompt if extra_system_prompt else ""
+        if mode not in ("granular", "coarse"):
+            raise ValueError(f"Invalid mode for architect agent: {mode}")
+        if type_ not in ("single", "tooler"):
+            raise ValueError(f"Invalid type for architect agent: {type_}")
+        key = (type_, mode)
+        if key not in self._SYSTEM_PROMPT_BUILDERS:
+            raise ValueError(f"Unsupported architect configuration: type={type_}, mode={mode}")
+        return self._SYSTEM_PROMPT_BUILDERS[key](resolved_extra_system_prompt)
 
     def run(
         self,
