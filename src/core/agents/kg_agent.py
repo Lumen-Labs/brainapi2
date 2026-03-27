@@ -9,7 +9,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 """
 
 import os
-from typing import Iterable, List, Literal, Optional, Union
+from typing import Callable, Iterable, List, Literal, Optional, Union
 from langchain.tools import BaseTool
 from pydantic import BaseModel
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
@@ -61,6 +61,16 @@ MAX_RECURSION_LIMIT_GRAPH_CONSOLIDATOR = 50
 
 
 class KGAgent:
+    _SYSTEM_PROMPT_BUILDERS: dict[str, Callable[[str], str]] = {
+        "normal": lambda extra: prompt_registry.get(
+            "KG_AGENT_SYSTEM_PROMPT", KG_AGENT_SYSTEM_PROMPT
+        ).format(extra_system_prompt=extra),
+        "graph-consolidator": lambda extra: prompt_registry.get(
+            "KG_AGENT_GRAPH_CONSOLIDATOR_SYSTEM_PROMPT",
+            KG_AGENT_GRAPH_CONSOLIDATOR_SYSTEM_PROMPT,
+        ).format(extra_system_prompt=extra),
+    }
+
     """
     Knowledge Graph Agent. Used to operate with the knowledge graph with new information.
     Not used for batch updates.
@@ -160,7 +170,7 @@ class KGAgent:
         metadata: dict,
         tools: Optional[List[BaseTool]] = None,
         output_schema: Optional[BaseModel] = None,
-        extra_system_prompt: Optional[dict] = None,
+        extra_system_prompt: Optional[str] = None,
         brain_id: str = "default",
     ):
         """
@@ -177,19 +187,12 @@ class KGAgent:
             extra_system_prompt (Optional[dict]): Optional additional content to interpolate into the selected system prompt.
             brain_id (str): Identifier of the knowledge brain/context to use when creating default tools.
         """
-        system_prompt = None
-        if type_ == "normal":
-            system_prompt = prompt_registry.get(
-                "KG_AGENT_SYSTEM_PROMPT", KG_AGENT_SYSTEM_PROMPT
-            ).format(
-                extra_system_prompt=extra_system_prompt if extra_system_prompt else ""
-            )
-        elif type_ == "graph-consolidator":
-            system_prompt = prompt_registry.get(
-                "KG_AGENT_GRAPH_CONSOLIDATOR_SYSTEM_PROMPT", KG_AGENT_GRAPH_CONSOLIDATOR_SYSTEM_PROMPT
-            ).format(
-                extra_system_prompt=extra_system_prompt if extra_system_prompt else ""
-            )
+        resolved_extra_system_prompt = extra_system_prompt if extra_system_prompt else ""
+        if type_ not in self._SYSTEM_PROMPT_BUILDERS:
+            raise ValueError(f"Invalid type: {type_}")
+        system_prompt = self._SYSTEM_PROMPT_BUILDERS[type_](
+            resolved_extra_system_prompt
+        )
 
         self.agent = runtime_agent_factory.build(
             model=self.llm_adapter.llm.langchain_model,
