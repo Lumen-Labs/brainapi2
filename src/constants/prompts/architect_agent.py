@@ -213,7 +213,7 @@ Entities Found by Scout: [
 ]
 
 Example architect_agent_create_relationship tool input 1:
-[
+{{"relationships": [
     {{
             "subject": "uuid_1",
             "predicate": "MOVED",
@@ -230,7 +230,7 @@ Example architect_agent_create_relationship tool input 1:
             "subject": "uuid_1",
             "predicate": "ACCOMPLISHED_ACTION",
             "description": "John knew 12 new friends in New York City",
-            "amount": 12, // You must add the amount TO THE RELATIONSHIP PROPERTIES if there is any quantity specified in the text.
+            "amount": 12,
             "object": "uuid_4"
         }},
         {{
@@ -243,16 +243,14 @@ Example architect_agent_create_relationship tool input 1:
             "subject": "uuid_4",
             "predicate": "TARGETED",
             "description": "John knew 12 new friends in New York City",
-            "object": "uuid_5"
-            "amount": 12, // You must add the amount TO THE RELATIONSHIP PROPERTIES if there is any quantity specified in the text.
-        }},
-        ... more relationships (remember that you must map all the entities found by the scout) ... 
-    }}
-]
+            "object": "uuid_5",
+            "amount": 12
+        }}
+]}}
 Example architect_agent_create_relationship tool output:
 "OK"
 Example architect_agent_create_relationship tool input 2:
-[
+{{"relationships": [
         {{
             "subject": "uuid_6",
             "predicate": "EXPERIENCED",
@@ -270,9 +268,8 @@ Example architect_agent_create_relationship tool input 2:
             "predicate": "HAPPENED_WITHIN",
             "description": "Mary was in San Francisco when John went to New York City",
             "object": "uuid_2"
-        }},
-        ... more relationships ...
-]
+        }}
+]}}
 Example architect_agent_create_relationship tool output 2:
 "OK"
 
@@ -418,7 +415,7 @@ Entities Found by Scout: [
 ]
 
 Example architect_agent_create_relationship tool input 1:
-[
+{{"relationships": [
     {{
             "subject": "uuid_1",
             "predicate": "MOVED",
@@ -435,7 +432,7 @@ Example architect_agent_create_relationship tool input 1:
             "subject": "uuid_1",
             "predicate": "ACCOMPLISHED_ACTION",
             "description": "John knew 12 new friends in New York City",
-            "amount": 12, // You must add the amount TO THE RELATIONSHIP PROPERTIES if there is any quantity specified in the text.
+            "amount": 12,
             "object": "uuid_4"
         }},
         {{
@@ -448,14 +445,14 @@ Example architect_agent_create_relationship tool input 1:
             "subject": "uuid_4",
             "predicate": "TARGETED",
             "description": "John knew 12 new friends in New York City",
-            "object": "uuid_5"
-            "amount": 12, // You must add the amount TO THE RELATIONSHIP PROPERTIES if there is any quantity specified in the text.
-        }},
-        ... more relationships (remember that you must map all the entities found by the scout) ... 
-    }}
-]
+            "object": "uuid_5",
+            "amount": 12
+        }}
+]}}
+Example architect_agent_create_relationship tool output:
+"OK"
 Example architect_agent_create_relationship tool input 2:
-[
+{{"relationships": [
         {{
             "subject": "uuid_6",
             "predicate": "EXPERIENCED",
@@ -473,9 +470,8 @@ Example architect_agent_create_relationship tool input 2:
             "predicate": "HAPPENED_WITHIN",
             "description": "Mary was in San Francisco when John went to New York City",
             "object": "uuid_2"
-        }},
-        ... more relationships ...
-]
+        }}
+]}}
 
 Your workflow must be:
 1. First of all call the architect_agent_get_remaining_entities_to_process tool to get the entities found by the scout.

@@ -22,6 +22,10 @@
   <a href="https://brainapi.lumen-labs.ai/docs/v2">API Docs ↗</a>
 </p>
 
+<a href="https://youtu.be/ECOleTRjl64?si=fBUALoYvsiUl-BPC">
+  <img src=".github/assets/screen-video.png" width="100%" alt="Watch the video" />
+</a>
+
 <p align="center">
   <img src="https://pbs.twimg.com/media/G6jXa2HXsAAJhDO?format=jpg&amp;name=4096x4096" alt="BrainAPI Concept Art" width="1000" style="border-radius:4px;box-shadow:0 2px 12px rgba(0,0,0,0.09);margin-bottom:16px;"/>
 </p>

@@ -8,12 +8,8 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
-from src.adapters.llm import LLMAdapter
 from src.core.agents.observations_agent import ObservationsAgent
-from src.lib.llm.client_small import _llm_small_client
+from src.core.instances import llm_small_adapter
 
 
-llm_adapter = LLMAdapter()
-llm_adapter.add_client(_llm_small_client)
-
-observations_agent = ObservationsAgent(llm_adapter)
+observations_agent = ObservationsAgent(llm_small_adapter)
