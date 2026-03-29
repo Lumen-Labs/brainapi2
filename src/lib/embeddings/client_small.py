@@ -8,18 +8,28 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
-from sentence_transformers import SentenceTransformer
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 from src.adapters.interfaces.embeddings import EmbeddingsClient
 from src.config import config
 
-_model = SentenceTransformer(config.embeddings.small_model)
+if TYPE_CHECKING:
+    from sentence_transformers import SentenceTransformer
+
+_model: SentenceTransformer | None = None
+
+
+def _get_model() -> SentenceTransformer:
+    global _model
+    if _model is None:
+        from sentence_transformers import SentenceTransformer
+        _model = SentenceTransformer(config.embeddings.small_model)
+    return _model
 
 
 class EmbeddingsClientSmall(EmbeddingsClient):
-    def __init__(self):
-        self.model = _model
-
     def embed_text(self, text: str) -> list[float]:
         """
         Return the embedding vector for the given text using the configured model.
@@ -30,7 +40,7 @@ class EmbeddingsClientSmall(EmbeddingsClient):
         Returns:
             list[float]: Dense embedding vector representing the input text.
         """
-        embedding = self.model.encode(text, convert_to_numpy=True)
+        embedding = _get_model().encode(text, convert_to_numpy=True)
         return embedding.tolist()
 
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
@@ -43,7 +53,7 @@ class EmbeddingsClientSmall(EmbeddingsClient):
         Returns:
             list[list[float]]: Dense embedding vectors representing the input texts.
         """
-        embeddings = self.model.encode(texts, convert_to_numpy=True)
+        embeddings = _get_model().encode(texts, convert_to_numpy=True)
         return embeddings.tolist()
 
 

@@ -17,6 +17,48 @@ from .prompts import build_system_internal_prompt
 from .structured_output import finalize_structured_response, parse_structured_output
 
 
+def _infer_tool_from_parsed(parsed: dict, tools: list):
+    if not parsed or not tools:
+        return None, None
+    if (
+        len(parsed) == 1
+        and "entities" in parsed
+        and isinstance(parsed["entities"], list)
+    ):
+        for t in tools:
+            t_schema = getattr(t, "args_schema", None)
+            if not isinstance(t_schema, dict):
+                continue
+            required = t_schema.get("required", [])
+            if len(required) == 1:
+                prop = t_schema.get("properties", {}).get(required[0], {})
+                if prop.get("type") == "array":
+                    return t.name, {required[0]: parsed["entities"]}
+        return None, None
+    for t in tools:
+        t_schema = getattr(t, "args_schema", None)
+        if not isinstance(t_schema, dict):
+            continue
+        required = t_schema.get("required", [])
+        if required and all(k in parsed for k in required):
+            return t.name, parsed
+    return None, None
+
+
+def _log_token_usage(response) -> None:
+    usage = getattr(response, "usage_metadata", None)
+    if usage is None and isinstance(response, dict):
+        usage = response.get("usage_metadata")
+    if usage:
+        details = usage.get("input_token_details") or {}
+        cached = details.get("cache_read", 0)
+        print(
+            f"[TOKENS] in={usage.get('input_tokens', 0)} "
+            f"out={usage.get('output_tokens', 0)}"
+            + (f" cached={cached}" if cached else "")
+        )
+
+
 def run_invoke_loop(agent, messages, config):
     model_responses = []
     agent.messages = []
@@ -28,6 +70,7 @@ def run_invoke_loop(agent, messages, config):
                 agent.output_schema,
                 agent.model,
                 agent.thinking,
+                tools_bound=agent._tools_bound,
             )
             + "\n"
             + agent.system_prompt,
@@ -56,6 +99,7 @@ def run_invoke_loop(agent, messages, config):
                 _n_message = agent.model.invoke(agent.messages, config)
                 _n_message = normalize_invoke_response(_n_message)
                 model_responses.append(_n_message)
+                _log_token_usage(_n_message)
                 raw_content = normalize_message_content(
                     _n_message.get("content")
                     if isinstance(_n_message, dict)
@@ -76,9 +120,22 @@ def run_invoke_loop(agent, messages, config):
             else:
                 _invoke_attempts = 3
                 for _invoke_attempt in range(_invoke_attempts):
-                    _n_message = agent.model.invoke(agent.messages, config)
+                    try:
+                        _n_message = agent.model.invoke(agent.messages, config)
+                    except Exception as _invoke_exc:
+                        _exc_str = str(_invoke_exc).lower()
+                        if agent._tools_bound and (
+                            "invalid message format" in _exc_str
+                            or "invalid_request_error" in _exc_str
+                            or "tool" in _exc_str
+                        ):
+                            agent._unbind_tools()
+                            _n_message = agent.model.invoke(agent.messages, config)
+                        else:
+                            raise
                     _n_message = normalize_invoke_response(_n_message)
                     model_responses.append(_n_message)
+                    _log_token_usage(_n_message)
                     raw_content = normalize_message_content(
                         _n_message.get("content")
                         if isinstance(_n_message, dict)
@@ -158,6 +215,13 @@ def run_invoke_loop(agent, messages, config):
                             existing
                         )
                         break
+        _outer_finish = get_finish_reason_from_response(_n_message)
+        if _outer_finish and str(_outer_finish).upper() in (
+            "MAX_TOKENS",
+            "LENGTH",
+            "MAX_LENGTH",
+        ):
+            break
         if raw_tc:
             pass
         elif content_breaks_ollama_tool_parse(n_message):
@@ -230,7 +294,10 @@ def run_invoke_loop(agent, messages, config):
                 tool_call_id_counter += 1
                 n_message = None
                 continue
-        agent.messages.append(assistant_msg)
+        if raw_tc and not agent._model_requires_thought_signatures():
+            agent.messages.append(_n_message)
+        else:
+            agent.messages.append(assistant_msg)
         tool_name, tool_input = _recovered_name, _recovered_input
         if tool_name is None:
             tool_name, tool_input = get_tool_call_from_response(_n_message)
@@ -238,6 +305,10 @@ def run_invoke_loop(agent, messages, config):
             parsed = strip_json(n_message)
             tool_name = parsed.get("tool_name")
             tool_input = parsed.get("tool_input")
+            if tool_name is None and agent.tools:
+                tool_name, tool_input = _infer_tool_from_parsed(
+                    parsed, agent.tools
+                )
         if tool_name is None:
             tool_name, tool_input = get_tool_call_from_malformed_response(
                 _n_message
@@ -248,21 +319,87 @@ def run_invoke_loop(agent, messages, config):
                 None,
             )
             if tool is not None:
-                n_message = agent._call_tool(tool, tool_input)
-                agent.messages.append(
-                    {
-                        "role": "tool",
-                        "content": n_message,
-                        "tool_call_id": tool_call_id,
-                    }
-                )
-                tool_call_id_counter += 1
+                serialized_tcs = assistant_msg.get("tool_calls") or []
+                if raw_tc and len(serialized_tcs) > 1:
+                    for _tc in serialized_tcs:
+                        _tc_name = _tc.get("name")
+                        _tc_args = _tc.get("args") or {}
+                        _tc_id = _tc.get("id") or f"call_{tool_call_id_counter}"
+                        _tc_tool = next(
+                            (t for t in agent.tools if t.name == _tc_name), None
+                        )
+                        _tc_result = (
+                            agent._call_tool(_tc_tool, _tc_args)
+                            if _tc_tool
+                            else f"Tool {_tc_name} not found."
+                        )
+                        agent.messages.append(
+                            {
+                                "role": "tool",
+                                "content": _tc_result,
+                                "tool_call_id": _tc_id,
+                            }
+                        )
+                        n_message = _tc_result
+                        tool_call_id_counter += 1
+                else:
+                    n_message = agent._call_tool(tool, tool_input)
+                    agent.messages.append(
+                        {
+                            "role": "tool",
+                            "content": n_message,
+                            "tool_call_id": tool_call_id,
+                        }
+                    )
+                    tool_call_id_counter += 1
                 _did_retry_recovered_next_tool_call = False
+                _last_called_tool_name = tool_name
                 while True:
                     _next_attempts = 3
                     for _next_attempt in range(_next_attempts):
-                        next_response = agent.model.invoke(agent.messages, config)
+                        if (
+                            not agent._model_requires_thought_signatures()
+                            and agent.messages
+                            and isinstance(agent.messages[-1], dict)
+                            and agent.messages[-1].get("role") == "tool"
+                        ):
+                            _last_tool = agent.messages[-1]
+                            _last_content = _last_tool.get("content") or ""
+                            if (
+                                "\nContinue with the next steps." not in _last_content
+                                and "\nDo NOT call" not in _last_content
+                            ):
+                                if _last_called_tool_name:
+                                    _hint = (
+                                        f"\n\nYou already called"
+                                        f" '{_last_called_tool_name}'."
+                                        " Do NOT call this same tool again."
+                                        " Proceed to the next step of the"
+                                        " workflow."
+                                    )
+                                else:
+                                    _hint = "\n\nContinue with the next steps."
+                                agent.messages[-1] = {
+                                    **_last_tool,
+                                    "content": _last_content + _hint,
+                                }
+                        try:
+                            next_response = agent.model.invoke(agent.messages, config)
+                        except Exception as _next_exc:
+                            _next_exc_str = str(_next_exc).lower()
+                            if agent._tools_bound and (
+                                "invalid message format" in _next_exc_str
+                                or "invalid_request_error" in _next_exc_str
+                                or "tool" in _next_exc_str
+                            ):
+                                agent._unbind_tools()
+                                next_response = agent.model.invoke(
+                                    agent.messages, config
+                                )
+                            else:
+                                raise
                         next_response = normalize_invoke_response(next_response)
+                        _log_token_usage(next_response)
                         if agent.debug:
                             print(
                                 "[DEBUG (agent_base)]: Next response: ",
@@ -365,6 +502,14 @@ def run_invoke_loop(agent, messages, config):
                             ] = existing
                             break
                         break
+                    _next_finish = get_finish_reason_from_response(next_response)
+                    if _next_finish and str(_next_finish).upper() in (
+                        "MAX_TOKENS",
+                        "LENGTH",
+                        "MAX_LENGTH",
+                    ):
+                        n_message = next_content or ""
+                        break
                     if next_raw_tc:
                         pass
                     elif content_breaks_ollama_tool_parse(next_content):
@@ -454,7 +599,10 @@ def run_invoke_loop(agent, messages, config):
                                 )
                             tool_call_id_counter += 1
                             continue
-                    agent.messages.append(next_assistant_msg)
+                    if next_raw_tc and not agent._model_requires_thought_signatures():
+                        agent.messages.append(next_response)
+                    else:
+                        agent.messages.append(next_assistant_msg)
                     next_tool_name, next_tool_input = (
                         _next_recovered_name,
                         _next_recovered_input,
@@ -469,6 +617,10 @@ def run_invoke_loop(agent, messages, config):
                         )
                         next_tool_name = next_parsed.get("tool_name")
                         next_tool_input = next_parsed.get("tool_input")
+                        if next_tool_name is None and agent.tools:
+                            next_tool_name, next_tool_input = (
+                                _infer_tool_from_parsed(next_parsed, agent.tools)
+                            )
                     if next_tool_name is None:
                         next_tool_name, next_tool_input = (
                             get_tool_call_from_malformed_response(next_response)
@@ -479,20 +631,60 @@ def run_invoke_loop(agent, messages, config):
                             None,
                         )
                         if tool is not None:
-                            n_message = agent._call_tool(tool, next_tool_input)
-                            if agent.debug:
-                                print(
-                                    "[DEBUG (agent_base)]: Tool result: ",
-                                    n_message,
-                                )
-                            agent.messages.append(
-                                {
-                                    "role": "tool",
-                                    "content": n_message,
-                                    "tool_call_id": next_tool_call_id,
-                                }
+                            next_serialized_tcs = (
+                                next_assistant_msg.get("tool_calls") or []
                             )
-                            tool_call_id_counter += 1
+                            if next_raw_tc and len(next_serialized_tcs) > 1:
+                                for _tc in next_serialized_tcs:
+                                    _tc_name = _tc.get("name")
+                                    _tc_args = _tc.get("args") or {}
+                                    _tc_id = (
+                                        _tc.get("id") or f"call_{tool_call_id_counter}"
+                                    )
+                                    _tc_tool = next(
+                                        (
+                                            t
+                                            for t in agent.tools
+                                            if t.name == _tc_name
+                                        ),
+                                        None,
+                                    )
+                                    _tc_result = (
+                                        agent._call_tool(_tc_tool, _tc_args)
+                                        if _tc_tool
+                                        else f"Tool {_tc_name} not found."
+                                    )
+                                    if agent.debug:
+                                        print(
+                                            "[DEBUG (agent_base)]: Tool result: ",
+                                            _tc_result,
+                                        )
+                                    agent.messages.append(
+                                        {
+                                            "role": "tool",
+                                            "content": _tc_result,
+                                            "tool_call_id": _tc_id,
+                                        }
+                                    )
+                                    n_message = _tc_result
+                                    tool_call_id_counter += 1
+                                _last_called_tool_name = next_tool_name
+                            else:
+                                n_message = agent._call_tool(tool, next_tool_input)
+                                if agent.debug:
+                                    print(
+                                        "[DEBUG (agent_base)]: Tool result: ",
+                                        n_message,
+                                    )
+                                agent.messages.append(
+                                    {
+                                        "role": "tool",
+                                        "content": n_message,
+                                        "tool_call_id": next_tool_call_id,
+                                    }
+                                )
+                                tool_call_id_counter += 1
+                                _last_called_tool_name = next_tool_name
                         else:
                             agent.messages.append(
                                 {

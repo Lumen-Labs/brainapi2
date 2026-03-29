@@ -20,7 +20,6 @@ def guard_brainpat(pat: str = None, target_brain: str = None) -> bool | str:
     If the BrainPAT is not matching any brain, it will try to match with the systempat,
     if the systempat is not matching, it will raise an auth error.
     """
-    print(pat, config.brainpat_token)
     if pat == config.brainpat_token:
         return True
 

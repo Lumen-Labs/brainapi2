@@ -20,6 +20,7 @@ warnings.filterwarnings(
 
 class AgentBase:
     model: BaseChatModel
+    _base_model: BaseChatModel
     system_prompt: str
     tools: list[BaseTool]
     output_schema: BaseModel | None
@@ -36,7 +37,7 @@ class AgentBase:
         debug: bool = False,
         thinking: bool = False,
     ):
-        self.model = model
+        self._base_model = model
         self.system_prompt = system_prompt
         self.tools = tools
         self.output_schema = output_schema
@@ -45,18 +46,33 @@ class AgentBase:
         self.thinking = thinking
 
         if self.thinking:
-            self.model.extra_body = {
-                **self.model.extra_body,
+            model.extra_body = {
+                **model.extra_body,
                 "think": (
                     ("high" if self.thinking else "low")
-                    if "gpt" in self.model and "oss" in self.model
+                    if "gpt" in model and "oss" in model
                     else (True if self.thinking else False)
                 ),
             }
 
+        self._tools_bound = False
+        if tools:
+            try:
+                self.model = model.bind_tools(tools)
+                self._tools_bound = True
+            except Exception:
+                self.model = model
+        else:
+            self.model = model
+
+    def _unbind_tools(self) -> None:
+        if self._tools_bound:
+            self.model = self._base_model
+            self._tools_bound = False
+
     def _model_requires_thought_signatures(self) -> bool:
-        mod = getattr(type(self.model), "__module__", "") or ""
-        name = getattr(type(self.model), "__name__", "") or ""
+        mod = getattr(type(self._base_model), "__module__", "") or ""
+        name = getattr(type(self._base_model), "__name__", "") or ""
         return "vertex" in mod.lower() or "Vertex" in name
 
     def _get_effective_output_schema(self):

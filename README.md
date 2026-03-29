@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://discord.gg/VTngQTaeDf"><img src="https://img.shields.io/badge/Discord-Join%20Lumen%20Brain-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"/></a>
-  <img src="https://img.shields.io/badge/version-2.10.2--dev-blue?style=for-the-badge" alt="Version"/>
+  <img src="https://img.shields.io/badge/version-2.10.3--dev-blue?style=for-the-badge" alt="Version"/>
   <img src="https://img.shields.io/badge/python-3.11+-green?style=for-the-badge&logo=python&logoColor=white" alt="Python"/>
   <img src="https://img.shields.io/badge/license-AGPLv3%20%2B%20Commons%20Clause-purple?style=for-the-badge" alt="License"/>
 </p>
@@ -21,6 +21,10 @@
   <a href="https://brainapi.lumen-labs.ai/docs/v2/installation">SDKs</a> •
   <a href="https://brainapi.lumen-labs.ai/docs/v2">API Docs ↗</a>
 </p>
+
+<a href="https://youtu.be/ECOleTRjl64?si=fBUALoYvsiUl-BPC">
+  <img src=".github/assets/screen-video.png" width="100%" alt="Watch the video" />
+</a>
 
 <p align="center">
   <img src="https://pbs.twimg.com/media/G6jXa2HXsAAJhDO?format=jpg&amp;name=4096x4096" alt="BrainAPI Concept Art" width="1000" style="border-radius:4px;box-shadow:0 2px 12px rgba(0,0,0,0.09);margin-bottom:16px;"/>

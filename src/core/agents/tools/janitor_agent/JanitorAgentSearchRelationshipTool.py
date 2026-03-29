@@ -138,14 +138,32 @@ class JanitorAgentSearchRelationshipsTool(BaseTool):
                     _query.get("subject") + " -> " + _query.get("object")
                 ] = "Graph does not contain any relationships between the subject and object"
             else:
+                serialized = []
+                for f in founds:
+                    if isinstance(f, tuple):
+                        subject_node, predicate, object_node = f
+                        entry = {
+                            "subject": strip_properties(
+                                [subject_node.model_dump(mode="json")],
+                                pop_also=["last_updated", "v_id", "properties"],
+                            )[0],
+                            "predicate": strip_properties(
+                                [predicate.model_dump(mode="json")],
+                                pop_also=["last_updated", "v_id", "properties"],
+                            )[0],
+                            "object": strip_properties(
+                                [object_node.model_dump(mode="json")],
+                                pop_also=["last_updated", "v_id", "properties"],
+                            )[0],
+                        }
+                    else:
+                        entry = strip_properties(
+                            [f.model_dump(mode="json")],
+                            pop_also=["last_updated", "v_id", "properties"],
+                        )[0]
+                    serialized.append(entry)
                 found_relationships[
                     _query.get("subject") + " -> " + _query.get("object")
-                ] = [
-                    strip_properties(
-                        [f.model_dump(mode="json")],
-                        pop_also=["last_updated", "v_id", "properties"],
-                    )[0]
-                    for f in founds
-                ]
+                ] = serialized
 
         return json.dumps(found_relationships, indent=4)
