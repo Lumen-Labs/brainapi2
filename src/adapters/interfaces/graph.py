@@ -9,7 +9,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict, List, Literal, Optional, Tuple, TypedDict
+from typing import Any, Dict, List, Literal, Optional, Tuple, TypedDict
 
 from src.constants.kg import (
     IdentificationParams,
@@ -50,7 +50,7 @@ class GraphClient(ABC):
         raise NotImplementedError("graphdb_type method not implemented")
 
     @abstractmethod
-    def execute_operation(self, operation: str, brain_id: str) -> str:
+    def execute_operation(self, operation: str, brain_id: str) -> Any:
         """
         Execute a generic graph operation.
         """
