@@ -93,10 +93,16 @@ class KGAgentAddTripletsTool(BaseTool):
             v_obj = self.embeddings.embed_text(object_node.name)
 
             v_sim_sub = self.vector_store.search_vectors(
-                v_sub.embeddings, "nodes", k=5, brain_id=self.brain_id
+                v_sub.embeddings,
+                store="nodes",
+                brain_id=self.brain_id,
+                k=5,
             )
             v_sim_obj = self.vector_store.search_vectors(
-                v_obj.embeddings, "nodes", k=5, brain_id=self.brain_id
+                v_obj.embeddings,
+                store="nodes",
+                brain_id=self.brain_id,
+                k=5,
             )
 
             sim_sub = most_similar_name_with_labels_or_none(

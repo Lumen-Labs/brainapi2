@@ -19,7 +19,11 @@ from src.constants.kg import Node, Predicate
 from src.services.kg_agent.main import graph_adapter
 from src.services.kg_agent.main import embeddings_adapter
 from src.services.kg_agent.main import vector_store_adapter
+from src.utils.vector_search import VectorSearchFacade
 from src.utils.similarity.vectors import cosine_similarity
+
+
+vector_search = VectorSearchFacade(vector_store_adapter)
 
 
 # ================================================================
@@ -164,8 +168,8 @@ class EventSynergyRetriever:
         query_embedding = embeddings_adapter.embed_text(query)
         target_embedding = embeddings_adapter.embed_text(target)
 
-        target_node_vs = vector_store_adapter.search_vectors(
-            target_embedding.embeddings, store="nodes", brain_id=self.brain_id
+        target_node_vs = vector_search.search_nodes(
+            target_embedding.embeddings, brain_id=self.brain_id
         )
 
         if not target_node_vs:

@@ -24,6 +24,9 @@ from src.core.search.entity_sibilings import EntitySinergyRetriever
 from src.services.data.main import data_adapter
 from src.services.input.agents import embeddings_adapter
 from src.services.kg_agent.main import graph_adapter, vector_store_adapter
+from src.utils.vector_search import VectorSearchFacade
+
+vector_search = VectorSearchFacade(vector_store_adapter)
 
 
 async def get_entity_info(
@@ -149,8 +152,9 @@ async def get_entity_status(
         types = []
 
     target_embeddings = embeddings_adapter.embed_text(target)
-    target_node_vs = vector_store_adapter.search_vectors(
-        target_embeddings.embeddings, store="nodes", brain_id=brain_id
+    target_node_vs = vector_search.search_nodes(
+        target_embeddings.embeddings,
+        brain_id=brain_id,
     )
 
     target_node = None

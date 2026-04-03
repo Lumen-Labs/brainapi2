@@ -14,6 +14,9 @@ from src.services.kg_agent.main import (
     graph_adapter,
     vector_store_adapter,
 )
+from src.utils.vector_search import VectorSearchFacade
+
+vector_search = VectorSearchFacade(vector_store_adapter)
 
 
 async def get_hops(
@@ -25,8 +28,9 @@ async def get_hops(
     Currently only supports 2nd degree hops.
     """
     text_embeddings = embeddings_adapter.embed_text(query)
-    data_vectors = vector_store_adapter.search_vectors(
-        text_embeddings.embeddings, store="nodes", brain_id=brain_id
+    data_vectors = vector_search.search_nodes(
+        text_embeddings.embeddings,
+        brain_id=brain_id,
     )
     node_uuids = [v.metadata.get("uuid") for v in data_vectors]
     print("[+] Getting 2nd degree hops for nodes:", node_uuids)

@@ -23,8 +23,10 @@ from src.core.instances import (
 )
 from src.lib.neo4j.client import _neo4j_client
 from src.services.mcp.utils import guard_brainpat
+from src.utils.vector_search import VectorSearchFacade
 
 auth_token_var: ContextVar[str | None] = ContextVar("auth_token", default=None)
+vector_search = VectorSearchFacade(vector_store_adapter)
 
 mcp = FastMCP("brainapi-mcp", stateless_http=True, host="0.0.0.0")
 
@@ -71,8 +73,10 @@ def _search_semantically_sync(query: str, brain_id: str) -> Any:
         if not guard_brainpat(auth_token_var.get(), brain_id):
             return "Unauthorized"
         query_embedding = embeddings_adapter.embed_text(query)
-        data_vectors = vector_store_adapter.search_vectors(
-            query_embedding.embeddings, store="nodes", brain_id=brain_id, k=5
+        data_vectors = vector_search.search_nodes(
+            query_embedding.embeddings,
+            brain_id=brain_id,
+            k=5,
         )
         triplets = graph_adapter.get_event_centric_neighbors(
             [v.metadata.get("uuid") for v in data_vectors], brain_id=brain_id
