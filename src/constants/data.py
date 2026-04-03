@@ -27,7 +27,8 @@ class TextChunk(BaseModel):
         default_factory=datetime.now,
         description="The date and time the chunk was inserted.",
     )
-    brain_version: str = Field(
+    brain_version: Optional[str] = Field(
+        default=None,
         description="The version of the brain when the chunk was inserted.",
     )
 
