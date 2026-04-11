@@ -50,7 +50,7 @@ Ask it a question it was never explicitly told the answer to:
 ```python
 result = client.retrieveContext("Who organized AI events in London in Q1 2024?")
 # → "Emily organized the AI Ethics Meetup in London on 2024-03-08."
-# → result.retrieveContext shows the full graph path used to derive this
+# → result.triples shows the full graph path used to derive this
 ```
 
 That trace is the difference. Not a similarity score. Not a nearest-neighbour guess. A **reasoned, walkable path through a knowledge graph** — built automatically from your raw text.
