@@ -111,10 +111,15 @@ class KGAgentSearchGraphTool(BaseTool):
         if query:
             query_embedding = self.embeddings.embed_text(query)
             v_triplets_results = self.vector_store.search_vectors(
-                query_embedding.embeddings, "triplets", k=5, brain_id=self.brain_id
+                query_embedding.embeddings,
+                store="triplets",
+                k=5,
+                brain_id=self.brain_id,
             )
             v_nodes_results = self.vector_store.search_vectors(
-                query_embedding.embeddings, "nodes", brain_id=self.brain_id
+                query_embedding.embeddings,
+                store="nodes",
+                brain_id=self.brain_id,
             )
             nodes.extend(self.kg.node_text_search(query, brain_id=self.brain_id))
             nodes.extend(

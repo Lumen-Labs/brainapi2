@@ -119,6 +119,75 @@ class EntityStatusHardeningTests(unittest.TestCase):
         self.assertIn("continue", source)
 
 
+class VectorSearchFacadeArchitectureTests(unittest.TestCase):
+    def test_vector_search_facade_file_exists_with_store_helpers(self):
+        source = read_source("src/utils/vector_search.py")
+        self.assertIn("class VectorSearchFacade", source)
+        self.assertIn("def search_nodes(", source)
+        self.assertIn("def search_triplets(", source)
+        self.assertIn("def search_relationships(", source)
+        self.assertIn("def search_data(", source)
+        self.assertIn("store=store", source)
+        self.assertIn("brain_id=brain_id", source)
+
+    def test_retrieve_data_uses_facade_methods_not_positional_calls(self):
+        source = read_source("src/services/api/controllers/retrieve.py")
+        self.assertIn("vector_search = VectorSearchFacade(vector_store_adapter)", source)
+        self.assertIn("vector_search.search_data(", source)
+        self.assertIn("vector_search.search_triplets(", source)
+        self.assertIn("k=limit", source)
+        self.assertNotIn(
+            'vector_store_adapter.search_vectors(\n            text_embeddings.embeddings, "data", brain_id, limit',
+            source,
+        )
+        self.assertNotIn(
+            'vector_store_adapter.search_vectors(\n            text_embeddings.embeddings, "triplets", brain_id, limit',
+            source,
+        )
+
+    def test_key_modules_use_facade_or_keyword_safe_search(self):
+        expected_snippets = {
+            "src/services/api/controllers/entities.py": [
+                "VectorSearchFacade",
+                "vector_search.search_nodes(",
+            ],
+            "src/services/api/controllers/kg.py": [
+                "VectorSearchFacade",
+                "vector_search.search_nodes(",
+            ],
+            "src/services/mcp/main.py": [
+                "VectorSearchFacade",
+                "vector_search.search_nodes(",
+            ],
+            "src/core/search/entity_context.py": [
+                "VectorSearchFacade",
+                "vector_search.search_nodes(",
+            ],
+            "src/core/search/entity_info.py": [
+                "VectorSearchFacade",
+                "vector_search.search_nodes(",
+            ],
+            "src/core/search/entity_sibilings.py": [
+                "VectorSearchFacade",
+                "vector_search.search_nodes(",
+            ],
+            "src/core/agents/tools/kg_agent/KGAgentSearchGraphTool.py": [
+                'store="triplets"',
+                'store="nodes"',
+                "brain_id=self.brain_id",
+            ],
+            "src/core/agents/tools/kg_agent/KGAgentAddTripletsTool.py": [
+                'store="nodes"',
+                "brain_id=self.brain_id",
+                "k=5",
+            ],
+        }
+        for relative_path, snippets in expected_snippets.items():
+            source = read_source(relative_path)
+            for snippet in snippets:
+                self.assertIn(snippet, source)
+                
+                
 class JanitorToolDeduplicationTests(unittest.TestCase):
     def test_janitor_tools_init_exports_single_graph_read_tool(self):
         source = read_source("src/core/agents/tools/janitor_agent/__init__.py")
