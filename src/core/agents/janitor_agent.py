@@ -726,9 +726,6 @@ class JanitorAgent:
                     f"Atomic janitor agent invoke failed after {last_attempt.attempt_number} attempts. "
                     f"Last error: {last_attempt.exception()}"
                 ) from last_attempt.exception()
-            except:
-                raise
-
         def _invoke_and_process(previous_messages: list):
             """
             Invoke the agent with retry logic, append any returned messages to the outer `accumulated_messages` list, and return the agent response.

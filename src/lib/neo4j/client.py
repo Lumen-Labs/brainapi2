@@ -47,7 +47,7 @@ class Neo4jClient(GraphClient):
             notifications_min_severity="OFF",
         )
 
-    def execute_operation(self, operation: str, brain_id: str) -> str:
+    def execute_operation(self, operation: str, brain_id: str) -> Any:
         """
         Execute a Neo4j operation with database override.
         """

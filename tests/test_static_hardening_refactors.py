@@ -119,5 +119,17 @@ class EntityStatusHardeningTests(unittest.TestCase):
         self.assertIn("continue", source)
 
 
+class JanitorToolDeduplicationTests(unittest.TestCase):
+    def test_janitor_tools_init_exports_single_graph_read_tool(self):
+        source = read_source("src/core/agents/tools/janitor_agent/__init__.py")
+        self.assertIn("JanitorAgentExecuteGraphReadOperationTool", source)
+        self.assertNotIn("JanitorAgentExecuteGraphOperationTool", source)
+
+    def test_janitor_agent_imports_single_graph_read_tool(self):
+        source = read_source("src/core/agents/janitor_agent.py")
+        self.assertIn("JanitorAgentExecuteGraphReadOperationTool", source)
+        self.assertNotIn("JanitorAgentExecuteGraphOperationTool", source)
+
+
 if __name__ == "__main__":
     unittest.main()
