@@ -22,6 +22,9 @@ from src.constants.kg import (
     SearchRelationshipsResult,
 )
 from src.adapters.interfaces.embeddings import VectorStoreClient
+from src.adapters.graph_operation_result_serializer import (
+    serialize_graph_operation_result,
+)
 from src.utils.normalization.list_reduction import reduce_list
 from src.utils.similarity.vectors import cosine_similarity
 
@@ -115,7 +118,8 @@ class GraphAdapter:
         Execute a generic graph operation.
         """
         try:
-            return self.graph.execute_operation(operation, brain_id)
+            result = self.graph.execute_operation(operation, brain_id)
+            return serialize_graph_operation_result(result)
         except Exception as e:  # pylint: disable=broad-exception-caught
             print(f"Error executing graph operation: {e} - {operation}")
             return f"Error executing graph operation: {e}"
