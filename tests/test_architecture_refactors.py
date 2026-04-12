@@ -1,5 +1,7 @@
 import json
 import os
+import sys
+import types
 import unittest
 from unittest.mock import patch
 
@@ -40,6 +42,45 @@ from src.adapters.embeddings import (
 from src.adapters.graph import GraphAdapter
 from src.constants.embeddings import Vector
 from src.core.agents.core.runtime_agent_factory import RuntimeAgentFactory
+
+
+class _StubEmbeddingsAdapter:
+    def embed_text(self, *_args, **_kwargs):
+        return Vector(id="stub", embeddings=[], metadata={})
+
+
+class _StubVectorStoreAdapter:
+    def search_vectors(self, *_args, **_kwargs):
+        return []
+
+
+class _StubGraphAdapter:
+    def get_by_uuids(self, *_args, **_kwargs):
+        return []
+
+    def get_neighbors(self, *_args, **_kwargs):
+        return {}
+
+
+class _StubDataAdapter:
+    def get_observations_list(self, *_args, **_kwargs):
+        return []
+
+
+_stub_input_agents = types.ModuleType("src.services.input.agents")
+_stub_input_agents.embeddings_adapter = _StubEmbeddingsAdapter()
+sys.modules.setdefault("src.services.input.agents", _stub_input_agents)
+
+_stub_kg_main = types.ModuleType("src.services.kg_agent.main")
+_stub_kg_main.graph_adapter = _StubGraphAdapter()
+_stub_kg_main.vector_store_adapter = _StubVectorStoreAdapter()
+_stub_kg_main.embeddings_adapter = _StubEmbeddingsAdapter()
+sys.modules.setdefault("src.services.kg_agent.main", _stub_kg_main)
+
+_stub_data_main = types.ModuleType("src.services.data.main")
+_stub_data_main.data_adapter = _StubDataAdapter()
+sys.modules.setdefault("src.services.data.main", _stub_data_main)
+
 from src.services.api.controllers.entities import get_entity_status
 
 

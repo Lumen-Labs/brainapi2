@@ -11,7 +11,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 import json
 import os
 from functools import reduce
-from typing import List, Literal, Optional, Tuple, Union
+from typing import Callable, List, Literal, Optional, Tuple, Union
 from langchain.agents.structured_output import ToolStrategy
 from langchain.tools import BaseTool
 from pydantic import BaseModel
@@ -76,6 +76,18 @@ class JanitorAgent:
     """
     Janitor agent.
     """
+    _SYSTEM_PROMPT_BUILDERS: dict[str, Callable[[str], str]] = {
+        "janitor": lambda extra: prompt_registry.get(
+            "JANITOR_AGENT_SYSTEM_PROMPT", JANITOR_AGENT_SYSTEM_PROMPT
+        ).format(extra_system_prompt=extra),
+        "graph-janitor": lambda extra: prompt_registry.get(
+            "JANITOR_AGENT_GRAPH_NORMALIZATOR_SYSTEM_PROMPT",
+            JANITOR_AGENT_GRAPH_NORMALIZATOR_SYSTEM_PROMPT,
+        ).format(extra_system_prompt=extra),
+        "atomic-janitor": lambda extra: prompt_registry.get(
+            "ATOMIC_JANITOR_AGENT_SYSTEM_PROMPT", ATOMIC_JANITOR_AGENT_SYSTEM_PROMPT
+        ).format(extra_system_prompt=extra),
+    }
 
     def __init__(
         self,
@@ -152,7 +164,7 @@ class JanitorAgent:
         output_schemas: Optional[Union[BaseModel, Tuple[BaseModel, ...]]] = None,
         extra_system_prompt: Optional[dict] = None,
         brain_id: str = "default",
-        type_: str = Literal["janitor", "graph-janitor"],
+        type_: Literal["janitor", "graph-janitor", "atomic-janitor"] = "janitor",
     ):
         """
         Configure and instantiate the internal LangChain agent and assign it to `self.agent`.
@@ -168,51 +180,11 @@ class JanitorAgent:
             type_ (str): Agent mode controlling system prompt selection; supported values are "janitor", "graph-janitor", and "atomic-janitor".
 
         """
-        system_prompt = None
-        if type_ == "janitor":
-            system_prompt = prompt_registry.get(
-                "JANITOR_AGENT_SYSTEM_PROMPT", JANITOR_AGENT_SYSTEM_PROMPT
-            ).format(
-                extra_system_prompt=extra_system_prompt if extra_system_prompt else ""
-            )
-        elif type_ == "graph-janitor":
-            system_prompt = prompt_registry.get(
-                "JANITOR_AGENT_GRAPH_NORMALIZATOR_SYSTEM_PROMPT", JANITOR_AGENT_GRAPH_NORMALIZATOR_SYSTEM_PROMPT
-            ).format(
-                extra_system_prompt=extra_system_prompt if extra_system_prompt else "",
-            )
-        elif type_ == "atomic-janitor":
-            system_prompt = prompt_registry.get(
-                "ATOMIC_JANITOR_AGENT_SYSTEM_PROMPT", ATOMIC_JANITOR_AGENT_SYSTEM_PROMPT
-            ).format(
-                extra_system_prompt=extra_system_prompt if extra_system_prompt else ""
-            )
-        else:
+        resolved_extra_system_prompt = extra_system_prompt if extra_system_prompt else ""
+        if type_ not in self._SYSTEM_PROMPT_BUILDERS:
             raise ValueError(f"Invalid type: {type_}")
-
-        response_format = None
-        if output_schemas:
-            if isinstance(output_schemas, tuple):
-                if len(output_schemas) == 1:
-                    union_schema = output_schemas[0]
-                elif len(output_schemas) == 2:
-                    union_schema = Union[output_schemas[0], output_schemas[1]]
-                else:
-                    union_schema = reduce(lambda x, y: Union[x, y], output_schemas)
-            else:
-                union_schema = output_schemas
-            response_format = ToolStrategy(schema=union_schema)
-        elif output_schema:
-            if isinstance(output_schema, tuple):
-                if len(output_schema) == 1:
-                    union_schema = output_schema[0]
-                elif len(output_schema) == 2:
-                    union_schema = Union[output_schema[0], output_schema[1]]
-                else:
-                    union_schema = reduce(lambda x, y: Union[x, y], output_schema)
-                response_format = ToolStrategy(schema=union_schema)
-            else:
-                response_format = output_schema
+        system_prompt = self._SYSTEM_PROMPT_BUILDERS[type_](resolved_extra_system_prompt)
+        response_format = self._resolve_response_format(output_schema, output_schemas)
 
         self.agent = runtime_agent_factory.build(
             model=self.llm_adapter.llm.langchain_model,
@@ -222,6 +194,32 @@ class JanitorAgent:
             debug=os.environ.get("DEBUG", "false").lower() == "true",
             architecture=config.agentic_architecture,
         )
+
+    def _resolve_response_format(
+        self,
+        output_schema: Optional[Union[BaseModel, Tuple[BaseModel, ...]]],
+        output_schemas: Optional[Union[BaseModel, Tuple[BaseModel, ...]]],
+    ):
+        if output_schemas is not None:
+            normalized_schema = self._normalize_schema(output_schemas)
+            return ToolStrategy(schema=normalized_schema)
+        if output_schema is not None:
+            if isinstance(output_schema, tuple):
+                normalized_schema = self._normalize_schema(output_schema)
+                return ToolStrategy(schema=normalized_schema)
+            return output_schema
+        return None
+
+    def _normalize_schema(
+        self, schema_or_schemas: Union[BaseModel, Tuple[BaseModel, ...]]
+    ):
+        if not isinstance(schema_or_schemas, tuple):
+            return schema_or_schemas
+        if len(schema_or_schemas) == 1:
+            return schema_or_schemas[0]
+        if len(schema_or_schemas) == 2:
+            return Union[schema_or_schemas[0], schema_or_schemas[1]]
+        return reduce(lambda x, y: Union[x, y], schema_or_schemas)
 
     def _content_only_history(
         self, messages: Optional[list], keep_last: Optional[int] = None
