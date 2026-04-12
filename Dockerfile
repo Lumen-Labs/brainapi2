@@ -12,7 +12,6 @@ ENV PYTHONUNBUFFERED=1 \
     POETRY_NO_INTERACTION=1 \
     POETRY_VIRTUALENVS_IN_PROJECT=true \
     HF_HOME=/app/.cache \
-    TRANSFORMERS_CACHE=/app/.cache \
     SENTENCE_TRANSFORMERS_HOME=/app/.cache
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -56,7 +55,6 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PATH="/app/.venv/bin:$PATH" \
     HF_HOME=/app/.cache \
-    TRANSFORMERS_CACHE=/app/.cache \
     SENTENCE_TRANSFORMERS_HOME=/app/.cache \
     PIP_NO_CACHE_DIR=1 \
     PIP_RETRIES=8 \

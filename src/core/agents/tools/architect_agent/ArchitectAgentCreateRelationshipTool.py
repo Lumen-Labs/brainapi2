@@ -3,7 +3,7 @@ File: /ArchitectAgentCreateRelationshipTool.py
 Created Date: Wednesday January 14th 2026
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Thursday February 19th 2026 7:45:12 pm
+Last Modified: Wednesday March 4th 2026 9:35:41 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
@@ -77,7 +77,7 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
             "Returns a summary of the created relationships to review them before creating them."
         )
         entities_dict = entities if entities is not None else {}
-        
+
         args_schema: dict = {
             "type": "object",
             "properties": {
@@ -92,9 +92,12 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
                         "properties": {
                             "subject": {
                                 "type": "string",
-                                "description": "The uuid of the subject" 
-                                + """ OR a TYPE:NAME that you want to use if the element is missing in the entities list, it must only be a valid uuid or a TYPE:NAME string""" 
-                                if mode == "coarse" else "",
+                                "description": (
+                                    "The uuid of the subject, it must be a valid uuid format (4-8-4-4-12 hexadecimal character strings) that is present in the entities list"
+                                    + """ OR a TYPE:NAME that you want to use if the element is missing in the entities list, it must only be a valid uuid or a TYPE:NAME string"""
+                                    if mode == "coarse"
+                                    else ""
+                                ),
                             },
                             "predicate": {
                                 "type": "string",
@@ -102,9 +105,12 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
                             },
                             "object": {
                                 "type": "string",
-                                "description": "The uuid of the object" 
-                                + """ OR a TYPE:NAME that you want to use if the element is missing in the entities list, it must only be a valid uuid or a TYPE:NAME string"""
-                                if mode == "coarse" else "",
+                                "description": (
+                                    "The uuid of the object, it must be a valid uuid format (4-8-4-4-12 hexadecimal character strings) that is present in the entities list"
+                                    + """ OR a TYPE:NAME that you want to use if the element is missing in the entities list, it must only be a valid uuid or a TYPE:NAME string"""
+                                    if mode == "coarse"
+                                    else ""
+                                ),
                             },
                             "description": {
                                 "type": "string",
@@ -121,7 +127,7 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
             },
             "required": ["relationships"],
         }
-        
+
         super().__init__(
             architect_agent=architect_agent,
             description=description,
@@ -426,7 +432,7 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
             )
 
             required_new_nodes = getattr(janitor_response, "required_new_nodes", [])
-            
+
             if required_new_nodes:
                 for node in required_new_nodes:
                     scout_entity = ScoutEntity(

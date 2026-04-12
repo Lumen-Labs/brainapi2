@@ -46,7 +46,7 @@ from src.services.input.agents import (
     llm_small_adapter,
     vector_store_adapter,
 )
-from src.services.observations.main import llm_adapter
+from src.core.instances import llm_small_adapter as llm_adapter
 from src.lib.neo4j.client import _neo4j_client
 from src.utils.tokens import merge_token_details, token_detail_from_token_counts
 

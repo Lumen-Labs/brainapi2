@@ -3,7 +3,7 @@ File: /architect_agent.py
 Created Date: Sunday December 21st 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Thursday February 19th 2026 7:45:12 pm
+Last Modified: Sunday March 22nd 2026 10:11:53 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
@@ -233,6 +233,7 @@ class ArchitectAgent:
         Side effects:
             Creates an agent via create_agent and assigns it to self.agent.
         """
+        
         system_prompt = self._resolve_system_prompt(type_, mode, extra_system_prompt)
         tools = (
             (
@@ -341,7 +342,8 @@ class ArchitectAgent:
                 {
                     "role": "user",
                     "content": prompt_registry.get(
-                        "ARCHITECT_AGENT_CREATE_RELATIONSHIPS_PROMPT", ARCHITECT_AGENT_CREATE_RELATIONSHIPS_PROMPT
+                        "ARCHITECT_AGENT_CREATE_RELATIONSHIPS_PROMPT",
+                        ARCHITECT_AGENT_CREATE_RELATIONSHIPS_PROMPT,
                     ).format(
                         text=text,
                         entities=[entity.model_dump(mode="json") for entity in ent],

@@ -10,6 +10,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 
 # pylint: disable=too-few-public-methods
 
+import logging
 import os
 from typing import Literal
 import dotenv
@@ -19,6 +20,8 @@ _project_root = Path(__file__).resolve().parent.parent
 _env_name = os.getenv("ENV")
 _env_path = _project_root / f".env{'.' + _env_name if _env_name else ''}"
 dotenv.load_dotenv(dotenv_path=_env_path)
+
+logger = logging.getLogger(__name__)
 
 
 class AzureConfig:
@@ -66,7 +69,7 @@ class GCPConfig:
                 f"Credentials file not found at: {credentials_path}. "
                 "Please set GCP_CREDENTIALS_PATH environment variable or place gcp_credentials.json in the project root."
             )
-        print("[GCPConfig] credentials_path: ", credentials_path)
+        logger.debug("GCP credentials_path: %s", credentials_path)
         self.credentials_path = credentials_path
         self.project_id = os.getenv("GCP_PROJECT_ID")
         self.small_llm_model = os.getenv("GCP_SMALL_LLM_MODEL")
