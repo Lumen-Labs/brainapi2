@@ -3,7 +3,7 @@ File: /data.py
 Created Date: Saturday October 25th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Saturday October 25th 2025 11:48:51 am
+Last Modified: Sunday April 12th 2026 11:44:39 am
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
@@ -29,6 +29,7 @@ class TextChunk(BaseModel):
     )
     brain_version: str = Field(
         description="The version of the brain when the chunk was inserted.",
+        default="0.0.0",
     )
 
 
