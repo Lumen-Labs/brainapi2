@@ -28,11 +28,10 @@ from src.services.api.constants.requests import (
     RetrieveNeighborsRequestResponse,
     RetrievedNeighborNode,
 )
-from src.services.kg_agent.main import graph_adapter, kg_agent
+from src.services.kg_agent.main import graph_adapter
 from src.services.data.main import data_adapter
 from src.services.kg_agent.main import embeddings_adapter, vector_store_adapter
 from src.utils.similarity.vectors import cosine_similarity
-from src.utils.nlp.ner import _entity_extractor
 
 vector_search = VectorSearchFacade(vector_store_adapter)
 
@@ -272,6 +271,8 @@ async def retrieve_neighbors_ai_mode(
     """
 
     def _get_neighbors():
+        from src.services.kg_agent.main import kg_agent
+
         node = graph_adapter.get_by_identification_params(
             identification_params,
             brain_id=brain_id,
@@ -393,6 +394,8 @@ async def get_context(request: GetContextRequestBody) -> GetContextResponse:
     Returns:
         GetContextResponse: Response containing the context information.
     """
+
+    from src.utils.nlp.ner import _entity_extractor
 
     embeddings_map = {}
     futures = []
