@@ -3,17 +3,14 @@ from src.adapters.data import DataAdapter
 from src.adapters.embeddings import EmbeddingsAdapter, VectorStoreAdapter
 from src.adapters.graph import GraphAdapter
 from src.adapters.llm import LLMAdapter
-from src.config import config
+from src.config import MODEL_MODES, config
 from src.lib.milvus.client import _milvus_client
 from src.lib.mongo.client import _mongo_client
 from src.lib.neo4j.client import _neo4j_client
 from src.lib.redis.client import _redis_client
 
-_MODES = ("local", "remote")
-
-
 def _require_mode():
-    if config.models_mode not in _MODES:
+    if config.models_mode not in MODEL_MODES:
         raise ValueError(f"Invalid models mode: {config.models_mode}")
     return config.models_mode == "local"
 

@@ -12,7 +12,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 
 import logging
 import os
-from typing import Literal
+from typing import Literal, cast
 import dotenv
 from pathlib import Path
 
@@ -268,7 +268,17 @@ class SpacyConfig:
         )
 
 
-_MODES = ("local", "remote")
+MODEL_MODES = ("local", "remote")
+PIPELINE_MODES = ("lightweight", "accurate")
+OCR_MODES = ("docling", "docparser")
+AGENTIC_ARCHITECTURES = ("custom", "langchain")
+
+
+def _read_mode(name: str, allowed_values: tuple[str, ...], default: str | None = None) -> str:
+    value = os.getenv(name, default)
+    if value not in allowed_values:
+        raise ValueError(f"Invalid {name}: {value}")
+    return value
 
 
 class Config:
@@ -289,9 +299,9 @@ class Config:
         if not self.brainpat_token:
             raise ValueError("BrainPAT token is not set")
 
-        self.models_mode = os.getenv("MODELS_MODE")
-        if self.models_mode not in _MODES:
-            raise ValueError(f"Invalid MODELS_MODE: {self.models_mode}")
+        self.models_mode = cast(
+            Literal["local", "remote"], _read_mode("MODELS_MODE", MODEL_MODES)
+        )
 
         if self.models_mode == "local":
             self.azure = None
@@ -317,14 +327,16 @@ class Config:
         self.docparser_endpoint = os.getenv("DOCPARSER_ENDPOINT")
         self.docparser_token = os.getenv("DOCPARSER_TOKEN")
         self.app_host = os.getenv("APP_HOST")
-        self.pipeline_mode: Literal["lightweight", "accurate"] = os.getenv(
-            "PIPELINE_MODE"
+        self.pipeline_mode = cast(
+            Literal["lightweight", "accurate"],
+            _read_mode("PIPELINE_MODE", PIPELINE_MODES, "accurate"),
         )
-        self.ocr_mode: Literal["docling", "docparser"] = os.getenv(
-            "OCR_MODE", "docling"
+        self.ocr_mode = cast(
+            Literal["docling", "docparser"], _read_mode("OCR_MODE", OCR_MODES, "docling")
         )
-        self.agentic_architecture: Literal["custom", "langchain"] = os.getenv(
-            "AGENTIC_ARCHITECTURE", "custom"
+        self.agentic_architecture = cast(
+            Literal["custom", "langchain"],
+            _read_mode("AGENTIC_ARCHITECTURE", AGENTIC_ARCHITECTURES, "custom"),
         )
 
 

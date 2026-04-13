@@ -17,6 +17,7 @@ from src.constants.kg import Node
 from src.core.agents.scout_agent import ScoutAgent
 from src.core.agents.architect_agent import ArchitectAgent
 from src.core.layers.graph_consolidation.graph_consolidation import consolidate_graph
+from src.core.pipeline import resolve_pipeline_mode_strategy
 from src.core.saving.ingestion_manager import IngestionManager
 from src.services.input.agents import (
     cache_adapter,
@@ -81,7 +82,9 @@ def _enrich_kg_impl(input: str, targeting, brain_id: str, ingestion_session_id: 
         ingestion_manager=ingestion_manager,
     )
 
-    if config.pipeline_mode == "lightweight":
+    pipeline_strategy = resolve_pipeline_mode_strategy(config.pipeline_mode)
+    scout_mode = pipeline_strategy.scout_mode()
+    if scout_mode is not None:
         print("[DEBUG (enrich_kg_from_input)]: Lightweight pipeline mode selected")
 
         entities = scout_agent.run(
@@ -89,7 +92,7 @@ def _enrich_kg_impl(input: str, targeting, brain_id: str, ingestion_session_id: 
             targeting=targeting,
             brain_id=brain_id,
             ingestion_session_id=ingestion_session_id,
-            mode="coarse",
+            mode=scout_mode,
         )
         print("[DEBUG (initial_scout_entities)]: ", entities.entities)
         architect_agent.run_tooler(
@@ -99,12 +102,12 @@ def _enrich_kg_impl(input: str, targeting, brain_id: str, ingestion_session_id: 
             brain_id=brain_id,
             timeout=20000,
             ingestion_session_id=ingestion_session_id,
-            mode="coarse",
+            mode=scout_mode,
         )
 
         return
 
-    if config.pipeline_mode == "accurate":
+    if pipeline_strategy.should_extract_observations():
         token_details = []
         print(f"[DEBUG (ingestion_session_id)]: {ingestion_session_id}")
 
