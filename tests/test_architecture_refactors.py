@@ -76,6 +76,9 @@ _stub_kg_main = types.ModuleType("src.services.kg_agent.main")
 _stub_kg_main.graph_adapter = _StubGraphAdapter()
 _stub_kg_main.vector_store_adapter = _StubVectorStoreAdapter()
 _stub_kg_main.embeddings_adapter = _StubEmbeddingsAdapter()
+_stub_kg_main.kg_agent = types.SimpleNamespace(
+    retrieve_neighbors=lambda *_args, **_kwargs: []
+)
 sys.modules.setdefault("src.services.kg_agent.main", _stub_kg_main)
 
 _stub_data_main = types.ModuleType("src.services.data.main")
