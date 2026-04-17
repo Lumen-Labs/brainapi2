@@ -85,6 +85,12 @@ _stub_data_main = types.ModuleType("src.services.data.main")
 _stub_data_main.data_adapter = _StubDataAdapter()
 sys.modules.setdefault("src.services.data.main", _stub_data_main)
 
+_stub_ner = types.ModuleType("src.utils.nlp.ner")
+_stub_ner._entity_extractor = types.SimpleNamespace(
+    extract_entities=lambda *_args, **_kwargs: []
+)
+sys.modules.setdefault("src.utils.nlp.ner", _stub_ner)
+
 from src.services.api.controllers.entities import get_entity_status
 from src.services.api.controllers.retrieve import retrieve_data
 from src.utils.vector_search import VectorSearchFacade
