@@ -38,6 +38,7 @@ from src.constants.kg import Node, Predicate
 from src.constants.agents import ArchitectAgentRelationship
 from src.constants.prompts.misc import NODE_DESCRIPTION_PROMPT
 from src.core.plugins.prompts import prompt_registry
+from src.core.ingestion.text_strategy import extract_ingestion_text
 from src.core.saving.auto_kg import enrich_kg_from_input
 from src.core.saving.ingestion_manager import IngestionManager
 from src.services.api.constants.requests import IngestionStructuredRequestBody
@@ -52,7 +53,6 @@ from src.services.observations.main import observations_agent
 from src.workers.app import ingestion_app
 from src.constants.tasks.ingestion import (
     IngestionTaskArgs,
-    IngestionTaskDataType,
     IngestionTaskTextArgs,
 )
 from src.services.kg_agent.main import cache_adapter
@@ -121,13 +121,11 @@ def ingest_data(self, args: dict):
         # ================================================
         # --------------- Data Saving --------------------
         # ================================================
+        payload_text = extract_ingestion_text(payload.data)
+
         text_chunk = data_adapter.save_text_chunk(
             TextChunk(
-                text=(
-                    payload.data.text_data
-                    if payload.data.data_type == IngestionTaskDataType.TEXT.value
-                    else json.dumps(payload.data.json_data)
-                ),
+                text=payload_text,
                 metadata=payload.meta_keys,
                 brain_version=BRAIN_VERSION,
             ),
@@ -152,11 +150,7 @@ def ingest_data(self, args: dict):
             # --------------- Observations -------------------
             # ================================================
             observations = observations_agent.observe(
-                text=(
-                    payload.data.text_data
-                    if payload.data.data_type == IngestionTaskDataType.TEXT.value
-                    else json.dumps(payload.data.json_data)
-                ),
+                text=payload_text,
                 observate_for=payload.observate_for,
             )
 
@@ -174,7 +168,7 @@ def ingest_data(self, args: dict):
         # ================================================
         # ------------ Triplet Extraction ----------------
         # ================================================
-        enrich_kg_from_input(payload.data.text_data, brain_id=payload.brain_id)
+        enrich_kg_from_input(payload_text, brain_id=payload.brain_id)
 
         cache_adapter.set(
             key=f"task:{self.request.id}",
