@@ -62,6 +62,9 @@ class _StubGraphAdapter:
     def get_neighbors(self, *_args, **_kwargs):
         return {}
 
+    def get_nodes_by_uuid(self, *_args, **_kwargs):
+        return []
+
 
 class _StubDataAdapter:
     def get_observations_list(self, *_args, **_kwargs):
