@@ -67,6 +67,12 @@ class _StubDataAdapter:
     def get_observations_list(self, *_args, **_kwargs):
         return []
 
+    def search(self, *_args, **_kwargs):
+        return type("SearchResult", (), {"text_chunks": [], "observations": []})()
+
+    def get_text_chunks_by_ids(self, *_args, **_kwargs):
+        return ([], [])
+
 
 _stub_input_agents = types.ModuleType("src.services.input.agents")
 _stub_input_agents.embeddings_adapter = _StubEmbeddingsAdapter()
