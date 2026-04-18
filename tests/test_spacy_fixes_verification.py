@@ -42,6 +42,17 @@ class TestDockerfileSpacyModels(unittest.TestCase):
         self.assertIn("spacy download", dockerfile)
         self.assertIn("src.constants.spacy_models", dockerfile)
 
+    def test_chinese_uses_web_pipeline_name(self):
+        from src.constants.spacy_models import SPACY_MODEL_NAMES
+
+        self.assertEqual(SPACY_MODEL_NAMES["zh"], "zh_core_web_sm")
+
+    def test_no_languages_without_spacy_3_8_pipelines(self):
+        from src.constants.spacy_models import SPACY_MODEL_NAMES
+
+        for code in ("ta", "te", "th", "tr", "vi"):
+            self.assertNotIn(code, SPACY_MODEL_NAMES)
+
 
 class TestFastAPIRedirectSlashes(unittest.TestCase):
     def test_app_disables_trailing_slash_redirect(self):
