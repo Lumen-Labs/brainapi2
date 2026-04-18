@@ -19,6 +19,7 @@ from src.constants.embeddings import Vector
 from src.constants.kg import IdentificationParams, Node, Predicate
 from src.core.search.entities import search_entities
 from src.core.search.relationships import search_relationships
+from src.utils.vector_search import VectorSearchFacade
 from src.services.api.constants.requests import (
     GetContextRequestBody,
     GetContextResponse,
@@ -32,6 +33,8 @@ from src.services.data.main import data_adapter
 from src.services.kg_agent.main import embeddings_adapter, vector_store_adapter
 from src.utils.similarity.vectors import cosine_similarity
 from src.utils.nlp.ner import _entity_extractor
+
+vector_search = VectorSearchFacade(vector_store_adapter)
 
 
 async def retrieve_data(
@@ -50,11 +53,15 @@ async def retrieve_data(
     def _get_data():
         text_embeddings = embeddings_adapter.embed_text(text)
 
-        data_vectors = vector_store_adapter.search_vectors(
-            text_embeddings.embeddings, "data", brain_id, limit
+        data_vectors = vector_search.search_data(
+            text_embeddings.embeddings,
+            brain_id=brain_id,
+            k=limit,
         )
-        triple_vectors = vector_store_adapter.search_vectors(
-            text_embeddings.embeddings, "triplets", brain_id, limit
+        triple_vectors = vector_search.search_triplets(
+            text_embeddings.embeddings,
+            brain_id=brain_id,
+            k=limit,
         )
 
         search_result = data_adapter.search(text, brain_id)
@@ -400,8 +407,9 @@ async def get_context(request: GetContextRequestBody) -> GetContextResponse:
         if text in embeddings_map:
             return embeddings_map[text]
         text_embeddings = embeddings_adapter.embed_text(text)
-        data_vectors = vector_store_adapter.search_vectors(
-            text_embeddings.embeddings, store="nodes", brain_id=request.brain_id
+        data_vectors = vector_search.search_nodes(
+            text_embeddings.embeddings,
+            brain_id=request.brain_id,
         )
         neighbors = graph_adapter.get_event_centric_neighbors(
             [v.metadata.get("uuid") for v in data_vectors], brain_id=request.brain_id

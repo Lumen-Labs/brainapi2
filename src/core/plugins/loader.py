@@ -6,9 +6,11 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
-from src.core.plugins.manifest import MANIFEST_FILENAME, PluginManifest, parse_manifest
+from src.core.plugins.catalog import PluginManifestCatalog
+from src.core.plugins.entrypoints import PluginEntryPointResolver
+from src.core.plugins.manifest import PluginManifest
 
 if TYPE_CHECKING:
     from src.core.plugins.context import PluginContext
@@ -17,37 +19,27 @@ logger = logging.getLogger("brainapi.plugins")
 
 
 class PluginLoader:
-    def __init__(self, plugins_dir: Path, context: "PluginContext"):
+    def __init__(
+        self,
+        plugins_dir: Path,
+        context: "PluginContext",
+        manifest_catalog: Optional[PluginManifestCatalog] = None,
+        entry_point_resolver: Optional[PluginEntryPointResolver] = None,
+    ):
         self.plugins_dir = plugins_dir
         self.context = context
         self._loaded: dict[str, PluginManifest] = {}
+        self._manifest_catalog = manifest_catalog or PluginManifestCatalog(
+            plugins_dir=plugins_dir,
+            logger_override=logger,
+        )
+        self._entry_point_resolver = entry_point_resolver or PluginEntryPointResolver()
 
     def discover(self) -> list[PluginManifest]:
         if not self.plugins_dir.exists():
             logger.info("Plugins directory '%s' does not exist, skipping discovery", self.plugins_dir)
             return []
-
-        manifests: list[PluginManifest] = []
-        for child in sorted(self.plugins_dir.iterdir()):
-            if not child.is_dir():
-                continue
-            manifest_path = child / MANIFEST_FILENAME
-            if not manifest_path.exists():
-                continue
-            try:
-                manifest = parse_manifest(manifest_path)
-                errors = manifest.validate()
-                if errors:
-                    logger.warning(
-                        "Plugin '%s' manifest validation failed: %s",
-                        child.name,
-                        "; ".join(errors),
-                    )
-                    continue
-                manifests.append(manifest)
-            except Exception as exc:
-                logger.warning("Failed to parse manifest in '%s': %s", child.name, exc)
-
+        manifests = self._manifest_catalog.discover(validate=True)
         manifests.sort(key=lambda m: m.priority)
         return manifests
 
@@ -91,9 +83,10 @@ class PluginLoader:
         if plugin_dir_str not in sys.path:
             sys.path.insert(0, plugin_dir_str)
 
-        module_name = manifest.entry_point.replace("/", ".").rstrip(".py")
-        if module_name == "__init__":
-            module_name = plugin_dir.name
+        module_name = self._entry_point_resolver.resolve(
+            entry_point=manifest.entry_point,
+            plugin_dir=plugin_dir,
+        )
 
         try:
             module = importlib.import_module(module_name)

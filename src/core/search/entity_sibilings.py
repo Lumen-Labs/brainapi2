@@ -18,6 +18,7 @@ from src.services.kg_agent.main import (
     graph_adapter,
     vector_store_adapter,
 )
+from src.utils.vector_search import VectorSearchFacade
 from src.utils.similarity.numbers import wmean, wsim
 from src.utils.similarity.vectors import cosine_similarity
 
@@ -32,6 +33,8 @@ FACTORS_INCREMENTAL_WEIGHT = 0.3
 
 # Weight to strengthen the similarity by the comparison of the neighbor+target descriptions
 NODE_SIM_DESC_INCREMENTAL_WEIGHT = 0.5
+
+vector_search = VectorSearchFacade(vector_store_adapter)
 
 
 class EntitySinergyRetriever:
@@ -358,9 +361,8 @@ class EntitySinergyRetriever:
                 _upsert_connection(seed_node, neighbor[1], neighbor[0])
 
         target_embedding = embeddings_adapter.embed_text(target)
-        target_node_vs = vector_store_adapter.search_vectors(
+        target_node_vs = vector_search.search_nodes(
             target_embedding.embeddings,
-            store="nodes",
             brain_id=self.brain_id,
         )
         if not target_node_vs:
@@ -406,9 +408,8 @@ class EntitySinergyRetriever:
                         )
                         if seed_embedding is None:
                             continue
-                        similar_seed_vs = vector_store_adapter.search_vectors(
+                        similar_seed_vs = vector_search.search_nodes(
                             seed_embedding,
-                            store="nodes",
                             brain_id=self.brain_id,
                         )
 

@@ -1,4 +1,7 @@
+import json
 import os
+import sys
+import types
 import unittest
 from unittest.mock import patch
 
@@ -38,8 +41,50 @@ from src.adapters.embeddings import (
 )
 from src.adapters.graph import GraphAdapter
 from src.constants.embeddings import Vector
+from src.constants.data import Observation, TextChunk
 from src.core.agents.core.runtime_agent_factory import RuntimeAgentFactory
+
+
+class _StubEmbeddingsAdapter:
+    def embed_text(self, *_args, **_kwargs):
+        return Vector(id="stub", embeddings=[], metadata={})
+
+
+class _StubVectorStoreAdapter:
+    def search_vectors(self, *_args, **_kwargs):
+        return []
+
+
+class _StubGraphAdapter:
+    def get_by_uuids(self, *_args, **_kwargs):
+        return []
+
+    def get_neighbors(self, *_args, **_kwargs):
+        return {}
+
+
+class _StubDataAdapter:
+    def get_observations_list(self, *_args, **_kwargs):
+        return []
+
+
+_stub_input_agents = types.ModuleType("src.services.input.agents")
+_stub_input_agents.embeddings_adapter = _StubEmbeddingsAdapter()
+sys.modules.setdefault("src.services.input.agents", _stub_input_agents)
+
+_stub_kg_main = types.ModuleType("src.services.kg_agent.main")
+_stub_kg_main.graph_adapter = _StubGraphAdapter()
+_stub_kg_main.vector_store_adapter = _StubVectorStoreAdapter()
+_stub_kg_main.embeddings_adapter = _StubEmbeddingsAdapter()
+sys.modules.setdefault("src.services.kg_agent.main", _stub_kg_main)
+
+_stub_data_main = types.ModuleType("src.services.data.main")
+_stub_data_main.data_adapter = _StubDataAdapter()
+sys.modules.setdefault("src.services.data.main", _stub_data_main)
+
 from src.services.api.controllers.entities import get_entity_status
+from src.services.api.controllers.retrieve import retrieve_data
+from src.utils.vector_search import VectorSearchFacade
 
 
 def raise_embedding_error(*args, **kwargs):
@@ -178,6 +223,59 @@ class GraphAdapterReductionTests(unittest.TestCase):
         self.assertEqual(averaged, [2.0, 3.0])
 
 
+class GraphOperationSerializationTests(unittest.TestCase):
+    def test_execute_operation_serializes_none_result(self):
+        class FakeGraphClient:
+            def execute_operation(self, operation: str, brain_id: str):
+                return None
+
+        adapter = GraphAdapter()
+        adapter.add_client(FakeGraphClient())
+        result = adapter.execute_operation("RETURN 1", brain_id="default")
+        self.assertEqual(result, "")
+
+    def test_execute_operation_serializes_mapping_result(self):
+        class FakeGraphClient:
+            def execute_operation(self, operation: str, brain_id: str):
+                return {"operation": operation, "brain_id": brain_id, "ok": True}
+
+        adapter = GraphAdapter()
+        adapter.add_client(FakeGraphClient())
+        result = adapter.execute_operation("RETURN 1", brain_id="test-brain")
+        self.assertEqual(
+            json.loads(result),
+            {"operation": "RETURN 1", "brain_id": "test-brain", "ok": True},
+        )
+
+    def test_execute_operation_serializes_neo4j_like_result_with_limit(self):
+        class FakeRecord:
+            def __init__(self, value: int):
+                self.value = value
+
+            def data(self):
+                return {"value": self.value}
+
+        class FakeNeo4jResult:
+            def __init__(self):
+                self.records = [FakeRecord(value) for value in range(25)]
+
+            def keys(self):
+                return ["value"]
+
+        class FakeGraphClient:
+            def execute_operation(self, operation: str, brain_id: str):
+                return FakeNeo4jResult()
+
+        adapter = GraphAdapter()
+        adapter.add_client(FakeGraphClient())
+        result = adapter.execute_operation("MATCH (n) RETURN n", brain_id="default")
+        payload = json.loads(result)
+        self.assertTrue(payload["truncated"])
+        self.assertEqual(payload["keys"], ["value"])
+        self.assertEqual(len(payload["records"]), 20)
+        self.assertEqual(payload["records"][0], {"value": 0})
+
+
 class EntityStatusControllerTests(unittest.IsolatedAsyncioTestCase):
     async def test_get_entity_status_skips_missing_graph_nodes(self):
         fake_vector = type(
@@ -191,7 +289,7 @@ class EntityStatusControllerTests(unittest.IsolatedAsyncioTestCase):
                 return_value=Vector(id="q", embeddings=[0.1, 0.2], metadata={}),
             ),
             patch(
-                "src.services.api.controllers.entities.vector_store_adapter.search_vectors",
+                "src.services.api.controllers.entities.vector_search.search_nodes",
                 return_value=[fake_vector],
             ),
             patch(
@@ -204,6 +302,92 @@ class EntityStatusControllerTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(response.has_relationships)
         self.assertEqual(response.relationships, [])
         self.assertEqual(response.observations, [])
+
+
+class VectorSearchFacadeTests(unittest.TestCase):
+    def test_facade_routes_search_arguments_with_keywords(self):
+        class FakeVectorStore:
+            def __init__(self):
+                self.calls = []
+
+            def search_vectors(self, data_vector, brain_id, store, k=10):
+                self.calls.append(
+                    {
+                        "data_vector": data_vector,
+                        "brain_id": brain_id,
+                        "store": store,
+                        "k": k,
+                    }
+                )
+                return [Vector(id="v1", embeddings=[0.1], metadata={"uuid": "n1"})]
+
+        fake = FakeVectorStore()
+        facade = VectorSearchFacade(fake)
+        result = facade.search_nodes([0.1, 0.2], brain_id="brain-a", k=7)
+        self.assertEqual(result[0].id, "v1")
+        self.assertEqual(
+            fake.calls[0],
+            {
+                "data_vector": [0.1, 0.2],
+                "brain_id": "brain-a",
+                "store": "nodes",
+                "k": 7,
+            },
+        )
+
+
+class RetrieveControllerVectorSearchTests(unittest.IsolatedAsyncioTestCase):
+    async def test_retrieve_data_uses_store_specific_vector_search(self):
+        fake_data_chunk = TextChunk(text="chunk", brain_version="1.0.0")
+        fake_observation = Observation(text="obs", resource_id="r1")
+        fake_search_result = type(
+            "SearchResult",
+            (),
+            {
+                "text_chunks": [fake_data_chunk],
+                "observations": [fake_observation],
+            },
+        )()
+        fake_data_vector = type("FakeVector", (), {"metadata": {"resource_id": "r1"}})()
+        fake_triplet_vector = type(
+            "FakeVector", (), {"metadata": {"node_ids": ["n1"], "predicate": "RELATED_TO"}}
+        )()
+        with (
+            patch(
+                "src.services.api.controllers.retrieve.embeddings_adapter.embed_text",
+                return_value=Vector(id="q", embeddings=[0.1, 0.2], metadata={}),
+            ),
+            patch(
+                "src.services.api.controllers.retrieve.vector_search.search_data",
+                return_value=[fake_data_vector],
+            ) as search_data,
+            patch(
+                "src.services.api.controllers.retrieve.vector_search.search_triplets",
+                return_value=[fake_triplet_vector],
+            ) as search_triplets,
+            patch(
+                "src.services.api.controllers.retrieve.data_adapter.search",
+                return_value=fake_search_result,
+            ),
+            patch(
+                "src.services.api.controllers.retrieve.data_adapter.get_text_chunks_by_ids",
+                return_value=([], []),
+            ),
+            patch(
+                "src.services.api.controllers.retrieve.graph_adapter.get_nodes_by_uuid",
+                return_value=[],
+            ),
+        ):
+            response = await retrieve_data(
+                text="sample",
+                limit=6,
+                preferred_entities="Person,Company",
+                brain_id="brain-a",
+            )
+        search_data.assert_called_once_with([0.1, 0.2], brain_id="brain-a", k=6)
+        search_triplets.assert_called_once_with([0.1, 0.2], brain_id="brain-a", k=6)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(len(response.observations), 1)
 
 
 if __name__ == "__main__":

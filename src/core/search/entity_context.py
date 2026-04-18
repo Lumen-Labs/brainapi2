@@ -15,6 +15,9 @@ from src.services.kg_agent.main import (
     vector_store_adapter,
     graph_adapter,
 )
+from src.utils.vector_search import VectorSearchFacade
+
+vector_search = VectorSearchFacade(vector_store_adapter)
 
 
 class EntityContext:
@@ -50,8 +53,9 @@ class EntityContext:
         natural_language_web = list()
 
         target_embedding = embeddings_adapter.embed_text(self.target)
-        target_node_vs = vector_store_adapter.search_vectors(
-            target_embedding.embeddings, store="nodes", brain_id=self.brain_id
+        target_node_vs = vector_search.search_nodes(
+            target_embedding.embeddings,
+            brain_id=self.brain_id,
         )
 
         if not target_node_vs:

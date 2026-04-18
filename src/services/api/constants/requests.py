@@ -271,7 +271,7 @@ class GetEntitySibilingsResponse(BaseModel):
 class GetEntityStatusResponse(BaseModel):
     """Response model for the get entity status endpoint."""
 
-    node: Node
+    node: Optional[Node] = None
     exists: bool
     has_relationships: bool
     relationships: List[Tuple[Predicate, Node]]

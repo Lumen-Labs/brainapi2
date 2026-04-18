@@ -5,6 +5,7 @@ import shutil
 from pathlib import Path
 from typing import Optional
 
+from src.core.plugins.catalog import PluginManifestCatalog
 from src.core.plugins.manifest import MANIFEST_FILENAME, PluginManifest, parse_manifest
 from src.core.plugins.registry import PluginMeta, PluginRegistryClient
 
@@ -21,6 +22,10 @@ class PluginManager:
     ):
         self.plugins_dir = plugins_dir
         self.registry_url = registry_url
+        self._manifest_catalog = PluginManifestCatalog(
+            plugins_dir=plugins_dir,
+            logger_override=logger,
+        )
         self._registry: Optional[PluginRegistryClient] = None
         if registry_url:
             self._registry = PluginRegistryClient(
@@ -80,22 +85,7 @@ class PluginManager:
         return True
 
     def list_installed(self) -> list[PluginManifest]:
-        if not self.plugins_dir.exists():
-            return []
-
-        manifests: list[PluginManifest] = []
-        for child in sorted(self.plugins_dir.iterdir()):
-            if not child.is_dir():
-                continue
-            manifest_path = child / MANIFEST_FILENAME
-            if not manifest_path.exists():
-                continue
-            try:
-                manifests.append(parse_manifest(manifest_path))
-            except Exception as exc:
-                logger.warning("Skipping '%s': %s", child.name, exc)
-
-        return manifests
+        return self._manifest_catalog.discover(validate=False)
 
     def list_available(self) -> list[PluginMeta]:
         registry = self._ensure_registry()

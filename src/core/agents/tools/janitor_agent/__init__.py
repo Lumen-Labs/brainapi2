@@ -10,7 +10,6 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 
 from .JanitorAgentGetSchemaTool import JanitorAgentGetSchemaTool
 from .JanitorAgentSearchEntitiesTool import JanitorAgentSearchEntitiesTool
-from .JanitorAgentExecuteGraphOperationTool import JanitorAgentExecuteGraphOperationTool
 from .JanitorAgentExecuteGraphReadOperationTool import (
     JanitorAgentExecuteGraphReadOperationTool,
 )
@@ -19,5 +18,4 @@ __all__ = [
     "JanitorAgentGetSchemaTool",
     "JanitorAgentSearchEntitiesTool",
     "JanitorAgentExecuteGraphReadOperationTool",
-    "JanitorAgentExecuteGraphOperationTool",
 ]

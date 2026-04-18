@@ -39,7 +39,9 @@ RUN /app/.venv/bin/python -c "\
 from sentence_transformers import SentenceTransformer; \
 SentenceTransformer('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2'); \
 SentenceTransformer('intfloat/e5-small')" \
-    && /app/.venv/bin/python -m spacy download en_core_web_sm \
+    && for m in $(/app/.venv/bin/python -c "from src.constants.spacy_models import SPACY_MODEL_NAMES; print(' '.join(sorted(set(SPACY_MODEL_NAMES.values()))))"); do \
+         /app/.venv/bin/python -m spacy download "$m"; \
+       done \
     && rm -rf /root/.cache /tmp/*
 
 # ── Stage 2: runtime ────────────────────────────────────────

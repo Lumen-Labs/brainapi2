@@ -59,39 +59,6 @@ class KGAgentExecuteGraphOperationTool(BaseTool):
             brain_id=brain_id,
         )
 
-    def _serialize_response(self, response) -> str:
-        if response is None:
-            return ""
-
-        if hasattr(response, "records"):
-            records = response.records or []
-            if len(records) > 20:
-                records = records[:20]
-            serialized_records = []
-            for record in records:
-                if hasattr(record, "data"):
-                    serialized_records.append(record.data())
-                else:
-                    try:
-                        serialized_records.append(dict(record))
-                    except Exception:
-                        serialized_records.append(str(record))
-            keys = None
-            try:
-                keys = list(response.keys())
-            except Exception:
-                try:
-                    keys = list(response.keys)
-                except Exception:
-                    keys = None
-            payload = {"records": serialized_records}
-            if keys is not None:
-                payload["keys"] = keys
-            payload["truncated"] = len(response.records or []) > 20
-            return json.dumps(payload, default=str)
-
-        return json.dumps(response, default=str)
-
     def _run(self, *args, **kwargs) -> str:
         """
         Execute a graph operation using a query extracted from the provided arguments and return the KG adapter's response.
@@ -156,4 +123,4 @@ class KGAgentExecuteGraphOperationTool(BaseTool):
             )
             return f"Error executing query: {e}"
 
-        return self._serialize_response(response)
+        return response
