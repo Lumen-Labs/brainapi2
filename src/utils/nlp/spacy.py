@@ -9,43 +9,14 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
+import subprocess
+import sys
+
 import spacy
 from src.config import config
+from src.constants.spacy_models import SPACY_MODEL_NAMES
 
-try:
-    from spacy.cli import download as spacy_download
-except ImportError:
-    spacy_download = None
-
-MODEL_NAMES = {
-    "en": "en_core_web_sm",
-    "es": "es_core_news_sm",
-    "it": "it_core_news_sm",
-    "fr": "fr_core_news_sm",
-    "de": "de_core_news_sm",
-    "nl": "nl_core_news_sm",
-    "pt": "pt_core_news_sm",
-    "ru": "ru_core_news_sm",
-    "zh": "zh_core_news_sm",
-    "ja": "ja_core_news_sm",
-    "ko": "ko_core_news_sm",
-    "ar": "ar_core_news_sm",
-    "hi": "hi_core_news_sm",
-    "bn": "bn_core_news_sm",
-    "pa": "pa_core_news_sm",
-    "ta": "ta_core_news_sm",
-    "te": "te_core_news_sm",
-    "ml": "ml_core_news_sm",
-    "tr": "tr_core_news_sm",
-    "vi": "vi_core_news_sm",
-    "id": "id_core_news_sm",
-    "ms": "ms_core_news_sm",
-    "fil": "fil_core_news_sm",
-    "th": "th_core_news_sm",
-    "lo": "lo_core_news_sm",
-    "my": "my_core_news_sm",
-    "km": "km_core_news_sm",
-}
+MODEL_NAMES = SPACY_MODEL_NAMES
 
 
 class SpacyManager:
@@ -62,9 +33,19 @@ class SpacyManager:
         try:
             nlp = spacy.load(model_name)
         except OSError:
-            if spacy_download is None:
-                raise
-            spacy_download(model_name)
+            proc = subprocess.run(
+                [sys.executable, "-m", "spacy", "download", model_name],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if proc.returncode != 0:
+                detail = (proc.stderr or proc.stdout or "").strip()
+                raise OSError(
+                    f"SpaCy model {model_name!r} is not installed. "
+                    f"Install with: python -m spacy download {model_name}"
+                    + (f" ({detail})" if detail else "")
+                ) from None
             nlp = spacy.load(model_name)
         if self.keep_models_in_memory:
             self._cache[lang] = nlp
