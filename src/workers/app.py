@@ -23,6 +23,10 @@ warnings.filterwarnings(
     category=UserWarning,
 )
 
+from src.workers.kombu_redis_patch import apply_kombu_redis_unblocked_patch
+
+apply_kombu_redis_unblocked_patch()
+
 from celery import Celery
 from kombu import Queue
 
