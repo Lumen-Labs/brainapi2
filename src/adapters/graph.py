@@ -500,6 +500,30 @@ class GraphAdapter:
             for i in range(dimension)
         ]
 
+    def _node_description(self, node: Optional[Node]) -> Optional[str]:
+        if node is None:
+            return None
+        return node.description
+
+    def _vectors_with_descriptions(
+        self,
+        neighbors: List[Tuple[Predicate, Node]],
+        vectors_by_uuid: Dict[str, Vector],
+    ) -> list[dict]:
+        vectors_with_desc = []
+        for _, node in neighbors:
+            vector = vectors_by_uuid.get(node.uuid)
+            if vector is None:
+                continue
+            vectors_with_desc.append(
+                {
+                    "embeddings": vector.embeddings,
+                    "metadata": vector.metadata,
+                    "description": self._node_description(node),
+                }
+            )
+        return vectors_with_desc
+
     def get_2nd_degree_hops(
         self,
         from_uuids: List[str],
@@ -588,20 +612,7 @@ class GraphAdapter:
         filtered_fd_by_origin: Dict[str, List[Tuple[Predicate, Node]]] = {}
 
         for node_uuid, fd_list in all_fd_nodes.items():
-            fd_nodes_by_uuid = {fd[1].uuid: fd[1] for fd in fd_list}
-            fd_vs_with_desc = [
-                {
-                    "embeddings": fd_vs_by_uuid[fd[1].uuid].embeddings,
-                    "metadata": fd_vs_by_uuid[fd[1].uuid].metadata,
-                    "description": (
-                        fd_nodes_by_uuid.get(fd[1].uuid, {}).description
-                        if fd_nodes_by_uuid.get(fd[1].uuid)
-                        else None
-                    ),
-                }
-                for fd in fd_list
-                if fd[1].uuid in fd_vs_by_uuid
-            ]
+            fd_vs_with_desc = self._vectors_with_descriptions(fd_list, fd_vs_by_uuid)
             from_node = nodes_by_uuid[node_uuid]
             filtered_uuids = self._reduce_neighbor_vectors(
                 vectors_with_desc=fd_vs_with_desc,
@@ -646,21 +657,7 @@ class GraphAdapter:
 
             for fd_pred, fd_node in filtered_fd_by_origin.get(from_uuid, []):
                 sd_list = all_sd_nodes.get(fd_node.uuid, [])
-                sd_nodes_by_uuid = {sd[1].uuid: sd[1] for sd in sd_list}
-
-                sd_vs_with_desc = [
-                    {
-                        "embeddings": sd_vs_by_uuid[sd[1].uuid].embeddings,
-                        "metadata": sd_vs_by_uuid[sd[1].uuid].metadata,
-                        "description": (
-                            sd_nodes_by_uuid.get(sd[1].uuid, {}).description
-                            if sd_nodes_by_uuid.get(sd[1].uuid)
-                            else None
-                        ),
-                    }
-                    for sd in sd_list
-                    if sd[1].uuid in sd_vs_by_uuid
-                ]
+                sd_vs_with_desc = self._vectors_with_descriptions(sd_list, sd_vs_by_uuid)
 
                 reduced_uuids = self._reduce_neighbor_vectors(
                     vectors_with_desc=sd_vs_with_desc,
