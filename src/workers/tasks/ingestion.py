@@ -38,6 +38,7 @@ from src.constants.kg import Node, Predicate
 from src.constants.agents import ArchitectAgentRelationship
 from src.constants.prompts.misc import NODE_DESCRIPTION_PROMPT
 from src.core.plugins.prompts import prompt_registry
+from src.core.pipeline import resolve_pipeline_mode_strategy
 from src.core.saving.auto_kg import enrich_kg_from_input
 from src.core.saving.ingestion_manager import IngestionManager
 from src.services.api.constants.requests import IngestionStructuredRequestBody
@@ -144,10 +145,11 @@ def ingest_data(self, args: dict):
             "data",
         )
 
-        if config.pipeline_mode == "lightweight":
+        pipeline_strategy = resolve_pipeline_mode_strategy(config.pipeline_mode)
+        if not pipeline_strategy.should_extract_observations():
             print("[DEBUG (ingest_data)]: Lightweight pipeline mode selected")
 
-        if config.pipeline_mode == "accurate":
+        if pipeline_strategy.should_extract_observations():
             # ================================================
             # --------------- Observations -------------------
             # ================================================
