@@ -120,8 +120,8 @@ _custom_routes = [
 app = Starlette(
     routes=_custom_routes + list(_mcp_app.routes),
     middleware=[
-        Middleware(AuthContextMiddleware),
         Middleware(TraceMiddleware, service_name="brainapi-mcp"),
+        Middleware(AuthContextMiddleware),
     ],
     lifespan=_mcp_app.router.lifespan_context,
 )

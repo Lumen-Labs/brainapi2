@@ -6,10 +6,10 @@ from src.lib.tracing.events import TraceEvent
 
 class TraceSubscriber(ABC):
     @abstractmethod
-    def publish(self, event: TraceEvent) -> None:
-        raise NotImplementedError("publish method not implemented")
+    def handle(self, event: TraceEvent) -> None:
+        raise NotImplementedError("handle method not implemented")
 
-    def publish_many(self, events: Iterable[TraceEvent]) -> None:
+    def handle_many(self, events: Iterable[TraceEvent]) -> None:
         for event in events:
-            self.publish(event)
+            self.handle(event)
 

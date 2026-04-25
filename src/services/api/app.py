@@ -110,7 +110,6 @@ app = FastAPI(
     redirect_slashes=False,
 )
 
-app.add_middleware(TraceMiddleware, service_name="brainapi-api")
 app.add_middleware(BrainPATMiddleware)
 app.add_middleware(BrainMiddleware)
 app.add_middleware(
@@ -120,6 +119,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(TraceMiddleware, service_name="brainapi-api")
 
 app.include_router(ingest_router)
 app.include_router(retrieve_router)
