@@ -20,6 +20,7 @@ from src.services.api.routes.model import model_router
 from src.services.api.routes.retrieve import retrieve_router
 from src.services.api.routes.system import system_router
 from src.services.api.routes.tasks import tasks_router
+from src.lib.tracing.middleware import TraceMiddleware
 
 logger = logging.getLogger("brainapi.plugins")
 
@@ -109,6 +110,7 @@ app = FastAPI(
     redirect_slashes=False,
 )
 
+app.add_middleware(TraceMiddleware, service_name="brainapi-api")
 app.add_middleware(BrainPATMiddleware)
 app.add_middleware(BrainMiddleware)
 app.add_middleware(

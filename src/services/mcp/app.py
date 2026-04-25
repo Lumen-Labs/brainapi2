@@ -11,6 +11,7 @@ from starlette.routing import Route
 _project_root = Path(__file__).resolve().parent.parent.parent.parent
 dotenv.load_dotenv(_project_root / ".env")
 
+from src.lib.tracing.middleware import TraceMiddleware
 from src.services.mcp.main import auth_token_var, mcp
 
 PLUGINS_DIR = Path(os.getenv("PLUGINS_DIR", str(_project_root / "plugins")))
@@ -118,6 +119,9 @@ _custom_routes = [
 ]
 app = Starlette(
     routes=_custom_routes + list(_mcp_app.routes),
-    middleware=[Middleware(AuthContextMiddleware)],
+    middleware=[
+        Middleware(AuthContextMiddleware),
+        Middleware(TraceMiddleware, service_name="brainapi-mcp"),
+    ],
     lifespan=_mcp_app.router.lifespan_context,
 )
