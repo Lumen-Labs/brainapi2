@@ -11,6 +11,10 @@ class TraceEventType(str, Enum):
     EXPENSIVE_LOOP = "expensive_loop"
     SLA_BREACH = "sla_breach"
     LATENCY = "latency"
+    HEARTBEAT = "heartbeat"
+    HEALTH_CHECK = "health_check"
+    RESOURCE_SAMPLE = "resource_sample"
+    PROCESS = "process"
 
 
 class TraceSeverity(str, Enum):

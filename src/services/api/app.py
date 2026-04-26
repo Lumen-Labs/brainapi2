@@ -21,6 +21,7 @@ from src.services.api.routes.retrieve import retrieve_router
 from src.services.api.routes.system import system_router
 from src.services.api.routes.tasks import tasks_router
 from src.lib.tracing.middleware import TraceMiddleware
+from src.lib.tracing.runtime import start_runtime_monitoring, stop_runtime_monitoring
 
 logger = logging.getLogger("brainapi.plugins")
 
@@ -32,6 +33,7 @@ async def lifespan(app: FastAPI):
     from src.core.plugins.context import PluginContext
     from src.core.plugins.loader import PluginLoader
 
+    start_runtime_monitoring("brainapi-api")
     ctx = PluginContext.from_app(app)
     loader = PluginLoader(plugins_dir=PLUGINS_DIR, context=ctx)
     results = loader.load_all()
@@ -43,7 +45,10 @@ async def lifespan(app: FastAPI):
             for handler in handlers:
                 await handler() if _is_coroutine(handler) else handler()
 
-    yield
+    try:
+        yield
+    finally:
+        stop_runtime_monitoring("brainapi-api")
 
     for event_name, handlers in ctx._event_handlers.items():
         if event_name == "shutdown":
