@@ -1,3 +1,4 @@
+import json
 import secrets
 import time
 from urllib.parse import urlencode
@@ -16,7 +17,6 @@ from mcp.server.auth.provider import (
 )
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 
-
 class BrainapiMcpOAuthProvider(
     OAuthAuthorizationServerProvider[AuthorizationCode, RefreshToken, AccessToken]
 ):
@@ -29,6 +29,7 @@ class BrainapiMcpOAuthProvider(
         access_token_ttl_seconds: int,
         refresh_token_ttl_seconds: int | None,
         auth_code_ttl_seconds: int,
+        redis_client=None,
     ):
         self._issuer_url = issuer_url.rstrip("/")
         self._resource_server_url = resource_server_url.rstrip("/")
@@ -36,22 +37,92 @@ class BrainapiMcpOAuthProvider(
         self._access_token_ttl = access_token_ttl_seconds
         self._refresh_token_ttl = refresh_token_ttl_seconds
         self._auth_code_ttl = auth_code_ttl_seconds
-        self._clients: dict[str, OAuthClientInformationFull] = {}
-        self._auth_codes: dict[str, AuthorizationCode] = {}
-        self._code_to_pat: dict[str, str] = {}
-        self._refresh_tokens: dict[str, RefreshToken] = {}
-        self._refresh_to_pat: dict[str, str] = {}
-        self._access_tokens: dict[str, AccessToken] = {}
-        self._pat_by_access: dict[str, str] = {}
+        if redis_client is None:
+            from src.lib.redis.client import _redis_client
+
+            redis_client = _redis_client.client
+        self._redis = redis_client
+
+    def _key(self, *parts: str) -> str:
+        return "mcp:oauth:" + ":".join(parts)
+
+    def _get_text(self, key: str) -> str | None:
+        value = self._redis.get(key)
+        if value is None:
+            return None
+        if isinstance(value, bytes):
+            return value.decode("utf-8")
+        return value
+
+    def _set_text(self, key: str, value: str, ttl: int | None = None) -> None:
+        self._redis.set(key, value, **({"ex": ttl} if ttl else {}))
+
+    def _set_model(self, key: str, value, ttl: int | None = None) -> None:
+        if hasattr(value, "model_dump_json"):
+            payload = value.model_dump_json()
+        else:
+            payload = json.dumps(value)
+        self._set_text(key, payload, ttl)
+
+    def _get_model(self, key: str, model_type):
+        payload = self._get_text(key)
+        if payload is None:
+            return None
+        if hasattr(model_type, "model_validate_json"):
+            return model_type.model_validate_json(payload)
+        return model_type(**json.loads(payload))
+
+    def _client_key(self, client_id: str) -> str:
+        return self._key("client", client_id)
+
+    def _auth_code_key(self, code: str) -> str:
+        return self._key("auth_code", code)
+
+    def _code_pat_key(self, code: str) -> str:
+        return self._key("code_pat", code)
+
+    def _access_key(self, token: str) -> str:
+        return self._key("access", token)
+
+    def _access_pat_key(self, token: str) -> str:
+        return self._key("access_pat", token)
+
+    def _refresh_key(self, token: str) -> str:
+        return self._key("refresh", token)
+
+    def _refresh_pat_key(self, token: str) -> str:
+        return self._key("refresh_pat", token)
+
+    def _client_access_key(self, client_id: str) -> str:
+        return self._key("client_access", client_id)
+
+    def _remember_client_access_token(
+        self, client_id: str, access_token: str, ttl: int
+    ) -> None:
+        key = self._client_access_key(client_id)
+        self._redis.sadd(key, access_token)
+        self._redis.expire(key, ttl)
+
+    def _client_access_tokens(self, client_id: str) -> list[str]:
+        values = self._redis.smembers(self._client_access_key(client_id))
+        return [
+            value.decode("utf-8") if isinstance(value, bytes) else value
+            for value in values
+        ]
+
+    def _delete_access_token(self, token: str, client_id: str | None = None) -> None:
+        self._redis.delete(self._access_key(token), self._access_pat_key(token))
+        if client_id:
+            self._redis.srem(self._client_access_key(client_id), token)
 
     async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
-        return self._clients.get(client_id)
+        return self._get_model(self._client_key(client_id), OAuthClientInformationFull)
 
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
         cid = client_info.client_id
         if not cid:
             raise ValueError("client_id required")
-        self._clients[cid] = client_info
+        self._set_model(self._client_key(cid), client_info)
 
     async def authorize(self, client: OAuthClientInformationFull, params: AuthorizationParams) -> str:
         if params.resource and params.resource.rstrip("/") != self._resource_server_url:
@@ -82,13 +153,14 @@ class BrainapiMcpOAuthProvider(
     async def load_authorization_code(
         self, client: OAuthClientInformationFull, authorization_code: str
     ) -> AuthorizationCode | None:
-        return self._auth_codes.get(authorization_code)
+        return self._get_model(self._auth_code_key(authorization_code), AuthorizationCode)
 
     async def exchange_authorization_code(
         self, client: OAuthClientInformationFull, authorization_code: AuthorizationCode
     ) -> OAuthToken:
-        self._auth_codes.pop(authorization_code.code, None)
-        brainpat = self._code_to_pat.pop(authorization_code.code, None)
+        self._redis.delete(self._auth_code_key(authorization_code.code))
+        brainpat = self._get_text(self._code_pat_key(authorization_code.code))
+        self._redis.delete(self._code_pat_key(authorization_code.code))
         if not brainpat:
             raise TokenError(error="invalid_grant", error_description="missing credentials")
 
@@ -98,7 +170,6 @@ class BrainapiMcpOAuthProvider(
         exp_access = now + self._access_token_ttl
         exp_refresh = now + self._refresh_token_ttl if self._refresh_token_ttl else None
 
-        self._pat_by_access[access] = brainpat
         at = AccessToken(
             token=access,
             client_id=client.client_id or "",
@@ -106,15 +177,19 @@ class BrainapiMcpOAuthProvider(
             expires_at=exp_access,
             resource=self._resource_server_url,
         )
-        self._access_tokens[access] = at
+        access_ttl = max(1, exp_access - now)
+        self._set_model(self._access_key(access), at, access_ttl)
+        self._set_text(self._access_pat_key(access), brainpat, access_ttl)
+        self._remember_client_access_token(client.client_id or "", access, access_ttl)
         rt = RefreshToken(
             token=refresh,
             client_id=client.client_id or "",
             scopes=authorization_code.scopes,
             expires_at=exp_refresh,
         )
-        self._refresh_tokens[refresh] = rt
-        self._refresh_to_pat[refresh] = brainpat
+        refresh_ttl = max(1, exp_refresh - now) if exp_refresh else None
+        self._set_model(self._refresh_key(refresh), rt, refresh_ttl)
+        self._set_text(self._refresh_pat_key(refresh), brainpat, refresh_ttl)
         return OAuthToken(
             access_token=access,
             token_type="Bearer",
@@ -124,7 +199,7 @@ class BrainapiMcpOAuthProvider(
         )
 
     async def load_refresh_token(self, client: OAuthClientInformationFull, refresh_token: str) -> RefreshToken | None:
-        rt = self._refresh_tokens.get(refresh_token)
+        rt = self._get_model(self._refresh_key(refresh_token), RefreshToken)
         if rt is None or rt.client_id != (client.client_id or ""):
             return None
         return rt
@@ -135,15 +210,18 @@ class BrainapiMcpOAuthProvider(
         refresh_token: RefreshToken,
         scopes: list[str],
     ) -> OAuthToken:
-        brainpat = self._refresh_to_pat.pop(refresh_token.token, None)
-        self._refresh_tokens.pop(refresh_token.token, None)
+        brainpat = self._get_text(self._refresh_pat_key(refresh_token.token))
+        self._redis.delete(
+            self._refresh_key(refresh_token.token),
+            self._refresh_pat_key(refresh_token.token),
+        )
         if not brainpat:
             raise TokenError(error="invalid_grant", error_description="refresh token not found")
 
-        for t, v in list(self._access_tokens.items()):
-            if v.client_id == (client.client_id or ""):
-                self._access_tokens.pop(t, None)
-                self._pat_by_access.pop(t, None)
+        client_id = client.client_id or ""
+        for token in self._client_access_tokens(client_id):
+            self._delete_access_token(token, client_id)
+        self._redis.delete(self._client_access_key(client_id))
 
         access = secrets.token_urlsafe(32)
         new_refresh = secrets.token_urlsafe(48)
@@ -151,23 +229,26 @@ class BrainapiMcpOAuthProvider(
         exp_access = now + self._access_token_ttl
         exp_refresh = now + self._refresh_token_ttl if self._refresh_token_ttl else None
 
-        self._pat_by_access[access] = brainpat
         at = AccessToken(
             token=access,
-            client_id=client.client_id or "",
+            client_id=client_id,
             scopes=scopes,
             expires_at=exp_access,
             resource=self._resource_server_url,
         )
-        self._access_tokens[access] = at
+        access_ttl = max(1, exp_access - now)
+        self._set_model(self._access_key(access), at, access_ttl)
+        self._set_text(self._access_pat_key(access), brainpat, access_ttl)
+        self._remember_client_access_token(client_id, access, access_ttl)
         rt = RefreshToken(
             token=new_refresh,
-            client_id=client.client_id or "",
+            client_id=client_id,
             scopes=scopes,
             expires_at=exp_refresh,
         )
-        self._refresh_tokens[new_refresh] = rt
-        self._refresh_to_pat[new_refresh] = brainpat
+        refresh_ttl = max(1, exp_refresh - now) if exp_refresh else None
+        self._set_model(self._refresh_key(new_refresh), rt, refresh_ttl)
+        self._set_text(self._refresh_pat_key(new_refresh), brainpat, refresh_ttl)
         return OAuthToken(
             access_token=access,
             token_type="Bearer",
@@ -177,25 +258,25 @@ class BrainapiMcpOAuthProvider(
         )
 
     async def load_access_token(self, token: str) -> AccessToken | None:
-        at = self._access_tokens.get(token)
+        at = self._get_model(self._access_key(token), AccessToken)
         if at is None:
             return None
         if at.expires_at and at.expires_at < int(time.time()):
-            self._access_tokens.pop(token, None)
-            self._pat_by_access.pop(token, None)
+            self._delete_access_token(token, at.client_id)
             return None
         return at
 
     async def revoke_token(self, token: AccessToken | RefreshToken) -> None:
         if isinstance(token, AccessToken):
-            self._access_tokens.pop(token.token, None)
-            self._pat_by_access.pop(token.token, None)
+            self._delete_access_token(token.token, token.client_id)
         else:
-            self._refresh_tokens.pop(token.token, None)
-            self._refresh_to_pat.pop(token.token, None)
+            self._redis.delete(
+                self._refresh_key(token.token),
+                self._refresh_pat_key(token.token),
+            )
 
     def get_pat_for_access_token(self, token: str) -> str | None:
-        return self._pat_by_access.get(token)
+        return self._get_text(self._access_pat_key(token))
 
     def issue_auth_code(
         self,
@@ -219,8 +300,8 @@ class BrainapiMcpOAuthProvider(
             redirect_uri_provided_explicitly=True,
             resource=resource,
         )
-        self._auth_codes[code] = ac
-        self._code_to_pat[code] = brainpat
+        self._set_model(self._auth_code_key(code), ac, self._auth_code_ttl)
+        self._set_text(self._code_pat_key(code), brainpat, self._auth_code_ttl)
         return code
 
     def redirect_after_consent(
