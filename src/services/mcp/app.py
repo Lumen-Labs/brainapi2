@@ -1,17 +1,18 @@
 import logging
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import dotenv
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.responses import JSONResponse
-from starlette.routing import Route
+from starlette.routing import Mount, Route
 
 _project_root = Path(__file__).resolve().parent.parent.parent.parent
 dotenv.load_dotenv(_project_root / ".env")
 
-from src.services.mcp.main import auth_token_var, mcp
+from src.services.mcp.main import auth_token_var, mcp, oauth_provider
 
 PLUGINS_DIR = Path(os.getenv("PLUGINS_DIR", str(_project_root / "plugins")))
 
@@ -93,9 +94,11 @@ class AuthContextMiddleware:
             else:
                 raw = (headers.get(b"authorization") or b"").decode()
                 if raw.startswith("Bearer: "):
-                    token = raw.removeprefix("Bearer: ").strip() or None
+                    bearer = raw.removeprefix("Bearer: ").strip() or None
+                    token = oauth_provider.get_pat_for_access_token(bearer) if oauth_provider and bearer else bearer
                 elif raw.startswith("Bearer "):
-                    token = raw.removeprefix("Bearer ").strip() or None
+                    bearer = raw.removeprefix("Bearer ").strip() or None
+                    token = oauth_provider.get_pat_for_access_token(bearer) if oauth_provider and bearer else bearer
             auth_token_var.set(token)
         await self.app(scope, receive, send)
 
@@ -105,19 +108,26 @@ async def _health(_request):
 
 
 async def _mcp_info(_request):
-    return JSONResponse(
-        {"service": "brainapi-mcp", "streamable_http": True, "path": "/mcp"},
-        status_code=200,
-    )
+    body = {"service": "brainapi-mcp", "streamable_http": True, "path": "/mcp"}
+    if oauth_provider:
+        body["oauth"] = True
+        body["oauth_consent_path"] = "/mcp-oauth/consent"
+    return JSONResponse(body, status_code=200)
 
 
-_custom_routes = [
-    Route("/", _health, methods=["GET"]),
-    Route("/mcp", _mcp_info, methods=["GET"]),
-    Route("/mcp/info", _mcp_info, methods=["GET"]),
-]
+@asynccontextmanager
+async def _lifespan(_app):
+    async with _mcp_app.router.lifespan_context(_mcp_app):
+        yield
+
+
 app = Starlette(
-    routes=_custom_routes + list(_mcp_app.routes),
+    routes=[
+        Route("/", _health, methods=["GET"]),
+        Route("/mcp", _mcp_info, methods=["GET"]),
+        Route("/mcp/info", _mcp_info, methods=["GET"]),
+        Mount("/", app=_mcp_app),
+    ],
     middleware=[Middleware(AuthContextMiddleware)],
-    lifespan=_mcp_app.router.lifespan_context,
+    lifespan=_lifespan,
 )
