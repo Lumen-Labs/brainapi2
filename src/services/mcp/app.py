@@ -7,7 +7,7 @@ import dotenv
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.responses import JSONResponse
-from starlette.routing import Route
+from starlette.routing import Mount, Route
 
 _project_root = Path(__file__).resolve().parent.parent.parent.parent
 dotenv.load_dotenv(_project_root / ".env")
@@ -100,9 +100,13 @@ class AuthContextMiddleware:
 
     async def __call__(self, scope, receive, send):
         if scope["type"] in ("http", "websocket"):
-            headers = dict(scope.get("headers", []))
+            raw_headers = list(scope.get("headers", []))
+            headers = dict(raw_headers)
             token = None
             brainpat = headers.get(b"brainpat")
+            if brainpat and b"authorization" not in headers:
+                raw_headers.append((b"authorization", b"Bearer " + brainpat))
+                scope = {**scope, "headers": raw_headers}
             if brainpat:
                 token = brainpat.decode()
             else:
@@ -150,7 +154,7 @@ _custom_routes = [
     Route("/mcp/info", _mcp_info, methods=["GET"]),
 ]
 app = Starlette(
-    routes=_custom_routes + list(_mcp_app.routes),
+    routes=_custom_routes + [Mount("/", app=_mcp_app)],
     middleware=[
         Middleware(TraceMiddleware, service_name="brainapi-mcp"),
         Middleware(AuthContextMiddleware),
