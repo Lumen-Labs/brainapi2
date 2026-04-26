@@ -1,5 +1,6 @@
 import logging
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import dotenv
@@ -106,10 +107,17 @@ class AuthContextMiddleware:
                 token = brainpat.decode()
             else:
                 raw = (headers.get(b"authorization") or b"").decode()
+                bearer = None
                 if raw.startswith("Bearer: "):
-                    token = raw.removeprefix("Bearer: ").strip() or None
+                    bearer = raw.removeprefix("Bearer: ").strip() or None
                 elif raw.startswith("Bearer "):
-                    token = raw.removeprefix("Bearer ").strip() or None
+                    bearer = raw.removeprefix("Bearer ").strip() or None
+                if bearer:
+                    if oauth_provider:
+                        pat = oauth_provider.get_pat_for_access_token(bearer)
+                        token = pat if pat else bearer
+                    else:
+                        token = bearer
             auth_token_var.set(token)
         await self.app(scope, receive, send)
 
@@ -119,10 +127,21 @@ async def _health(_request):
 
 
 async def _mcp_info(_request):
-    return JSONResponse(
-        {"service": "brainapi-mcp", "streamable_http": True, "path": "/mcp"},
-        status_code=200,
-    )
+    body = {
+        "service": "brainapi-mcp",
+        "streamable_http": True,
+        "path": "/mcp",
+    }
+    if oauth_provider:
+        body["oauth"] = True
+        body["oauth_consent_path"] = "/mcp-oauth/consent"
+    return JSONResponse(body, status_code=200)
+
+
+@asynccontextmanager
+async def _lifespan(app):
+    async with _mcp_app.router.lifespan_context(_mcp_app):
+        yield
 
 
 _custom_routes = [
