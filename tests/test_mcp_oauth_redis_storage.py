@@ -60,7 +60,7 @@ class FakeRedis:
         return True
 
 
-def make_provider(redis_client):
+def make_provider(redis_client, pat_verifier=lambda _pat: False):
     return BrainapiMcpOAuthProvider(
         issuer_url="https://brainapi.example",
         resource_server_url="https://brainapi.example/mcp",
@@ -69,6 +69,7 @@ def make_provider(redis_client):
         refresh_token_ttl_seconds=7200,
         auth_code_ttl_seconds=600,
         redis_client=redis_client,
+        pat_verifier=pat_verifier,
     )
 
 
@@ -138,6 +139,21 @@ class BrainapiMcpOAuthProviderRedisTests(unittest.TestCase):
         query = parse_qs(urlparse(url).query)
 
         self.assertEqual(query["redirect_uri_provided_explicitly"], ["0"])
+
+    def test_valid_pat_can_be_used_as_bearer_token(self):
+        provider = make_provider(FakeRedis(), pat_verifier=lambda pat: pat == "brain-pat")
+
+        access_token = asyncio.run(provider.load_access_token("brain-pat"))
+
+        self.assertIsNotNone(access_token)
+        self.assertEqual(access_token.token, "brain-pat")
+        self.assertEqual(access_token.client_id, "brainpat")
+        self.assertEqual(access_token.scopes, ["brainapi"])
+
+    def test_invalid_pat_is_not_accepted_as_bearer_token(self):
+        provider = make_provider(FakeRedis(), pat_verifier=lambda _pat: False)
+
+        self.assertIsNone(asyncio.run(provider.load_access_token("bad-pat")))
 
     def test_refresh_exchange_survives_provider_recreation_and_revokes_old_access_token(self):
         redis_client = FakeRedis()

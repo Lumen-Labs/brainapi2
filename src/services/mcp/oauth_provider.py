@@ -30,6 +30,7 @@ class BrainapiMcpOAuthProvider(
         refresh_token_ttl_seconds: int | None,
         auth_code_ttl_seconds: int,
         redis_client=None,
+        pat_verifier=None,
     ):
         self._issuer_url = issuer_url.rstrip("/")
         self._resource_server_url = resource_server_url.rstrip("/")
@@ -37,6 +38,11 @@ class BrainapiMcpOAuthProvider(
         self._access_token_ttl = access_token_ttl_seconds
         self._refresh_token_ttl = refresh_token_ttl_seconds
         self._auth_code_ttl = auth_code_ttl_seconds
+        if pat_verifier is None:
+            from src.services.mcp.utils import guard_brainpat
+
+            pat_verifier = guard_brainpat
+        self._pat_verifier = pat_verifier
         if redis_client is None:
             from src.lib.redis.client import _redis_client
 
@@ -263,6 +269,14 @@ class BrainapiMcpOAuthProvider(
     async def load_access_token(self, token: str) -> AccessToken | None:
         at = self._get_model(self._access_key(token), AccessToken)
         if at is None:
+            if self._pat_verifier(token):
+                return AccessToken(
+                    token=token,
+                    client_id="brainpat",
+                    scopes=list(self._valid_scopes),
+                    expires_at=None,
+                    resource=self._resource_server_url,
+                )
             return None
         if at.expires_at and at.expires_at < int(time.time()):
             self._delete_access_token(token, at.client_id)
