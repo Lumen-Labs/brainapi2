@@ -142,6 +142,9 @@ class BrainapiMcpOAuthProvider(
             "client_id": client.client_id or "",
             "redirect_uri": str(params.redirect_uri),
             "code_challenge": params.code_challenge,
+            "redirect_uri_provided_explicitly": "1"
+            if params.redirect_uri_provided_explicitly
+            else "0",
             "scope": " ".join(scopes),
         }
         if params.resource:
@@ -283,6 +286,7 @@ class BrainapiMcpOAuthProvider(
         *,
         client_id: str,
         redirect_uri: AnyUrl,
+        redirect_uri_provided_explicitly: bool = True,
         code_challenge: str,
         scopes: list[str],
         resource: str | None,
@@ -297,7 +301,7 @@ class BrainapiMcpOAuthProvider(
             client_id=client_id,
             code_challenge=code_challenge,
             redirect_uri=redirect_uri,
-            redirect_uri_provided_explicitly=True,
+            redirect_uri_provided_explicitly=redirect_uri_provided_explicitly,
             resource=resource,
         )
         self._set_model(self._auth_code_key(code), ac, self._auth_code_ttl)

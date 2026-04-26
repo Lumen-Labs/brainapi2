@@ -93,6 +93,7 @@ if oauth_provider:
             scope = q.get("scope") or " ".join(_oauth_scopes)
             resource = q.get("resource") or ""
             state = q.get("state") or ""
+            redirect_uri_provided = q.get("redirect_uri_provided_explicitly") or "1"
             if not (client_id and redirect_uri and code_challenge):
                 return HTMLResponse("Missing OAuth parameters", status_code=400)
             client = await oauth_provider.get_client(client_id)
@@ -111,6 +112,7 @@ if oauth_provider:
 <input type="hidden" name="scope" value="{esc(scope)}">
 <input type="hidden" name="resource" value="{esc(resource)}">
 <input type="hidden" name="state" value="{esc(state)}">
+<input type="hidden" name="redirect_uri_provided_explicitly" value="{redirect_uri_provided}">
 <label for="brainpat">BrainPAT</label>
 <input id="brainpat" name="brainpat" type="password" autocomplete="off" required style="width:100%;max-width:40em">
 <button type="submit">Authorize</button>
@@ -125,6 +127,9 @@ if oauth_provider:
         scope_str = str(form.get("scope") or "")
         resource = str(form.get("resource") or "") or None
         state = str(form.get("state") or "") or None
+        redirect_uri_provided_explicitly = str(
+            form.get("redirect_uri_provided_explicitly") or "1"
+        ) == "1"
         brainpat = str(form.get("brainpat") or "").strip()
         if not (client_id and redirect_uri and code_challenge and brainpat):
             return HTMLResponse("Missing fields", status_code=400)
@@ -145,6 +150,7 @@ if oauth_provider:
         code = oauth_provider.issue_auth_code(
             client_id=client_id,
             redirect_uri=ru,
+            redirect_uri_provided_explicitly=redirect_uri_provided_explicitly,
             code_challenge=code_challenge,
             scopes=scopes,
             resource=resource,
