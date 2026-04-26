@@ -114,6 +114,14 @@ class AuthContextMiddleware:
                 bearer = None
                 if raw.startswith("Bearer: "):
                     bearer = raw.removeprefix("Bearer: ").strip() or None
+                    if bearer:
+                        raw_headers = [
+                            (name, value)
+                            for name, value in raw_headers
+                            if name.lower() != b"authorization"
+                        ]
+                        raw_headers.append((b"authorization", f"Bearer {bearer}".encode()))
+                        scope = {**scope, "headers": raw_headers}
                 elif raw.startswith("Bearer "):
                     bearer = raw.removeprefix("Bearer ").strip() or None
                 if bearer:
