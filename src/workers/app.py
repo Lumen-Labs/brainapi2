@@ -32,7 +32,7 @@ from kombu import Queue
 
 from src.config import config
 from src.lib.tracing import start_runtime_monitoring
-from src.lib.tracing.workers import register_celery_tracing
+from src.lib.tracing.workers import install_celery_tracing
 
 os.environ.setdefault("GRPC_ENABLE_FORK_SUPPORT", "1")
 
@@ -100,5 +100,5 @@ ingestion_app.conf.update(
         "fanout_patterns": True,
     },
 )
-register_celery_tracing(service_name="brainapi-worker")
+install_celery_tracing(service_name="brainapi-worker")
 start_runtime_monitoring(service_name="brainapi-worker")

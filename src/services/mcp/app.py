@@ -16,7 +16,7 @@ from contextlib import asynccontextmanager
 
 from src.lib.tracing.middleware import TraceMiddleware
 from src.lib.tracing.runtime import start_runtime_monitoring, stop_runtime_monitoring
-from src.services.mcp.main import auth_token_var, mcp
+from src.services.mcp.main import auth_token_var, mcp, oauth_provider
 
 PLUGINS_DIR = Path(os.getenv("PLUGINS_DIR", str(_project_root / "plugins")))
 

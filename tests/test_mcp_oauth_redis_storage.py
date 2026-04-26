@@ -1,12 +1,14 @@
 import asyncio
 import os
 import unittest
+from urllib.parse import parse_qs, urlparse
 
 from pydantic import AnyUrl
 
 os.environ.setdefault("REDIS_HOST", "localhost")
 os.environ.setdefault("REDIS_PORT", "6379")
 
+from mcp.server.auth.provider import AuthorizationParams
 from mcp.shared.auth import OAuthClientInformationFull
 
 from src.services.mcp.oauth_provider import BrainapiMcpOAuthProvider
@@ -98,6 +100,44 @@ class BrainapiMcpOAuthProviderRedisTests(unittest.TestCase):
         self.assertEqual(recreated.get_pat_for_access_token(token.access_token), "brain-pat")
         self.assertIsNone(asyncio.run(recreated.load_authorization_code(loaded_client, code)))
         self.assertIsNotNone(asyncio.run(recreated.load_access_token(token.access_token)))
+
+    def test_authorization_code_preserves_implicit_redirect_uri(self):
+        redis_client = FakeRedis()
+        provider = make_provider(redis_client)
+
+        code = provider.issue_auth_code(
+            client_id="client-1",
+            redirect_uri=AnyUrl("https://claude.ai/api/mcp/auth_callback"),
+            redirect_uri_provided_explicitly=False,
+            code_challenge="challenge",
+            scopes=["brainapi"],
+            resource="https://brainapi.example/mcp",
+            state="state",
+            brainpat="brain-pat",
+        )
+        auth_code = asyncio.run(provider.load_authorization_code(None, code))
+
+        self.assertFalse(auth_code.redirect_uri_provided_explicitly)
+
+    def test_authorize_carries_redirect_uri_explicitness_to_consent(self):
+        provider = make_provider(FakeRedis())
+        client = OAuthClientInformationFull(
+            client_id="client-1",
+            redirect_uris=[AnyUrl("https://claude.ai/api/mcp/auth_callback")],
+        )
+        params = AuthorizationParams(
+            state="state",
+            scopes=["brainapi"],
+            code_challenge="challenge",
+            redirect_uri=AnyUrl("https://claude.ai/api/mcp/auth_callback"),
+            redirect_uri_provided_explicitly=False,
+            resource="https://brainapi.example/mcp",
+        )
+
+        url = asyncio.run(provider.authorize(client, params))
+        query = parse_qs(urlparse(url).query)
+
+        self.assertEqual(query["redirect_uri_provided_explicitly"], ["0"])
 
     def test_refresh_exchange_survives_provider_recreation_and_revokes_old_access_token(self):
         redis_client = FakeRedis()
