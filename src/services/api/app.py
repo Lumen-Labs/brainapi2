@@ -106,7 +106,7 @@ def _log_plugin_banner(loader, results: dict[str, bool]):
 app = FastAPI(
     debug=os.getenv("ENV") == "development",
     lifespan=lifespan,
-    redirect_slashes=False,
+    redirect_slashes=True,
 )
 
 app.add_middleware(BrainPATMiddleware)

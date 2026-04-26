@@ -275,6 +275,11 @@ services:
         "src.workers.app",
         "worker",
         "--loglevel=info",
+        "--pool=threads",
+        "--without-gossip",
+        "--without-mingle",
+        "--concurrency=2",
+        "--max-tasks-per-child=50",
       ]
     depends_on:
       redis:
@@ -291,11 +296,15 @@ services:
     mem_limit: 4g
     cpus: 2
     healthcheck:
-      test: ["CMD", "celery", "-A", "src.workers.app", "inspect", "ping"]
+      test:
+        [
+          "CMD-SHELL",
+          "python -m celery -A src.workers.app inspect ping --timeout 5 >/dev/null 2>&1 && q=$(redis-cli -h redis -p 6379 LLEN ingest_data 2>/dev/null || echo 0); [ \"$q\" -lt \"${CELERY_QUEUE_HEALTH_THRESHOLD:-50}\" ]",
+        ]
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 900s
+      start_period: 120s
       start_interval: 30s
 
   brainapi-mcp:
