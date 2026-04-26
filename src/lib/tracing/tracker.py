@@ -245,8 +245,14 @@ class TraceTracker:
         tenant_id: Optional[str] = None,
         trace_id: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None,
+        threshold: Optional[int] = None,
     ) -> Optional[TraceEvent]:
-        if iterations < self.expensive_loop_iterations:
+        limit = (
+            threshold
+            if threshold is not None
+            else self.expensive_loop_iterations
+        )
+        if iterations < limit:
             return None
         return self.publish(
             TraceEventType.EXPENSIVE_LOOP,
@@ -268,6 +274,8 @@ class TraceTracker:
         trace_id: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None,
         slow_operation_ms: Optional[float] = None,
+        service: Optional[str] = None,
+        operation: Optional[str] = None,
     ) -> Iterator[None]:
         tokens = self.set_context(trace_id=trace_id, tenant_id=tenant_id)
         started_at = time.perf_counter()
@@ -278,6 +286,8 @@ class TraceTracker:
             self.exception(
                 name,
                 exc,
+                service=service,
+                operation=operation,
                 metadata={**(metadata or {}), "duration_ms": duration_ms},
             )
             raise
@@ -293,6 +303,8 @@ class TraceTracker:
                     TraceEventType.SLA_BREACH,
                     name,
                     severity=TraceSeverity.WARNING,
+                    service=service,
+                    operation=operation,
                     duration_ms=duration_ms,
                     threshold_ms=threshold,
                     metadata=metadata,
@@ -320,6 +332,7 @@ class TraceTracker:
                 tenant_id=tenant_id,
                 trace_id=trace_id,
                 metadata=metadata,
+                threshold=threshold,
             )
 
     async def dispatch_once(self) -> TraceEvent:

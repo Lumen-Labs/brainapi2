@@ -1,3 +1,6 @@
+import os
+
+from src.lib.tracing import TraceSeverity, tracer
 from src.utils.cleanup import strip_json
 
 from .parsing import (
@@ -59,7 +62,51 @@ def _log_token_usage(response) -> None:
         )
 
 
+def _trace_metadata(agent, config) -> dict:
+    metadata = (config or {}).get("metadata") or {}
+    return {
+        "agent": metadata.get("agent") or agent.__class__.__name__,
+        "brain_id": metadata.get("brain_id") or (config or {}).get("brain_id"),
+        "tags": (config or {}).get("tags") or [],
+        "tools_count": len(getattr(agent, "tools", []) or []),
+        "has_output_schema": agent.output_schema is not None,
+    }
+
+
 def run_invoke_loop(agent, messages, config):
+    trace_metadata = _trace_metadata(agent, config)
+    trace_tenant_id = trace_metadata.get("brain_id")
+    with tracer.span(
+        "agent.invoke_loop",
+        service="brainapi-agent",
+        operation="invoke_loop",
+        tenant_id=trace_tenant_id,
+        metadata=trace_metadata,
+        slow_operation_ms=float(os.getenv("TRACE_AGENT_SLOW_OPERATION_MS", "30000")),
+    ):
+        return _run_invoke_loop_impl(
+            agent,
+            messages,
+            config,
+            trace_metadata=trace_metadata,
+            trace_tenant_id=trace_tenant_id,
+        )
+
+
+def _run_invoke_loop_impl(
+    agent,
+    messages,
+    config,
+    *,
+    trace_metadata: dict,
+    trace_tenant_id: str | None,
+):
+    agent_loop_threshold = int(os.getenv("TRACE_AGENT_LOOP_ITERATIONS", "20"))
+    tool_loop_threshold = int(os.getenv("TRACE_AGENT_TOOL_LOOP_ITERATIONS", "20"))
+    outer_loop_count = 0
+    tool_loop_count = 0
+    model_invoke_attempt_count = 0
+    schema_retry_count = 0
     model_responses = []
     agent.messages = []
     agent.messages.append(
@@ -92,6 +139,16 @@ def run_invoke_loop(agent, messages, config):
     structured_response = None
     _schema_retry_count = 0
     while True:
+        outer_loop_count += 1
+        tracer.expensive_loop(
+            "agent.invoke_loop.outer_loop",
+            outer_loop_count,
+            service="brainapi-agent",
+            operation="invoke_loop",
+            tenant_id=trace_tenant_id,
+            metadata=trace_metadata,
+            threshold=agent_loop_threshold,
+        )
         _did_retry_recovered_tool_call = False
         while n_message is None:
             _did_retry_unknown_finish = False
@@ -120,9 +177,21 @@ def run_invoke_loop(agent, messages, config):
             else:
                 _invoke_attempts = 3
                 for _invoke_attempt in range(_invoke_attempts):
+                    model_invoke_attempt_count += 1
                     try:
                         _n_message = agent.model.invoke(agent.messages, config)
                     except Exception as _invoke_exc:
+                        tracer.exception(
+                            "agent.model.invoke.failed",
+                            _invoke_exc,
+                            service="brainapi-agent",
+                            operation="model.invoke",
+                            tenant_id=trace_tenant_id,
+                            metadata={
+                                **trace_metadata,
+                                "attempt": _invoke_attempt + 1,
+                            },
+                        )
                         _exc_str = str(_invoke_exc).lower()
                         if agent._tools_bound and (
                             "invalid message format" in _exc_str
@@ -355,6 +424,19 @@ def run_invoke_loop(agent, messages, config):
                 _did_retry_recovered_next_tool_call = False
                 _last_called_tool_name = tool_name
                 while True:
+                    tool_loop_count += 1
+                    tracer.expensive_loop(
+                        "agent.invoke_loop.tool_loop",
+                        tool_loop_count,
+                        service="brainapi-agent",
+                        operation="tool_loop",
+                        tenant_id=trace_tenant_id,
+                        metadata={
+                            **trace_metadata,
+                            "last_tool_name": _last_called_tool_name,
+                        },
+                        threshold=tool_loop_threshold,
+                    )
                     _next_attempts = 3
                     for _next_attempt in range(_next_attempts):
                         if (
@@ -386,6 +468,18 @@ def run_invoke_loop(agent, messages, config):
                         try:
                             next_response = agent.model.invoke(agent.messages, config)
                         except Exception as _next_exc:
+                            tracer.exception(
+                                "agent.model.next_invoke.failed",
+                                _next_exc,
+                                service="brainapi-agent",
+                                operation="model.next_invoke",
+                                tenant_id=trace_tenant_id,
+                                metadata={
+                                    **trace_metadata,
+                                    "attempt": _next_attempt + 1,
+                                    "last_tool_name": _last_called_tool_name,
+                                },
+                            )
                             _next_exc_str = str(_next_exc).lower()
                             if agent._tools_bound and (
                                 "invalid message format" in _next_exc_str
@@ -739,6 +833,20 @@ def run_invoke_loop(agent, messages, config):
             )
             break
         except Exception as e:
+            schema_retry_count += 1
+            tracer.error(
+                "agent.structured_output.parse_failed",
+                service="brainapi-agent",
+                operation="structured_output.parse",
+                tenant_id=trace_tenant_id,
+                severity=TraceSeverity.WARNING,
+                message=str(e),
+                metadata={
+                    **trace_metadata,
+                    "schema_retry_count": schema_retry_count,
+                    "error_type": type(e).__name__,
+                },
+            )
             if agent.debug:
                 print("[DEBUG (agent_base)]: ", type(e).__name__, e)
             print(
@@ -760,6 +868,16 @@ def run_invoke_loop(agent, messages, config):
             _schema_retry_count += 1
             n_message = None
             continue
+
+    tracer.expensive_loop(
+        "agent.model.invoke_attempts",
+        model_invoke_attempt_count,
+        service="brainapi-agent",
+        operation="model.invoke",
+        tenant_id=trace_tenant_id,
+        metadata=trace_metadata,
+        threshold=int(os.getenv("TRACE_AGENT_MODEL_INVOKE_ATTEMPTS", "10")),
+    )
 
     try:
         from langchain_core.tracers.langchain import wait_for_all_tracers

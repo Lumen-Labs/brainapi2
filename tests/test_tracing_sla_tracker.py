@@ -1,4 +1,5 @@
 import asyncio
+from unittest.mock import patch
 import unittest
 
 from starlette.applications import Starlette
@@ -15,8 +16,10 @@ from src.lib.tracing import (
     TraceSubscriber,
     TraceTracker,
 )
+from src.core.agents.core.invoke_loop import run_invoke_loop
 from src.lib.tracing.middleware import TraceMiddleware
 from src.lib.tracing import middleware as tracing_middleware
+from src.lib.tracing import workers as tracing_workers
 
 
 class MemorySubscriber(TraceSubscriber):

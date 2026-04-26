@@ -4,7 +4,7 @@ from src.lib.tracing.events import (
     TraceSeverity,
 )
 from src.lib.tracing.subscribers import TraceSubscriber
-from src.lib.tracing.tracker import LocalTraceQueue, TraceTracker, trace_tracker
+from src.lib.tracing.tracker import LocalTraceQueue, TraceTracker, trace_tracker, tracer
 
 __all__ = [
     "LocalTraceQueue",
@@ -14,4 +14,5 @@ __all__ = [
     "TraceSubscriber",
     "TraceTracker",
     "trace_tracker",
+    "tracer",
 ]
