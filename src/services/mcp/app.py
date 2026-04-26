@@ -12,7 +12,11 @@ from starlette.routing import Route
 _project_root = Path(__file__).resolve().parent.parent.parent.parent
 dotenv.load_dotenv(_project_root / ".env")
 
-from src.services.mcp.main import auth_token_var, mcp, oauth_provider
+from contextlib import asynccontextmanager
+
+from src.lib.tracing.middleware import TraceMiddleware
+from src.lib.tracing.runtime import start_runtime_monitoring, stop_runtime_monitoring
+from src.services.mcp.main import auth_token_var, mcp
 
 PLUGINS_DIR = Path(os.getenv("PLUGINS_DIR", str(_project_root / "plugins")))
 
@@ -80,6 +84,16 @@ _load_mcp_plugins()
 _mcp_app = mcp.streamable_http_app()
 
 
+@asynccontextmanager
+async def _lifespan(app):
+    start_runtime_monitoring("brainapi-mcp")
+    async with _mcp_app.router.lifespan_context(app):
+        try:
+            yield
+        finally:
+            stop_runtime_monitoring("brainapi-mcp")
+
+
 class AuthContextMiddleware:
     def __init__(self, app):
         self.app = app
@@ -137,6 +151,9 @@ _custom_routes = [
 ]
 app = Starlette(
     routes=_custom_routes + list(_mcp_app.routes),
-    middleware=[Middleware(AuthContextMiddleware)],
+    middleware=[
+        Middleware(TraceMiddleware, service_name="brainapi-mcp"),
+        Middleware(AuthContextMiddleware),
+    ],
     lifespan=_lifespan,
 )
