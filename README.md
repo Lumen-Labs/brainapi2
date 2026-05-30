@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://discord.gg/VTngQTaeDf"><img src="https://img.shields.io/badge/Discord-Join%20Lumen%20Brain-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"/></a>
-  <img src="https://img.shields.io/badge/version-2.11.12--dev-blue?style=for-the-badge" alt="Version"/>
+  <img src="https://img.shields.io/badge/version-2.12.0--dev-blue?style=for-the-badge" alt="Version"/>
   <img src="https://img.shields.io/badge/python-3.11+-green?style=for-the-badge&logo=python&logoColor=white" alt="Python"/>
   <img src="https://img.shields.io/badge/license-AGPLv3%20%2B%20Commons%20Clause-purple?style=for-the-badge" alt="License"/>
 </p>
@@ -20,6 +20,7 @@
 
 <p align="center">
   <a href="https://brainapi.lumen-labs.ai/">BrainAPI Cloud</a> •
+  <a href="#-try-it-now">Get Started</a> •
   <a href="#-what-is-brainapi">Overview</a> •
   <a href="#-core-philosophy-the-triangle-of-attribution">Core Philosophy</a> •
   <a href="#-the-agentic-swarm">Agents</a> •
@@ -61,13 +62,79 @@ That trace is the difference. Not a similarity score. Not a nearest-neighbour gu
 
 ## 🏃 Try It Now
 
+The fastest way to run BrainAPI locally is the **`brainapi` TUI** — an interactive CLI that clones the project, creates a Python venv, walks you through configuration, starts backing services, and launches the API.
+
 ```sh
-# Clone and run in under 2 minutes
+npm install -g brainapi
+brainapi init     # clone, install deps, interactive setup
+brainapi start    # docker services + API + MCP + worker
+```
+
+Running `brainapi start`, `brainapi config`, or `brainapi doctor` before `init` automatically runs `init` first.
+
+### TUI commands
+
+| Command           | Description                                                                                                 |
+| ----------------- | ----------------------------------------------------------------------------------------------------------- |
+| `brainapi init`   | Clone the repo into `~/.brainapi/source/`, create a venv, run the setup wizard, optionally start containers |
+| `brainapi start`  | Bring up backing services and run the API, MCP server, and Celery worker (Ctrl-C stops all)                 |
+| `brainapi config` | Re-open the setup wizard and rewrite `.env` — pick a section or walk through step-by-step with **Back**     |
+| `brainapi doctor` | Check Python, Docker, Ollama, cloud credentials, and configured services                                    |
+| `brainapi update` | `git pull` the install and reinstall Python dependencies                                                    |
+
+**`brainapi start` options**
+
+| Option                                  | Description                                                                                 |
+| --------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `--pipeline accurate\|lightweight`      | Set `PIPELINE_MODE` before start (accurate = full pipeline; lightweight = faster ingestion) |
+| `--no-services`                         | Skip bringing backing services up                                                           |
+| `--no-api` / `--no-mcp` / `--no-worker` | Skip individual processes                                                                   |
+| `--only api,mcp,worker`                 | Run only the listed processes                                                               |
+
+See `brainapi help` for `--repo`, `--branch`, and `--force` flags.
+
+### What the setup wizard configures
+
+1. **Defaults or custom stack** — e.g. NetworkX graph + PostgreSQL data/vectors, or pick each database separately
+2. **Services runtime** — Docker Compose vs native installs
+3. **Models** — local (Ollama) or remote (OpenAI, Azure OpenAI, GCP Vertex, Amazon Bedrock)
+4. **Embedding dimensions** — inferred for known models, or confirm/enter manually
+5. **Pipeline** — OCR mode and optional heavy extras
+6. **Connections** — URLs and credentials for only the services you selected
+7. **`BRAINPAT_TOKEN`** — generate or paste your API key
+
+`brainapi config` opens a section menu (databases, models, pipeline, connections, auth, …) so you can change one area without redoing everything, or choose **Step-by-step wizard** to walk through the full flow with **Back** at each prompt.
+
+If Python (≥3.11) or Docker is missing, the TUI suggests platform-aware install commands and retries detection automatically.
+
+### Where the TUI installs things
+
+| Path                        | Purpose                    |
+| --------------------------- | -------------------------- |
+| `~/.brainapi/source/`       | Cloned BrainAPI repo       |
+| `~/.brainapi/source/.venv/` | Python virtual environment |
+| `~/.brainapi/source/.env`   | Generated configuration    |
+| `~/.brainapi/state.json`    | Install state              |
+
+Override with `BRAINAPI_HOME`, `BRAINAPI_REPO_URL`, or `BRAINAPI_BRANCH`. Full CLI reference → [`tui/README.md`](tui/README.md).
+
+### Alternative: clone and run from source
+
+For contributors or when working inside this repo:
+
+```sh
 git clone https://github.com/lumen-labs/brainapi2.git && cd brainapi2
 poetry install && make start-all
 ```
 
-Or with Docker (recommended):
+Or build the TUI locally and point it at this checkout:
+
+```sh
+cd tui && npm install && npm run build
+node dist/index.js init --repo /path/to/brainapi2
+```
+
+### Alternative: Docker only
 
 ```sh
 docker compose -f example-docker-compose.yaml up -d
@@ -75,10 +142,10 @@ docker compose -f example-docker-compose.yaml up -d
 
 ### Optional dependencies (heavy ML extras)
 
-`poetry install` only installs the **base** dependencies — enough to run BrainAPI with remote LLMs and remote OCR. Heavier components are gated by `.env` flags and live in `[project.optional-dependencies]` groups:
+The base install is enough for remote LLMs and remote OCR. Heavier components are gated by `.env` flags and live in `[project.optional-dependencies]` groups:
 
-| Group | Triggered by | Adds |
-|---|---|---|
+| Group         | Triggered by                 | Adds                                                       |
+| ------------- | ---------------------------- | ---------------------------------------------------------- |
 | `docling-ocr` | `OCR_MODE=docling` in `.env` | `docling`, `accelerate` (~2 GB) for local PDF/DOCX parsing |
 
 Install the right extras based on your current `.env`:
@@ -94,7 +161,7 @@ python scripts/install_extras.py docling-ocr      # force a specific group
 python scripts/install_extras.py --dry-run        # print pip command, don't run
 ```
 
-If you flip `OCR_MODE=docling` later, just re-run `make install-extras` — pip is a no-op when the deps are already satisfied. The interactive `brainapi` TUI calls the same script under the hood.
+If you flip `OCR_MODE=docling` later, re-run `make install-extras` — pip is a no-op when deps are already satisfied. The `brainapi` TUI calls the same script during setup.
 
 Then ingest your first data point:
 
@@ -544,6 +611,7 @@ If you just need to find a sentence you wrote before, use a memory vault. If you
 
 | Resource               | Link                                                                                             |
 | ---------------------- | ------------------------------------------------------------------------------------------------ |
+| 🖥️ Local CLI (TUI)     | [`tui/README.md`](tui/README.md) — `npm install -g brainapi`                                     |
 | 📖 Documentation       | [brainapi.lumen-labs.ai/docs/v2](https://brainapi.lumen-labs.ai/docs/v2)                         |
 | ⚡ Quick Start Guide   | [brainapi.lumen-labs.ai/docs/quickstart](https://brainapi.lumen-labs.ai/docs/quickstart)         |
 | 🔌 Plugin Registry     | [registry.brain-api.dev/app](https://registry.brain-api.dev/app)                                 |
