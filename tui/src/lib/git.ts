@@ -38,9 +38,11 @@ export async function cloneRepo(opts: CloneOptions): Promise<void> {
 
 export async function pullRepo(branch: string): Promise<void> {
   const git = simpleGit(sourcePath());
+  const remoteRef = `origin/${branch}`;
   await git.fetch("origin", branch);
-  await git.checkout(branch);
-  await git.pull("origin", branch, { "--ff-only": null });
+  await git.clean("f", ["-d", "-e", ".env", "-e", ".venv"]);
+  await git.checkout(["-B", branch, "-f"]);
+  await git.reset(["--hard", remoteRef]);
 }
 
 export async function ensureRepo(opts: CloneOptions): Promise<"cloned" | "pulled"> {

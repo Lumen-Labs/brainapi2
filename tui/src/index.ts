@@ -103,7 +103,7 @@ function printHelp(): void {
     "  start [...]        Start backing services + API + MCP + celery worker (Ctrl-C to stop all)",
     "  config             Re-run the interactive flow and rewrite .env",
     "  doctor             Check Python, Docker, Ollama, GCP credentials, services",
-    "  update             git pull + reinstall Python dependencies",
+    "  update             Fetch latest source + reinstall Python dependencies",
     "  help               Show this message",
     "",
     pc.bold("Options:"),
