@@ -371,5 +371,50 @@ class MilvusClient(VectorStoreClient):
         except Exception as e:
             print(f"[Milvus] Failed to remove vectors from {store}: {e}")
 
+    def list_vectors(
+        self,
+        store: str,
+        brain_id: str,
+        limit: int = 10,
+        skip: int = 0,
+        include_embeddings: bool = False,
+    ) -> tuple[list[Vector], int]:
+        client = self._get_client(brain_id)
+        self._ensure_store(store, brain_id)
+        try:
+            client.load_collection(store)
+        except Exception:
+            pass
+
+        output_fields = ["uuid", "$meta"]
+        if include_embeddings:
+            output_fields.insert(0, "embeddings")
+
+        stats = client.get_collection_stats(store)
+        total = int(stats.get("row_count", 0))
+
+        rows = client.query(
+            collection_name=store,
+            filter="id >= 0",
+            output_fields=output_fields,
+            limit=limit,
+            offset=skip,
+        )
+        results = []
+        for row in rows or []:
+            metadata = {
+                k: v
+                for k, v in row.items()
+                if k not in ["id", "embeddings", "distance", "uuid"]
+            }
+            results.append(
+                Vector(
+                    id=row.get("uuid", str(row.get("id", ""))),
+                    embeddings=row.get("embeddings") if include_embeddings else None,
+                    metadata=metadata,
+                )
+            )
+        return results, total
+
 
 _milvus_client = MilvusClient()

@@ -78,6 +78,9 @@ class NetworkXGraphClient(GraphClient):
             for label in labels
         ]
 
+    def _node_label_set(self, brain, node_uuid: str) -> set[str]:
+        return set(self._clean_labels(list(brain.labels(node_uuid))))
+
     def _clean_property_key(self, property_key: str) -> str:
         words = property_key.split()
         return words[0].lower() + "".join(word.capitalize() for word in words[1:])
@@ -568,9 +571,13 @@ class NetworkXGraphClient(GraphClient):
                 continue
             if relationship_uuids and key not in relationship_uuids and edge_data.get("uuid") not in relationship_uuids:
                 continue
-            if from_labels and not from_labels.intersection(brain.labels(source)):
+            if from_labels and not from_labels.intersection(
+                self._node_label_set(brain, source)
+            ):
                 continue
-            if to_labels and not to_labels.intersection(brain.labels(target)):
+            if to_labels and not to_labels.intersection(
+                self._node_label_set(brain, target)
+            ):
                 continue
             if text_lower:
                 haystacks = [
@@ -643,7 +650,9 @@ class NetworkXGraphClient(GraphClient):
             if uuid_filter is not None and node_uuid not in uuid_filter:
                 continue
             if allowed_labels is not None:
-                if not allowed_labels.intersection(set(brain.labels(node_uuid))):
+                if not allowed_labels.intersection(
+                    self._node_label_set(brain, node_uuid)
+                ):
                     continue
             if text_lower is not None:
                 if text_lower not in str(data.get("name", "")).lower():

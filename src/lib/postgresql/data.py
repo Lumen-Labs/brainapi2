@@ -26,12 +26,18 @@ from src.constants.data import (
     TextChunk,
 )
 
+from ._naming import (
+    brain_db_name,
+    brain_id_from_db_name,
+    is_internal_brain_db_suffix,
+)
 from ._provisioning import (
     borrow,
     ensure_brain_database,
     ensure_database_exists,
     get_brain_pool,
     get_system_pool,
+    list_brain_database_names,
 )
 
 
@@ -353,7 +359,7 @@ class PostgreSQLDataClient(DataClient):
                     ),
                 )
             conn.commit()
-        self._ensure_brain_schema(brain.id)
+        self._ensure_brain_schema(name_key)
         return brain
 
     def get_brain(self, name_key: str) -> Optional[Brain]:
@@ -368,12 +374,39 @@ class PostgreSQLDataClient(DataClient):
             return None
         return Brain.model_validate(row["document"])
 
+    def get_brain_by_pat(self, pat: str) -> Optional[Brain]:
+        with self._system_connection() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT document FROM data_brains WHERE pat = %s",
+                    (pat,),
+                )
+                row = cur.fetchone()
+        if not row:
+            return None
+        return Brain.model_validate(row["document"])
+
     def get_brains_list(self) -> List[Brain]:
         with self._system_connection() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute("SELECT document FROM data_brains")
                 rows = cur.fetchall()
-        return [Brain.model_validate(row["document"]) for row in rows]
+        registered = [Brain.model_validate(row["document"]) for row in rows]
+        by_key = {brain.name_key: brain for brain in registered}
+        known_db_names = {
+            brain_db_name(brain.name_key) for brain in registered
+        } | {brain_db_name(brain.id) for brain in registered}
+
+        for db_name in list_brain_database_names():
+            if db_name in known_db_names:
+                continue
+            suffix = brain_id_from_db_name(db_name)
+            if not suffix or is_internal_brain_db_suffix(suffix):
+                continue
+            if suffix not in by_key:
+                by_key[suffix] = Brain(name_key=suffix)
+
+        return sorted(by_key.values(), key=lambda brain: brain.name_key)
 
     def save_kg_changes(self, kg_changes: KGChanges, brain_id: str) -> KGChanges:
         document = kg_changes.model_dump(mode="json")

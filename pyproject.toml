@@ -41,6 +41,7 @@ dependencies = [
     "mcp (>=1.26.0,<2.0.0)",
     "boto3 (>=1.40.19,<2.0.0)",
     "langchain-aws (>=1.0.0,<2.0.0)",
+    "watchfiles (>=1.2.0,<2.0.0)",
 ]
 
 [project.optional-dependencies]
@@ -93,6 +94,7 @@ langid = ">=1.1.6,<2.0.0"
 mcp = ">=1.26.0,<2.0.0"
 boto3 = ">=1.40.19,<2.0.0"
 langchain-aws = ">=1.0.0,<2.0.0"
+watchfiles = ">=1.2.0,<2.0.0"
 
 [tool.poetry.group.docling-ocr]
 optional = true
@@ -100,6 +102,7 @@ optional = true
 [tool.poetry.group.docling-ocr.dependencies]
 docling = ">=2.0.0,<3.0.0"
 accelerate = ">=1.0.0,<2.0.0"
+
 
 [tool.pylint.messages_control]
 enable = ["abstract-method"]

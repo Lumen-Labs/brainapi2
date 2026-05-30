@@ -51,13 +51,13 @@ delete-mongo-volumes:
 	docker compose -f src/lib/mongo/docker-compose.yaml down -v --remove-orphans
 
 start-api:
-	ENV=development poetry run python -m uvicorn src.services.api.app:app --host 0.0.0.0 --port 8000 --access-log --log-level info --reload
+	ENV=development CONSOLE_ENABLED=true poetry run python -m uvicorn src.services.api.app:app --host 0.0.0.0 --port 8000 --access-log --log-level info --reload --reload-dir src
 
 stop-api:
 	pkill -f "uvicorn src.services.api.app"
 
 start-mcp:
-	ENV=development poetry run python -m uvicorn src.services.mcp.app:app --host 0.0.0.0 --port 8001 --access-log --log-level info --reload
+	ENV=development poetry run python -m uvicorn src.services.mcp.app:app --host 0.0.0.0 --port 8001 --access-log --log-level info --reload --reload-dir src
 
 MCP_BRIDGE_DIR := mcp-stdio-http-bridge
 MCP_BRIDGE_VERSION := $(shell grep '^version = ' $(MCP_BRIDGE_DIR)/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
@@ -182,3 +182,9 @@ install-extras-all:
 
 check-extras:
 	poetry run python scripts/install_extras.py --check
+
+build-console:
+	cd console && npm install && npm run build
+
+start-console-dev:
+	cd console && npm install && npm run dev

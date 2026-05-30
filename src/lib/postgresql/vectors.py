@@ -355,6 +355,47 @@ class PostgreSQLVectorStoreClient(VectorStoreClient):
         except Exception as exc:
             print(f"[PostgreSQLVectorStore] Failed to remove vectors from {store}: {exc}")
 
+    def list_vectors(
+        self,
+        store: str,
+        brain_id: str,
+        limit: int = 10,
+        skip: int = 0,
+        include_embeddings: bool = False,
+    ) -> tuple[list[Vector], int]:
+        self._ensure_store(store, brain_id)
+        table = _table_name(store)
+        embedding_col = ", embeddings" if include_embeddings else ""
+        with self._connection(brain_id) as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(f"SELECT COUNT(*) AS total FROM {table}")
+                total = int(cur.fetchone()["total"])
+                cur.execute(
+                    f"""
+                    SELECT id, uuid, metadata{embedding_col}
+                    FROM {table}
+                    ORDER BY id
+                    LIMIT %s OFFSET %s
+                    """,
+                    (limit, skip),
+                )
+                rows = cur.fetchall()
+        results: list[Vector] = []
+        for row in rows:
+            embeddings = None
+            if include_embeddings:
+                embeddings = row.get("embeddings")
+                if embeddings is not None and not isinstance(embeddings, list):
+                    embeddings = list(embeddings)
+            results.append(
+                Vector(
+                    id=row["uuid"] or str(row["id"]),
+                    embeddings=embeddings,
+                    metadata=dict(row["metadata"] or {}),
+                )
+            )
+        return results, total
+
 
 _postgresql_vector_store_client: Optional[PostgreSQLVectorStoreClient] = None
 

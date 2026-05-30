@@ -53,6 +53,10 @@ from src.services.api.controllers.entities import (
     get_entity_sibilings as get_entity_sibilings_controller,
     get_entity_status as get_entity_status_controller,
 )
+from src.services.api.controllers.vectors import (
+    get_vector_stores as get_vector_stores_controller,
+    list_vectors as list_vectors_controller,
+)
 
 retrieve_router = APIRouter(prefix="/retrieve", tags=["retrieve"])
 
@@ -508,3 +512,27 @@ async def get_entity_status(
         status (dict): A dictionary containing the entity's status details.
     """
     return await get_entity_status_controller(target, types or [], brain_id)
+
+
+@retrieve_router.get(path="/vectors/stores")
+async def get_vector_stores():
+    """
+    List available vector store names and dimensions.
+    """
+    return await get_vector_stores_controller()
+
+
+@retrieve_router.get(path="/vectors/{store}")
+async def get_vectors_list(
+    store: str,
+    limit: int = 10,
+    skip: int = 0,
+    include_embeddings: bool = False,
+    brain_id: str = Depends(get_brain_id),
+):
+    """
+    List vectors in a store with pagination.
+    """
+    return await list_vectors_controller(
+        store, brain_id, limit, skip, include_embeddings
+    )

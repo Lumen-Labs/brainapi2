@@ -95,6 +95,12 @@ class DataAdapter:
         """
         return self.data.get_brain(name_key=name_key)
 
+    def get_brain_by_pat(self, pat: str) -> Brain | None:
+        """
+        Get a brain from the data client by its PAT.
+        """
+        return self.data.get_brain_by_pat(pat=pat)
+
     def get_brains_list(self) -> List[Brain]:
         """
         Get the list of brains from the data client.

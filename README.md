@@ -118,6 +118,27 @@ If Python (≥3.11) or Docker is missing, the TUI suggests platform-aware instal
 
 Override with `BRAINAPI_HOME`, `BRAINAPI_REPO_URL`, or `BRAINAPI_BRANCH`. Full CLI reference → [`tui/README.md`](tui/README.md).
 
+### Local Console
+
+A web UI for browsing your local BrainAPI data — graph, text chunks, vectors, tasks, and observations — with BrainPAT login.
+
+**Build and serve from the API (single port):**
+
+```sh
+make build-console
+make start-api
+# open http://localhost:8000/console
+```
+
+**Dev mode with hot reload:**
+
+```sh
+make start-api          # terminal 1
+make start-console-dev  # terminal 2 → http://localhost:5173/console/
+```
+
+Log in with your `BRAINPAT_TOKEN` from `.env` (system PAT) or a per-brain PAT. Set `CONSOLE_ENABLED=false` to disable static serving in non-development environments.
+
 ### Alternative: clone and run from source
 
 For contributors or when working inside this repo:

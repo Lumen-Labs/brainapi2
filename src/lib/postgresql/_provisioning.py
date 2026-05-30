@@ -36,7 +36,7 @@ from psycopg2 import sql
 
 from src.config import config
 
-from ._naming import brain_db_name
+from ._naming import BRAIN_DB_PREFIX, brain_db_name
 
 logger = logging.getLogger(__name__)
 
@@ -188,3 +188,13 @@ def ensure_system_database() -> str:
     dbname = _system_dbname()
     ensure_database_exists(dbname)
     return dbname
+
+
+def list_brain_database_names() -> list[str]:
+    with borrow(_registry.get(_maintenance_dbname())) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT datname FROM pg_database WHERE datname LIKE %s ORDER BY datname",
+                (f"{BRAIN_DB_PREFIX}%",),
+            )
+            return [row[0] for row in cur.fetchall()]

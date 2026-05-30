@@ -17,7 +17,7 @@ from __future__ import annotations
 import hashlib
 import re
 
-__all__ = ["brain_db_name", "BRAIN_DB_PREFIX"]
+__all__ = ["brain_db_name", "brain_id_from_db_name", "BRAIN_DB_PREFIX", "is_internal_brain_db_suffix"]
 
 
 BRAIN_DB_PREFIX = "brain_"
@@ -47,3 +47,17 @@ def brain_db_name(brain_id: str) -> str:
     head_budget = _MAX_DBNAME_LEN - len(BRAIN_DB_PREFIX) - len(digest) - 1
     head = sanitized[:head_budget].rstrip("_")
     return f"{BRAIN_DB_PREFIX}{head}_{digest}"
+
+
+def brain_id_from_db_name(db_name: str) -> str | None:
+    if not db_name.startswith(BRAIN_DB_PREFIX):
+        return None
+    suffix = db_name[len(BRAIN_DB_PREFIX) :]
+    return suffix or None
+
+
+def is_internal_brain_db_suffix(suffix: str) -> bool:
+    compact = suffix.replace("_", "")
+    if len(compact) < 32:
+        return False
+    return all(ch in "0123456789abcdef" for ch in compact)

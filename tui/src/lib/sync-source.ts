@@ -11,6 +11,20 @@ const SYNC_PATHS = [
   "src/lib/llm",
   "src/lib/embeddings",
   "src/lib/postgresql",
+  "src/services/api/app.py",
+  "src/services/api/console_static.py",
+  "src/services/api/middlewares/auth.py",
+  "src/services/api/middlewares/brains.py",
+  "src/services/api/controllers/meta.py",
+  "src/services/api/routes/meta.py",
+  "src/adapters/interfaces/data.py",
+  "src/adapters/data.py",
+  "src/services/api/controllers/vectors.py",
+  "src/services/api/routes/retrieve.py",
+  "src/adapters/interfaces/embeddings.py",
+  "src/adapters/embeddings.py",
+  "src/lib/milvus/client.py",
+  "console",
 ] as const;
 
 async function pathExists(target: string): Promise<boolean> {

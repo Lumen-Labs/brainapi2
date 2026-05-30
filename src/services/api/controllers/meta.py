@@ -9,7 +9,32 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 """
 
 import asyncio
+import os
+
+from fastapi import HTTPException, Request
+
+from src.services.data.main import data_adapter
 from src.services.kg_agent.main import graph_adapter
+
+
+async def get_login_info(request: Request):
+    brainpat = request.headers.get("BrainPAT")
+    if not brainpat:
+        auth = request.headers.get("Authorization")
+        if auth:
+            brainpat = auth.split(" ")[-1].rstrip()
+    if not brainpat:
+        raise HTTPException(status_code=401, detail="Invalid or missing BrainPAT header")
+
+    system_pat = os.getenv("BRAINPAT_TOKEN")
+    if brainpat == system_pat:
+        return {"is_system_pat": True, "brain_id": "default"}
+
+    brain = await asyncio.to_thread(data_adapter.get_brain_by_pat, brainpat)
+    if not brain:
+        raise HTTPException(status_code=401, detail="Invalid or missing BrainPAT header")
+
+    return {"is_system_pat": False, "brain_id": brain.name_key}
 
 
 async def get_entities_labels(brain_id: str):
