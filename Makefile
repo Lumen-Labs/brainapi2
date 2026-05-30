@@ -170,3 +170,15 @@ v-minor:
 
 v-major:
 	poetry version major
+
+install-base:
+	poetry install
+
+install-extras:
+	poetry run python scripts/install_extras.py
+
+install-extras-all:
+	poetry run python scripts/install_extras.py --all
+
+check-extras:
+	poetry run python scripts/install_extras.py --check

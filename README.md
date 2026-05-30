@@ -73,6 +73,29 @@ Or with Docker (recommended):
 docker compose -f example-docker-compose.yaml up -d
 ```
 
+### Optional dependencies (heavy ML extras)
+
+`poetry install` only installs the **base** dependencies — enough to run BrainAPI with remote LLMs and remote OCR. Heavier components are gated by `.env` flags and live in `[project.optional-dependencies]` groups:
+
+| Group | Triggered by | Adds |
+|---|---|---|
+| `docling-ocr` | `OCR_MODE=docling` in `.env` | `docling`, `accelerate` (~2 GB) for local PDF/DOCX parsing |
+
+Install the right extras based on your current `.env`:
+
+```sh
+make install-extras                       # auto-detects from .env, installs only what's needed
+make install-extras-all                   # install every optional group
+make check-extras                         # exit non-zero if any required extras are missing
+
+# Or call the script directly:
+python scripts/install_extras.py                  # auto-detect from .env
+python scripts/install_extras.py docling-ocr      # force a specific group
+python scripts/install_extras.py --dry-run        # print pip command, don't run
+```
+
+If you flip `OCR_MODE=docling` later, just re-run `make install-extras` — pip is a no-op when the deps are already satisfied. The interactive `brainapi` TUI calls the same script under the hood.
+
 Then ingest your first data point:
 
 ```sh
