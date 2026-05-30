@@ -93,3 +93,17 @@ class VectorStoreClient(ABC):
         Remove vectors from the vector store.
         """
         raise NotImplementedError("remove_vectors method not implemented")
+
+    @abstractmethod
+    def list_vectors(
+        self,
+        store: str,
+        brain_id: str,
+        limit: int = 10,
+        skip: int = 0,
+        include_embeddings: bool = False,
+    ) -> tuple[list[Vector], int]:
+        """
+        List vectors in a store with pagination.
+        """
+        raise NotImplementedError("list_vectors method not implemented")

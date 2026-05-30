@@ -10,7 +10,10 @@ dotenv.load_dotenv(_project_root / ".env")
 
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from uvicorn import run
+
+from src.services.api.console_static import SPAStaticFiles
 
 from src.services.api.middlewares.auth import BrainPATMiddleware
 from src.services.api.middlewares.brains import BrainMiddleware
@@ -26,6 +29,11 @@ from src.lib.tracing.runtime import start_runtime_monitoring, stop_runtime_monit
 logger = logging.getLogger("brainapi.plugins")
 
 PLUGINS_DIR = Path(os.getenv("PLUGINS_DIR", str(_project_root / "plugins")))
+CONSOLE_DIST = _project_root / "console" / "dist"
+
+
+def _console_enabled() -> bool:
+    return os.getenv("CONSOLE_ENABLED", "true").strip().lower() != "false"
 
 
 @asynccontextmanager
@@ -139,5 +147,29 @@ async def root():
     return Response(content="ok", status_code=200)
 
 
+if _console_enabled():
+
+    @app.get("/console", include_in_schema=False)
+    async def console_redirect():
+        return RedirectResponse(url="/console/", status_code=307)
+
+    if CONSOLE_DIST.is_dir():
+        app.mount(
+            "/console",
+            SPAStaticFiles(directory=str(CONSOLE_DIST), html=True),
+            name="console",
+        )
+        logger.info("Local console mounted at /console")
+    else:
+        logger.warning(
+            "Console enabled but %s not found — run: make build-console",
+            CONSOLE_DIST,
+        )
+elif os.getenv("CONSOLE_ENABLED", "").strip().lower() == "true":
+    logger.warning(
+        "CONSOLE_ENABLED=true but console is disabled — set CONSOLE_ENABLED=false to silence",
+    )
+
+
 if __name__ == "__main__":
-    run(app, host="0.0.0.0", port=8000, reload=os.getenv("ENV") == "development")
+    run(app, host="0.0.0.0", port=8000)

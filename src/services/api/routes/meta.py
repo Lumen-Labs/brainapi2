@@ -8,16 +8,24 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 -----
 """
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 
 from src.services.api.dependencies import get_brain_id
 from src.services.api.controllers.meta import (
     get_entities_labels as get_entities_labels_controller,
+    get_login_info as get_login_info_controller,
     get_relationships_properties as get_relationships_properties_controller,
     get_entity_properties as get_entity_properties_controller,
 )
 
 meta_router = APIRouter(prefix="/meta", tags=["meta"])
+
+@meta_router.get(path="/login-info")
+async def get_login_info(request: Request):
+    """
+    Resolve whether a BrainPAT is the system token or scoped to a single brain.
+    """
+    return await get_login_info_controller(request)
 
 @meta_router.get(path="/relationships-properties")
 async def get_relationships_properties(

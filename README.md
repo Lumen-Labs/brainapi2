@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://discord.gg/VTngQTaeDf"><img src="https://img.shields.io/badge/Discord-Join%20Lumen%20Brain-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"/></a>
-  <img src="https://img.shields.io/badge/version-2.12.0--dev-blue?style=for-the-badge" alt="Version"/>
+  <img src="https://img.shields.io/badge/version-2.13.0--dev-blue?style=for-the-badge" alt="Version"/>
   <img src="https://img.shields.io/badge/python-3.11+-green?style=for-the-badge&logo=python&logoColor=white" alt="Python"/>
   <img src="https://img.shields.io/badge/license-AGPLv3%20%2B%20Commons%20Clause-purple?style=for-the-badge" alt="License"/>
 </p>
@@ -117,6 +117,27 @@ If Python (≥3.11) or Docker is missing, the TUI suggests platform-aware instal
 | `~/.brainapi/state.json`    | Install state              |
 
 Override with `BRAINAPI_HOME`, `BRAINAPI_REPO_URL`, or `BRAINAPI_BRANCH`. Full CLI reference → [`tui/README.md`](tui/README.md).
+
+### Local Console
+
+A web UI for browsing your local BrainAPI data — graph, text chunks, vectors, tasks, and observations — with BrainPAT login.
+
+**Build and serve from the API (single port):**
+
+```sh
+make build-console
+make start-api
+# open http://localhost:8000/console
+```
+
+**Dev mode with hot reload:**
+
+```sh
+make start-api          # terminal 1
+make start-console-dev  # terminal 2 → http://localhost:5173/console/
+```
+
+Log in with your `BRAINPAT_TOKEN` from `.env` (system PAT) or a per-brain PAT. Set `CONSOLE_ENABLED=false` to disable static serving in non-development environments.
 
 ### Alternative: clone and run from source
 

@@ -9,7 +9,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 """
 
 from abc import ABC, abstractmethod
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from pydantic import BaseModel
 
@@ -93,6 +93,13 @@ class DataClient(ABC):
         Get a brain from the data client.
         """
         raise NotImplementedError("get_brain method not implemented")
+
+    @abstractmethod
+    def get_brain_by_pat(self, pat: str) -> Optional[Brain]:
+        """
+        Get a brain from the data client by its PAT.
+        """
+        raise NotImplementedError("get_brain_by_pat method not implemented")
 
     @abstractmethod
     def get_brains_list(self) -> List[Brain]:

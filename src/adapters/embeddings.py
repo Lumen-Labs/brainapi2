@@ -214,6 +214,21 @@ class VectorStoreAdapter:
         """
         return self.vector_store.remove_vectors(ids, store, brain_id)
 
+    def list_vectors(
+        self,
+        store: str,
+        brain_id: str = "default",
+        limit: int = 10,
+        skip: int = 0,
+        include_embeddings: bool = False,
+    ) -> tuple[list[Vector], int]:
+        """
+        List vectors in a store with pagination.
+        """
+        return self.vector_store.list_vectors(
+            store, brain_id, limit, skip, include_embeddings
+        )
+
 
 _embeddings_adapter = EmbeddingsAdapter()
 _vector_store_adapter = VectorStoreAdapter()

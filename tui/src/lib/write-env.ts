@@ -60,6 +60,8 @@ export async function writeEnvFromChoices(choices: InitChoices): Promise<void> {
   values[ENV_KEYS.celeryWorkerConcurrency] = 4;
 
   values[ENV_KEYS.brainpatToken] = choices.auth.brainpatToken;
+  values["ENV"] = "development";
+  values["CONSOLE_ENABLED"] = "true";
 
   values[ENV_KEYS.redisHost] = choices.connections.redis.host;
   values[ENV_KEYS.redisPort] = choices.connections.redis.port;

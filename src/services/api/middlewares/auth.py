@@ -14,21 +14,27 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette import status
 
+from src.services.api.console_static import is_console_path
 from src.services.kg_agent.main import cache_adapter
 from src.services.data.main import data_adapter
 
 
 class BrainPATMiddleware(BaseHTTPMiddleware):
-    excluded_prefixes: set[str] = set()
+    excluded_prefixes: set[str] = {"/console"}
+    auth_exempt_paths: set[str] = {"/meta/login-info"}
 
     async def dispatch(self, request: Request, call_next):
         if request.method == "OPTIONS":
             return await call_next(request)
 
+        if is_console_path(request.url.path):
+            return await call_next(request)
+
         if any(request.url.path.startswith(p) for p in self.excluded_prefixes):
             return await call_next(request)
 
-        # Variables ----------------------------------------------
+        if request.url.path in self.auth_exempt_paths:
+            return await call_next(request)
         brainpat = request.headers.get("BrainPAT") or getattr(
             request.state, "pat", None
         )
@@ -39,7 +45,6 @@ class BrainPATMiddleware(BaseHTTPMiddleware):
                 if brainpat:
                     brainpat = brainpat.rstrip()
         system_pat = os.getenv("BRAINPAT_TOKEN")
-        print(brainpat, system_pat)
         if request.url.path.startswith("/system") or request.url.path == "/":
             if brainpat == system_pat:
                 return await call_next(request)

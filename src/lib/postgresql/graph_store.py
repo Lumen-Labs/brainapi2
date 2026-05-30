@@ -210,8 +210,58 @@ class PostgreSQLGraphStore:
                         key=row["uuid"],
                         **payload,
                     )
+        if brain.graph.number_of_edges() == 0:
+            self._hydrate_relationships_from_vectors(brain_id, brain)
         self._brains[brain_id] = brain
         return brain
+
+    def _hydrate_relationships_from_vectors(
+        self, brain_id: str, brain: _BrainGraph
+    ) -> None:
+        with self._connection(brain_id) as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT 1 FROM information_schema.tables
+                    WHERE table_schema = 'public' AND table_name = 'vectors_relationships'
+                    """
+                )
+                if not cur.fetchone():
+                    return
+                cur.execute("SELECT uuid, metadata FROM vectors_relationships")
+                rows = cur.fetchall()
+
+        for row in rows:
+            meta = dict(row.get("metadata") or {})
+            rel_uuid = str(meta.get("uuid") or row.get("uuid") or "")
+            if not rel_uuid:
+                continue
+            node_ids = meta.get("node_ids") or []
+            if len(node_ids) < 2:
+                continue
+            source_uuid = str(node_ids[0])
+            target_uuid = str(node_ids[1])
+            if (
+                source_uuid not in brain.graph
+                or target_uuid not in brain.graph
+            ):
+                continue
+            rel_type = str(meta.get("predicate") or "RELATED")
+            edge_data = {"rel_type": rel_type, "deprecated": False}
+            brain.graph.add_edge(
+                source_uuid,
+                target_uuid,
+                key=rel_uuid,
+                **edge_data,
+            )
+            self._persist_relationship(
+                brain_id,
+                rel_uuid,
+                rel_type,
+                source_uuid,
+                target_uuid,
+                edge_data,
+            )
 
     def _persist_node(self, brain_id: str, uuid: str, data: dict) -> None:
         payload = dict(data)

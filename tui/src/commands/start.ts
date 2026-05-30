@@ -12,6 +12,7 @@ import {
   missingRequiredPythonDeps,
 } from "../lib/python.js";
 import { runParallel } from "../lib/parallel.js";
+import { ensureConsoleBuilt } from "../lib/console-build.js";
 import {
   API_DEFAULT_PORT,
   MCP_DEFAULT_PORT,
@@ -121,13 +122,26 @@ export async function runStart(opts: StartOptions = {}): Promise<void> {
     return;
   }
 
+  if (wantApi) {
+    await ensureConsoleBuilt();
+  }
+
   const processEnv = envFileToProcessEnv(env);
+  if (!processEnv.ENV) {
+    processEnv.ENV = "development";
+  }
+  if (!processEnv.CONSOLE_ENABLED) {
+    processEnv.CONSOLE_ENABLED = "true";
+  }
   const jobs = buildJobs({ wantApi, wantMcp, wantWorker, processEnv });
 
   p.note(
     jobs
       .map((j) => `${pc.bold(j.name.padEnd(7))} ${pc.dim(`${j.bin} ${j.args.join(" ")}`)}`)
-      .join("\n"),
+      .join("\n") +
+      (wantApi
+        ? `\n\n${pc.cyan("Local console:")} http://localhost:${API_DEFAULT_PORT}/console`
+        : ""),
     "Starting (Ctrl-C to stop everything)",
   );
 
@@ -175,7 +189,6 @@ function buildJobs(opts: {
         "0.0.0.0",
         "--port",
         String(API_DEFAULT_PORT),
-        "--reload",
       ],
       cwd,
       env: opts.processEnv,
@@ -191,7 +204,6 @@ function buildJobs(opts: {
         "0.0.0.0",
         "--port",
         String(MCP_DEFAULT_PORT),
-        "--reload",
       ],
       cwd,
       env: opts.processEnv,

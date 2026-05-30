@@ -19,6 +19,7 @@ from pymongo.errors import OperationFailure, ServerSelectionTimeoutError
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette import status
 
+from src.services.api.console_static import is_console_path
 from src.services.data.main import data_adapter
 from src.services.kg_agent.main import cache_adapter
 
@@ -43,10 +44,17 @@ def _brain_id_from_multipart(body: bytes, content_type: str) -> str | None:
 
 
 class BrainMiddleware(BaseHTTPMiddleware):
-    excluded_prefixes: set[str] = set()
+    excluded_prefixes: set[str] = {"/console"}
+    brain_exempt_paths: set[str] = {"/meta/login-info"}
 
     async def dispatch(self, request: Request, call_next):
+        if is_console_path(request.url.path):
+            return await call_next(request)
+
         if any(request.url.path.startswith(p) for p in self.excluded_prefixes):
+            return await call_next(request)
+
+        if request.url.path in self.brain_exempt_paths:
             return await call_next(request)
 
         async def _get_brain_id():

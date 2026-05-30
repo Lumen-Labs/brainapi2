@@ -151,6 +151,17 @@ class MongoClient(DataClient):
             pat=result.get("pat"),
         )
 
+    def get_brain_by_pat(self, pat: str) -> Brain | None:
+        collection = self.get_collection("brains", config.mongo.system_database)
+        result = collection.find_one({"pat": pat})
+        if not result:
+            return None
+        return Brain(
+            id=str(result["_id"]),
+            name_key=result["name_key"],
+            pat=result.get("pat"),
+        )
+
     def get_brains_list(self) -> List[Brain]:
         collection = self.get_collection("brains", config.mongo.system_database)
         result = collection.find()
