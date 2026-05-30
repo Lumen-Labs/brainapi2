@@ -26,11 +26,15 @@ WORKDIR /app
 COPY pyproject.toml poetry.lock ./
 
 RUN poetry sync --no-root \
-    && TORCH_VER=$(/app/.venv/bin/python -c "import torch; print(torch.__version__.split('+')[0])") \
-    && TV_VER=$(/app/.venv/bin/python -c "import torchvision; print(torchvision.__version__.split('+')[0])") \
-    && /app/.venv/bin/pip install --no-cache-dir --no-deps --force-reinstall \
-       "torch==${TORCH_VER}" "torchvision==${TV_VER}" \
-       --index-url https://download.pytorch.org/whl/cpu \
+    && /app/.venv/bin/python -c "\
+import subprocess, torch; \
+pkgs = [f'torch=={torch.__version__.split(chr(43))[0]}']; \
+try: \
+    import torchvision; \
+    pkgs.append(f'torchvision=={torchvision.__version__.split(chr(43))[0]}'); \
+except ModuleNotFoundError: \
+    pass; \
+subprocess.check_call(['/app/.venv/bin/pip', 'install', '--no-cache-dir', '--no-deps', '--force-reinstall', *pkgs, '--index-url', 'https://download.pytorch.org/whl/cpu'])" \
     && rm -rf /root/.cache /tmp/*
 
 COPY src/ ./src/
