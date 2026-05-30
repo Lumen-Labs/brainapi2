@@ -1,0 +1,42 @@
+{
+  "name": "brainapi",
+  "version": "0.1.0",
+  "description": "Interactive installer and runtime CLI for BrainAPI.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "brainapi": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18.17"
+  },
+  "scripts": {
+    "sync:install-extras": "node scripts/sync-install-extras.mjs",
+    "prebuild": "npm run sync:install-extras",
+    "build": "tsup",
+    "predev": "npm run sync:install-extras",
+    "dev": "tsup --watch",
+    "typecheck": "npm run sync:install-extras && tsc --noEmit",
+    "start": "node dist/index.js",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@clack/prompts": "^0.7.0",
+    "execa": "^9.4.0",
+    "picocolors": "^1.1.0",
+    "simple-git": "^3.27.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.4",
+    "tsup": "^8.3.0",
+    "typescript": "^5.6.2"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

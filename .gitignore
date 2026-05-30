@@ -21,3 +21,8 @@ plugins/**
 docs/**
 
 .git
+
+tui/node_modules
+tui/dist
+.cursor
+tui/embedded

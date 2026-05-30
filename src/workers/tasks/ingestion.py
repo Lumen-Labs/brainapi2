@@ -142,6 +142,7 @@ def ingest_data(self, args: dict):
         vector_store_adapter.add_vectors(
             [text_chunk_vector],
             "data",
+            brain_id=payload.brain_id,
         )
 
         if config.pipeline_mode == "lightweight":
@@ -828,7 +829,15 @@ def ingest_file(self, content_b64: str, filename: str, brain_id: str):
     ingest_data task per page.
     """
     from celery.exceptions import OperationalError
-    from docling.document_converter import DocumentConverter
+    try:
+        from docling.document_converter import DocumentConverter
+    except ImportError as exc:
+        raise RuntimeError(
+            "OCR_MODE=docling requires the 'docling-ocr' optional dependency group. "
+            "Install it with: `python scripts/install_extras.py docling-ocr` "
+            "(or `make install-extras`). "
+            "Alternatively set OCR_MODE=docparser in your .env to use the remote OCR pipeline."
+        ) from exc
 
     cache_adapter.set(
         key=f"task:{self.request.id}",

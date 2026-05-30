@@ -12,6 +12,9 @@ dependencies = [
     "pymongo (>=4.15.3,<5.0.0)",
     "cpp-chunker (>=0.1.4,<0.2.0)",
     "neo4j (>=6.0.2,<7.0.0)",
+    "networkx (>=3.0,<4.0.0)",
+    "psycopg2-binary (>=2.9.6,<3.0.0)",
+    "pgvector (>=0.3.0,<1.0.0)",
     "pylint (>=4.0.1,<5.0.0)",
     "langchain (>=1.0.0,<2.0.0)",
     "openai (>=2.5.0,<3.0.0)",
@@ -36,8 +39,19 @@ dependencies = [
     "spacy_langdetect (>=0.1.2,<0.2.0)",
     "langid (>=1.1.6,<2.0.0)",
     "mcp (>=1.26.0,<2.0.0)",
+    "boto3 (>=1.36.0,<2.0.0)",
+    "langchain-aws (>=0.2.0,<1.0.0)",
+]
+
+[project.optional-dependencies]
+docling-ocr = [
     "docling (>=2.0.0,<3.0.0)",
     "accelerate (>=1.0.0,<2.0.0)",
+]
+postgresql-backend = [
+    "psycopg2-binary (>=2.9.6,<3.0.0)",
+    "pgvector (>=0.3.0,<1.0.0)",
+    "networkx (>=3.0,<4.0.0)",
 ]
 
 [tool.poetry]
@@ -49,6 +63,9 @@ redis = ">=6.4.0,<7.0.0"
 pymongo = ">=4.15.3,<5.0.0"
 cpp-chunker = ">=0.1.4,<0.2.0"
 neo4j = ">=6.0.2,<7.0.0"
+networkx = ">=3.0,<4.0.0"
+psycopg2-binary = ">=2.9.6,<3.0.0"
+pgvector = ">=0.3.0,<1.0.0"
 pylint = ">=4.0.1,<5.0.0"
 langchain = ">=1.0.0,<2.0.0"
 openai = ">=2.5.0,<3.0.0"
@@ -74,6 +91,13 @@ typer = ">=0.12.0,<0.15.0"
 spacy_langdetect = ">=0.1.2,<0.2.0"
 langid = ">=1.1.6,<2.0.0"
 mcp = ">=1.26.0,<2.0.0"
+boto3 = ">=1.36.0,<2.0.0"
+langchain-aws = ">=0.2.0,<1.0.0"
+
+[tool.poetry.group.docling-ocr]
+optional = true
+
+[tool.poetry.group.docling-ocr.dependencies]
 docling = ">=2.0.0,<3.0.0"
 accelerate = ">=1.0.0,<2.0.0"
 
