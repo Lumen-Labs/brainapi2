@@ -26,6 +26,8 @@ export const AZURE_DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large";
 export const OPENAI_DEFAULT_SMALL_MODEL = "gpt-4o-mini";
 export const OPENAI_DEFAULT_LARGE_MODEL = "gpt-4o";
 export const OPENAI_DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large";
+export const ANTHROPIC_DEFAULT_SMALL_MODEL = "claude-3-5-haiku-latest";
+export const ANTHROPIC_DEFAULT_LARGE_MODEL = "claude-sonnet-4-20250514";
 
 export const KNOWN_EMBEDDING_MODEL_DIMENSIONS: Record<string, number> = {
   "nomic-embed-text": 768,
@@ -206,6 +208,9 @@ export const ENV_KEYS = {
   openaiSmallLlmModel: "OPENAI_SMALL_LLM_MODEL",
   openaiLargeLlmModel: "OPENAI_LARGE_LLM_MODEL",
   openaiEmbeddingModel: "OPENAI_EMBEDDING_MODEL",
+  anthropicApiKey: "ANTHROPIC_API_KEY",
+  anthropicSmallLlmModel: "ANTHROPIC_SMALL_LLM_MODEL",
+  anthropicLargeLlmModel: "ANTHROPIC_LARGE_LLM_MODEL",
 
   bedrockRegion: "BEDROCK_REGION",
   bedrockAccessKeyId: "BEDROCK_ACCESS_KEY_ID",
@@ -225,6 +230,7 @@ export const ENV_KEYS = {
   embeddingObservationsDimension: "EMBEDDING_OBSERVATIONS_DIMENSION",
   embeddingDataDimension: "EMBEDDING_DATA_DIMENSION",
   embeddingRelationshipsDimension: "EMBEDDING_RELATIONSHIPS_DIMENSION",
+  enabledPlugins: "ENABLED_PLUGINS",
 } as const;
 
 export const SERVICE_COMPOSE_FILES = {

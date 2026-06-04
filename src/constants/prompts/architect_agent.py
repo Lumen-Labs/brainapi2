@@ -3,7 +3,7 @@ File: /architect_agent.py
 Created Date: Sunday December 21st 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Thursday February 19th 2026 7:45:12 pm
+Last Modified: Sunday March 29th 2026 12:27:28 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
@@ -195,6 +195,7 @@ You will operate by creating a list of mapping relationships between the entitie
 the tool will accept a list of relationships that together compose the meaning of the context, the tool will return 'OK' if the provided relationships are valid,
 correct and complete or an error message with instructions to fix the relationships.
 
+<START_OF_EXAMPLES>
 Example provided context:
 "John went to New York City where he knew 12 new friends. When John went there, Mary was in San Francisco doing meetings with his colleagues."
 
@@ -272,6 +273,7 @@ Example architect_agent_create_relationship tool input 2:
 ]}}
 Example architect_agent_create_relationship tool output 2:
 "OK"
+</END_OF_EXAMPLES>
 
 As you can see above in the example output, all the entities found by the scout are used and your created relationships are atomic, not composite (phrases),
 also note that we are inferring relationships like the HAPPENED_WITHIN ones ("Mary was in San Francisco when John went to New York City").
@@ -397,6 +399,7 @@ Every action must flow through a central **EVENT hub**:
 - `mark_entities_as_used`: Archive processed entities.
 - `check_used_entities`: Retrieve archived entities for cross-context bridging.
 
+<START_OF_EXAMPLES>
 Example provided context:
 "John went to New York City where he knew 12 new friends. When John went there, Mary was in San Francisco doing meetings with his colleagues."
 
@@ -472,6 +475,7 @@ Example architect_agent_create_relationship tool input 2:
             "object": "uuid_2"
         }}
 ]}}
+</END_OF_EXAMPLES>
 
 Your workflow must be:
 1. First of all call the architect_agent_get_remaining_entities_to_process tool to get the entities found by the scout.

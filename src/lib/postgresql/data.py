@@ -10,7 +10,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import json
 import threading
-from typing import Any, Iterator, List, Optional, Tuple
+from typing import Any, Iterator, List, Literal, Optional, Tuple
 
 import psycopg2
 import psycopg2.extras
@@ -500,7 +500,13 @@ class PostgreSQLDataClient(DataClient):
         )
 
     def get_text_chunks(
-        self, brain_id: str, limit: int = 10, skip: int = 0, query_text: str = None
+        self,
+        brain_id: str,
+        limit: int = 10,
+        skip: int = 0,
+        query_text: str = None,
+        metadata_eq: dict[str, str] | None = None,
+        order: Literal["asc", "desc"] = "desc",
     ) -> Tuple[List[TextChunk], int]:
         clauses: list[str] = []
         params: list[Any] = []
@@ -508,14 +514,19 @@ class PostgreSQLDataClient(DataClient):
             pattern = _ilike_pattern(query_text)
             clauses.append("(text ILIKE %s OR metadata::text ILIKE %s)")
             params.extend([pattern, pattern])
+        if metadata_eq:
+            for key, value in metadata_eq.items():
+                clauses.append("metadata ->> %s = %s")
+                params.extend([key, value])
         where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        order_sql = "ASC" if order == "asc" else "DESC"
         with self._brain_connection(brain_id) as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(
                     f"""
                     SELECT document FROM data_text_chunks
                     {where_sql}
-                    ORDER BY inserted_at DESC
+                    ORDER BY inserted_at {order_sql}
                     OFFSET %s LIMIT %s
                     """,
                     (*params, skip, limit),

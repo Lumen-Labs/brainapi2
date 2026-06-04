@@ -94,6 +94,25 @@ class OpenAIConfig:
             raise ValueError("OpenAI embedding model is not set")
 
 
+class AnthropicConfig:
+    def __init__(self):
+        self.api_key = os.getenv("ANTHROPIC_API_KEY")
+        self.small_llm_model = os.getenv(
+            "ANTHROPIC_SMALL_LLM_MODEL", "claude-3-5-haiku-latest"
+        )
+        self.large_llm_model = os.getenv(
+            "ANTHROPIC_LARGE_LLM_MODEL", "claude-sonnet-4-20250514"
+        )
+
+    def validate_llm(self, require_large: bool):
+        if not self.api_key:
+            raise ValueError("Anthropic API key is not set")
+        if not self.small_llm_model:
+            raise ValueError("Anthropic small LLM model is not set")
+        if require_large and not self.large_llm_model:
+            raise ValueError("Anthropic large LLM model is not set")
+
+
 class GCPConfig:
     """
     Configuration class for the GCP configuration.
@@ -389,7 +408,7 @@ class SpacyConfig:
 
 
 _MODES = ("local", "remote")
-_PROVIDERS = ("ollama", "azure", "openai", "gcp_vertex", "amazon_bedrock")
+_PROVIDERS = ("ollama", "azure", "openai", "anthropic", "gcp_vertex", "amazon_bedrock")
 
 
 class Config:
@@ -450,6 +469,11 @@ class Config:
         )
         use_openai_large = self.llm_large_provider == "openai"
         use_openai_embeddings = self.embeddings_provider == "openai"
+        use_anthropic_llm = (
+            self.llm_small_provider == "anthropic"
+            or self.llm_large_provider == "anthropic"
+        )
+        use_anthropic_large = self.llm_large_provider == "anthropic"
         use_ollama = (
             self.llm_small_provider == "ollama"
             or self.llm_large_provider == "ollama"
@@ -483,6 +507,10 @@ class Config:
                 self.openai.validate_llm(require_large=use_openai_large)
             if use_openai_embeddings:
                 self.openai.validate_embeddings()
+
+        self.anthropic = AnthropicConfig() if use_anthropic_llm else None
+        if self.anthropic is not None:
+            self.anthropic.validate_llm(require_large=use_anthropic_large)
 
         self.ollama = OllamaConfig() if use_ollama else None
         self.embeddings = EmbeddingsConfig(mode=self.models_mode)

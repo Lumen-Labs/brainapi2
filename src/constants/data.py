@@ -8,11 +8,18 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
+import tomllib
+import uuid
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 from typing import Annotated, Any, List, Literal, Optional, Union
-import uuid
+
 from pydantic import BaseModel, Field
+
+_PYPROJECT_PATH = Path(__file__).resolve().parent.parent.parent / "pyproject.toml"
+with _PYPROJECT_PATH.open("rb") as _f:
+    BRAIN_VERSION = tomllib.load(_f)["project"]["version"]
 
 
 class TextChunk(BaseModel):

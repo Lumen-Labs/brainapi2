@@ -4,6 +4,8 @@ import { homedir } from "node:os";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
 import {
+  ANTHROPIC_DEFAULT_LARGE_MODEL,
+  ANTHROPIC_DEFAULT_SMALL_MODEL,
   AZURE_DEFAULT_EMBEDDING_MODEL,
   AZURE_DEFAULT_SMALL_MODEL,
   AZURE_DEFAULT_LARGE_API_VERSION,
@@ -33,6 +35,7 @@ import type {
   ModelProvider,
   ModelsChoices,
   ModelsMode,
+  AnthropicChoices,
   OpenAIChoices,
 } from "../types.js";
 import { askOllama } from "./ollama.js";
@@ -268,8 +271,50 @@ async function askOpenAI(): Promise<OpenAIChoices> {
   };
 }
 
-async function askProvider(message: string, initialValue: ModelProvider): Promise<ModelProvider> {
+async function askAnthropic(): Promise<AnthropicChoices> {
+  p.log.step("Configure Anthropic");
+  const apiKey = await askPassword({
+    message: "Anthropic API key",
+    validate: (value) =>
+      value.trim().length === 0 ? "API key is required" : undefined,
+  });
+  const smallLlmModel = await askText({
+    message: "Anthropic small LLM model",
+    placeholder: ANTHROPIC_DEFAULT_SMALL_MODEL,
+    defaultValue: ANTHROPIC_DEFAULT_SMALL_MODEL,
+  });
+  const largeLlmModel = await askText({
+    message: "Anthropic large LLM model",
+    placeholder: ANTHROPIC_DEFAULT_LARGE_MODEL,
+    defaultValue: ANTHROPIC_DEFAULT_LARGE_MODEL,
+  });
+  return {
+    apiKey: apiKey.trim(),
+    smallLlmModel: smallLlmModel.trim() || ANTHROPIC_DEFAULT_SMALL_MODEL,
+    largeLlmModel: largeLlmModel.trim() || ANTHROPIC_DEFAULT_LARGE_MODEL,
+  };
+}
+
+async function askLlmProvider(message: string, initialValue: ModelProvider): Promise<ModelProvider> {
   return pickOne<ModelProvider>({
+    message,
+    options: [
+      { value: "ollama", label: "Ollama" },
+      { value: "openai", label: "OpenAI" },
+      { value: "anthropic", label: "Anthropic" },
+      { value: "azure", label: "Azure OpenAI" },
+      { value: "gcp_vertex", label: "Google Cloud — Vertex AI" },
+      { value: "amazon_bedrock", label: "Amazon Bedrock" },
+    ],
+    initialValue,
+  });
+}
+
+async function askEmbeddingsProvider(
+  message: string,
+  initialValue: Exclude<ModelProvider, "anthropic">,
+): Promise<Exclude<ModelProvider, "anthropic">> {
+  return pickOne<Exclude<ModelProvider, "anthropic">>({
     message,
     options: [
       { value: "ollama", label: "Ollama" },
@@ -343,9 +388,9 @@ export async function askModels(options?: {
     );
   }
 
-  const llmSmallProvider = await askProvider("Small LLM provider", "gcp_vertex");
-  const llmLargeProvider = await askProvider("Large LLM provider", "azure");
-  const embeddingsProvider = await askProvider("Embeddings provider", "azure");
+  const llmSmallProvider = await askLlmProvider("Small LLM provider", "gcp_vertex");
+  const llmLargeProvider = await askLlmProvider("Large LLM provider", "azure");
+  const embeddingsProvider = await askEmbeddingsProvider("Embeddings provider", "azure");
 
   const providers = new Set([llmSmallProvider, llmLargeProvider, embeddingsProvider]);
 
@@ -353,6 +398,7 @@ export async function askModels(options?: {
   let gcp = undefined;
   let azure = undefined;
   let openai = undefined;
+  let anthropic = undefined;
   let bedrock = undefined;
 
   if (providers.has("ollama")) {
@@ -366,6 +412,9 @@ export async function askModels(options?: {
   }
   if (providers.has("openai")) {
     openai = await askOpenAI();
+  }
+  if (providers.has("anthropic")) {
+    anthropic = await askAnthropic();
   }
   if (providers.has("amazon_bedrock")) {
     bedrock = await askBedrock();
@@ -381,6 +430,7 @@ export async function askModels(options?: {
       gcp,
       azure,
       openai,
+      anthropic,
       bedrock,
     },
     {

@@ -2,10 +2,17 @@ export type GraphDb = "networkx" | "neo4j";
 export type VectorDb = "postgresql" | "milvus";
 export type DataDb = "postgresql" | "mongo";
 export type ModelsMode = "local" | "remote";
-export type ModelProvider = "ollama" | "azure" | "openai" | "gcp_vertex" | "amazon_bedrock";
+export type ModelProvider =
+  | "ollama"
+  | "azure"
+  | "openai"
+  | "anthropic"
+  | "gcp_vertex"
+  | "amazon_bedrock";
 export type OcrMode = "docparser" | "docling";
 export type PipelineMode = "accurate" | "lightweight";
 export type ServicesRuntime = "docker" | "manual";
+export type PluginSource = "local" | "registry";
 
 export function isPipelineMode(value: string): value is PipelineMode {
   return value === "accurate" || value === "lightweight";
@@ -62,6 +69,12 @@ export interface BedrockChoices {
   embeddingModel: string;
 }
 
+export interface AnthropicChoices {
+  apiKey: string;
+  smallLlmModel: string;
+  largeLlmModel: string;
+}
+
 export interface EmbeddingDimensions {
   nodesDimension: number;
   tripletsDimension: number;
@@ -80,6 +93,7 @@ export interface ModelsChoices {
   gcp?: GcpChoices;
   azure?: AzureChoices;
   openai?: OpenAIChoices;
+  anthropic?: AnthropicChoices;
   bedrock?: BedrockChoices;
 }
 
@@ -134,12 +148,20 @@ export interface PipelineChoices {
   ocrMode: OcrMode;
 }
 
+export interface PluginChoice {
+  name: string;
+  source: PluginSource;
+  version?: string;
+  path?: string;
+}
+
 export interface InitChoices {
   dbs: DbChoices;
   models: ModelsChoices;
   pipeline: PipelineChoices;
   connections: Connections;
   auth: AuthChoices;
+  plugins: PluginChoice[];
   servicesRuntime: ServicesRuntime;
   usedDefaults: boolean;
 }
@@ -151,6 +173,7 @@ export interface InstallState {
   envWritten: boolean;
   containersStarted: boolean;
   selectedServices: string[] | null;
+  installedPlugins: string[] | null;
   servicesRuntime: ServicesRuntime | null;
   sourcePath: string;
   repoUrl: string;

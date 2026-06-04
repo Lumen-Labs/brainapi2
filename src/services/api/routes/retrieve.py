@@ -8,8 +8,9 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
+import json
 from typing import List, Literal, Optional
-from fastapi import APIRouter, Body, Depends, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 from src.services.api.dependencies import get_brain_id
 from src.services.api.constants.requests import (
@@ -276,11 +277,42 @@ async def get_text_chunks(
     limit: int = 10,
     skip: int = 0,
     query_text: Optional[str] = None,
+    metadata_eq: Optional[str] = Query(default=None),
+    order: Literal["asc", "desc"] = Query(default="desc"),
 ):
     """
-    Get text chunks by a query text.
+    Get text chunks by a query text and optional metadata equality filters.
     """
-    results, total = await get_text_chunks_controller(brain_id, limit, skip, query_text)
+    metadata_eq_filters: Optional[dict[str, str]] = None
+    if metadata_eq:
+        try:
+            parsed_metadata_eq = json.loads(metadata_eq)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail="metadata_eq must be a valid JSON object string",
+            ) from exc
+
+        if not isinstance(parsed_metadata_eq, dict):
+            raise HTTPException(
+                status_code=422,
+                detail="metadata_eq must be a JSON object string",
+            )
+
+        if any(
+            not isinstance(key, str) or not isinstance(value, str)
+            for key, value in parsed_metadata_eq.items()
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="metadata_eq must be a JSON object with string keys and string values",
+            )
+
+        metadata_eq_filters = parsed_metadata_eq
+
+    results, total = await get_text_chunks_controller(
+        brain_id, limit, skip, query_text, metadata_eq_filters, order
+    )
 
     return JSONResponse(
         content={

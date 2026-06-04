@@ -15,3 +15,13 @@ class PluginEntryPointResolver:
         if module_name == "__init__" or module_name == "":
             return plugin_dir.name
         return module_name
+
+    def resolve_path(self, entry_point: str, plugin_dir: Path) -> Path:
+        normalized = entry_point.strip().replace("\\", "/")
+        normalized = normalized.lstrip("./").strip("/")
+        if normalized == "":
+            return plugin_dir / "__init__.py"
+        candidate = plugin_dir / normalized
+        if candidate.suffix != ".py":
+            candidate = candidate.with_suffix(".py")
+        return candidate

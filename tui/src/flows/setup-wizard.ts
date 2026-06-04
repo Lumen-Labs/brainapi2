@@ -6,6 +6,7 @@ import { askPipeline } from "./pipeline.js";
 import { askConnections } from "./connections.js";
 import { askAuth } from "./auth.js";
 import { askServicesRuntime } from "./services-runtime.js";
+import { askPlugins } from "./plugins.js";
 import { isPromptBack } from "../lib/prompts.js";
 import type {
   AuthChoices,
@@ -13,6 +14,7 @@ import type {
   DbChoices,
   InitChoices,
   ModelsChoices,
+  PluginChoice,
   PipelineChoices,
   ServicesRuntime,
 } from "../types.js";
@@ -24,6 +26,7 @@ export interface SetupDraft {
   pipeline?: PipelineChoices;
   connections?: Connections;
   auth?: AuthChoices;
+  plugins?: PluginChoice[];
   usedDefaults?: boolean;
 }
 
@@ -41,6 +44,7 @@ export function toInitChoices(draft: SetupDraft): InitChoices {
     pipeline: draft.pipeline!,
     connections: draft.connections!,
     auth: draft.auth!,
+    plugins: draft.plugins ?? [],
     usedDefaults: draft.usedDefaults ?? false,
   };
 }
@@ -166,6 +170,21 @@ export async function runSetupWizard(
         continue;
       }
       draft.auth = auth;
+      step = 7;
+      continue;
+    }
+
+    if (step === 7) {
+      const plugins = await askPlugins({
+        allowBack: true,
+        backHint: stepBackHint,
+        initial: draft.plugins,
+      });
+      if (isPromptBack(plugins)) {
+        step = 6;
+        continue;
+      }
+      draft.plugins = plugins;
       return true;
     }
   }

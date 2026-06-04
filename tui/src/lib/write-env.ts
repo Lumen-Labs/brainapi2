@@ -1,4 +1,6 @@
 import {
+  ANTHROPIC_DEFAULT_LARGE_MODEL,
+  ANTHROPIC_DEFAULT_SMALL_MODEL,
   AZURE_DEFAULT_EMBEDDING_MODEL,
   AZURE_DEFAULT_LARGE_API_VERSION,
   AZURE_DEFAULT_LARGE_MODEL,
@@ -32,6 +34,7 @@ const AZURE_EMBEDDING_PLACEHOLDER =
   "https://example.openai.azure.com/openai/deployments/text-embedding-3-large/embeddings?api-version=2023-05-15";
 const AZURE_KEY_PLACEHOLDER = "azure-key-placeholder";
 const OPENAI_KEY_PLACEHOLDER = "openai-api-key-placeholder";
+const ANTHROPIC_KEY_PLACEHOLDER = "anthropic-api-key-placeholder";
 
 function resolveModelsMode(choices: InitChoices): "local" | "remote" {
   const { llmSmallProvider, llmLargeProvider, embeddingsProvider } = choices.models;
@@ -60,6 +63,7 @@ export async function writeEnvFromChoices(choices: InitChoices): Promise<void> {
   values[ENV_KEYS.celeryWorkerConcurrency] = 4;
 
   values[ENV_KEYS.brainpatToken] = choices.auth.brainpatToken;
+  values[ENV_KEYS.enabledPlugins] = choices.plugins.map((plugin) => plugin.name).join(",");
   values["ENV"] = "development";
   values["CONSOLE_ENABLED"] = "true";
 
@@ -170,6 +174,7 @@ function applyRemoteModelValues(
   const gcp = choices.models.gcp;
   const azure = choices.models.azure;
   const openai = choices.models.openai;
+  const anthropic = choices.models.anthropic;
   const bedrock = choices.models.bedrock;
   values[ENV_KEYS.llmSmallProvider] = choices.models.llmSmallProvider;
   values[ENV_KEYS.llmLargeProvider] = choices.models.llmLargeProvider;
@@ -217,6 +222,11 @@ function applyRemoteModelValues(
   } else {
     values[ENV_KEYS.openaiBaseUrl] = "";
   }
+  values[ENV_KEYS.anthropicApiKey] = anthropic?.apiKey ?? ANTHROPIC_KEY_PLACEHOLDER;
+  values[ENV_KEYS.anthropicSmallLlmModel] =
+    anthropic?.smallLlmModel ?? ANTHROPIC_DEFAULT_SMALL_MODEL;
+  values[ENV_KEYS.anthropicLargeLlmModel] =
+    anthropic?.largeLlmModel ?? ANTHROPIC_DEFAULT_LARGE_MODEL;
   values[ENV_KEYS.bedrockAccessKeyId] = bedrock?.accessKeyId ?? "your-access-key-id";
   values[ENV_KEYS.bedrockSecretAccessKey] =
     bedrock?.secretAccessKey ?? "your-secret-access-key";

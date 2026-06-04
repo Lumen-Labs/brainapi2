@@ -11,6 +11,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 
 import asyncio
 import html
+import json
 import os
 from contextvars import ContextVar
 from typing import Any
@@ -27,7 +28,6 @@ from src.core.instances import (
     graph_adapter,
     vector_store_adapter,
 )
-from src.lib.neo4j.client import _neo4j_client
 from src.services.mcp.oauth_provider import BrainapiMcpOAuthProvider
 from src.services.mcp.utils import guard_brainpat
 from src.utils.vector_search import VectorSearchFacade
@@ -170,14 +170,94 @@ def get_search_operation_instructions(message: str) -> str:
     """
     This tool will provide instructions on how to use the search_memory tool.
     """
+    backend_type = graph_adapter.graphdb_type
+    backend_desc = graph_adapter.graphdb_description
     return f"""
-    The brains are a storage for information and memories, they are powered by multiple dbs.
-    The `search_memory` tool will execute graph operations to search the knowledge graph that contains informations.
-    {_neo4j_client.graphdb_description}.
-    The input must be a JSON object with the following fields:
-    - db_query: str: the operation to execute on the graph.
-    - brain_id: str: the brain to search in.
+    Graph backend: {backend_type}
+    {backend_desc}
+
+    Recommended workflow:
+    1. search_semantically — when you do not know node UUIDs or exact names
+    2. traverse_graph — multi-hop expansion with filters (preferred over hand-written queries)
+    3. search_memory — ad-hoc read queries not covered by traverse_graph
+
+    traverse_graph parameters:
+    - brain_id (required)
+    - start_uuid OR (start_name + start_labels)
+    - depth (1-5, default 2)
+    - rel_types (optional list of relationship type names)
+    - node_labels (optional list of node label filters)
+    - direction: in | out | both (default both)
+    - limit (1-100, default 50)
+
+    search_memory parameters:
+    - db_query: read-only graph query ({("SQL SELECT/WITH" if "postgresql" in backend_type else "Cypher")})
+    - brain_id: the brain to search in
     """
+
+
+def _traverse_graph_sync(
+    brain_id: str,
+    start_uuid: str,
+    start_name: str,
+    start_labels: list[str] | None,
+    depth: int,
+    rel_types: list[str] | None,
+    node_labels: list[str] | None,
+    direction: str,
+    limit: int,
+) -> Any:
+    try:
+        if not guard_brainpat(auth_token_var.get(), brain_id):
+            return "Unauthorized"
+        if direction not in {"in", "out", "both"}:
+            return "Error: direction must be in, out, or both"
+        result = graph_adapter.traverse_graph(
+            brain_id=brain_id,
+            start_uuid=start_uuid or None,
+            start_name=start_name or None,
+            start_labels=start_labels,
+            depth=depth,
+            rel_types=rel_types,
+            node_labels=node_labels,
+            direction=direction,
+            limit=limit,
+        )
+        return json.dumps(result, default=str)
+    except Exception as e:
+        return f"Error traversing graph: {e}"
+
+
+@mcp.tool()
+async def traverse_graph(
+    brain_id: str,
+    start_uuid: str = "",
+    start_name: str = "",
+    start_labels: list[str] | None = None,
+    depth: int = 2,
+    rel_types: list[str] | None = None,
+    node_labels: list[str] | None = None,
+    direction: str = "both",
+    limit: int = 50,
+) -> Any:
+    """
+    Traverse the knowledge graph from a starting node up to N hops with optional filters.
+    Prefer this over search_memory for multi-hop exploration.
+
+    Provide start_uuid, or both start_name and start_labels to identify the start node.
+    """
+    return await asyncio.to_thread(
+        _traverse_graph_sync,
+        brain_id,
+        start_uuid,
+        start_name,
+        start_labels,
+        depth,
+        rel_types,
+        node_labels,
+        direction,
+        limit,
+    )
 
 
 def _search_memory_sync(db_query: str, brain_id: str) -> Any:
@@ -193,10 +273,10 @@ def _search_memory_sync(db_query: str, brain_id: str) -> Any:
 async def search_memory(db_query: str, brain_id: str) -> Any:
     """
     Search the brain for memories and information.
-    This tool will search into the knowledge graph.
+    This tool will search into the knowledge graph using the active graph backend query language.
 
     Input must be a JSON object with the following fields:
-    - db_query: str: the operation to execute on the graph.
+    - db_query: str: read-only graph query (Cypher on Neo4j, SQL on PostgreSQL).
     - brain_id: str: the brain to search in.
     """
     return await asyncio.to_thread(_search_memory_sync, db_query, brain_id)

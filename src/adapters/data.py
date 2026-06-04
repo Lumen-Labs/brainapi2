@@ -3,12 +3,12 @@ File: /data.py
 Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Thursday February 19th 2026 7:45:12 pm
+Last Modified: Wednesday May 20th 2026 8:41:53 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
-from typing import List, Tuple
+from typing import List, Literal, Tuple
 from src.adapters.interfaces.data import DataClient, SearchResult
 from src.constants.data import Brain, KGChanges, Observation, StructuredData, TextChunk
 
@@ -37,7 +37,7 @@ class DataAdapter:
 
     def save_observations(
         self, observations: List[Observation], brain_id: str = "default"
-    ) -> Observation:
+    ) -> List[Observation]:
         """
         Save a list of observations to the data client.
         """
@@ -65,12 +65,19 @@ class DataAdapter:
         limit: int = 10,
         skip: int = 0,
         query_text: str = None,
+        metadata_eq: dict[str, str] | None = None,
+        order: Literal["asc", "desc"] = "desc",
     ) -> Tuple[List[TextChunk], int]:
         """
-        Get text chunks with pagination and a query text.
+        Get text chunks with pagination, optional text search, and metadata equality filters.
         """
         return self.data.get_text_chunks(
-            brain_id=brain_id, limit=limit, skip=skip, query_text=query_text
+            brain_id=brain_id,
+            limit=limit,
+            skip=skip,
+            query_text=query_text,
+            metadata_eq=metadata_eq,
+            order=order,
         )
 
     def save_structured_data(
