@@ -25,6 +25,11 @@ from src.adapters.interfaces.embeddings import VectorStoreClient
 from src.adapters.graph_operation_result_serializer import (
     serialize_graph_operation_result,
 )
+from src.core.search.traverse import (
+    MAX_TRAVERSE_DEPTH,
+    MAX_TRAVERSE_HOPS,
+    flatten_neighborhood,
+)
 from src.utils.normalization.list_reduction import reduce_list
 from src.utils.similarity.vectors import cosine_similarity
 
@@ -714,6 +719,53 @@ class GraphAdapter:
         Returns a nested structure where each neighbor contains its own neighbors.
         """
         return self.graph.get_neighborhood(node, depth, brain_id)
+
+    def traverse_graph(
+        self,
+        *,
+        brain_id: str = "default",
+        start_uuid: str | None = None,
+        start_name: str | None = None,
+        start_labels: list[str] | None = None,
+        depth: int = 2,
+        rel_types: list[str] | None = None,
+        node_labels: list[str] | None = None,
+        direction: Literal["in", "out", "both"] = "both",
+        limit: int = 50,
+    ) -> dict:
+        depth = max(1, min(depth, MAX_TRAVERSE_DEPTH))
+        limit = max(1, min(limit, MAX_TRAVERSE_HOPS))
+
+        if start_uuid:
+            start_node = self.get_by_uuid(start_uuid, brain_id)
+        elif start_name and start_labels:
+            start_node = self.get_by_identification_params(
+                IdentificationParams(name=start_name),
+                brain_id,
+                entity_types=start_labels,
+            )
+        else:
+            return {
+                "error": "Provide start_uuid or both start_name and start_labels",
+            }
+
+        if start_node is None:
+            return {"error": "Start node not found"}
+
+        neighborhood = self.get_neighborhood(start_node.uuid, depth, brain_id)
+        hops, truncated = flatten_neighborhood(
+            neighborhood,
+            rel_types=rel_types,
+            node_labels=node_labels,
+            direction=direction,
+            limit=limit,
+        )
+        return {
+            "start": start_node.model_dump(mode="json"),
+            "depth": depth,
+            "hops": hops,
+            "truncated": truncated,
+        }
 
     def get_nexts_by_flow_key(
         self,

@@ -43,10 +43,8 @@ class NetworkXGraphClient(GraphClient):
         self._store.ensure_database(database)
 
     def execute_operation(self, operation: str, brain_id: str) -> Any:
-        raise GraphDatabaseError(
-            "Ad-hoc Cypher operations are only supported with the Neo4j backend (GRAPH_DB=neo4j). "
-            "Use the native PostgreSQL+NetworkX graph API instead."
-        )
+        self._store.ensure_database(brain_id)
+        return self._store.execute_read_query(brain_id, operation)
 
     @property
     def graphdb_type(self) -> str:
@@ -55,8 +53,20 @@ class NetworkXGraphClient(GraphClient):
     @property
     def graphdb_description(self) -> str:
         return (
-            "The graph database is PostgreSQL with NetworkX-backed in-memory traversal. "
-            "Use the native graph API methods; Cypher is not supported on this backend."
+            "The graph database is PostgreSQL. Use read-only SQL (SELECT or WITH ... SELECT) "
+            "as db_query; Cypher is not supported. "
+            "Tables: kg_nodes(uuid TEXT PRIMARY KEY, data JSONB) where data holds name, labels, "
+            "description and other node properties; "
+            "kg_relationships(uuid TEXT PRIMARY KEY, rel_type TEXT, source_uuid TEXT, "
+            "target_uuid TEXT, data JSONB). "
+            "Filter nodes by label with data->'labels' ? 'PERSON', by name with data->>'name' ILIKE '%alice%'. "
+            "Multi-hop traversal example: WITH RECURSIVE walk AS ("
+            "SELECT source_uuid, target_uuid, rel_type, 1 AS depth FROM kg_relationships "
+            "WHERE source_uuid = '<uuid>' "
+            "UNION ALL SELECT r.source_uuid, r.target_uuid, r.rel_type, w.depth + 1 "
+            "FROM walk w JOIN kg_relationships r ON r.source_uuid = w.target_uuid "
+            "WHERE w.depth < 3) SELECT * FROM walk LIMIT 50. "
+            "Only read queries are allowed; results are capped at 100 rows."
         )
 
     def _clean_labels(self, labels: list[str]) -> list[str]:

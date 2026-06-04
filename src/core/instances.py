@@ -19,6 +19,10 @@ def _build_small_llm(provider: str):
         from src.lib.llm.client_openai import _llm_small_client_openai
 
         return _llm_small_client_openai
+    if provider == "anthropic":
+        from src.lib.llm.client_anthropic import _llm_small_client_anthropic
+
+        return _llm_small_client_anthropic
     if provider == "gcp_vertex":
         from src.lib.llm.client_small import _llm_small_client
 
@@ -43,6 +47,10 @@ def _build_large_llm(provider: str):
         from src.lib.llm.client_openai import _llm_large_client_openai
 
         return _llm_large_client_openai
+    if provider == "anthropic":
+        from src.lib.llm.client_anthropic import _llm_large_client_anthropic
+
+        return _llm_large_client_anthropic
     if provider == "gcp_vertex":
         from src.lib.llm.client_vertex import _llm_large_client_vertex
 

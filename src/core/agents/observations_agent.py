@@ -4,7 +4,7 @@ Created Date: Thursday October 23rd 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
 Last Modified: Thursday October 23rd 2025 10:11:00 pm
-Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
+Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
@@ -23,7 +23,9 @@ class ObservationsAgent:
     def __init__(self, llm_adapter: LLMAdapter):
         self.llm_adapter = llm_adapter
 
-    def observe(self, text: str, observate_for: Optional[List[str]]) -> str:
+    def observe(
+        self, text: str, observate_for: Optional[List[str]], context: Optional[str]
+    ) -> list[str]:
         """
         Observe the world and update the knowledge graph with new information.
         """
@@ -32,7 +34,13 @@ class ObservationsAgent:
                 prompt_registry.get(
                     "OBSERVATIONS_AGENT_SYSTEM_PROMPT", OBSERVATIONS_AGENT_SYSTEM_PROMPT
                 ).format(
-                    text=text, observate_for=observate_for
+                    text=text,
+                    observate_for=(
+                        f"You must look for the following things to observe: {observate_for}"
+                        if observate_for
+                        else ""
+                    ),
+                    context=context if context else "",
                 )
             ),
             empty_fallback=True,

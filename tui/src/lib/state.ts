@@ -12,6 +12,7 @@ export function defaultState(): InstallState {
     envWritten: false,
     containersStarted: false,
     selectedServices: null,
+    installedPlugins: null,
     servicesRuntime: null,
     sourcePath: sourcePath(),
     repoUrl: process.env.BRAINAPI_REPO_URL ?? DEFAULT_REPO_URL,

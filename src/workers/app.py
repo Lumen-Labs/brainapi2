@@ -31,6 +31,10 @@ from celery import Celery
 from kombu import Queue
 
 from src.config import config
+from src.core.plugins.celery_discovery import (
+    default_plugins_dir,
+    discover_plugin_celery,
+)
 from src.lib.tracing import start_runtime_monitoring
 from src.lib.tracing.workers import install_celery_tracing
 
@@ -54,6 +58,8 @@ ingestion_app = Celery(
     include=["src.workers.tasks.ingestion"],
 )
 
+_PLUGIN_QUEUES, _PLUGIN_ROUTES = discover_plugin_celery(default_plugins_dir(_project_root))
+
 TASK_QUEUES = (
     Queue("ingest_data", routing_key="ingest_data"),
     Queue(
@@ -62,7 +68,7 @@ TASK_QUEUES = (
     Queue("ingest_structured_data", routing_key="ingest_structured_data"),
     Queue("consolidate_graph", routing_key="consolidate_graph"),
     Queue("ingest_file", routing_key="ingest_file"),
-)
+) + _PLUGIN_QUEUES
 
 TASK_ROUTES = {
     "src.workers.tasks.ingestion.ingest_data": {"queue": "ingest_data"},
@@ -76,6 +82,7 @@ TASK_ROUTES = {
         "queue": "consolidate_graph"
     },
     "src.workers.tasks.ingestion.ingest_file": {"queue": "ingest_file"},
+    **_PLUGIN_ROUTES,
 }
 
 ingestion_app.conf.update(

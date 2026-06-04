@@ -100,6 +100,46 @@ class PluginLoaderRefactorTests(unittest.TestCase):
             self.assertEqual(loader.context.loaded, ["mycopy"])
             self.assertIn(manifest.name, loader.loaded_plugins)
 
+    def test_loader_isolates_modules_for_plugins_with_same_entrypoint_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            alpha_dir = root / "alpha"
+            beta_dir = root / "beta"
+            write_manifest(alpha_dir, name="alpha", entry_point="main.py", priority=1)
+            write_manifest(beta_dir, name="beta", entry_point="main.py", priority=2)
+
+            (alpha_dir / "main.py").write_text(
+                "def register(context):\n"
+                "    from routes.shared import marker\n"
+                "    context.loaded.append(marker())\n",
+                encoding="utf-8",
+            )
+            (beta_dir / "main.py").write_text(
+                "def register(context):\n"
+                "    from routes.shared import marker\n"
+                "    context.loaded.append(marker())\n",
+                encoding="utf-8",
+            )
+
+            (alpha_dir / "routes").mkdir(parents=True, exist_ok=True)
+            (beta_dir / "routes").mkdir(parents=True, exist_ok=True)
+            (alpha_dir / "routes" / "shared.py").write_text(
+                "def marker():\n"
+                "    return 'alpha'\n",
+                encoding="utf-8",
+            )
+            (beta_dir / "routes" / "shared.py").write_text(
+                "def marker():\n"
+                "    return 'beta'\n",
+                encoding="utf-8",
+            )
+
+            loader = PluginLoader(root, self.DummyContext())
+            results = loader.load_all()
+
+            self.assertEqual(results, {"alpha": True, "beta": True})
+            self.assertEqual(loader.context.loaded, ["alpha", "beta"])
+
 
 if __name__ == "__main__":
     unittest.main()

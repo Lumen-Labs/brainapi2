@@ -5,7 +5,7 @@ Interactive installer and runtime CLI for [BrainAPI](https://github.com/Lumen-La
 ## Install
 
 ```bash
-npm install -g brainapi
+npm install -g brainapi-tui
 ```
 
 This puts a `brainapi` binary on your `$PATH`.
@@ -20,18 +20,18 @@ brainapi doctor  # check Python, Docker, Ollama, and configured services
 
 ## Commands
 
-| Command | Description |
-| --- | --- |
-| `brainapi init` | Full bootstrap: clone the repo, create a Python venv, install deps, and run the interactive setup. |
-| `brainapi start` | Start docker compose containers for the chosen services and launch the API. |
-| `brainapi config` | Re-run the interactive flow and rewrite `.env`. |
-| `brainapi doctor` | Check that Python, Docker, Ollama, GCP credentials, and configured services are reachable. |
-| `brainapi update` | `git pull` the project and `pip install -e .` again. |
+| Command           | Description                                                                                        |
+| ----------------- | -------------------------------------------------------------------------------------------------- |
+| `brainapi init`   | Full bootstrap: clone the repo, create a Python venv, install deps, and run the interactive setup. |
+| `brainapi start`  | Start docker compose containers for the chosen services and launch the API.                        |
+| `brainapi config` | Re-run the interactive flow and rewrite `.env`.                                                    |
+| `brainapi doctor` | Check that Python, Docker, Ollama, GCP credentials, and configured services are reachable.         |
+| `brainapi update` | `git pull` the project and `pip install -e .` again.                                               |
 
 ### `brainapi start` options
 
-| Option | Description |
-| --- | --- |
+| Option                             | Description                                                                                                               |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
 | `--pipeline accurate\|lightweight` | Set `PIPELINE_MODE` in `~/.brainapi/source/.env` before start (accurate = full pipeline; lightweight = faster ingestion). |
 
 ## Where things live
@@ -77,8 +77,8 @@ If someone runs any command before `brainapi init` (e.g. `brainapi doctor` or `b
 
 ## Environment overrides
 
-| Variable | Default | Description |
-| --- | --- | --- |
-| `BRAINAPI_REPO_URL` | `https://github.com/Lumen-Labs/brainapi2.git` | The git repo cloned on `init`. |
-| `BRAINAPI_HOME` | `$HOME/.brainapi` | Where the source and state live. |
-| `BRAINAPI_BRANCH` | `main` | Branch to checkout after cloning. |
+| Variable            | Default                                       | Description                       |
+| ------------------- | --------------------------------------------- | --------------------------------- |
+| `BRAINAPI_REPO_URL` | `https://github.com/Lumen-Labs/brainapi2.git` | The git repo cloned on `init`.    |
+| `BRAINAPI_HOME`     | `$HOME/.brainapi`                             | Where the source and state live.  |
+| `BRAINAPI_BRANCH`   | `main`                                        | Branch to checkout after cloning. |

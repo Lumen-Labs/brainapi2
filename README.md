@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://discord.gg/VTngQTaeDf"><img src="https://img.shields.io/badge/Discord-Join%20Lumen%20Brain-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"/></a>
-  <img src="https://img.shields.io/badge/version-2.13.0--dev-blue?style=for-the-badge" alt="Version"/>
+  <img src="https://img.shields.io/badge/version-2.14.0--dev-blue?style=for-the-badge" alt="Version"/>
   <img src="https://img.shields.io/badge/python-3.11+-green?style=for-the-badge&logo=python&logoColor=white" alt="Python"/>
   <img src="https://img.shields.io/badge/license-AGPLv3%20%2B%20Commons%20Clause-purple?style=for-the-badge" alt="License"/>
 </p>
@@ -65,7 +65,7 @@ That trace is the difference. Not a similarity score. Not a nearest-neighbour gu
 The fastest way to run BrainAPI locally is the **`brainapi` TUI** — an interactive CLI that clones the project, creates a Python venv, walks you through configuration, starts backing services, and launches the API.
 
 ```sh
-npm install -g brainapi
+npm install -g brainapi-tui
 brainapi init     # clone, install deps, interactive setup
 brainapi start    # docker services + API + MCP + worker
 ```

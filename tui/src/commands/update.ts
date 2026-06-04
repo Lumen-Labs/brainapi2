@@ -51,12 +51,12 @@ export async function runUpdate(): Promise<void> {
 
   const branch = state.branch || "main";
   const spinner = p.spinner();
-  spinner.start(`git pull origin ${branch} in ${sourcePath()}`);
+  spinner.start(`Updating source from origin/${branch} in ${sourcePath()}`);
   try {
     await pullRepo(branch);
-    spinner.stop("Repository updated");
+    spinner.stop("Source updated");
   } catch (err) {
-    spinner.stop(pc.red("git pull failed"));
+    spinner.stop(pc.red("Source update failed"));
     throw err;
   }
 

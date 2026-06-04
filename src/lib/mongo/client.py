@@ -3,7 +3,7 @@ File: /client.py
 Created Date: Saturday October 25th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Thursday February 19th 2026 7:45:12 pm
+Last Modified: Wednesday May 20th 2026 8:41:53 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
@@ -50,7 +50,7 @@ class MongoClient(DataClient):
 
     def save_observations(
         self, observations: List[Observation], brain_id: str
-    ) -> Observation:
+    ) -> List[Observation]:
         collection = self.get_collection("observations", database=brain_id)
         collection.insert_many([o.model_dump(mode="json") for o in observations])
         return observations
@@ -229,7 +229,13 @@ class MongoClient(DataClient):
         )
 
     def get_text_chunks(
-        self, brain_id: str, limit: int = 10, skip: int = 0, query_text: str = None
+        self,
+        brain_id: str,
+        limit: int = 10,
+        skip: int = 0,
+        query_text: str = None,
+        metadata_eq: dict[str, str] | None = None,
+        order: str = "desc",
     ) -> Tuple[List[TextChunk], int]:
         collection = self.get_collection("text_chunks", database=brain_id)
         query = {}
@@ -239,8 +245,17 @@ class MongoClient(DataClient):
                 {"text": {"$regex": query_text, "$options": "i"}},
                 {"metadata": {"$regex": query_text, "$options": "i"}},
             ]
+        if metadata_eq:
+            for key, value in metadata_eq.items():
+                query[f"metadata.{key}"] = value
 
-        results = list(collection.find(query).skip(skip).limit(limit))
+        sort_direction = 1 if order == "asc" else -1
+        results = list(
+            collection.find(query)
+            .sort("inserted_at", sort_direction)
+            .skip(skip)
+            .limit(limit)
+        )
         total = collection.count_documents(query)
         return (
             [TextChunk(**{k: v for k, v in r.items() if k != "_id"}) for r in results],

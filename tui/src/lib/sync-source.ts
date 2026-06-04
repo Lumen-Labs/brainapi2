@@ -7,6 +7,7 @@ import { sourcePath } from "./paths.js";
 
 const SYNC_PATHS = [
   "src/config.py",
+  "src/constants",
   "src/core/instances.py",
   "src/lib/llm",
   "src/lib/embeddings",

@@ -1,6 +1,6 @@
 [project]
 name = "brainapi2"
-version = "2.13.0-dev"
+version = "2.14.0-dev"
 description = "Version 2.x.x of the BrainAPI memory layer."
 authors = [
     {name = "Christian",email = "alch.infoemail@gmail.com"}
@@ -35,13 +35,14 @@ dependencies = [
     "sympy (>=1.12.1,<1.14.0)",
     "numpy (>=1.26.0,<2.0.0)",
     "spacy (>=3.0.0,<4.0.0)",
-    "typer (>=0.12.0,<0.15.0)",
+    "typer (>=0.16.0,<0.17.0)",
     "spacy_langdetect (>=0.1.2,<0.2.0)",
     "langid (>=1.1.6,<2.0.0)",
     "mcp (>=1.26.0,<2.0.0)",
     "boto3 (>=1.40.19,<2.0.0)",
     "langchain-aws (>=1.0.0,<2.0.0)",
     "watchfiles (>=1.2.0,<2.0.0)",
+    "anthropic (>=0.57.1,<0.58.0)",
 ]
 
 [project.optional-dependencies]
@@ -88,13 +89,14 @@ python-multipart = ">=0.0.20,<0.0.21"
 sympy = ">=1.12.1,<1.14.0"
 numpy = ">=1.26.0,<2.0.0"
 spacy = ">=3.0.0,<4.0.0"
-typer = ">=0.12.0,<0.15.0"
+typer = ">=0.16.0,<0.17.0"
 spacy_langdetect = ">=0.1.2,<0.2.0"
 langid = ">=1.1.6,<2.0.0"
 mcp = ">=1.26.0,<2.0.0"
 boto3 = ">=1.40.19,<2.0.0"
 langchain-aws = ">=1.0.0,<2.0.0"
 watchfiles = ">=1.2.0,<2.0.0"
+anthropic = ">=0.57.1,<0.58.0"
 
 [tool.poetry.group.docling-ocr]
 optional = true

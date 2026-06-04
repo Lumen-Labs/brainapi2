@@ -1,6 +1,6 @@
 {
-  "name": "brainapi",
-  "version": "0.1.0",
+  "name": "brainapi-tui",
+  "version": "0.1.1",
   "description": "Interactive installer and runtime CLI for BrainAPI.",
   "license": "MIT",
   "type": "module",

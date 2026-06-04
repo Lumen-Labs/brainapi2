@@ -3,13 +3,13 @@ File: /data.py
 Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Thursday February 19th 2026 7:45:12 pm
+Last Modified: Wednesday May 20th 2026 8:41:53 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
 from abc import ABC, abstractmethod
-from typing import List, Optional, Tuple
+from typing import List, Literal, Optional, Tuple
 
 from pydantic import BaseModel
 
@@ -40,7 +40,7 @@ class DataClient(ABC):
     @abstractmethod
     def save_observations(
         self, observations: List[Observation], brain_id: str
-    ) -> Observation:
+    ) -> List[Observation]:
         """
         Save a list of observations to the data client.
         """
@@ -64,10 +64,16 @@ class DataClient(ABC):
 
     @abstractmethod
     def get_text_chunks(
-        self, brain_id: str, limit: int = 10, skip: int = 0, query_text: str = None
+        self,
+        brain_id: str,
+        limit: int = 10,
+        skip: int = 0,
+        query_text: str = None,
+        metadata_eq: dict[str, str] | None = None,
+        order: Literal["asc", "desc"] = "desc",
     ) -> Tuple[List[TextChunk], int]:
         """
-        Get text chunks with pagination and a query text.
+        Get text chunks with pagination, optional text search, and metadata equality filters.
         """
         raise NotImplementedError("get_text_chunks method not implemented")
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import importlib
+import importlib.util
 import logging
 import shutil
 import subprocess
@@ -80,26 +80,37 @@ class PluginLoader:
             return False
 
         plugin_dir_str = str(plugin_dir)
+        added_plugin_path = False
         if plugin_dir_str not in sys.path:
             sys.path.insert(0, plugin_dir_str)
+            added_plugin_path = True
+        self._clear_local_plugin_namespaces()
 
         module_name = self._entry_point_resolver.resolve(
             entry_point=manifest.entry_point,
             plugin_dir=plugin_dir,
         )
+        entrypoint_path = self._entry_point_resolver.resolve_path(
+            entry_point=manifest.entry_point,
+            plugin_dir=plugin_dir,
+        )
+        unique_module_name = self._module_name_for_manifest(manifest, module_name)
 
         try:
-            module = importlib.import_module(module_name)
+            module = self._import_entrypoint(
+                unique_module_name=unique_module_name,
+                entrypoint_path=entrypoint_path,
+            )
         except Exception as exc:
             logger.error("Failed to import plugin '%s' (module: %s): %s", manifest.name, module_name, exc)
-            if plugin_dir_str in sys.path:
+            if added_plugin_path and plugin_dir_str in sys.path:
                 sys.path.remove(plugin_dir_str)
             return False
 
         register_fn = getattr(module, "register", None)
         if register_fn is None or not callable(register_fn):
             logger.error("Plugin '%s' has no callable 'register' function in '%s'", manifest.name, module_name)
-            if plugin_dir_str in sys.path:
+            if added_plugin_path and plugin_dir_str in sys.path:
                 sys.path.remove(plugin_dir_str)
             return False
 
@@ -107,12 +118,56 @@ class PluginLoader:
             register_fn(self.context)
             self._loaded[manifest.name] = manifest
             logger.info("Plugin '%s' v%s loaded successfully", manifest.name, manifest.version)
+            if added_plugin_path and plugin_dir_str in sys.path:
+                sys.path.remove(plugin_dir_str)
             return True
         except Exception as exc:
             logger.error("Plugin '%s' register() raised an exception: %s", manifest.name, exc, exc_info=True)
-            if plugin_dir_str in sys.path:
+            if added_plugin_path and plugin_dir_str in sys.path:
                 sys.path.remove(plugin_dir_str)
             return False
+
+    def _clear_local_plugin_namespaces(self) -> None:
+        namespace_roots = (
+            "routes",
+            "controllers",
+            "adapters",
+            "constants",
+            "agents",
+            "workers",
+            "prompts",
+        )
+        for module_name in list(sys.modules.keys()):
+            if any(
+                module_name == namespace_root
+                or module_name.startswith(f"{namespace_root}.")
+                for namespace_root in namespace_roots
+            ):
+                sys.modules.pop(module_name, None)
+
+    @staticmethod
+    def _safe_module_token(value: str) -> str:
+        return "".join(ch if ch.isalnum() else "_" for ch in value)
+
+    def _module_name_for_manifest(self, manifest: PluginManifest, module_name: str) -> str:
+        plugin_token = self._safe_module_token(manifest.name)
+        module_token = self._safe_module_token(module_name)
+        return f"brainapi_plugin_{plugin_token}__{module_token}"
+
+    def _import_entrypoint(
+        self,
+        unique_module_name: str,
+        entrypoint_path: Path,
+    ):
+        if not entrypoint_path.exists():
+            raise ModuleNotFoundError(f"Entrypoint file not found: {entrypoint_path}")
+        spec = importlib.util.spec_from_file_location(unique_module_name, entrypoint_path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Unable to create module spec for '{entrypoint_path}'")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[unique_module_name] = module
+        spec.loader.exec_module(module)
+        return module
 
     def load_all(self) -> dict[str, bool]:
         manifests = self.discover()

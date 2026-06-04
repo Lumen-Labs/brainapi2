@@ -25,10 +25,12 @@ import { ensureDocker } from "../lib/docker-recovery.js";
 import { bringUpServices, bringUpServicesManually } from "../lib/bring-up.js";
 import { targetFromConnections } from "../lib/service-target.js";
 import { askConfirm } from "../lib/prompts.js";
+import { installLocalPlugin, installRegistryPlugin } from "../lib/plugins.js";
 import type {
   Connections,
   DbChoices,
   InitChoices,
+  PluginChoice,
   ServicesRuntime,
 } from "../types.js";
 import { type ServiceName } from "../constants.js";
@@ -183,6 +185,30 @@ async function servicesPhase(
   });
 }
 
+async function pluginsPhase(plugins: PluginChoice[]): Promise<void> {
+  if (plugins.length === 0) {
+    await updateState({ installedPlugins: [] });
+    return;
+  }
+  const installed: string[] = [];
+  for (const plugin of plugins) {
+    if (plugin.source === "local") {
+      if (!plugin.path) {
+        p.log.warn(`Skipping local plugin '${plugin.name}' because path is missing.`);
+        continue;
+      }
+      await installLocalPlugin(plugin.path);
+      p.log.success(`Installed local plugin ${plugin.name}`);
+      installed.push(plugin.name);
+      continue;
+    }
+    await installRegistryPlugin(plugin.name, plugin.version);
+    p.log.success(`Installed registry plugin ${plugin.name}`);
+    installed.push(plugin.name);
+  }
+  await updateState({ installedPlugins: installed });
+}
+
 export async function runInit(opts: InitOptions = {}): Promise<void> {
   intro();
   await ensureStateDir();
@@ -213,6 +239,8 @@ export async function runInit(opts: InitOptions = {}): Promise<void> {
   ];
 
   await installPhase(extras);
+
+  await pluginsPhase(choices.plugins);
 
   await writeEnvFromChoices(choices);
   await updateState({ envWritten: true });

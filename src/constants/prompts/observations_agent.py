@@ -4,7 +4,7 @@ Created Date: Friday October 24th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
 Last Modified: Friday October 24th 2025 6:28:49 pm
-Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@gmail.com>
+Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
@@ -19,8 +19,10 @@ You must return the text with the hidden, implicit concepts and meanings.
 Text:
 {text}
 
-You must look for the following things to observe:
 {observate_for}
+
+This is the previous information that you can consider about the context where the text you are observing lies in:
+{context}
 
 You must return a json list of strings representing the observations you made in the text.
 [

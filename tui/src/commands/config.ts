@@ -17,10 +17,17 @@ import {
   toInitChoices,
   type SetupDraft,
 } from "../flows/setup-wizard.js";
+import { askPluginUninstall, askPlugins } from "../flows/plugins.js";
 import { writeEnvFromChoices } from "../lib/write-env.js";
 import { installExtras, missingExtras } from "../lib/python.js";
-import { isPromptBack, pickOne } from "../lib/prompts.js";
-import type { InitChoices } from "../types.js";
+import { askText, isPromptBack, pickOne } from "../lib/prompts.js";
+import {
+  installLocalPlugin,
+  installRegistryPlugin,
+  listInstalledPlugins,
+  uninstallPlugin,
+} from "../lib/plugins.js";
+import type { InitChoices, InstallState } from "../types.js";
 
 const MENU_BACK_HINT = "Return to configuration menu";
 
@@ -32,6 +39,7 @@ type ConfigMenuSection =
   | "pipeline"
   | "connections"
   | "auth"
+  | "plugins"
   | "wizard"
   | "save"
   | "exit";
@@ -64,18 +72,19 @@ function draftSummary(draft: ConfigDraft): string {
   lines.push(
     draft.auth?.brainpatToken ? "Auth token: set" : "Auth token: not configured",
   );
+  lines.push(`Plugins selected: ${draft.plugins?.length ?? 0}`);
   return lines.join("\n");
 }
 
-function missingForSave(draft: ConfigDraft): string[] {
-  const missing: string[] = [];
-  if (!draft.dbs) missing.push("databases");
-  if (!draft.servicesRuntime) missing.push("services runtime");
-  if (!draft.models) missing.push("models");
-  if (!draft.pipeline) missing.push("pipeline");
-  if (!draft.connections) missing.push("connections");
-  if (!draft.auth?.brainpatToken) missing.push("authentication");
-  return missing;
+function hasCompleteDraft(draft: ConfigDraft): boolean {
+  return Boolean(
+    draft.dbs &&
+      draft.servicesRuntime &&
+      draft.models &&
+      draft.pipeline &&
+      draft.connections &&
+      draft.auth?.brainpatToken,
+  );
 }
 
 async function configMainMenu(): Promise<ConfigMenuSection> {
@@ -93,6 +102,7 @@ async function configMainMenu(): Promise<ConfigMenuSection> {
       { value: "pipeline", label: "Pipeline (OCR)" },
       { value: "connections", label: "Connection details" },
       { value: "auth", label: "Authentication token" },
+      { value: "plugins", label: "Plugins (install/uninstall)" },
       {
         value: "wizard",
         label: "Configure all (step-by-step)",
@@ -202,6 +212,80 @@ async function configureAuth(draft: ConfigDraft): Promise<void> {
   p.log.success("Authentication token updated.");
 }
 
+async function configurePlugins(draft: ConfigDraft): Promise<void> {
+  const action = await pickOne<"add_search" | "install_path" | "uninstall" | "list" | "back">({
+    message: "Plugin management",
+    options: [
+      { value: "add_search", label: "Search and add plugin (local/registry)" },
+      { value: "install_path", label: "Install local plugin by path" },
+      { value: "uninstall", label: "Uninstall installed plugin" },
+      { value: "list", label: "List installed plugins" },
+      { value: "back", label: "Back" },
+    ],
+    initialValue: "add_search",
+  });
+  if (action === "back") return;
+  if (action === "list") {
+    const installed = await listInstalledPlugins();
+    if (installed.length === 0) {
+      p.log.info("No installed plugins.");
+      return;
+    }
+    p.note(
+      installed.map((plugin) => `${plugin.name} (${plugin.version})`).join("\n"),
+      "Installed plugins",
+    );
+    return;
+  }
+  if (action === "install_path") {
+    const pluginPath = await askText({
+      message: "Enter local plugin directory path",
+      placeholder: "/path/to/plugin",
+    });
+    if (!pluginPath.trim()) {
+      p.log.warn("No path provided.");
+      return;
+    }
+    const installedName = await installLocalPlugin(pluginPath.trim());
+    const existing = draft.plugins ?? [];
+    draft.plugins = [
+      ...existing.filter((plugin) => plugin.name !== installedName),
+      { name: installedName, source: "local", path: pluginPath.trim() },
+    ];
+    p.log.success(`Installed local plugin ${installedName}.`);
+    return;
+  }
+  if (action === "uninstall") {
+    const selected = await askPluginUninstall({ allowBack: true, backHint: MENU_BACK_HINT });
+    if (selected === null || isPromptBack(selected)) {
+      return;
+    }
+    await uninstallPlugin(selected);
+    draft.plugins = (draft.plugins ?? []).filter((plugin) => plugin.name !== selected);
+    p.log.success(`Uninstalled plugin ${selected}.`);
+    return;
+  }
+  const selectedPlugins = await askPlugins({
+    allowBack: true,
+    backHint: MENU_BACK_HINT,
+    initial: draft.plugins ?? [],
+  });
+  if (isPromptBack(selectedPlugins)) {
+    return;
+  }
+  for (const plugin of selectedPlugins) {
+    if (plugin.source === "local") {
+      if (!plugin.path) continue;
+      await installLocalPlugin(plugin.path);
+      p.log.success(`Installed local plugin ${plugin.name}.`);
+      continue;
+    }
+    await installRegistryPlugin(plugin.name, plugin.version);
+    p.log.success(`Installed registry plugin ${plugin.name}.`);
+  }
+  draft.plugins = selectedPlugins;
+}
+
 async function runConfigWizard(draft: ConfigDraft): Promise<void> {
   const completed = await runSetupWizard(draft, {
     firstStepBack: "return",
@@ -214,18 +298,33 @@ async function runConfigWizard(draft: ConfigDraft): Promise<void> {
 }
 
 async function saveDraft(draft: ConfigDraft): Promise<boolean> {
-  const missing = missingForSave(draft);
-  if (missing.length > 0) {
-    p.log.error(
-      "Cannot save yet. Still need: " + missing.join(", ") + ".",
+  const statePatch: Partial<InstallState> = {};
+  if (draft.servicesRuntime) {
+    statePatch.servicesRuntime = draft.servicesRuntime;
+  }
+  if (draft.plugins) {
+    statePatch.installedPlugins = draft.plugins.map((plugin) => plugin.name);
+  }
+  if (Object.keys(statePatch).length > 0) {
+    await updateState(statePatch);
+  }
+
+  if (!hasCompleteDraft(draft)) {
+    p.log.success("Changes saved.");
+    p.log.warn(
+      "Draft is partial, so .env was not rewritten. Use Configure all to fully regenerate it.",
     );
-    p.note(draftSummary(draft), "Current draft");
-    return false;
+    p.outro(pc.green("Partial configuration applied."));
+    return true;
   }
 
   const choices = toInitChoices(draft);
   await writeEnvFromChoices(choices);
-  await updateState({ envWritten: true, servicesRuntime: choices.servicesRuntime });
+  await updateState({
+    envWritten: true,
+    servicesRuntime: choices.servicesRuntime,
+    installedPlugins: choices.plugins.map((plugin) => plugin.name),
+  });
 
   const extras = [
     ...ocrToExtras(choices.pipeline.ocrMode),
@@ -255,6 +354,10 @@ export async function runConfig(): Promise<void> {
 
   const draft: ConfigDraft = {
     servicesRuntime: state.servicesRuntime ?? undefined,
+    plugins: (state.installedPlugins ?? []).map((name) => ({
+      name,
+      source: "local",
+    })),
   };
 
   p.note(
@@ -295,6 +398,9 @@ export async function runConfig(): Promise<void> {
         break;
       case "auth":
         await configureAuth(draft);
+        break;
+      case "plugins":
+        await configurePlugins(draft);
         break;
       case "wizard":
         await runConfigWizard(draft);

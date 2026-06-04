@@ -90,10 +90,18 @@ async def get_text_chunks(
     limit: int = 10,
     skip: int = 0,
     query_text: Optional[str] = None,
+    metadata_eq: Optional[dict[str, str]] = None,
+    order: str = "desc",
 ):
     """
-    Get text chunks by a query text.
+    Get text chunks by a query text and optional metadata equality filters.
     """
     return await asyncio.to_thread(
-        data_adapter.get_text_chunks, brain_id, limit, skip, query_text
+        data_adapter.get_text_chunks,
+        brain_id,
+        limit,
+        skip,
+        query_text,
+        metadata_eq,
+        order,
     )

@@ -50,6 +50,9 @@ def parse_manifest(manifest_path: Path) -> PluginManifest:
         if field_name not in data:
             raise ValueError(f"Missing required field '{field_name}' in {manifest_path}")
 
+    pip_dependencies = data.get("pip_dependencies") or []
+    tags = data.get("tags") or []
+
     return PluginManifest(
         name=str(data["name"]),
         version=str(data["version"]),
@@ -58,7 +61,7 @@ def parse_manifest(manifest_path: Path) -> PluginManifest:
         author=str(data.get("author", "")),
         brainapi_version=str(data.get("brainapi_version", "")),
         priority=int(data.get("priority", 100)),
-        pip_dependencies=list(data.get("pip_dependencies", [])),
-        tags=[str(t) for t in data.get("tags", [])],
+        pip_dependencies=list(pip_dependencies),
+        tags=[str(t) for t in tags],
         plugin_dir=manifest_path.parent,
     )

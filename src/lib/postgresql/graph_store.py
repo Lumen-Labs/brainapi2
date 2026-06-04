@@ -19,6 +19,12 @@ import psycopg2.extras
 from src.config import config
 
 from ._provisioning import borrow, ensure_brain_database, get_brain_pool
+from .read_query import (
+    MAX_READ_QUERY_ROWS,
+    READ_QUERY_TIMEOUT_MS,
+    ReadQueryValidationError,
+    validate_read_only_sql,
+)
 
 
 class GraphDatabaseError(Exception):
@@ -345,6 +351,30 @@ class PostgreSQLGraphStore:
     def ensure_database(self, database: str) -> None:
         self._ensure_brain_row(database)
         self._load_brain(database)
+
+    def execute_read_query(
+        self,
+        brain_id: str,
+        query: str,
+        max_rows: int = MAX_READ_QUERY_ROWS,
+    ) -> dict[str, Any]:
+        try:
+            sql = validate_read_only_sql(query)
+        except ReadQueryValidationError as exc:
+            raise GraphDatabaseError(str(exc)) from exc
+        self._ensure_brain_schema(brain_id)
+        with self._connection(brain_id) as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(f"SET LOCAL statement_timeout = {READ_QUERY_TIMEOUT_MS}")
+                cur.execute(sql)
+                rows = cur.fetchmany(max_rows + 1)
+        truncated = len(rows) > max_rows
+        if truncated:
+            rows = rows[:max_rows]
+        return {
+            "records": [dict(row) for row in rows],
+            "truncated": truncated,
+        }
 
     def merge_node(
         self,
