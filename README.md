@@ -8,28 +8,23 @@
 <h1 align="center">🧠 BrainAPI</h1>
 
 <p align="center">
-  <strong>Your AI doesn't have memory. It has a database. There's a difference.</strong>
+  <strong>Turn raw text into a living knowledge graph — automatically.</strong>
   <br/><br/>
-  <em>BrainAPI turns raw text, documents and events into a living knowledge graph —<br/>one that reasons, connects dots, and grows smarter with every ingestion.</em>
-</p>
-
-<p align="center">
-  <!-- <a href="https://brainapi.lumen-labs.ai/docs/quickstart"><img src="https://img.shields.io/badge/⚡%20Try%20it%20in%2030%20seconds-Get%20Started-FF6B35?style=for-the-badge" alt="Get Started"/></a> -->
-  <a href="https://youtu.be/ECOleTRjl64?si=fBUALoYvsiUl-BPC"><img src="https://img.shields.io/badge/▶%20Watch%20Demo-YouTube-FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="Watch Demo"/></a>
+  <em>You send text. A swarm of agents reads it, takes notes, and draws the graph for you.<br/>
+  Then you ask questions and get answers backed by a traceable path — not a similarity guess.</em>
 </p>
 
 <p align="center">
   <a href="https://brainapi.lumen-labs.ai/">BrainAPI Cloud</a> •
-  <a href="#-try-it-now">Get Started</a> •
-  <a href="#-what-is-brainapi">Overview</a> •
-  <a href="#-core-philosophy-the-triangle-of-attribution">Core Philosophy</a> •
-  <a href="#-the-agentic-swarm">Agents</a> •
-  <a href="https://brainapi.lumen-labs.ai/docs/v2/installation">SDKs</a> •
-  <a href="https://brainapi.lumen-labs.ai/docs/v2">API Docs ↗</a>
+  <a href="#-quickstart-fastest-way-to-run-it">Quickstart</a> •
+  <a href="#-what-is-brainapi">What it is</a> •
+  <a href="#️-how-it-works-the-agent-swarm">How it works</a> •
+  <a href="#-where-you-can-use-it">Use cases</a> •
+  <a href="https://brainapi.lumen-labs.ai/docs/v2">Docs ↗</a>
 </p>
 
 <a href="https://youtu.be/ECOleTRjl64?si=fBUALoYvsiUl-BPC">
-  <img src=".github/assets/screen-video.png" width="100%" alt="Watch the video" />
+  <img src=".github/assets/screen-video.png" width="100%" alt="Watch the demo" />
 </a>
 
 <p align="center">
@@ -38,15 +33,21 @@
 
 ---
 
-## ⚡ See It in 30 Seconds
+## 📖 What is BrainAPI?
 
-Feed BrainAPI one sentence:
+**BrainAPI reads your text and builds a knowledge graph out of it — by itself.**
+
+You feed it documents, notes, messages or events. Behind the scenes a group of AI agents reads everything, understands what happened, writes down the facts, and connects them into a queryable graph. You then ask questions in plain language and get answers grounded in the actual connections it found.
+
+The trick is that BrainAPI is **event-centric**. Instead of just storing "A is related to B," it captures _who did what, to whom, when, and in what context_. That's what lets it answer multi-step questions and always show you the path it used to get there.
+
+Feed it one sentence:
 
 ```
 "Emily organized the AI Ethics Meetup in London on March 8, 2024."
 ```
 
-Ask it a question it was never explicitly told the answer to:
+Ask something it was never explicitly told:
 
 ```python
 result = client.retrieveContext("Who organized AI events in London in Q1 2024?")
@@ -54,242 +55,123 @@ result = client.retrieveContext("Who organized AI events in London in Q1 2024?")
 # → result.triples shows the full graph path used to derive this
 ```
 
-That trace is the difference. Not a similarity score. Not a nearest-neighbour guess. A **reasoned, walkable path through a knowledge graph** — built automatically from your raw text.
+That trace is the difference. Not a nearest-neighbour guess — a **reasoned, walkable path through a graph it built for you.**
 
 > **[▶ Watch the full demo →](https://youtu.be/ECOleTRjl64?si=fBUALoYvsiUl-BPC)**
 
 ---
 
-## 🏃 Try It Now
+## 🏃 Quickstart (fastest way to run it)
 
-The fastest way to run BrainAPI locally is the **`brainapi` TUI** — an interactive CLI that clones the project, creates a Python venv, walks you through configuration, starts backing services, and launches the API.
+The quickest way to get BrainAPI running is the **`brainapi` TUI** — an interactive CLI that clones the project, sets up a Python environment, walks you through configuration, starts the backing services, and launches everything for you. Pick the defaults and you'll be up in a few minutes.
 
 ```sh
 npm install -g brainapi-tui
-brainapi init     # clone, install deps, interactive setup
-brainapi start    # docker services + API + MCP + worker
+brainapi init     # clone, install deps, interactive setup → choose "Use default settings"
+brainapi start    # backing services + API + MCP + worker + console
 ```
 
-Running `brainapi start`, `brainapi config`, or `brainapi doctor` before `init` automatically runs `init` first.
+When it's up:
+
+- **API** → `http://localhost:8000`
+- **Console (web UI)** → `http://localhost:8000/console`
+- **MCP server** → `http://localhost:8001/mcp`
+
+Log in to the console with the `BRAINPAT_TOKEN` generated during setup. That's it — you have a working brain.
 
 ### TUI commands
 
-| Command           | Description                                                                                                 |
-| ----------------- | ----------------------------------------------------------------------------------------------------------- |
-| `brainapi init`   | Clone the repo into `~/.brainapi/source/`, create a venv, run the setup wizard, optionally start containers |
-| `brainapi start`  | Bring up backing services and run the API, MCP server, and Celery worker (Ctrl-C stops all)                 |
-| `brainapi config` | Re-open the setup wizard and rewrite `.env` — pick a section or walk through step-by-step with **Back**     |
-| `brainapi doctor` | Check Python, Docker, Ollama, cloud credentials, and configured services                                    |
-| `brainapi update` | `git pull` the install and reinstall Python dependencies                                                    |
+| Command           | What it does                                                                                |
+| ----------------- | ------------------------------------------------------------------------------------------- |
+| `brainapi init`   | Clone the repo into `~/.brainapi/source/`, create a venv, run the setup wizard              |
+| `brainapi start`  | Bring up backing services and run the API, MCP server, and Celery worker (Ctrl-C stops all) |
+| `brainapi config` | Re-open the setup wizard to change one area (databases, models, pipeline, plugins, …)       |
+| `brainapi doctor` | Check Python, Docker, Ollama, cloud credentials, and configured services                    |
+| `brainapi update` | `git pull` the install and reinstall Python dependencies                                    |
 
-**`brainapi start` options**
+Running any command (except `help`) before `init` will run `init` first automatically.
 
-| Option                                  | Description                                                                                 |
-| --------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `--pipeline accurate\|lightweight`      | Set `PIPELINE_MODE` before start (accurate = full pipeline; lightweight = faster ingestion) |
-| `--no-services`                         | Skip bringing backing services up                                                           |
-| `--no-api` / `--no-mcp` / `--no-worker` | Skip individual processes                                                                   |
-| `--only api,mcp,worker`                 | Run only the listed processes                                                               |
+**Useful `brainapi start` flags:** `--pipeline accurate|lightweight`, `--no-services`, `--no-api` / `--no-mcp` / `--no-worker`, `--only api,mcp,worker`. Full reference → [`tui/README.md`](tui/README.md).
 
-See `brainapi help` for `--repo`, `--branch`, and `--force` flags.
+> The TUI installs into `~/.brainapi/` (source, venv, `.env`, and `state.json`) — separate from any git clone. Override with `BRAINAPI_HOME`, `BRAINAPI_REPO_URL`, or `BRAINAPI_BRANCH`.
 
-### What the setup wizard configures
+---
 
-1. **Defaults or custom stack** — e.g. NetworkX graph + PostgreSQL data/vectors, or pick each database separately
-2. **Services runtime** — Docker Compose vs native installs
-3. **Models** — local (Ollama) or remote (OpenAI, Azure OpenAI, GCP Vertex, Amazon Bedrock)
-4. **Embedding dimensions** — inferred for known models, or confirm/enter manually
-5. **Pipeline** — OCR mode and optional heavy extras
-6. **Connections** — URLs and credentials for only the services you selected
-7. **`BRAINPAT_TOKEN`** — generate or paste your API key
+## 🛠️ Run it locally (dev mode)
 
-`brainapi config` opens a section menu (databases, models, pipeline, connections, auth, …) so you can change one area without redoing everything, or choose **Step-by-step wizard** to walk through the full flow with **Back** at each prompt.
-
-If Python (≥3.11) or Docker is missing, the TUI suggests platform-aware install commands and retries detection automatically.
-
-### Where the TUI installs things
-
-| Path                        | Purpose                    |
-| --------------------------- | -------------------------- |
-| `~/.brainapi/source/`       | Cloned BrainAPI repo       |
-| `~/.brainapi/source/.venv/` | Python virtual environment |
-| `~/.brainapi/source/.env`   | Generated configuration    |
-| `~/.brainapi/state.json`    | Install state              |
-
-Override with `BRAINAPI_HOME`, `BRAINAPI_REPO_URL`, or `BRAINAPI_BRANCH`. Full CLI reference → [`tui/README.md`](tui/README.md).
-
-### Local Console
-
-A web UI for browsing your local BrainAPI data — graph, text chunks, vectors, tasks, and observations — with BrainPAT login.
-
-**Build and serve from the API (single port):**
+If you're contributing or hacking on BrainAPI, run it straight from the repo with `make`:
 
 ```sh
-make build-console
-make start-api
-# open http://localhost:8000/console
+git clone https://github.com/lumen-labs/brainapi2.git && cd brainapi2
+poetry install
+make start-all      # backing services + API (:8000) + MCP (:8001) + Celery worker
 ```
 
-**Dev mode with hot reload:**
+`make start-all` runs everything from source with hot reload enabled, so code changes are picked up live.
+
+**Console in dev mode:**
 
 ```sh
+make build-console && make start-api   # serve console at http://localhost:8000/console
+# — or hot-reload the console UI separately —
 make start-api          # terminal 1
 make start-console-dev  # terminal 2 → http://localhost:5173/console/
 ```
 
-Log in with your `BRAINPAT_TOKEN` from `.env` (system PAT) or a per-brain PAT. Set `CONSOLE_ENABLED=false` to disable static serving in non-development environments.
+**Other handy targets:** `make start-api`, `make start-mcp`, `make stop-all`, and `make install-extras` (auto-installs heavy ML extras like local OCR based on your `.env`).
 
-### Alternative: clone and run from source
-
-For contributors or when working inside this repo:
-
-```sh
-git clone https://github.com/lumen-labs/brainapi2.git && cd brainapi2
-poetry install && make start-all
-```
-
-Or build the TUI locally and point it at this checkout:
-
-```sh
-cd tui && npm install && npm run build
-node dist/index.js init --repo /path/to/brainapi2
-```
-
-### Alternative: Docker only
+**Docker only:**
 
 ```sh
 docker compose -f example-docker-compose.yaml up -d
 ```
 
-### Optional dependencies (heavy ML extras)
-
-The base install is enough for remote LLMs and remote OCR. Heavier components are gated by `.env` flags and live in `[project.optional-dependencies]` groups:
-
-| Group         | Triggered by                 | Adds                                                       |
-| ------------- | ---------------------------- | ---------------------------------------------------------- |
-| `docling-ocr` | `OCR_MODE=docling` in `.env` | `docling`, `accelerate` (~2 GB) for local PDF/DOCX parsing |
-
-Install the right extras based on your current `.env`:
-
-```sh
-make install-extras                       # auto-detects from .env, installs only what's needed
-make install-extras-all                   # install every optional group
-make check-extras                         # exit non-zero if any required extras are missing
-
-# Or call the script directly:
-python scripts/install_extras.py                  # auto-detect from .env
-python scripts/install_extras.py docling-ocr      # force a specific group
-python scripts/install_extras.py --dry-run        # print pip command, don't run
-```
-
-If you flip `OCR_MODE=docling` later, re-run `make install-extras` — pip is a no-op when deps are already satisfied. The `brainapi` TUI calls the same script during setup.
-
 Then ingest your first data point:
 
 ```sh
-curl -X POST http://localhost:3000/ingest \
-  -H "Authorization: Bearer $BRAIN_API_KEY" \
+curl -X POST http://localhost:8000/ingest/ \
+  -H "Authorization: Bearer $BRAINPAT_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"type": "text", "content": "Emily organized the AI Ethics Meetup in London on 2024-03-08."}'
+  -d '{"data": {"data_type": "text", "text_data": "Emily organized the AI Ethics Meetup in London on 2024-03-08."}, "brain_id": "default"}'
 ```
-
-Full walkthrough → [Quick Start Guide](https://brainapi.lumen-labs.ai/docs/quickstart)
 
 ---
 
-## 📖 What is BrainAPI?
+## 🖥️ The Console
 
-BrainAPI is an advanced **knowledge graph ecosystem** designed for high-precision semantic reasoning and relational analysis across multi-domain datasets. Unlike traditional databases that store static snapshots, BrainAPI uses a dynamic **Event-Centric architecture** — treating actions, interactions and state changes as first-class nodes that capture multi-dimensional context, temporal history and complex multi-hop reasoning.
+The Console is a web UI for exploring everything inside your brain: the **graph**, **text chunks**, **vectors**, **observations**, **tasks**, and an **ingest** page to push new data. It's served on the same port as the API at `http://localhost:8000/console` and you log in with your `BRAINPAT_TOKEN`.
 
-**The core idea:** raw documents, plain text and event streams go in. A queryable, time-aware knowledge graph comes out — powering long-term memory, recommendations and natural-language retrieval for AI agents without you needing to build an extraction pipeline yourself.
+<p align="center">
+  <img src=".github/assets/console-sh.png" width="100%" alt="BrainAPI Console (screenshot coming soon)" />
+</p>
 
-> **Why Event-Centric?**  
-> Move beyond simple keyword retrieval toward **"Action-Path Reasoning."** BrainAPI identifies not just _that_ two entities are connected, but _how_ they interacted, at what _magnitude_, and within what _environment_.
-
-### When to use BrainAPI
-
-✅ **BrainAPI excels when you need:**
-
-- Structured knowledge extracted from messy, constantly-changing data sources
-- Long-term AI memory that persists across sessions, users and documents
-- Explainable relationships behind recommendations — not just similarity scores
-- Multi-hop queries over temporal data with traceable provenance
-
-⚠️ **It may be overkill if:**
-
-- Your data fits a fixed schema you fully control
-- A single SQL query or simple CRUD operations solve the problem
-- You need purely local, offline-only storage with zero extraction
+> Set `CONSOLE_ENABLED=false` to disable static serving in environments where you don't want the UI exposed.
 
 ---
 
-## ⚙️ How It Works: The Ingestion Pipeline
+## ⚙️ How It Works: The Agent Swarm
 
-Every piece of data you feed BrainAPI flows through a five-step pipeline before it becomes queryable knowledge:
+Every piece of text you send is read and discussed by a **swarm of specialized agents**. After they understand it, they write down notes and draw the graph. Each agent has one narrow job, which keeps the pipeline reliable and auditable end to end.
 
-```
-  Raw data (files, text, APIs, event streams)
-          │
-          ▼
-  ┌───────────────────────────────────────────────────┐
-  │  1. INGEST                                        │
-  │     Accept documents, plain text, structured      │
-  │     events                                        │
-  └──────┬────────────────────────────────────────────┘
-         │
-         ▼
-  ┌───────────────────────────────────────────────────┐
-  │  2. ANNOTATE                                      │
-  │     Save observations, notes and annotations on   │
-  │     the new data — informed by existing knowledge │
-  │     already in the graph                          │
-  └──────┬────────────────────────────────────────────┘
-         │
-         ▼
-  ┌───────────────────────────────────────────────────┐
-  │  3. PROCESS                                       │
-  │                                                   │
-  │  3a. EXTRACT                                      │
-  │      Identify entities, events, adjectives and    │
-  │      properties in the new data                   │
-  │                 │                                 │
-  │                 ▼                                 │
-  │  3b. LINK                                         │
-  │      Connect extracted nodes with relationships   │
-  │      — to each other and to existing KG nodes     │
-  │                 │                                 │
-  │                 ▼                                 │
-  │  3c. DEDUPLICATE                                  │
-  │      Entity resolution — merge duplicates,        │
-  │      reconcile conflicts, unify references        │
-  │                 │                                 │
-  │                 ▼                                 │
-  │  3d. CONSOLIDATE  (optional)                      │
-  │      High-level graph reasoning to inject or      │
-  │      edit inferred knowledge from the current     │
-  │      state of the graph                           │
-  └──────┬────────────────────────────────────────────┘
-         │
-         ▼
-  ┌───────────────────────────────────────────────────┐
-  │  4. STORE                                         │
-  │     Persist as a connected, time-aware graph      │
-  └──────┬────────────────────────────────────────────┘
-         │
-         ▼
-  ┌───────────────────────────────────────────────────┐
-  │  5. QUERY                                         │
-  │     REST · Python SDK · Node SDK · MCP            │
-  └───────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    Text["Raw text"] --> Scout["🔍 Scout<br/>extract ALL entities"]
+    Text --> Observer["📝 Observations Agent<br/>write notes about facts<br/>using prior context"]
+    Scout -->|entities| Architect["🏛️ Architect<br/>build event-centric<br/>relationships"]
+    Architect -->|relationships + entities| Janitor["🧹 Janitor<br/>verify correctness<br/>+ check for duplicates"]
+    Janitor -->|"errors + instructions"| Architect
+    Janitor -->|"OK"| Graph["📊 Knowledge Graph<br/>(append-only)"]
+    Observer --> Graph
 ```
 
-You bring the data. BrainAPI handles the rest — no custom extraction pipeline required.
+1. **🔍 Scout** reads the text and extracts **all** the entities it contains — people, things, events, quantities.
+2. **📝 Observations Agent** runs alongside and writes down notes about the facts in the text, taking the previously known context into account.
+3. **🏛️ Architect** takes the Scout's entities, re-reads the text, and creates the connections between them as **event-centric relationships** — `subject —rel→ event —rel→ object`. Actions become first-class event hubs rather than flat edges.
+4. **🧹 Janitor** checks the Architect's work: are the relationships correct, and do similar nodes (the same entity) or triplets (the same fact) already exist in the graph? If something is wrong, the Janitor tells the Architect exactly what to fix and expects a corrected output, then checks again — looping until it's clean.
 
----
+### The Triangle of Attribution
 
-## 🔺 Core Philosophy: The Triangle of Attribution
-
-Every action in the graph is modeled as a central **Event Hub** connecting three critical points through directed energy vectors:
+Every action is modeled as a central **Event Hub** connecting three points, which is what makes multi-hop, traceable answers possible:
 
 ```
                     ┌─────────────────┐
@@ -298,7 +180,6 @@ Every action in the graph is modeled as a central **Event Hub** connecting three
                     └────────┬────────┘
                              │
            ┌─────────────────┼─────────────────┐
-           │                 │                 │
            ▼                 ▼                 ▼
     ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
     │    ACTOR     │  │    TARGET    │  │   CONTEXT    │
@@ -307,314 +188,154 @@ Every action in the graph is modeled as a central **Event Hub** connecting three
          :MADE            :TARGETED       :OCCURRED_WITHIN
 ```
 
-| Vector         | Relationship                 | Description                                                                       |
-| -------------- | ---------------------------- | --------------------------------------------------------------------------------- |
-| **Initiation** | `:MADE` / `:INITIATED`       | Connects the **Actor** to the **Event Hub**. Carries quantitative `amount` data.  |
-| **Targeting**  | `:TARGETED` / `:DIRECTED_AT` | Connects the **Event Hub** to the **Target** (recipient/destination).             |
-| **Context**    | `:OCCURRED_WITHIN`           | Connects the **Event Hub** to a **Persistent Anchor** (org, location, timeframe). |
+So `"Emily organized the AI Ethics Meetup in London"` becomes:
 
-This model is what enables BrainAPI to answer questions like _"Who organized AI events in London in March 2024?"_ and return a traceable graph path — not just a similarity score.
+```
+(Emily)-[:MADE]->(Organizing Event)-[:TARGETED]->(AI Ethics Meetup)
+                                     \-[:OCCURRED_WITHIN]->(London)
+```
+
+### Append-only by design
+
+BrainAPI follows an **append-only philosophy**: nothing is deleted from the graph. Every new action is appended as its own event node rather than overwriting what was already there. This keeps the full history intact and lets you **reconstruct how facts evolved over time** — events are never merged away, so the provenance trail always survives.
+
+### Two pipeline modes
+
+- **`accurate`** (default) — the full swarm runs: Scout extracts every entity, the Observations agent writes notes, and the Janitor validates and deduplicates the Architect's relationships.
+- **`lightweight`** — a faster, cheaper path that extracts only the most important entities and skips the heavier validation steps. Switch with `--pipeline lightweight` or `PIPELINE_MODE` in `.env`.
 
 ---
 
-## 🤖 The Agentic Swarm
+## 🔎 Retrieving Knowledge
 
-BrainAPI transforms unstructured text into rigorous graph schemas through a specialized **multi-agent ingestion pipeline**. Each agent has a single, clearly-defined responsibility:
+Once your data is in, BrainAPI exposes purpose-built retrieval endpoints (REST, on port `8000`):
 
-| Agent               | Role                  | Responsibility                                                                       |
-| :------------------ | :-------------------- | :----------------------------------------------------------------------------------- |
-| 🔍 **Scout**        | Semantic Fact-Finding | Identifies raw entities; distinguishes static properties from dynamic shared anchors |
-| 🏛️ **Architect**    | Structural Mapping    | Translates facts into the Triangle of Attribution, enforcing vector directionality   |
-| 🧹 **Janitor**      | Directional Police    | Audits graph units, resolves UUIDs, flips inverted relationships violating ontology  |
-| 🔄 **Consolidator** | Micro-Swarm Auditor   | Performs deduplication and hub merging via collaborative voting (MAKGED)             |
+| Endpoint                     | Method | What you get                                                                                                     |
+| ---------------------------- | ------ | ---------------------------------------------------------------------------------------------------------------- |
+| `/retrieve/context`          | `POST` | **Relevant information for a piece of text** — the matching graph triples plus historical context                |
+| `/retrieve/entity/status`    | `GET`  | **Existence check** for a specific entity — returns whether it exists, its node, relationships, and observations |
+| `/retrieve/entity/synergies` | `GET`  | **Similar things** related to a given one — effectively a recommendation algorithm over the graph                |
 
-This modular design keeps ingestion reliable while maintaining a consistent, conflict-free graph over time. Because each agent has a narrow role, failures are isolated and the pipeline stays auditable end-to-end.
+**Get context for a question:**
+
+```sh
+curl -X POST http://localhost:8000/retrieve/context \
+  -H "Authorization: Bearer $BRAINPAT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Who organized AI events in London in March 2024?", "brain_id": "default"}'
+# → text_context + triples (the graph path) + historical_context
+```
+
+**Check if an entity exists:**
+
+```sh
+curl "http://localhost:8000/retrieve/entity/status?target=Emily" \
+  -H "Authorization: Bearer $BRAINPAT_TOKEN"
+# → { "exists": true, "node": {...}, "relationships": [...], "observations": [...] }
+```
+
+**Find synergies (recommendations):**
+
+```sh
+curl "http://localhost:8000/retrieve/entity/synergies?target=Neural%20Networks%20101" \
+  -H "Authorization: Bearer $BRAINPAT_TOKEN"
+# → similar entities ranked by how strongly they connect to the target
+```
+
+These three cover the most common needs, but there are more (`/retrieve/hops`, `/retrieve/entities/neighbors`, `/retrieve/text-chunks`, …). Full list → [REST API Reference](https://brainapi.lumen-labs.ai/docs/rest).
 
 ---
 
-## 🔎 Retrieval & Intelligence Layer
+## 🧩 Plugins: Make BrainAPI Fit Your Use Case
 
-<details>
-<summary><strong>KGLA — Knowledge Graph Enhanced Language Agents</strong></summary>
+Out of the box BrainAPI is a general-purpose understanding engine. **Plugins** let you reshape it into something far more specific — without forking the core. Because plugins can add routes, swap agent prompts, and register MCP tools, the same engine can become:
 
-Bridges structured facts and natural language. Extracts multi-hop paths and translates them into human-readable explanations using rich `description` properties stored in nodes and relationships.
+- **A cheap semantic search engine** — extract entities once, then serve fast graph-backed search instead of paying for vector queries every time.
+- **A recommendation system** — build on `/retrieve/entity/synergies` and custom routes to surface related products, content or collaborators.
+- **A domain-specific extractor** — override the Scout/Architect prompts so the swarm understands your ontology (CRM, legal, medical, …).
+- **An agent toolset** — register custom MCP tools so any LLM runtime can read and write your brain.
 
-</details>
+A plugin can:
 
-<details>
-<summary><strong>RGP — Relational Graph Perceiver with Temporal Sampling</strong></summary>
+- Add custom REST routes to the BrainAPI server
+- Override or extend the agents' prompts for domain-specific extraction
+- Register new MCP tools for agent runtimes
+- Ship its own background (Celery) tasks
 
-Applies **Temporal Subgraph Sampling** to prioritize contextually recent events while enabling "Non-Local Temporal Matching" — finding entities that shared similar challenges during the same chronological windows.
+### Install & publish
 
-</details>
+```sh
+poetry run brainapi install @community/crm-entities
+poetry run brainapi list --remote
 
-<details>
-<summary><strong>HippoRAG2 — Subgraph Localization</strong></summary>
+poetry run brainapi register                 # become a publisher
+poetry run brainapi publish ./my-plugin.tar.gz
+```
 
-Uses **Personalized PageRank** to navigate large, disparate data clusters. By traversing abstract "Concept Nodes," bridges disconnected subgraphs to discover structurally distant but semantically related information.
-
-</details>
-
-<details>
-<summary><strong>Quantitative Synergy Scoring</strong></summary>
-
-Ranks results using a multi-factor formula balancing semantic similarity, temporal recency and quantitative alignment:
-
-$$Score = (Similarity \times W_1) + (Recency \times W_2) + (PropertyAlignment)$$
-
-Retrieval is based not just on _what_ an entity is, but on the _scale_ and _timing_ of their recorded actions.
-
-</details>
+Browse and publish at the [Plugin Registry →](https://registry.brain-api.dev/app)
 
 ---
 
-## 🚀 Use Cases
+## 🚀 Where You Can Use It
 
-### 1. AI Memory for Agents & Apps
+BrainAPI shines wherever messy, ever-changing text needs to become structured, queryable understanding:
 
-Equip your agents and applications with persistent, structured memory — enabling nuanced contextual understanding, continuity across sessions and knowledge grounding over long time horizons.
+- **AI memory for agents** — persistent, structured memory across sessions and documents, with provenance.
+- **Recommendation systems** — grounded in real behavioural paths, not click co-occurrence.
+- **Semantic search** — retrieve by meaning and multi-hop reasoning across docs, tickets and chat.
+- **Expert & community mapping** — "Who in our org has worked on Kubernetes and ML pipelines together?"
+- **Business intelligence from qualitative data** — turn feedback and support conversations into queryable signals.
+- **Investigation & compliance** — connect people, events, documents and timestamps into a coherent, traceable graph.
 
-**Example input sequence:**
+✅ **Reach for BrainAPI when** you need structured knowledge from messy sources, long-term explainable memory, or multi-hop queries with a traceable answer.
 
-1. `"The user's favorite tool is VSCode."`
-2. `"She also uses GitHub Copilot for code suggestions."`
-
-**Constructed graph:**
-
-```
-(User)-[:MADE]->(Preference Event)-[:TARGETED]->(VSCode)
-(User)-[:MADE]->(Usage Event)-[:TARGETED]->(GitHub Copilot)
-                                  \
-                                   \-[:OCCURRED_WITHIN]->(Code Suggestions)
-```
-
-**Queries this unlocks:**
-
-- _"Which productivity tools does the user rely on for coding?"_
-- _"Recommend AI tools that integrate with VSCode."_
-
----
-
-### 2. Relationship-Driven Recommendation Systems
-
-Leverage BrainAPI's graph of actions, relationships and temporal contexts to produce precise recommendations — for content, products, collaborators or actions — grounded in real behavioural paths rather than click co-occurrence.
-
-**Example input:** `"Alice bought 'Neural Networks 101' during the Spring AI Symposium."`
-
-**Constructed graph:**
-
-```
-(Alice)-[:MADE {date: "2024-04-12"}]->(Purchase Event)-[:TARGETED]->(Neural Networks 101)
-                                      \
-                                       \-[:OCCURRED_WITHIN]->(Spring AI Symposium)
-```
-
-**Recommendation unlocked:**  
-_Bob also attended the Spring AI Symposium — he may be interested in the same books as Alice._
-
----
-
-### 3. Semantic Knowledge Search
-
-Move beyond keyword search and retrieve information via deep semantic connections, matching intent, events and multi-hop reasoning across documents, tickets and chat history.
-
-**Example input:** `"Tesla presented their latest battery at the 2023 Battery Expo in Berlin."`
-
-**Constructed graph:**
-
-```
-(Tesla)-[:MADE]->(Presentation Event)-[:TARGETED]->(Latest Battery)
-                                    \
-                                     \-[:OCCURRED_WITHIN]->(2023 Battery Expo)-[:HELD_IN]->(Berlin)
-```
-
-**Query:** `"What products did Tesla present in Berlin in 2023?"`  
-**Result:** `"The latest battery was presented at the 2023 Battery Expo in Berlin."`
-
----
-
-### 4. Community & Expert Mapping
-
-Identify domain experts, map collaboration paths and surface emerging topics within an organization or community. Answer questions like _"Who in our org has worked on Kubernetes and ML pipelines together?"_
-
-### 5. Business Intelligence from Qualitative Data
-
-Feed in customer feedback, usage events and support conversations. BrainAPI extracts patterns, sentiment signals and recurring themes — turning free-form qualitative data into structured, queryable business intelligence.
-
-### 6. Investigation & Compliance Workflows
-
-Connect people, events, documents and timestamps into a coherent investigative graph. Ideal for compliance teams, journalists and researchers who need to trace relationships across large, heterogeneous source corpora.
-
----
-
-### End-to-End Example: From Text to Graph to Answer
-
-**Step 1 — Ingest**
-
-```json
-{
-  "actor": "Emily",
-  "event": "organized",
-  "target": "AI Ethics Meetup",
-  "context": "London",
-  "date": "2024-03-08"
-}
-```
-
-**Step 2 — Graph representation**
-
-```
-(Emily)-[:MADE {date: "2024-03-08"}]->(Organizing Event)-[:TARGETED]->(AI Ethics Meetup)
-                                        \
-                                         \-[:OCCURRED_WITHIN]->(London)
-```
-
-**Step 3 — Retrieve**
-
-- Query: `"Who organized AI events in London in March 2024?"`
-- Result: `"Emily organized the 'AI Ethics Meetup' in London on 2024-03-08."`
-
-**Step 4 — Recommend**
-
-- Query: `"What other events has Emily organized, or what similar events are happening in London?"`
-- Result: Past and upcoming meetups in London, related organizers, AI-themed events.
+⚠️ **Skip it when** your data already fits a fixed schema you control, or a single SQL query solves the problem.
 
 ---
 
 ## 🔌 Connecting Claude Desktop via MCP
 
-The MCP server runs as a separate process on port **8001** (`http://localhost:8001/mcp`) to avoid ASGI nesting issues.
+The MCP server runs as a separate process on port **8001** (`http://localhost:8001/mcp`).
 
-1. Start the MCP server: `make start-mcp` — keep it running.
-2. Open Claude Desktop → **Settings → Developer → Edit Config** (`claude_desktop_config.json`).
-3. Add the following under `mcpServers`:
+1. Start it: `make start-mcp` (or it's already running via `brainapi start`).
+2. In Claude Desktop → **Settings → Developer → Edit Config**, add:
 
 ```json
 "brainapi-local": {
-  "command": "/path/to/your/node/version/v22.19.0/bin/npx",
+  "command": "/path/to/node/bin/npx",
   "args": ["-y", "@pyroprompts/mcp-stdio-to-streamable-http-adapter"],
   "env": {
     "URI": "http://localhost:8001/mcp",
     "MCP_NAME": "brainapi-local",
-    "PATH": "/path/to/your/node/version/v22.19.0/bin:/usr/local/bin:/usr/bin:/bin",
+    "PATH": "/path/to/node/bin:/usr/local/bin:/usr/bin:/bin",
     "BEARER_TOKEN": "your-pat-here"
   }
 }
 ```
 
-4. Ensure URL-based MCP servers are enabled in Claude Desktop settings.
+3. Make sure URL-based MCP servers are enabled in Claude Desktop settings.
 
 ---
 
-## 📦 SDKs & Packages
-
-Integrate BrainAPI into your stack using our official client libraries:
+## 📦 SDKs
 
 | Platform    | Package                                                               | Status                                                                                    |
 | ----------- | --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
 | **Python**  | [`lumen_brain`](https://pypi.org/project/lumen_brain/)                | ![PyPI](https://img.shields.io/pypi/v/lumen_brain?label=v0.x&color=orange) ⚠️ Pre-release |
 | **Node.js** | [`lumen-brain`](https://www.npmjs.com/package/@lumenlabs/lumen-brain) | ![npm](https://img.shields.io/npm/v/lumen-brain?label=v0.x&color=orange) ⚠️ Pre-release   |
 
-> **Note:** Both SDKs are at version 0.x and under active development. For production use cases, we recommend the [REST API](https://brainapi.lumen-labs.ai/docs/rest) directly until v1.0 releases.
-
-You can mix interaction modes freely — for example, ingest data via REST on a schedule and retrieve context via MCP for agent runtimes.
-
----
-
-## 🧩 Plugin Registry & Extensibility
-
-BrainAPI is designed to be extended without forking the core. Teams can publish and install plugins through the **BrainAPI CLI** to modify ontology, add custom routes, tune agent prompts, or register new MCP tools.
-
-### Install a plugin
-
-```sh
-brainapi plugins install @community/crm-entities
-brainapi plugins list
-```
-
-### Publish your own
-
-```sh
-brainapi plugins login          # authenticate as a publisher
-brainapi plugins publish ./my-plugin
-brainapi plugins depublish @myorg/my-plugin@1.0.0
-```
-
-Plugins can:
-
-- Extend the graph ontology with new entity and relation types
-- Add custom REST routes to the BrainAPI server
-- Customize agent prompts for domain-specific extraction
-- Register new MCP tools for agent runtimes
-
-Browse and publish at the [Plugin Registry →](https://registry.brain-api.dev/app)
-
----
-
-## 💻 SDK Quick Examples
-
-You can mix interaction modes freely — ingest over REST on a schedule, retrieve via MCP inside an agent runtime, or use the SDKs for everything.
-
-**Ingest via REST:**
-
-```sh
-curl -X POST https://localhost:3000/ingest \
-  -H "Authorization: Bearer $BRAIN_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"type": "text", "content": "Emily organized the AI Ethics Meetup in London on 2024-03-08."}'
-```
-
-**Ingest & query with the Python SDK:**
-
 ```python
 from lumen_brain import BrainAPI
 
 client = BrainAPI(api_key="your-key")
-
-# Ingest
 client.ingest.text("Emily organized the AI Ethics Meetup in London on 2024-03-08.")
 
-# Query
-result = client.query("Who organized AI events in London in March 2024?")
-print(result.answer)   # "Emily organized the AI Ethics Meetup on 2024-03-08."
-print(result.trace)    # Full graph path used to derive the answer
+result = client.retrieveContext("Who organized AI events in London in March 2024?")
+print(result.text_context)   # the answer
+print(result.triples)        # the graph path used to derive it
 ```
 
-**Ingest with the Node.js SDK:**
-
-```typescript
-import { BrainAPI } from "@lumenlabs/lumen-brain";
-
-const client = new BrainAPI({ apiKey: process.env.BRAIN_API_KEY });
-await client.ingest.text(
-  "Emily organized the AI Ethics Meetup in London on 2024-03-08."
-);
-const result = await client.query(
-  "Who organized AI events in London in March 2024?"
-);
-console.log(result.answer);
-```
-
----
-
-## ⚖️ BrainAPI vs. Memory Vaults
-
-> **Other tools store your words. BrainAPI builds understanding.**
-
-Most AI memory tools store conversation transcripts verbatim. No extraction, no reasoning, no connections. Just text in, text out, closest match returned. That's a search engine dressed up as memory.
-
-BrainAPI extracts _what happened, who was involved, when, and how it connects to everything else_ — then stores that as a traversable, time-aware graph. The result isn't a retrieved chunk. It's a reasoned answer with a provenance trail.
-
-|                   | BrainAPI                                   | Memory Vault (e.g. MemPalace)      |
-| ----------------- | ------------------------------------------ | ---------------------------------- |
-| **Storage model** | Structured knowledge graph                 | Verbatim transcripts               |
-| **Extraction**    | Multi-agent pipeline                       | None — stores raw text             |
-| **Reasoning**     | Multi-hop, time-aware queries              | Semantic similarity search         |
-| **Answers**       | Traceable graph paths                      | Nearest-neighbour scores           |
-| **Grows smarter** | ✅ Yes — each ingestion enriches the graph | ❌ No — each doc sits in isolation |
-| **Deployment**    | Cloud or self-hosted                       | Local only                         |
-
-If you just need to find a sentence you wrote before, use a memory vault. If you need your system to _understand_ what happened and _why it matters_ — use BrainAPI.
+> Both SDKs are pre-1.0 and under active development. For production, use the [REST API](https://brainapi.lumen-labs.ai/docs/rest) directly until v1.0 ships. You can mix modes freely — ingest over REST, retrieve via MCP inside an agent runtime, or use the SDKs for everything.
 
 ---
 
@@ -632,7 +353,7 @@ If you just need to find a sentence you wrote before, use a memory vault. If you
 
 | Resource               | Link                                                                                             |
 | ---------------------- | ------------------------------------------------------------------------------------------------ |
-| 🖥️ Local CLI (TUI)     | [`tui/README.md`](tui/README.md) — `npm install -g brainapi`                                     |
+| 🖥️ Local CLI (TUI)     | [`tui/README.md`](tui/README.md) — `npm install -g brainapi-tui`                                 |
 | 📖 Documentation       | [brainapi.lumen-labs.ai/docs/v2](https://brainapi.lumen-labs.ai/docs/v2)                         |
 | ⚡ Quick Start Guide   | [brainapi.lumen-labs.ai/docs/quickstart](https://brainapi.lumen-labs.ai/docs/quickstart)         |
 | 🔌 Plugin Registry     | [registry.brain-api.dev/app](https://registry.brain-api.dev/app)                                 |
@@ -640,11 +361,6 @@ If you just need to find a sentence you wrote before, use a memory vault. If you
 | 🐍 Python SDK (PyPI)   | [pypi.org/project/lumen_brain](https://pypi.org/project/lumen_brain/)                            |
 | 📦 Node.js SDK (npm)   | [npmjs.com/package/@lumenlabs/lumen-brain](https://www.npmjs.com/package/@lumenlabs/lumen-brain) |
 | 💬 Community & Support | [Discord](https://discord.gg/VTngQTaeDf)                                                         |
-
----
-
-> BrainAPI isn't memory. It's understanding at scale — queryable, explainable, and built to grow.  
-> **[Start building →](https://brainapi.lumen-labs.ai/docs/quickstart)**
 
 ---
 

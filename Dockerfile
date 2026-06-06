@@ -33,14 +33,11 @@ RUN poetry sync --no-root \
     && rm -rf /root/.cache /tmp/*
 
 COPY src/ ./src/
+COPY scripts/preload_docker_models.py ./scripts/
 
-RUN /app/.venv/bin/python -c "\
-from sentence_transformers import SentenceTransformer; \
-SentenceTransformer('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2'); \
-SentenceTransformer('intfloat/e5-small')" \
-    && for m in $(/app/.venv/bin/python -c "from src.constants.spacy_models import SPACY_MODEL_NAMES; print(' '.join(sorted(set(SPACY_MODEL_NAMES.values()))))"); do \
-         /app/.venv/bin/python -m spacy download "$m"; \
-       done \
+RUN --mount=type=secret,id=HF_TOKEN,required=false \
+    export HUGGING_FACE_HUB_TOKEN="$(cat /run/secrets/HF_TOKEN 2>/dev/null || true)" \
+    && /app/.venv/bin/python scripts/preload_docker_models.py \
     && rm -rf /root/.cache /tmp/*
 
 # ── Stage 2: runtime ────────────────────────────────────────
