@@ -16,7 +16,7 @@ if [ -n "$BRAINAPI_PLUGINS" ]; then
         version="${plugin_spec##*:}"
         [ "$name" = "$version" ] && version="latest"
         echo "[brainapi] Installing plugin: $name v$version"
-        gosu appuser /app/.venv/bin/python -m src.core.plugins.cli install "$name" --version "$version" || echo "[brainapi] WARNING: Failed to install plugin '$name'"
+        gosu appuser /app/.venv/bin/python -m src.core.plugins.cli plugins install "$name" --version "$version" || echo "[brainapi] WARNING: Failed to install plugin '$name'"
     done
 fi
 
