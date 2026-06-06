@@ -62,6 +62,8 @@ jobs:
             BUILD_DATE=${{ github.event.head_commit.timestamp }}
             BUILD_SHA=${{ github.sha }}
             CACHE_BUST=${{ github.run_number }}
+          secrets: |
+            HF_TOKEN=${{ secrets.HF_TOKEN }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

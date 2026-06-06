@@ -36,11 +36,13 @@ for _k, _v in ENV_DEFAULTS.items():
 
 
 class TestDockerfileSpacyModels(unittest.TestCase):
-    def test_builder_installs_models_via_spacy_model_names(self):
+    def test_builder_installs_models_via_preload_script(self):
         dockerfile = (ROOT / "Dockerfile").read_text()
-        self.assertIn("SPACY_MODEL_NAMES", dockerfile)
-        self.assertIn("spacy download", dockerfile)
-        self.assertIn("src.constants.spacy_models", dockerfile)
+        preload = (ROOT / "scripts" / "preload_docker_models.py").read_text()
+        self.assertIn("preload_docker_models.py", dockerfile)
+        self.assertIn("SPACY_MODEL_NAMES", preload)
+        self.assertIn("spacy download", preload)
+        self.assertIn("src.constants.spacy_models", preload)
 
     def test_chinese_uses_web_pipeline_name(self):
         from src.constants.spacy_models import SPACY_MODEL_NAMES
