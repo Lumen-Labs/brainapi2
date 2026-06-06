@@ -5,10 +5,11 @@ import { runStart } from "./commands/start.js";
 import { runConfig } from "./commands/config.js";
 import { runDoctor } from "./commands/doctor.js";
 import { runUpdate } from "./commands/update.js";
+import { runPlugins, type PluginsOptions, type PluginsSubcommand } from "./commands/plugins.js";
 import { readState } from "./lib/state.js";
 import { isPipelineMode, type PipelineMode } from "./types.js";
 
-type Command = "init" | "start" | "config" | "doctor" | "update" | "help";
+type Command = "init" | "start" | "config" | "doctor" | "update" | "plugins" | "help";
 
 interface ParsedArgs {
   command: Command;
@@ -22,7 +23,20 @@ interface ParsedArgs {
   only?: Array<"api" | "mcp" | "worker" | "services">;
   pipeline?: PipelineMode;
   invalidPipeline?: string;
+  plugins?: PluginsOptions;
   unknown: string[];
+}
+
+const PLUGIN_SUBCOMMANDS = new Set<PluginsSubcommand>([
+  "install",
+  "uninstall",
+  "list",
+  "info",
+  "update",
+]);
+
+function isPluginsSubcommand(value: string): value is PluginsSubcommand {
+  return PLUGIN_SUBCOMMANDS.has(value as PluginsSubcommand);
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -79,11 +93,35 @@ function parseArgs(argv: string[]): ParsedArgs {
         case "config":
         case "doctor":
         case "update":
+        case "plugins":
         case "help":
           out.command = arg;
           break;
         default:
           unknown.push(arg);
+      }
+    } else if (out.command === "plugins") {
+      if (!out.plugins) out.plugins = {};
+      const plugins = out.plugins;
+      if (!plugins.subcommand && !arg.startsWith("-")) {
+        if (isPluginsSubcommand(arg)) {
+          plugins.subcommand = arg;
+        } else {
+          unknown.push(arg);
+        }
+      } else if (arg === "--version") {
+        plugins.version = args.shift();
+      } else if (arg === "--remote" || arg === "-r") {
+        plugins.remote = true;
+      } else if (
+        plugins.subcommand &&
+        plugins.subcommand !== "list" &&
+        !plugins.name &&
+        !arg.startsWith("-")
+      ) {
+        plugins.name = arg;
+      } else {
+        unknown.push(arg);
       }
     } else {
       unknown.push(arg);
@@ -104,6 +142,7 @@ function printHelp(): void {
     "  config             Re-run the interactive flow and rewrite .env",
     "  doctor             Check Python, Docker, Ollama, GCP credentials, services",
     "  update             Fetch latest source + reinstall Python dependencies",
+    "  plugins <cmd>      Manage plugins (install, uninstall, list, info, update)",
     "  help               Show this message",
     "",
     pc.bold("Options:"),
@@ -202,6 +241,9 @@ async function main(): Promise<void> {
         return;
       case "update":
         await runUpdate();
+        return;
+      case "plugins":
+        await runPlugins(parsed.plugins ?? {});
         return;
       case "help":
         printHelp();

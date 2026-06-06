@@ -27,6 +27,9 @@ brainapi doctor  # check Python, Docker, Ollama, and configured services
 | `brainapi config` | Re-run the interactive flow and rewrite `.env`.                                                    |
 | `brainapi doctor` | Check that Python, Docker, Ollama, GCP credentials, and configured services are reachable.         |
 | `brainapi update` | `git pull` the project and `pip install -e .` again.                                               |
+| `brainapi plugins install <name>` | Install a plugin from the registry (e.g. `brainapi plugins install chatbot`).          |
+| `brainapi plugins list`           | List installed plugins (`--remote` to browse the registry).                            |
+| `brainapi plugins uninstall <name>` | Remove an installed plugin.                                                          |
 
 ### `brainapi start` options
 

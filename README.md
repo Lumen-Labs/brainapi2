@@ -265,11 +265,11 @@ A plugin can:
 ### Install & publish
 
 ```sh
-poetry run brainapi install @community/crm-entities
-poetry run brainapi list --remote
+poetry run brainapi plugins install @community/crm-entities
+poetry run brainapi plugins list --remote
 
-poetry run brainapi register                 # become a publisher
-poetry run brainapi publish ./my-plugin.tar.gz
+poetry run brainapi plugins register         # become a publisher
+poetry run brainapi plugins publish ./my-plugin.tar.gz
 ```
 
 Browse and publish at the [Plugin Registry →](https://registry.brain-api.dev/app)

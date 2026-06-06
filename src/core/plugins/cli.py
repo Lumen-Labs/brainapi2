@@ -4,7 +4,9 @@ from typing import Optional
 
 import typer
 
-app = typer.Typer(name="plugins", help="BrainAPI plugin management")
+plugins_app = typer.Typer(name="plugins", help="BrainAPI plugin management")
+app = typer.Typer(name="brainapi", help="BrainAPI CLI", no_args_is_help=True)
+app.add_typer(plugins_app, name="plugins")
 
 PLUGINS_DIR = Path(os.getenv("PLUGINS_DIR", "plugins"))
 REGISTRY_URL = os.getenv("PLUGIN_REGISTRY_URL", "https://registry.brain-api.dev")
@@ -23,7 +25,7 @@ def _get_manager():
     )
 
 
-@app.command()
+@plugins_app.command()
 def install(
     name: str = typer.Argument(..., help="Plugin name to install"),
     version: str = typer.Option("latest", "--version", "-v", help="Plugin version"),
@@ -37,7 +39,7 @@ def install(
         raise typer.Exit(code=1)
 
 
-@app.command()
+@plugins_app.command()
 def uninstall(
     name: str = typer.Argument(..., help="Plugin name to uninstall"),
 ):
@@ -49,7 +51,7 @@ def uninstall(
         raise typer.Exit(code=1)
 
 
-@app.command(name="list")
+@plugins_app.command(name="list")
 def list_plugins(
     remote: bool = typer.Option(False, "--remote", "-r", help="List available plugins from registry"),
 ):
@@ -76,7 +78,7 @@ def list_plugins(
             typer.echo(f"  {p.name} v{p.version} - {p.description}")
 
 
-@app.command()
+@plugins_app.command()
 def info(
     name: str = typer.Argument(..., help="Plugin name to get info for"),
 ):
@@ -94,7 +96,7 @@ def info(
         raise typer.Exit(code=1)
 
 
-@app.command()
+@plugins_app.command()
 def update(
     name: str = typer.Argument(..., help="Plugin name to update"),
 ):
@@ -107,7 +109,7 @@ def update(
         raise typer.Exit(code=1)
 
 
-@app.command()
+@plugins_app.command()
 def publish(
     archive: Path = typer.Argument(..., help="Path to plugin archive (.tar.gz)"),
     name: Optional[str] = typer.Option(None, "--name", "-n", help="Plugin name override"),
@@ -122,7 +124,7 @@ def publish(
         raise typer.Exit(code=1)
 
 
-@app.command()
+@plugins_app.command()
 def depublish(
     name: str = typer.Argument(..., help="Plugin name to remove from registry"),
     version: Optional[str] = typer.Option(None, "--version", "-v", help="Specific version to remove (omit to remove all)"),
@@ -137,7 +139,7 @@ def depublish(
         raise typer.Exit(code=1)
 
 
-@app.command()
+@plugins_app.command()
 def register(
     publisher_id: Optional[str] = typer.Option(None, "--id", help="Desired publisher ID (auto-generated if omitted)"),
 ):

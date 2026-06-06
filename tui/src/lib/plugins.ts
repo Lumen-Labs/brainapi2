@@ -111,24 +111,33 @@ export async function searchPlugins(query: string): Promise<PluginSearchResult[]
   );
 }
 
+export async function runPluginCli(args: string[]): Promise<void> {
+  const result = await runInherit(
+    venvBin("python"),
+    ["-m", "src.core.plugins.cli", "plugins", ...args],
+    { cwd: sourcePath() },
+  );
+  if (!result.ok) {
+    throw new Error("Plugin command failed");
+  }
+}
+
 export async function installRegistryPlugin(name: string, version?: string): Promise<void> {
-  const args = ["-m", "src.core.plugins.cli", "install", name];
+  const args = ["install", name];
   if (version && version.trim()) {
     args.push("--version", version.trim());
   }
-  const result = await runInherit(venvBin("python"), args, { cwd: sourcePath() });
-  if (!result.ok) {
+  try {
+    await runPluginCli(args);
+  } catch {
     throw new Error(`Failed to install registry plugin '${name}'`);
   }
 }
 
 export async function uninstallPlugin(name: string): Promise<void> {
-  const result = await runInherit(
-    venvBin("python"),
-    ["-m", "src.core.plugins.cli", "uninstall", name],
-    { cwd: sourcePath() },
-  );
-  if (!result.ok) {
+  try {
+    await runPluginCli(["uninstall", name]);
+  } catch {
     throw new Error(`Failed to uninstall plugin '${name}'`);
   }
 }
