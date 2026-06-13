@@ -1,6 +1,9 @@
 import json
+import logging
 from abc import ABC, abstractmethod
 from typing import Any, Iterable
+
+logger = logging.getLogger(__name__)
 
 
 class GraphOperationResultSerializer(ABC):
@@ -33,26 +36,39 @@ class Neo4jResultSerializer(GraphOperationResultSerializer):
     def can_handle(self, result: Any) -> bool:
         return hasattr(result, "records")
 
+    def _serialize_record(self, record: Any) -> dict | str:
+        record_data = getattr(record, "data", None)
+        if callable(record_data):
+            return record_data()
+        try:
+            return dict(record)
+        except (TypeError, ValueError) as exc:
+            logger.warning("Failed to map neo4j record, using string fallback: %s", exc)
+            return str(record)
+
+    def _extract_keys(self, result: Any) -> list | None:
+        keys_accessor = getattr(result, "keys", None)
+        if callable(keys_accessor):
+            try:
+                return list(keys_accessor())
+            except (TypeError, ValueError) as exc:
+                logger.warning(
+                    "Failed to extract neo4j result keys from callable: %s", exc
+                )
+                return None
+        if isinstance(keys_accessor, Iterable) and not isinstance(
+            keys_accessor, (str, bytes)
+        ):
+            return list(keys_accessor)
+        return None
+
     def serialize(self, result: Any) -> str:
         records = result.records or []
         limited_records = records[:20]
         serialized_records = []
         for record in limited_records:
-            if hasattr(record, "data"):
-                serialized_records.append(record.data())
-                continue
-            try:
-                serialized_records.append(dict(record))
-            except Exception:
-                serialized_records.append(str(record))
-        keys = None
-        try:
-            keys = list(result.keys())
-        except Exception:
-            try:
-                keys = list(result.keys)
-            except Exception:
-                keys = None
+            serialized_records.append(self._serialize_record(record))
+        keys = self._extract_keys(result)
         payload = {
             "records": serialized_records,
             "truncated": len(records) > 20,

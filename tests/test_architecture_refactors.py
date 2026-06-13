@@ -62,10 +62,19 @@ class _StubGraphAdapter:
     def get_neighbors(self, *_args, **_kwargs):
         return {}
 
+    def get_nodes_by_uuid(self, *_args, **_kwargs):
+        return []
+
 
 class _StubDataAdapter:
     def get_observations_list(self, *_args, **_kwargs):
         return []
+
+    def search(self, *_args, **_kwargs):
+        return type("SearchResult", (), {"text_chunks": [], "observations": []})()
+
+    def get_text_chunks_by_ids(self, *_args, **_kwargs):
+        return ([], [])
 
 
 _stub_input_agents = types.ModuleType("src.services.input.agents")
@@ -76,11 +85,20 @@ _stub_kg_main = types.ModuleType("src.services.kg_agent.main")
 _stub_kg_main.graph_adapter = _StubGraphAdapter()
 _stub_kg_main.vector_store_adapter = _StubVectorStoreAdapter()
 _stub_kg_main.embeddings_adapter = _StubEmbeddingsAdapter()
+_stub_kg_main.kg_agent = types.SimpleNamespace(
+    retrieve_neighbors=lambda *_args, **_kwargs: []
+)
 sys.modules.setdefault("src.services.kg_agent.main", _stub_kg_main)
 
 _stub_data_main = types.ModuleType("src.services.data.main")
 _stub_data_main.data_adapter = _StubDataAdapter()
 sys.modules.setdefault("src.services.data.main", _stub_data_main)
+
+_stub_ner = types.ModuleType("src.utils.nlp.ner")
+_stub_ner._entity_extractor = types.SimpleNamespace(
+    extract_entities=lambda *_args, **_kwargs: []
+)
+sys.modules.setdefault("src.utils.nlp.ner", _stub_ner)
 
 from src.services.api.controllers.entities import get_entity_status
 from src.services.api.controllers.retrieve import retrieve_data
