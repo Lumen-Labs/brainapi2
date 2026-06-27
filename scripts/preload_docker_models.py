@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 SENTENCE_TRANSFORMER_MODELS = (
     "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
@@ -54,6 +55,9 @@ def _preload_sentence_transformers() -> None:
 
 
 def _preload_spacy() -> None:
+    root = Path(__file__).resolve().parents[1]
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
     from src.constants.spacy_models import SPACY_MODEL_NAMES
 
     for model in sorted(set(SPACY_MODEL_NAMES.values())):
