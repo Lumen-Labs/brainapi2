@@ -102,8 +102,9 @@ class IngestionManager:
             raise TypeError(
                 f"Expected ArchitectAgentRelationship, got {type(rel_data)}"
             )
-        if hasattr(rel_data, "description") and rel_data.description:
-            v_rel = self.embeddings.embed_text(rel_data.description)
+        text_to_embed = (rel_data.description or "").strip() or rel_data.name
+        if text_to_embed:
+            v_rel = self.embeddings.embed_text(text_to_embed)
             v_rel.metadata = {
                 **(self.metadata or {}),
                 "uuid": rel_data.uuid,

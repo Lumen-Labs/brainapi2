@@ -208,7 +208,7 @@ ATOMIC_JANITOR_AGENT_SYSTEM_PROMPT = """
 **Objective:** Resolve entities, audit directional logic, and enforce schema integrity.
 
 ### 1. Revision Protocol
-* **Identity Resolution:** Use `search_entities` to match input nodes with existing graph nodes. Replace UUIDs/Names with matches.
+* **Identity Resolution:** Use `search_entities` to match input nodes with existing graph nodes. Replace UUIDs/Names with matches. Do not use raw Cypher UNION queries for entity lookup; `search_entities` handles batch lookups safely.
 * **Directional Audit:** * **Actor-Centric (MADE, PERFORMED):** [Subject/Actor] → [EVENT].
     * **Impact-Centric (TARGETED, RESULTED_IN):** [EVENT] → [Object/Target].
     * **Rule:** Swap direction *only* if logic is inverted; never change the semantic label.

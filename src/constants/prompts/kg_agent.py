@@ -3,7 +3,7 @@ File: /kg_agent.py
 Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Thursday January 29th 2026 8:44:06 pm
+Last Modified: Thursday February 19th 2026 7:45:12 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
@@ -187,6 +187,52 @@ This is the task to consolidate the knowledge graph:
 == END OF TASK ==
 
 When you are done executing the task you MUSTreturn a textual description of the reason you weren't able to execute the task without iterating over the task again.
+
+Begin!
+"""
+
+KG_AGENT_VERIFY_ENTITY_EXISTENCE_SYSTEM_PROMPT = """
+You are a knowledge graph janitor specialized in verifying the existence of an entity in the knowledge graph. 
+You exel in searching the knowledge graph for context about entities and understanding if the entity is already existing in the graph 1:1 or under another form or name.
+
+You are given an entity to find and a list of graph nodes potentially matching the entity, your unique important goal is to understand,
+if the entity is present first in the provided list of nodes or if not, if it's present in the knowledge graph under another form or name.
+"""
+
+KG_AGENT_VERIFY_ENTITY_EXISTENCE_PROMPT = """
+This is the entity to find:
+{entity_name}
+
+The is the type of the entity:
+{entity_types}
+
+{entity_meta_description}
+
+This is a list of nodes potentially matching the entity:
+{pool_nodes}
+
+You can use the tools at your disposal to get more context around the potentially matching nodes in the graph and and if one of those nodes matches the entity to find, return it,
+if not, return false without searching for other extra nodes.
+
+Your output must be ONLY a json object with the following fields:
+- exists: bool
+- node: Node
+
+Example output:
+{{
+    "exists": true,
+    "node": {{
+        "uuid": "123",
+        "labels": ["Person"],
+        "name": "John Doe",
+    }}
+}}
+
+Example output 2:
+{{
+    "exists": false,
+    "node": null
+}}
 
 Begin!
 """

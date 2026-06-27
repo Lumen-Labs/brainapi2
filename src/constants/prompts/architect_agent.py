@@ -13,11 +13,11 @@ You are a "Structural Graph Architect." Your goal is to map information into an 
 
 THE TRIANGLE OF ATTRIBUTION:
 Every action accomplished must be a central EVENT hub connecting three points:
-1. THE INITIATION VECTOR: [Source/Actor] --(subject)--> :MADE --(object)--> [Event Instance]
+1. THE INITIATION VECTOR: [Source/Actor] --(tail)--> :MADE --(tip)--> [Event Instance]
    - MANDATORY: The "amount" (quantity) must be a property of this relationship.
-2. THE TARGET VECTOR: [Event Instance] --(subject)--> :TARGETED --(object)--> [Object/Recipient]
+2. THE TARGET VECTOR: [Event Instance] --(tail)--> :TARGETED --(tip)--> [Object/Recipient]
    - MANDATORY: Repeat the "amount" property here for cross-reference.
-3. THE CONTEXT VECTOR: [Event Instance] --(subject)--> :OCCURRED_WITHIN --(object)--> [Broad Anchor/Context]
+3. THE CONTEXT VECTOR: [Event Instance] --(tail)--> :OCCURRED_WITHIN --(tip)--> [Broad Anchor/Context]
 
 If no action is accomplished and the text just states a fact don't create an Event hub and just create the relationships between the entities.
 
@@ -37,56 +37,56 @@ Entities Found by Scout: [
     {{"uuid": "uuid_11", "type": "PERSON", "name": "Colleagues", "description": "The colleagues Mary was doing meetings with in San Francisco"}},
 ]
 
-Example output 1:
+Example output 1 (in the real output "tail" and "tip" must be the full entity objects taken from the entities list, here only the uuids are shown for brevity):
 {{
     "relationships: [
         {{
-            "subject": "uuid_1",
-            "predicate": "MOVED",
+            "tail": "uuid_1",
+            "name": "MOVED",
             "description": "John went to New York City",
-            "object": "uuid_2"
+            "tip": "uuid_2"
         }},
         {{
-            "subject": "uuid_2",
-            "predicate": "INTO_LOCATION",
+            "tail": "uuid_2",
+            "name": "INTO_LOCATION",
             "description": "John went to New York City",
-            "object": "uuid_3"
+            "tip": "uuid_3"
         }},
         {{
-            "subject": "uuid_1",
-            "predicate": "ACCOMPLISHED_ACTION",
+            "tail": "uuid_1",
+            "name": "ACCOMPLISHED_ACTION",
             "description": "John knew 12 new friends in New York City",
-            "object": "uuid_4"
+            "tip": "uuid_4"
         }},
         {{
-            "subject": "uuid_4",
-            "predicate": "HAPPENED_WITHIN",
+            "tail": "uuid_4",
+            "name": "HAPPENED_WITHIN",
             "description": "John knew 12 new friends when he went to New York City",
-            "object": "uuid_2"
+            "tip": "uuid_2"
         }},
         {{
-            "subject": "uuid_4",
-            "predicate": "TARGETED",
+            "tail": "uuid_4",
+            "name": "TARGETED",
             "description": "John knew 12 new friends in New York City",
-            "object": "uuid_5"
+            "tip": "uuid_5"
         }},
         {{
-            "subject": "uuid_6",
-            "predicate": "EXPERIENCED",
+            "tail": "uuid_6",
+            "name": "EXPERIENCED",
             "description": "Mary was in San Francisco",
-            "object": "uuid_7"
+            "tip": "uuid_7"
         }},
         {{
-            "subject": "uuid_7",
-            "predicate": "INTO_LOCATION",
+            "tail": "uuid_7",
+            "name": "INTO_LOCATION",
             "description": "Mary was in San Francisco",
-            "object": "uuid_8"
+            "tip": "uuid_8"
         }},
         {{
-            "subject": "uuid_7",
-            "predicate": "HAPPENED_WITHIN",
+            "tail": "uuid_7",
+            "name": "HAPPENED_WITHIN",
             "description": "Mary was in San Francisco when John went to New York City",
-            "object": "uuid_2"
+            "tip": "uuid_2"
         }},
         ... more relationships ...
     ],
@@ -109,27 +109,27 @@ Entities Found by Scout: [
     {{"uuid": "uuid_11", "type": "MONEY", "name": "Money", "description": "The amount of money Acme Inc. raised in funding"}},
 ]
 
-Example output 1:
+Example output 2:
 {{
     "relationships: [
         ... more relationships ...
         {{
-            "subject": "uuid_6",
-            "predicate": "EXPERIENCED",
+            "tail": "uuid_6",
+            "name": "EXPERIENCED",
             "description": "Mark Johnson covered the role of CEO of Acme Inc.",
-            "object": "uuid_7"
+            "tip": "uuid_7"
         }},
         {{
-            "subject": "uuid_7",
-            "predicate": "OF_TYPE",
+            "tail": "uuid_7",
+            "name": "OF_TYPE",
             "description": "Mark Johnson covered the role of CEO of Acme Inc.",
-            "object": "uuid_8"
+            "tip": "uuid_8"
         }},
         {{
-            "subject": "uuid_10",
-            "predicate": "TARGETED",
+            "tail": "uuid_10",
+            "name": "TARGETED",
             "description": "Acme Inc. raised $100 million in funding",
-            "object": "uuid_11"
+            "tip": "uuid_11"
         }},
         ... more relationships ...
     ],
@@ -147,10 +147,15 @@ As you can see above in the example output, all the entities found by the scout 
 also note that we are inferring relationships like the HAPPENED_WITHIN ones ("Mary was in San Francisco when John went to New York City").
 
 DIRECTIONAL SLOT-FILLING:
-- "subject": The start of the arrow (The Source of Energy/Origin).
-- "object": The end of the arrow (The Destination/Target).
+- "tail": The start of the arrow (The Source of Energy/Origin, the subject performing the action).
+- "tip": The end of the arrow (The Destination/Target, the object being affected).
+- FORBIDDEN: Never swap "tail" and "tip": for an initiation vector the Actor is ALWAYS the "tail" and the Event is ALWAYS the "tip"; for a target vector the Event is ALWAYS the "tail" and the Recipient is ALWAYS the "tip".
 - FORBIDDEN: Never link Actor nodes directly to Target nodes for dynamic actions.
 - FORBIDDEN: Never create nodes for numeric quantities.
+
+NEW NODES POLICY:
+- Only add an entity to "new_nodes" if it appears NEITHER in the provided entities list NOR in the previously created relationships.
+- If an entity is already provided anywhere (entities list or previously created relationships), reuse its exact uuid in your relationships instead of recreating it.
 
 LOGIC CHECKLIST:
 - Identify the Actor (Origin).
@@ -174,6 +179,42 @@ Task: Create a Vector JSON representing the interactions in the text.
 Source Text: {text}
 Entities Found by Scout: {entities}
 {previously_created_relationships}
+
+Begin!
+"""
+
+STRUCTURED_ARCHITECT_AGENT_CREATE_RELATIONSHIPS_PROMPT = """
+Role: Graph Structural Architect.
+Task: Create a Vector JSON representing the interactions in the text.
+
+{targeting}
+
+Source Text: {text}
+Entities Found by Scout: {entities}
+{previously_created_relationships}
+
+STRICT RULES:
+- The nodes referenced in the previously created relationships ALREADY EXIST: reuse their exact uuids when connecting them, NEVER add them to "new_nodes".
+- Do NOT duplicate any previously created relationship; only create the missing connections.
+- "tail" is the source/origin of the relationship (the subject performing the action), "tip" is the destination/target (the object being affected). Never invert them.
+
+Begin!
+"""
+
+STRUCTURED_ARCHITECT_AGENT_FIX_RELATIONSHIPS_PROMPT = """
+A reviewing agent rejected some of the relationships you created.
+
+Wrong relationships (with the reason and the instructions to fix them):
+{wrong_relationships}
+
+{newly_created_nodes}
+
+Recreate ONLY the corrected versions of the rejected relationships, following the provided instructions.
+
+STRICT RULES:
+- Do NOT recreate the relationships that were not rejected.
+- The nodes listed above ALREADY EXIST: reuse their exact uuids, NEVER add them to "new_nodes".
+- "tail" is the source/origin of the relationship (the subject performing the action), "tip" is the destination/target (the object being affected). Never invert them.
 
 Begin!
 """

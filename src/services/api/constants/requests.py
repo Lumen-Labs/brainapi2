@@ -3,14 +3,16 @@ File: /requests.py
 Created Date: Monday October 20th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Monday February 2nd 2026 10:04:06 pm
+Last Modified: Sunday April 12th 2026 1:35:36 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
-from typing import List, Any, Optional, Tuple
+from typing import Any, List, Optional, Tuple, Union
+
 from pydantic import BaseModel, Field, field_serializer
-from src.constants.data import Observation, TextChunk
+
+from src.constants.data import Observation, PartialNode, PartialPredicate, TextChunk
 from src.constants.kg import (
     EntitySynergy,
     IdentificationParams,
@@ -55,16 +57,76 @@ class IngestionStructuredDataElement(BaseModel):
     )
 
 
+class RequestPartialNode(PartialNode):
+    uuid: Optional[str] = Field(None, description="The id of the node.")
+    type: str = Field(description="The type of the node.")
+    happened_at: Optional[str] = Field(
+        None,
+        description="The date and time the node happened at if known otherwise None. Mostly used for event nodes.",
+    )
+
+
+class RequestPartialPredicate(PartialPredicate):
+    uuid: Optional[str] = Field(None, description="The id of the relationship.")
+    amount: Optional[Union[int, float]] = Field(
+        None,
+        description="The amount of the relationship, if it is a quantitative relationship.",
+    )
+
+
+class IngestionTripleSet(BaseModel):
+    subject: Optional[RequestPartialNode] = Field(
+        None,
+        description="The optional actor of the triple.",
+    )
+    subj_event: Optional[RequestPartialPredicate] = Field(
+        None,
+        description="The optional event predicate of the triple.",
+    )
+    event: RequestPartialNode
+    event_obj: RequestPartialPredicate
+    object: RequestPartialNode
+
+
+class PartialNodeFilter(BaseModel):
+    """
+    Partial node filter model.
+    """
+
+    name: Optional[str] = Field(
+        None,
+        description="The name of the node to filter by.",
+    )
+    type: Optional[str] = Field(
+        None,
+        description="The type of the node to filter by.",
+    )
+    uuid: Optional[str] = Field(
+        None,
+        description="The uuid of the node to filter by.",
+    )
+    meta_description: Optional[str] = Field(
+        None,
+        description="An extra description that explains what this node is about, helpful for entity resolution.",
+    )
+
+
 class IngestionStructuredRequestBody(BaseModel):
     """
     Request body for the structured ingestion endpoint.
     """
 
-    data: List[IngestionStructuredDataElement]
-    observate_for: Optional[List[str]] = Field(
-        default=[],
-        description="What to look for and describe in the data during observation. "
-        "If not provided, the observations will be generic",
+    data: List[IngestionTripleSet] = Field(
+        ...,
+        description="The list of event-centric information triples to ingest.",
+    )
+    anchor: Optional[Union[str, PartialNodeFilter]] = Field(
+        None,
+        description="The related information to connect the structured data to.",
+    )
+    text: Optional[str] = Field(
+        ...,
+        description="Additional text context for the structured data.",
     )
     brain_id: str = Field(
         default="default", description="The brain identifier to store the data in."
@@ -85,8 +147,12 @@ class RetrieveRequestResponse(BaseModel):
         try:
             from neo4j.graph import (
                 Node as NeoNode,
-                Relationship as NeoRel,
+            )
+            from neo4j.graph import (
                 Path as NeoPath,
+            )
+            from neo4j.graph import (
+                Relationship as NeoRel,
             )
         except Exception:
             NeoNode = NeoRel = NeoPath = tuple()
