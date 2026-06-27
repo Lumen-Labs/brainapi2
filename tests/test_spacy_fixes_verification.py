@@ -52,7 +52,24 @@ class TestDockerfileSpacyModels(unittest.TestCase):
     def test_no_languages_without_spacy_3_8_pipelines(self):
         from src.constants.spacy_models import SPACY_MODEL_NAMES
 
-        for code in ("ta", "te", "th", "tr", "vi"):
+        for code in (
+            "ar",
+            "bn",
+            "fil",
+            "hi",
+            "id",
+            "km",
+            "lo",
+            "ml",
+            "ms",
+            "my",
+            "pa",
+            "ta",
+            "te",
+            "th",
+            "tr",
+            "vi",
+        ):
             self.assertNotIn(code, SPACY_MODEL_NAMES)
 
 
