@@ -2,7 +2,7 @@
   <a href="https://discord.gg/VTngQTaeDf"><img src="https://img.shields.io/badge/Discord-Join%20Lumen%20Brain-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"/></a>
   <img src="https://img.shields.io/badge/version-2.14.0--dev-blue?style=for-the-badge" alt="Version"/>
   <img src="https://img.shields.io/badge/python-3.11+-green?style=for-the-badge&logo=python&logoColor=white" alt="Python"/>
-  <img src="https://img.shields.io/badge/license-AGPLv3%20%2B%20Commons%20Clause-purple?style=for-the-badge" alt="License"/>
+  <img src="https://img.shields.io/badge/license-PolyForm%20Small%20Business-blue?style=for-the-badge" alt="License"/>
 </p>
 
 <h1 align="center">🧠 BrainAPI</h1>
@@ -376,9 +376,13 @@ print(result.triples)        # the graph path used to derive it
 
 ## 📄 License
 
-This project is licensed under **AGPLv3 + Commons Clause** — free for personal, research and non-commercial use. Commercial usage (SaaS, embedding, redistribution) requires an [Enterprise License](mailto:hello@lumen-labs.ai) from Lumen Platforms Inc.
+This project is licensed under the **[PolyForm Small Business License 1.0.0](LICENSE)**.
 
-See the [LICENSE](LICENSE) file for full details.
+- **Free for small businesses** — use, modify, self-host, and embed in closed-source products if your company has fewer than **100** employees/contractors and less than **~$1M USD** annual revenue (2019 CPI-adjusted).
+- **No copyleft** — your application stays proprietary.
+- **Commercial license required** for larger organizations or use outside these terms.
+
+Contact [hello@lumen-labs.ai](mailto:hello@lumen-labs.ai) for a commercial license.
 
 ---
 

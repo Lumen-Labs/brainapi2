@@ -1,130 +1,67 @@
-BRAINAPI2 ENGINE LICENSE
-Version 1.0 — © 2026 Lumen Platforms Inc.
+Required Notice: Copyright Lumen Platforms Inc. (https://github.com/lumen-labs)
 
-This software ("BrainAPI Engine" or "the Software") is provided under a combined
-license consisting of:
+# PolyForm Small Business License 1.0.0
 
-  (1) The GNU Affero General Public License, Version 3 ("AGPLv3")
-  (2) The Commons Clause License Condition v1.0 ("Commons Clause")
-  (3) An Additional Use Grant clarifying permitted non-commercial usage
-  (4) A Dual Licensing Statement describing how commercial licenses may be obtained
+<https://polyformproject.org/licenses/small-business/1.0.0>
 
-The intent of this license package is to:
-- Preserve the freedoms of open-source software for research, education, and 
-  community use.
-- Prevent third parties from selling, hosting, embedding, or repackaging the 
-  BrainAPI Engine as part of a competing commercial offering.
-- Allow commercial use only via a separate paid Enterprise License agreement 
-  with Lumen Platforms Inc.
+## Acceptance
 
--------------------------------------------------------------------------------
-SECTION 1 — COMMONS CLAUSE LICENSE CONDITION v1.0
--------------------------------------------------------------------------------
-The “Commons Clause” License Condition v1.0 is an addendum to the 
-AGPLv3 License granted below. It states:
+In order to get any license under these terms, you must agree to them as both strict obligations and conditions to all your licenses.
 
-"Without limiting other conditions in the License, the license grant does not 
-include the right to Sell the Software.
+## Copyright License
 
-'Sell' means practicing any or all of the rights granted to you under the License 
-to provide the Software or Derivative Works to third parties, for a fee or other 
-consideration, including without limitation:
-  - Providing the Software or Derivative Works as a hosted or managed service;
-  - Embedding or incorporating the Software or Derivative Works in a commercial 
-    product or service;
-  - Distributing the Software or Derivative Works to third parties for any 
-    commercial purpose.
+The licensor grants you a copyright license for the software to do everything you might do with the software that would otherwise infringe the licensor's copyright in it for any permitted purpose.  However, you may only distribute the software according to [Distribution License](#distribution-license) and make changes or new works based on the software according to [Changes and New Works License](#changes-and-new-works-license).
 
-Any commercial use of the Software requires a separate commercial license 
-from Lumen Platforms Inc."
+## Distribution License
 
-The Commons Clause overrides any conflicting provisions of the AGPLv3.
+The licensor grants you an additional copyright license to distribute copies of the software.  Your license to distribute covers distributing the software with changes and new works permitted by [Changes and New Works License](#changes-and-new-works-license).
 
--------------------------------------------------------------------------------
-SECTION 2 — ADDITIONAL USE GRANT (NON-COMMERCIAL USE ALLOWED)
--------------------------------------------------------------------------------
-You are permitted to:
-- Use, modify, study, and run the Software for personal, research, academic, 
-  experimental, or non-commercial organizational use.
-- Self-host BrainAPI internally for non-commercial, non-revenue-generating 
-  purposes.
-- Publish modifications, forks, and contributions as long as they also comply 
-  with this license (including the Commons Clause).
-- Use the Software to build prototypes, internal tools, or demos, provided 
-  these are not sold, licensed, offered as a service, or incorporated into any 
-  commercial product.
+## Notices
 
-These permissions remain free of charge.
+You must ensure that anyone who gets a copy of any part of the software from you also gets a copy of these terms or the URL for them above, as well as copies of any plain-text lines beginning with `Required Notice:` that the licensor provided with the software.  For example:
 
--------------------------------------------------------------------------------
-SECTION 3 — PROHIBITED USES WITHOUT A COMMERCIAL LICENSE
--------------------------------------------------------------------------------
-The following uses are NOT permitted under this Community License:
+> Required Notice: Copyright Yoyodyne, Inc. (http://example.com)
 
-(1) Offering BrainAPI (modified or unmodified) as a managed or hosted service.
-(2) Embedding or integrating any part of BrainAPI into a commercial SaaS,
-    product, or API.
-(3) Selling services that rely on BrainAPI as a core component.
-(4) Using BrainAPI to power commercial applications, LLM pipelines, AI agents,
-    enterprise search engines, or knowledge-graph infrastructure.
-(5) Creating a competing product or service based on the BrainAPI engine or 
-    significant portions of its architecture, algorithms, or modules.
+## Changes and New Works License
 
-Any commercial use requires a separate Enterprise License from Lumen Platforms Inc.
+The licensor grants you an additional copyright license to make changes and new works based on the software for any permitted purpose.
 
--------------------------------------------------------------------------------
-SECTION 4 — COMMERCIAL LICENSE
--------------------------------------------------------------------------------
-Commercial usage, including SaaS hosting, embedding, redistribution, or 
-derivative commercial offerings, requires an Enterprise License obtained directly 
-from Lumen Platforms Inc.
+## Patent License
 
-Contact:
-  Lumen Platforms Inc. — Licensing Department  
-  Email: hello@lumen-labs.ai  
+The licensor grants you a patent license for the software that covers patent claims the licensor can license, or becomes able to license, that you would infringe by using the software.
 
--------------------------------------------------------------------------------
-SECTION 5 — TRADEMARK POLICY
--------------------------------------------------------------------------------
-The names "BrainAPI", “BrainAPI Engine”, “Lumen Platforms Inc.”, and associated logos are 
-trademarks of Lumen Platforms Inc.
+## Fair Use
 
-You may not:
-- Use these trademarks in commerce,
-- Portray forks or modified versions as official BrainAPI distributions,
-- Use the trademarks in product names or domain names without permission.
+You may have "fair use" rights for the software under the law. These terms do not limit them.
 
-Fair-use (e.g., citing or referring to BrainAPI) is allowed.
+## Small Business
 
--------------------------------------------------------------------------------
-SECTION 6 — FULL AGPLv3 LICENSE TEXT
--------------------------------------------------------------------------------
-The full text of the GNU Affero General Public License v3 is included below 
-exactly as published by the Free Software Foundation. The AGPLv3 applies except 
-where modified or restricted by the Commons Clause and Additional Use Grant.
+Use of the software for the benefit of your company is use for a permitted purpose if your company has fewer than 100 total individuals working as employees and independent contractors, and less than 1,000,000 USD (2019) total revenue in the prior tax year.  Adjust this revenue threshold for inflation according to the United States Bureau of Labor Statistics' consumer price index for all urban consumers, U.S. city average, for all items, not seasonally adjusted, with 1982–1984=100 reference base.
 
----------------------------------------------------------------------------
-GNU AFFERO GENERAL PUBLIC LICENSE  
-Version 3, 19 November 2007  
-Copyright (C) 2007 Free Software Foundation
----------------------------------------------------------------------------
+## No Other Rights
 
-[ FULL ORIGINAL AGPLv3 TEXT HERE — UNMODIFIED ]  
-For brevity, the text is omitted in this preview.  
-In your final LICENSE.txt, paste the complete AGPLv3 text from:  
-https://www.gnu.org/licenses/agpl-3.0.txt
+These terms do not allow you to sublicense or transfer any of your licenses to anyone else, or prevent the licensor from granting licenses to anyone else.  These terms do not imply any other licenses.
 
--------------------------------------------------------------------------------
-SECTION 7 — EXPLANATORY NOTE (NON-LEGAL)
--------------------------------------------------------------------------------
-This license is designed to:
-- Enable an open-source community ecosystem,
-- Allow free self-hosting for research and internal use,
-- Prevent competitors from extracting BrainAPI internals to build
-  competing services, AI agents, or infrastructure,
-- Ensure long-term commercial viability via dual licensing.
+## Patent Defense
 
-If you need a different arrangement or custom enterprise terms, contact us.
+If you make any written claim that the software infringes or contributes to infringement of any patent, your patent license for the software granted under these terms ends immediately. If your company makes such a claim, your patent license ends immediately for work on behalf of your company.
 
--------------------------------------------------------------------------------
-END OF LICENSE
+## Violations
+
+The first time you are notified in writing that you have violated any of these terms, or done anything with the software not covered by your licenses, your licenses can nonetheless continue if you come into full compliance with these terms, and take practical steps to correct past violations, within 32 days of receiving notice.  Otherwise, all your licenses end immediately.
+
+## No Liability
+
+***As far as the law allows, the software comes as is, without any warranty or condition, and the licensor will not be liable to you for any damages arising out of these terms or the use or nature of the software, under any kind of legal claim.***
+
+## Definitions
+
+The **licensor** is the individual or entity offering these terms, and the **software** is the software the licensor makes available under these terms.
+
+**You** refers to the individual or entity agreeing to these terms.
+
+**Your company** is any legal entity, sole proprietorship, or other kind of organization that you work for, plus all organizations that have control over, are under the control of, or are under common control with that organization.  **Control** means ownership of substantially all the assets of an entity, or the power to direct its management and policies by vote, contract, or otherwise.  Control can be direct or indirect.
+
+**Your licenses** are all the licenses granted to you for the software under these terms.
+
+**Use** means anything you do with the software requiring one of your licenses.
