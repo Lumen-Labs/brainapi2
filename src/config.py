@@ -295,7 +295,11 @@ class EmbeddingsConfig:
             if os.getenv("EMBEDDING_NODES_DIMENSION")
             else None
         )
-        self.embedding_triplets_dimension = os.getenv("EMBEDDING_TRIPLETS_DIMENSION")
+        self.embedding_triplets_dimension = (
+            int(os.getenv("EMBEDDING_TRIPLETS_DIMENSION"))
+            if os.getenv("EMBEDDING_TRIPLETS_DIMENSION")
+            else None
+        )
         self.embedding_observations_dimension = (
             int(os.getenv("EMBEDDING_OBSERVATIONS_DIMENSION"))
             if os.getenv("EMBEDDING_OBSERVATIONS_DIMENSION")

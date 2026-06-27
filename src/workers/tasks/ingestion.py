@@ -3,7 +3,7 @@ File: /ingestion.py
 Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Thursday February 19th 2026 7:45:12 pm
+Last Modified: Wednesday March 4th 2026 9:35:41 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
@@ -15,16 +15,23 @@ import os
 import tempfile
 import time
 import tomllib
-from pathlib import Path
-from uuid import uuid4
-from typing import List, Optional, Tuple
 from concurrent.futures import (
     Future,
     ThreadPoolExecutor,
+)
+from concurrent.futures import (
     TimeoutError as FutureTimeoutError,
 )
+from pathlib import Path
+from typing import List, Optional, Tuple, TypedDict
+from uuid import uuid4
+
+from pydantic import BaseModel
+
 from src.config import config
+from src.constants.agents import ArchitectAgentRelationship
 from src.constants.data import (
+    KGChangeLogNodePropertiesUpdated,
     KGChangeLogPredicateUpdatedProperty,
     KGChanges,
     KGChangesType,
@@ -32,34 +39,218 @@ from src.constants.data import (
     PartialNode,
     StructuredData,
     TextChunk,
-    KGChangeLogNodePropertiesUpdated,
 )
-from src.constants.kg import Node, Predicate
-from src.constants.agents import ArchitectAgentRelationship
+from src.constants.kg import IdentificationParams, Node, Predicate
 from src.constants.prompts.misc import NODE_DESCRIPTION_PROMPT
-from src.core.plugins.prompts import prompt_registry
-from src.core.saving.auto_kg import enrich_kg_from_input
-from src.core.saving.ingestion_manager import IngestionManager
-from src.services.api.constants.requests import IngestionStructuredRequestBody
-from src.services.data.main import data_adapter
-from src.services.input.agents import llm_small_adapter
-from src.services.kg_agent.main import (
-    embeddings_adapter,
-    graph_adapter,
-    vector_store_adapter,
-)
-from src.services.observations.main import observations_agent
-from src.workers.app import ingestion_app
 from src.constants.tasks.ingestion import (
     IngestionTaskArgs,
     IngestionTaskDataType,
     IngestionTaskTextArgs,
 )
-from src.services.kg_agent.main import cache_adapter
+from src.core.agents.architect_agent import ArchitectAgent
+from src.core.agents.kg_agent import KGAgent
+from src.core.agents.scout_agent import ScoutAgent, ScoutEntity
+from src.core.plugins.prompts import prompt_registry
+from src.core.saving.auto_kg import enrich_kg_from_input
+from src.core.saving.ingestion_manager import IngestionManager
+from src.services.api.constants.requests import (
+    IngestionStructuredRequestBody,
+    IngestionTripleSet,
+    PartialNodeFilter,
+)
+from src.services.data.main import data_adapter
+from src.services.input.agents import llm_small_adapter
+from src.services.kg_agent.main import (
+    cache_adapter,
+    embeddings_adapter,
+    graph_adapter,
+    vector_store_adapter,
+)
+from src.services.observations.main import observations_agent
+from src.utils.dates import normalize_date_string
+from src.utils.similarity.vectors import cosine_similarity
+from src.workers.app import ingestion_app
 
 PYPROJECT_PATH = Path(__file__).parent.parent.parent.parent / "pyproject.toml"
 with open(PYPROJECT_PATH, "rb") as f:
     BRAIN_VERSION = tomllib.load(f)["project"]["version"]
+
+NODE_RESOLUTION_SIMILARITY = 0.9
+EVENT_RESOLUTION_NAME_SIMILARITY = 0.7
+
+
+def _entity_key(entity) -> Tuple[str, str]:
+    return (
+        (entity.name or "").strip().lower(),
+        (entity.type or "").strip().lower(),
+    )
+
+
+def _is_same_graph_node(graph_node: Node, entity) -> bool:
+    if graph_node.uuid and graph_node.uuid == entity.uuid:
+        return True
+    same_name = (graph_node.name or "").strip().lower() == (
+        entity.name or ""
+    ).strip().lower()
+    labels = [str(label).strip().lower() for label in (graph_node.labels or [])]
+    return same_name and (entity.type or "").strip().lower() in labels
+
+
+def _normalize_relationship_dates(
+    relationships: List[ArchitectAgentRelationship],
+) -> None:
+    for relationship in relationships:
+        for entity in (relationship.tail, relationship.tip):
+            if (entity.type or "").strip().upper() == "DATE":
+                entity.name = normalize_date_string(entity.name)
+            if getattr(entity, "happened_at", None):
+                entity.happened_at = normalize_date_string(entity.happened_at)
+
+
+def _resolve_relationship_entities(
+    relationships: List[ArchitectAgentRelationship], brain_id: str
+) -> None:
+    unique_entities = {}
+    for relationship in relationships:
+        for entity in (relationship.tail, relationship.tip):
+            unique_entities.setdefault(_entity_key(entity), entity)
+
+    embeddings_cache: dict = {}
+
+    def _name_embedding(name: str):
+        key = (name or "").strip().lower()
+        if key not in embeddings_cache:
+            try:
+                vector = embeddings_adapter.embed_text(name)
+                embeddings_cache[key] = vector.embeddings if vector else None
+            except Exception:
+                embeddings_cache[key] = None
+        return embeddings_cache[key]
+
+    def _exact_match(entity) -> Optional[Node]:
+        try:
+            return graph_adapter.get_by_identification_params(
+                IdentificationParams(name=entity.name, entity_types=[entity.type]),
+                brain_id=brain_id,
+                entity_types=[entity.type],
+            )
+        except Exception:
+            return None
+
+    def _vector_match(entity) -> Optional[Node]:
+        embedding = _name_embedding(entity.name)
+        if not embedding:
+            return None
+        try:
+            candidates = vector_store_adapter.search_vectors(
+                embedding, brain_id=brain_id, store="nodes", k=5
+            )
+        except Exception:
+            return None
+        entity_type = (entity.type or "").strip().lower()
+        for candidate in candidates:
+            metadata = candidate.metadata or {}
+            candidate_uuid = metadata.get("uuid")
+            labels = [
+                str(label).strip().lower() for label in metadata.get("labels") or []
+            ]
+            if not candidate_uuid or entity_type not in labels:
+                continue
+            candidate_vectors = vector_store_adapter.get_by_ids(
+                [candidate.id], store="nodes", brain_id=brain_id
+            )
+            if not candidate_vectors or not candidate_vectors[0].embeddings:
+                continue
+            similarity = cosine_similarity(embedding, candidate_vectors[0].embeddings)
+            if similarity < NODE_RESOLUTION_SIMILARITY:
+                continue
+            node = graph_adapter.get_by_uuid(candidate_uuid, brain_id=brain_id)
+            if node:
+                return node
+        return None
+
+    resolutions: dict = {}
+    for key, entity in unique_entities.items():
+        if key[1] == "event":
+            continue
+        node = _exact_match(entity) or _vector_match(entity)
+        if node:
+            resolutions[key] = node
+
+    def _apply_resolutions():
+        for relationship in relationships:
+            for entity in (relationship.tail, relationship.tip):
+                node = resolutions.get(_entity_key(entity))
+                if node:
+                    entity.uuid = node.uuid
+                    entity.name = node.name
+
+    _apply_resolutions()
+    resolved_uuids = {node.uuid for node in resolutions.values()}
+
+    for key, event in unique_entities.items():
+        if key[1] != "event" or key in resolutions:
+            continue
+        anchor_uuids = set()
+        for relationship in relationships:
+            if (
+                _entity_key(relationship.tip) == key
+                and relationship.tail.uuid in resolved_uuids
+            ):
+                anchor_uuids.add(relationship.tail.uuid)
+            if (
+                _entity_key(relationship.tail) == key
+                and relationship.tip.uuid in resolved_uuids
+            ):
+                anchor_uuids.add(relationship.tip.uuid)
+        if not anchor_uuids:
+            continue
+        try:
+            neighbor_map = graph_adapter.get_neighbors(
+                list(anchor_uuids), of_types=["EVENT"], brain_id=brain_id
+            )
+        except Exception:
+            continue
+        candidate_counts: dict = {}
+        candidate_nodes: dict = {}
+        for pairs in (neighbor_map or {}).values():
+            seen = set()
+            for _, neighbor in pairs:
+                if not neighbor or not neighbor.uuid or neighbor.uuid in seen:
+                    continue
+                seen.add(neighbor.uuid)
+                candidate_nodes[neighbor.uuid] = neighbor
+                candidate_counts[neighbor.uuid] = (
+                    candidate_counts.get(neighbor.uuid, 0) + 1
+                )
+        event_embedding = _name_embedding(event.name)
+        if not event_embedding:
+            continue
+        event_date = normalize_date_string(getattr(event, "happened_at", None))
+        required_anchors = max(1, (len(anchor_uuids) + 1) // 2)
+        best = None
+        for candidate_uuid, count in candidate_counts.items():
+            if count < required_anchors:
+                continue
+            candidate = candidate_nodes[candidate_uuid]
+            candidate_date = normalize_date_string(
+                getattr(candidate, "happened_at", None)
+                or (candidate.properties or {}).get("happened_at")
+            )
+            if event_date and candidate_date and event_date != candidate_date:
+                continue
+            candidate_embedding = _name_embedding(candidate.name)
+            if not candidate_embedding:
+                continue
+            similarity = cosine_similarity(event_embedding, candidate_embedding)
+            if similarity < EVENT_RESOLUTION_NAME_SIMILARITY:
+                continue
+            if best is None or similarity > best[0]:
+                best = (similarity, candidate)
+        if best:
+            resolutions[key] = best[1]
+
+    _apply_resolutions()
 
 
 def format_textual_data(data: dict, include_keys: bool = True) -> str:
@@ -256,6 +447,8 @@ def process_architect_relationships(self, args: dict):
         relationships = [
             ArchitectAgentRelationship(**rel_data) for rel_data in relationships_data
         ]
+        _normalize_relationship_dates(relationships)
+        _resolve_relationship_entities(relationships, brain_id)
 
         with ThreadPoolExecutor(max_workers=10) as io_executor:
             rel_embedding_futures: List[Tuple[Future, ArchitectAgentRelationship]] = []
@@ -263,6 +456,11 @@ def process_architect_relationships(self, args: dict):
                 if not isinstance(relationship, ArchitectAgentRelationship):
                     print(
                         f"[!] Skipping invalid relationship type: {type(relationship)}"
+                    )
+                    continue
+                if relationship.tail.uuid == relationship.tip.uuid:
+                    print(
+                        f"[!] Skipping self-relationship {relationship.name} on {relationship.tail.name}"
                     )
                     continue
                 future = io_executor.submit(
@@ -311,11 +509,11 @@ def process_architect_relationships(self, args: dict):
                         if similar_rel:
                             similar_tail, _, similar_tip = similar_rel[0]
                             if (
-                                similar_tail.uuid == relationship.tail.uuid
-                                and similar_tip.uuid == relationship.tip.uuid
+                                _is_same_graph_node(similar_tail, relationship.tail)
+                                and _is_same_graph_node(similar_tip, relationship.tip)
                             ) or (
-                                similar_tail.uuid == relationship.tip.uuid
-                                and similar_tip.uuid == relationship.tail.uuid
+                                _is_same_graph_node(similar_tail, relationship.tip)
+                                and _is_same_graph_node(similar_tip, relationship.tail)
                             ):
                                 vector_store_adapter.remove_vectors(
                                     [v_rel_id],
@@ -354,7 +552,13 @@ def process_architect_relationships(self, args: dict):
                                     labels=[node_data.type],
                                     name=node_data.name,
                                     description=node_data.description,
-                                    properties=node_data.properties,
+                                    properties={
+                                        k: v
+                                        for k, v in (
+                                            node_data.properties or {}
+                                        ).items()
+                                        if v is not None
+                                    },
                                     polarity=(
                                         node_data.polarity
                                         if node_data.polarity
@@ -398,10 +602,18 @@ def process_architect_relationships(self, args: dict):
                             uuid=relationship.uuid,
                             flow_key=relationship.flow_key,
                             name=relationship.name,
-                            description=relationship.description,
+                            description=relationship.description or "",
                             properties={
-                                **(relationship.properties or {}),
-                                "v_id": v_rel_id,
+                                **{
+                                    k: v
+                                    for k, v in (relationship.properties or {}).items()
+                                    if v is not None
+                                },
+                                **(
+                                    {"v_id": v_rel_id}
+                                    if v_rel_id is not None
+                                    else {}
+                                ),
                             },
                             last_updated=datetime.datetime.now(),
                             amount=relationship.amount,
@@ -484,19 +696,13 @@ def process_architect_relationships(self, args: dict):
 @ingestion_app.task(bind=True)
 def ingest_structured_data(self, args: dict):
     """
-    Ingest structured elements into the knowledge graph by creating nodes, embedding and storing vectors, generating observations, and saving structured-data records.
+    Ingest event-centric information triples into the knowledge graph enriching subgraphs and registering the information in the memory.
 
     Parses `args` into an IngestionStructuredRequestBody and for each element:
-    - creates a graph node with properties and metadata,
-    - records node property change logs (KG changes),
-    - embeds and stores node and element vectors in the vector store,
-    - generates and stores observations (vectors and Observation records),
-    - merges and saves structured-data records,
-    - calls knowledge-graph enrichment for the element,
-    and updates a task status cache with "started" and "completed" entries.
+    -
 
     Parameters:
-        args (dict): The raw task payload parsed into IngestionStructuredRequestBody (must include brain_id and data elements).
+        args (dict): The raw task payload parsed into IngestionStructuredRequestBody.
 
     Returns:
         str: The task id for this ingestion (self.request.id).
@@ -521,192 +727,141 @@ def ingest_structured_data(self, args: dict):
             expires_in=3600 * 24 * 7,
         )
 
-        for element in payload.data:
-            uuid = str(uuid4())
-            _element = element.model_dump(mode="json")
-            description = llm_small_adapter.generate_text(
-                prompt=prompt_registry.get(
-                    "NODE_DESCRIPTION_PROMPT", NODE_DESCRIPTION_PROMPT
-                ).format(
-                    element=json.dumps(
+        anchor = None
+        ingestion_manager = IngestionManager(
+            embeddings_adapter, vector_store_adapter, graph_adapter
+        )
+
+        if isinstance(payload.anchor, PartialNodeFilter) and payload.anchor.uuid:
+            anchor = graph_adapter.get_by_uuid(
+                payload.anchor.uuid, brain_id=payload.brain_id
+            )
+            if not anchor:
+                cache_adapter.set(
+                    key=f"task:{self.request.id}",
+                    value=json.dumps(
                         {
-                            **_element.get("json_data", {}),
-                            **_element.get("textual_data", {}),
-                        },
-                        indent=2,
+                            "status": "failed",
+                            "task_id": self.request.id,
+                            "error": f"Anchor node with uuid {payload.anchor.uuid} not found",
+                        }
                     ),
-                    element_type=", ".join(element.types) if element.types else "thing",
-                    element_name=(
-                        element.identification_params.name
-                        if element.identification_params
-                        else "the thing"
-                    ),
+                    brain_id=payload.brain_id,
+                    expires_in=3600 * 24 * 7,
+                )
+                return
+
+        else:
+            anchor = graph_adapter.get_by_identification_params(
+                IdentificationParams(
+                    name=payload.anchor.name, entity_types=[payload.anchor.type]
                 )
             )
-            node = graph_adapter.add_nodes(
-                [
-                    Node(
-                        uuid=uuid,
-                        labels=element.types,
-                        name=element.identification_params.name,
-                        description=description,
-                        properties={
-                            **(element.json_data if element.json_data else {}),
-                            **(
-                                element.identification_params.model_dump(mode="json")
-                                if element.identification_params
-                                else {}
-                            ),
-                            **(element.textual_data if element.textual_data else {}),
-                        },
-                    )
-                ],
-                brain_id=payload.brain_id,
-                identification_params=element.identification_params.model_dump(
-                    mode="json"
-                ),
-                metadata={
-                    **(element.metadata if element.metadata else {}),
-                },
-            )[0]
-
-            # Saving the node properties updated change
-            kg_changes = KGChanges(
-                type=KGChangesType.NODE_PROPERTIES_UPDATED,
-                change=KGChangeLogNodePropertiesUpdated(
-                    node=PartialNode(
-                        **node.model_dump(mode="json"),
-                    ),
-                    properties=[
-                        KGChangeLogPredicateUpdatedProperty(
-                            property=property,
-                            previous_value=None,
-                            new_value=node.properties[property],
-                        )
-                        for property in node.properties
-                    ],
-                ),
-            )
-            data_adapter.save_kg_changes(kg_changes, brain_id=payload.brain_id)
-
-            existing_structured_data = data_adapter.get_structured_data_by_id(
-                id=uuid, brain_id=payload.brain_id
-            )
-
-            new_structured_data = None
-
-            if existing_structured_data:
-                new_structured_data = existing_structured_data.model_copy(
-                    update={
-                        "data": {
-                            **(
-                                existing_structured_data.data
-                                if existing_structured_data.data
-                                else {}
-                            ),
-                            **(element.json_data if element.json_data else {}),
-                        },
-                        "types": [
-                            *existing_structured_data.types,
-                            *element.types,
-                        ],
-                        "metadata": {
-                            **(
-                                existing_structured_data.metadata
-                                if existing_structured_data.metadata
-                                else {}
-                            ),
-                            **(element.metadata if element.metadata else {}),
-                        },
-                        "brain_version": BRAIN_VERSION,
-                    },
+            if not anchor:
+                txt = (
+                    payload.anchor.name + "; " + (payload.anchor.meta_description or "")
                 )
-                # TODO: update the changelogs here
-            else:
-                vector = embeddings_adapter.embed_text(node.name)
-                vector.id = node.uuid
-                vector.metadata = {
-                    "labels": node.labels,
-                    "name": node.name,
-                    "uuid": node.uuid,
-                }
-                vector_store_adapter.add_vectors(vectors=[vector], store="nodes")
-                new_structured_data = StructuredData(
-                    id=uuid,
-                    data={
-                        **(element.json_data if element.json_data else {}),
-                        **(element.textual_data if element.textual_data else {}),
-                    },
-                    types=element.types,
-                    metadata=element.metadata,
-                    brain_version=BRAIN_VERSION,
+                embedded_anchor = embeddings_adapter.embed_text(txt)
+                matching_vector_nodes = vector_store_adapter.search_vectors(
+                    embedded_anchor.embeddings,
+                    store="nodes",
+                    brain_id=payload.brain_id,
+                    k=10,
                 )
-
-            data_adapter.save_structured_data(
-                structured_data=new_structured_data,
-                brain_id=payload.brain_id,
-            )
-            vector = embeddings_adapter.embed_text(
-                format_textual_data(element.textual_data, include_keys=False)
-                + "\n"
-                + (
-                    ", ".join(node.labels)
-                    if isinstance(node.labels, list)
-                    else node.labels
-                )
-                + "\n"
-                + node.name,
-            )
-            vector.id = node.uuid
-            vector.metadata = {
-                "labels": node.labels,
-                "name": node.name,
-                "uuid": node.uuid,
-            }
-            vector_store_adapter.add_vectors(vectors=[vector], store="data")
-
-            text_content = format_textual_data(element.textual_data)
-            observations = observations_agent.observe(
-                text=text_content,
-                observate_for=payload.observate_for,
-            )
-            for obs in observations:
-                obs_vector = embeddings_adapter.embed_text(obs)
-                obs_vector.id = str(uuid4())
-                obs_vector.metadata = {
-                    "resource_id": node.uuid,
-                    "labels": node.labels,
-                    "name": node.name,
-                }
-                vector_store_adapter.add_vectors(
-                    vectors=[obs_vector], store="observations"
-                )
-            if len(observations) > 0:
-                data_adapter.save_observations(
-                    [
-                        Observation(
-                            id=node.uuid,
-                            text=obs,
-                            metadata={
-                                "labels": node.labels,
-                                "name": node.name,
-                            },
-                            resource_id=node.uuid,
-                        )
-                        for obs in observations
-                    ],
+                matching_nodes = graph_adapter.get_by_uuids(
+                    [v.metadata.get("uuid") for v in matching_vector_nodes],
                     brain_id=payload.brain_id,
                 )
+                kg_agent = KGAgent(
+                    llm_adapter=llm_small_adapter,
+                    cache_adapter=cache_adapter,
+                    kg=graph_adapter,
+                    vector_store=vector_store_adapter,
+                    embeddings=embeddings_adapter,
+                    database_desc=graph_adapter.graphdb_description,
+                )
+                kg_agent_anchor_result = kg_agent.verify_entity_existence(
+                    entity_name=payload.anchor.name,
+                    entity_types=[payload.anchor.type],
+                    entity_meta_description=payload.anchor.meta_description,
+                    pool_nodes=matching_nodes,
+                    brain_id=payload.brain_id,
+                )
+                if kg_agent_anchor_result.exists:
+                    anchor = kg_agent_anchor_result.node
+                elif payload.anchor:
+                    anchor_entity = ScoutEntity(
+                        name=payload.anchor.name,
+                        type=payload.anchor.type,
+                        description=payload.anchor.meta_description,
+                    )
+                    ingestion_manager.process_node_vectors(
+                        anchor_entity, payload.brain_id
+                    )
+                    added_nodes = graph_adapter.add_nodes(
+                        [
+                            Node(
+                                uuid=anchor_entity.uuid,
+                                labels=[payload.anchor.type],
+                                name=anchor_entity.name,
+                                description=anchor_entity.description,
+                                properties=anchor_entity.properties,
+                            )
+                        ],
+                        brain_id=payload.brain_id,
+                    )
+                    anchor = added_nodes[0]
 
-            enrich_kg_from_input(
-                (
-                    json.dumps(element.textual_data, indent=2)
-                    if len(element.textual_data.keys()) > 0
-                    else description
-                ),
-                targeting=node,
-                brain_id=payload.brain_id,
+        if payload.text:
+            current_triples: List[IngestionTripleSet] = []
+            partial_triples: List[IngestionTripleSet] = []
+            for triple in payload.data:
+                if triple.subject and triple.subj_event:
+                    current_triples.append(triple)
+                else:
+                    partial_triples.append(triple)
+
+            scout_agent = ScoutAgent(
+                llm_adapter=llm_small_adapter,
+                cache_adapter=cache_adapter,
+                kg=graph_adapter,
+                vector_store=vector_store_adapter,
+                embeddings=embeddings_adapter,
             )
+            architect_agent = ArchitectAgent(
+                llm_adapter=llm_small_adapter,
+                cache_adapter=cache_adapter,
+                kg=graph_adapter,
+                vector_store=vector_store_adapter,
+                embeddings=embeddings_adapter,
+                ingestion_manager=ingestion_manager,
+            )
+            scout_agent_response = scout_agent.run_structured(
+                text=payload.text if payload.text else None,
+                brain_id=payload.brain_id,
+                timeout=180,
+                max_retries=3,
+                ingestion_session_id=self.request.id,
+                partial_triples=partial_triples,
+                current_triples=current_triples,
+            )
+            architect_agent.run_structured(
+                text=payload.text if payload.text else None,
+                entities=scout_agent_response.entities,
+                targeting=anchor,
+                brain_id=payload.brain_id,
+                timeout=180,
+                max_retries=3,
+                ingestion_session_id=self.request.id,
+                partial_triples=partial_triples,
+                current_triples=current_triples,
+            )
+
+        # TODO [SIR]: Add the triples to the knowledge graph + save the data + create the embeddings and save them -- save the text if present and find a way to save the rels (maybe isn't necessary?)
+
+        # TODO [SIR]: Create the observations ??
+        # NOTE [SIR]: structured is by definition ment to save precise information so the pipeline will only be granular/accurate
+        # NOTE [SIR]: for the text ingestion the lightweight can be converted into ingestion of only observations instead whole text
 
         cache_adapter.set(
             key=f"task:{self.request.id}",
@@ -747,12 +902,14 @@ def consolidate_graph_async(
     Consolidate graph after all processing tasks complete.
     """
     import os
+
     import langsmith
+
+    from src.config import config
     from src.core.layers.graph_consolidation.graph_consolidation import (
         consolidate_graph,
     )
     from src.lib.redis.client import _redis_client
-    from src.config import config
 
     print(
         f"[DEBUG (consolidate_graph_async)]: Starting consolidation for session {session_id}"
@@ -829,6 +986,7 @@ def ingest_file(self, content_b64: str, filename: str, brain_id: str):
     ingest_data task per page.
     """
     from celery.exceptions import OperationalError
+
     try:
         from docling.document_converter import DocumentConverter
     except ImportError as exc:

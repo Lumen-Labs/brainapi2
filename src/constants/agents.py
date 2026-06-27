@@ -64,11 +64,15 @@ class _ArchitectAgentRelationship(BaseModel):
     Architect agent relationship.
     """
 
-    tip: ArchitectAgentEntity
+    tail: ArchitectAgentEntity = Field(
+        description="The SOURCE of the relationship (the subject/origin where the arrow starts, e.g. the Actor in 'Actor --MADE--> Event')."
+    )
     name: str
     properties: Optional[dict] = Field(default_factory=dict)
     description: Optional[str] = None
-    tail: ArchitectAgentEntity
+    tip: ArchitectAgentEntity = Field(
+        description="The DESTINATION of the relationship (the object/target where the arrow points, e.g. the Event in 'Actor --MADE--> Event')."
+    )
     amount: Optional[float] = Field(
         default=None,
         description="The amount of the relationship.",

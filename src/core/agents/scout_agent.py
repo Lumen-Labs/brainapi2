@@ -3,26 +3,29 @@ File: /scout_agent.py
 Created Date: Sunday December 21st 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Wednesday March 4th 2026 9:35:41 pm
+Last Modified: Sunday March 22nd 2026 10:11:53 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
-from typing import Dict, List, Literal, Optional
+import os
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
+from typing import Dict, List, Literal, Optional
+
 from langchain.tools import BaseTool
 from pydantic import BaseModel, Field
-import os
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from tenacity import (
+    RetryError,
     retry,
+    retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
-    retry_if_exception_type,
-    RetryError,
 )
-from src.adapters.embeddings import EmbeddingsAdapter, VectorStoreAdapter
+
 from src.adapters.cache import CacheAdapter
+from src.adapters.embeddings import EmbeddingsAdapter, VectorStoreAdapter
 from src.adapters.graph import GraphAdapter
 from src.adapters.llm import LLMAdapter
 from src.config import config
@@ -31,10 +34,12 @@ from src.constants.prompts.scout_agent import (
     SCOUT_AGENT_COARSE_EXTRACT_ENTITIES_PROMPT,
     SCOUT_AGENT_COARSE_SYSTEM_PROMPT,
     SCOUT_AGENT_EXTRACT_ENTITIES_PROMPT,
+    SCOUT_AGENT_EXTRACT_STRUCTURED_ENTITIES_PROMPT,
     SCOUT_AGENT_SYSTEM_PROMPT,
 )
 from src.core.agents.core import parse_structured_from_messages, runtime_agent_factory
 from src.core.plugins.prompts import prompt_registry
+from src.services.api.constants.requests import IngestionTripleSet
 from src.utils.tokens import token_detail_from_token_counts
 
 
@@ -155,6 +160,193 @@ class ScoutAgent:
             use_custom_backend=(mode == "coarse"),
         )
 
+    def run_structured(
+        self,
+        text: str,
+        brain_id: str = "default",
+        timeout: int = 300,
+        max_retries: int = 3,
+        ingestion_session_id: Optional[str] = None,
+        partial_triples: List[IngestionTripleSet] = [],
+        current_triples: List[IngestionTripleSet] = [],
+    ) -> ScoutAgentResponse:
+        """
+        Given the provided text and partial/full triples, extract all the (missing) entities from the text.
+
+        Performs an LLM invocation (with optional targeting context), applies retries with exponential backoff on timeouts, enforces a per-invocation timeout, and accumulates token usage from the agent responses.
+
+        Parameters:
+            text: The input text to extract entities from.
+            targeting: Optional Node providing contextual targeting information (name, description, properties) to bias extraction.
+            brain_id: Identifier for the agent/brain configuration to use.
+            timeout: Maximum seconds to wait for a single agent invocation before treating it as a timeout.
+            max_retries: Maximum number of retry attempts for timed-out invocations using exponential backoff.
+            ingestion_session_id: Identifier for the ingestion session to use.
+            mode: Mode to use for the scout agent. "granular" for a more granular extraction, "coarse" to extract the most important entities only.
+            partial_triples: List of partial triples to use for the extraction.
+            current_triples: List of current triples to use for the extraction.
+        Returns:
+            A ScoutAgentResponse containing:
+                - entities: list of extracted ScoutEntity objects.
+                - input_tokens: accumulated input token count observed during the run.
+                - output_tokens: accumulated output token count observed during the run.
+
+        Raises:
+            TimeoutError: If a single invocation exceeds `timeout`, or if all retry attempts fail due to timeouts.
+        """
+        self._get_agent(
+            output_schema=_ScoutAgentResponse,
+            brain_id=brain_id,
+            mode="granular",
+        )
+        current_entities = []
+        for triple in current_triples:
+            if not triple.subject or not triple.object or not triple.event:
+                continue
+            current_entities.extend(
+                [
+                    ScoutEntity(
+                        type=triple.subject.type,
+                        name=triple.subject.name,
+                        description=triple.subject.description,
+                        properties=triple.subject.properties or {},
+                        happened_at=triple.subject.happened_at,
+                    ),
+                    ScoutEntity(
+                        type=triple.object.type,
+                        name=triple.object.name,
+                        description=triple.object.description,
+                        properties=triple.object.properties or {},
+                        happened_at=triple.object.happened_at,
+                    ),
+                    ScoutEntity(
+                        type=triple.event.type,
+                        name=triple.event.name,
+                        description=triple.event.description,
+                        properties=triple.event.properties or {},
+                        happened_at=triple.event.happened_at,
+                    ),
+                ]
+            )
+        for triple in partial_triples:
+            current_entities.extend(
+                [
+                    ScoutEntity(
+                        type=triple.object.type,
+                        name=triple.object.name,
+                        description=triple.object.description,
+                        properties=triple.object.properties or {},
+                    ),
+                    ScoutEntity(
+                        type=triple.event.type,
+                        name=triple.event.name,
+                        description=triple.event.description,
+                    ),
+                ]
+            )
+        prompt = prompt_registry.get(
+            "SCOUT_AGENT_EXTRACT_STRUCTURED_ENTITIES_PROMPT",
+            SCOUT_AGENT_EXTRACT_STRUCTURED_ENTITIES_PROMPT,
+        ).format(
+            text=text,
+            current_entities=current_entities,
+        )
+
+        def _invoke_agent():
+            return self.agent.invoke(
+                {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": prompt,
+                        }
+                    ],
+                },
+                config={
+                    "tags": ["scout_agent"],
+                    "metadata": {
+                        "agent": "scout_agent",
+                        "brain_id": brain_id,
+                        **(
+                            {"ingestion_session_id": ingestion_session_id}
+                            if ingestion_session_id
+                            else {}
+                        ),
+                    },
+                },
+            )
+
+        @retry(
+            stop=stop_after_attempt(max_retries),
+            wait=wait_exponential(multiplier=1, min=2, max=30),
+            retry=retry_if_exception_type(TimeoutError),
+            reraise=True,
+        )
+        def _invoke_agent_with_retry():
+            """
+            Invoke the agent in a separate thread, enforce the configured timeout, and update token accounting from the agent's response.
+
+            Returns:
+                dict: The agent response dictionary.
+
+            Raises:
+                TimeoutError: If the agent invocation exceeds the specified timeout.
+            """
+            try:
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(_invoke_agent)
+                    response = future.result(timeout=timeout)
+                    for m in response.get("messages", []):
+                        if hasattr(m, "usage_metadata"):
+                            self._update_token_counts(m.usage_metadata)
+                            self.token_detail = token_detail_from_token_counts(
+                                self.input_tokens,
+                                self.output_tokens,
+                                self.cached_tokens,
+                                self.reasoning_tokens,
+                                "scout_agent",
+                            )
+                    return response
+            except FutureTimeoutError:
+                raise TimeoutError(
+                    f"Scout agent invoke timed out after {timeout} seconds. "
+                    "This may indicate a network issue or the LLM service is unresponsive."
+                )
+
+        try:
+            response = _invoke_agent_with_retry()
+        except RetryError as e:
+            last_attempt = e.last_attempt
+            raise TimeoutError(
+                f"Scout agent invoke failed after {last_attempt.attempt_number} attempts. "
+                f"Last error: {last_attempt.exception()}"
+            ) from last_attempt.exception()
+        except TimeoutError:
+            raise
+
+        structured = response.get("structured_response")
+        if isinstance(structured, dict):
+            try:
+                structured = _ScoutAgentResponse.model_validate(structured)
+            except Exception:
+                structured = None
+        if structured is None or not getattr(structured, "entities", None):
+            fallback = parse_structured_from_messages(
+                response.get("messages", []), _ScoutAgentResponse
+            )
+            if fallback is not None and getattr(fallback, "entities", None):
+                structured = fallback
+        if structured is None:
+            structured = _ScoutAgentResponse(entities=[])
+        return ScoutAgentResponse(
+            entities=[
+                ScoutEntity(**entity.model_dump(mode="json"))
+                for entity in structured.entities
+            ],
+            input_tokens=self.input_tokens,
+            output_tokens=self.output_tokens,
+        )
+
     def run(
         self,
         text: str,
@@ -204,14 +396,16 @@ class ScoutAgent:
         )
         if mode == "granular":
             prompt = prompt_registry.get(
-                "SCOUT_AGENT_EXTRACT_ENTITIES_PROMPT", SCOUT_AGENT_EXTRACT_ENTITIES_PROMPT
+                "SCOUT_AGENT_EXTRACT_ENTITIES_PROMPT",
+                SCOUT_AGENT_EXTRACT_ENTITIES_PROMPT,
             ).format(
                 text=text,
                 targeting=targeting_str,
             )
         elif mode == "coarse":
             prompt = prompt_registry.get(
-                "SCOUT_AGENT_COARSE_EXTRACT_ENTITIES_PROMPT", SCOUT_AGENT_COARSE_EXTRACT_ENTITIES_PROMPT
+                "SCOUT_AGENT_COARSE_EXTRACT_ENTITIES_PROMPT",
+                SCOUT_AGENT_COARSE_EXTRACT_ENTITIES_PROMPT,
             ).format(
                 text=text,
                 targeting=targeting_str,

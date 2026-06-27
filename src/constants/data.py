@@ -3,7 +3,7 @@ File: /data.py
 Created Date: Saturday October 25th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Sunday April 12th 2026 11:44:39 am
+Last Modified: Sunday April 12th 2026 1:35:36 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
@@ -113,6 +113,10 @@ class PartialPredicate(BaseModel):
     )
     properties: Optional[dict] = Field(
         default=None, description="The properties of the relationship."
+    )
+    amount: Optional[Union[int, float]] = Field(
+        default=None,
+        description="The amount of the relationship, if it is a quantitative relationship.",
     )
 
 

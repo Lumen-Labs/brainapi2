@@ -7,7 +7,7 @@ name = "common"
 version = "0.1.0"
 description = "API for the BrainAPI memory layer"
 authors = [{ name = "Lumen Platforms Inc." }]
-license = { text = "Business Source License 1.1" }
+license = { text = "PolyForm Small Business License 1.0.0" }
 readme = "README.md"
 requires-python = ">=3.10"
 

@@ -3,7 +3,7 @@ File: /kg_agent.py
 Created Date: Sunday October 19th 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Thursday February 19th 2026 7:45:12 pm
+Last Modified: Sunday April 12th 2026 1:35:36 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
@@ -35,8 +35,10 @@ from src.constants.prompts.kg_agent import (
     KG_AGENT_SYSTEM_PROMPT,
     KG_AGENT_UPDATE_PROMPT,
     KG_AGENT_UPDATE_STRUCTURED_PROMPT,
+    KG_AGENT_VERIFY_ENTITY_EXISTENCE_PROMPT,
+    KG_AGENT_VERIFY_ENTITY_EXISTENCE_SYSTEM_PROMPT,
 )
-from src.core.agents.core import runtime_agent_factory
+from src.core.agents.core import parse_structured_from_messages, runtime_agent_factory
 from src.core.plugins.prompts import prompt_registry
 from src.core.agents.tools.kg_agent import (
     KGAgentAddTripletsTool,
@@ -58,6 +60,11 @@ from src.utils.tokens import token_detail_from_token_counts
 
 MAX_RECURSION_LIMIT = 50
 MAX_RECURSION_LIMIT_GRAPH_CONSOLIDATOR = 50
+
+
+class EntityExistenceResult(BaseModel):
+    exists: bool
+    node: Optional[Node]
 
 
 class KGAgent:
@@ -187,7 +194,9 @@ class KGAgent:
             extra_system_prompt (Optional[dict]): Optional additional content to interpolate into the selected system prompt.
             brain_id (str): Identifier of the knowledge brain/context to use when creating default tools.
         """
-        resolved_extra_system_prompt = extra_system_prompt if extra_system_prompt else ""
+        resolved_extra_system_prompt = (
+            extra_system_prompt if extra_system_prompt else ""
+        )
         if type_ not in self._SYSTEM_PROMPT_BUILDERS:
             raise ValueError(f"Invalid type: {type_}")
         system_prompt = self._SYSTEM_PROMPT_BUILDERS[type_](
@@ -213,6 +222,84 @@ class KGAgent:
         """
         Search the knowledge graph for information.
         """
+
+    def verify_entity_existence(
+        self,
+        entity_name: str,
+        entity_types: List[str],
+        entity_meta_description: Optional[str],
+        pool_nodes: List[Node],
+        brain_id: str = "default",
+    ) -> EntityExistenceResult:
+        """
+        Verify if an entity exists in the knowledge graph.
+        """
+        self.agent = runtime_agent_factory.build(
+            model=self.llm_adapter.llm.langchain_model,
+            tools=[
+                KGAgentSearchGraphTool(
+                    self,
+                    self.kg,
+                    self.vector_store,
+                    self.embeddings,
+                    identification_params={},
+                    metadata={},
+                    brain_id=brain_id,
+                ),
+            ],
+            system_prompt=prompt_registry.get(
+                "KG_AGENT_VERIFY_ENTITY_EXISTENCE_SYSTEM_PROMPT",
+                KG_AGENT_VERIFY_ENTITY_EXISTENCE_SYSTEM_PROMPT,
+            ),
+            output_schema=EntityExistenceResult,
+        )
+        response = self.agent.invoke(
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": prompt_registry.get(
+                            "KG_AGENT_VERIFY_ENTITY_EXISTENCE_PROMPT",
+                            KG_AGENT_VERIFY_ENTITY_EXISTENCE_PROMPT,
+                        ).format(
+                            entity_name=entity_name,
+                            entity_types=entity_types,
+                            entity_meta_description=(
+                                f"""
+                            This extra information about the entity:
+                            {entity_meta_description}
+                            """
+                                if entity_meta_description
+                                else ""
+                            ),
+                            pool_nodes=pool_nodes,
+                        ),
+                    }
+                ],
+            },
+            config={
+                "recursion_limit": MAX_RECURSION_LIMIT,
+                "tags": ["kg_agent"],
+                "metadata": {"agent": "kg_agent", "brain_id": brain_id},
+            },
+        )
+        structured_response = response.get("structured_response")
+        if isinstance(structured_response, dict):
+            try:
+                structured_response = EntityExistenceResult.model_validate(
+                    structured_response
+                )
+            except Exception:
+                structured_response = None
+        if structured_response is None:
+            fallback = parse_structured_from_messages(
+                response.get("messages", []), EntityExistenceResult
+            )
+            if fallback is not None:
+                structured_response = fallback
+        if structured_response is None:
+            structured_response = EntityExistenceResult(exists=False, node=None)
+        return structured_response
 
     def update_kg(
         self,
@@ -256,7 +343,6 @@ class KGAgent:
                     }
                 ],
             },
-            print_mode="debug",
             config={
                 "recursion_limit": MAX_RECURSION_LIMIT,
                 "tags": ["kg_agent"],
@@ -289,7 +375,8 @@ class KGAgent:
                     {
                         "role": "user",
                         "content": prompt_registry.get(
-                            "KG_AGENT_UPDATE_STRUCTURED_PROMPT", KG_AGENT_UPDATE_STRUCTURED_PROMPT
+                            "KG_AGENT_UPDATE_STRUCTURED_PROMPT",
+                            KG_AGENT_UPDATE_STRUCTURED_PROMPT,
                         ).format(
                             textual_data=textual_data,
                             main_node=main_node,
@@ -297,7 +384,6 @@ class KGAgent:
                     }
                 ],
             },
-            print_mode="debug",
             config={
                 "recursion_limit": MAX_RECURSION_LIMIT,
                 "tags": ["kg_agent"],
@@ -371,7 +457,8 @@ class KGAgent:
                     {
                         "role": "user",
                         "content": prompt_registry.get(
-                            "KG_AGENT_RETRIEVE_NEIGHBORS_PROMPT", KG_AGENT_RETRIEVE_NEIGHBORS_PROMPT
+                            "KG_AGENT_RETRIEVE_NEIGHBORS_PROMPT",
+                            KG_AGENT_RETRIEVE_NEIGHBORS_PROMPT,
                         ).format(
                             main_node=node, looking_for=looking_for_prompt, limit=limit
                         ),
@@ -383,7 +470,6 @@ class KGAgent:
                 "tags": ["kg_agent"],
                 "metadata": {"agent": "kg_agent", "brain_id": brain_id},
             },
-            print_mode="debug",
         )
 
         response = _response.get("structured_response")
@@ -475,10 +561,9 @@ class KGAgent:
                         {
                             "role": "user",
                             "content": prompt_registry.get(
-                                "KG_AGENT_GRAPH_CONSOLIDATOR_PROMPT", KG_AGENT_GRAPH_CONSOLIDATOR_PROMPT
-                            ).format(
-                                task=task
-                            ),
+                                "KG_AGENT_GRAPH_CONSOLIDATOR_PROMPT",
+                                KG_AGENT_GRAPH_CONSOLIDATOR_PROMPT,
+                            ).format(task=task),
                         }
                     ],
                 },

@@ -3,7 +3,7 @@ File: /scout_agent.py
 Created Date: Sunday December 21st 2025
 Author: Christian Nonis <alch.infoemail@gmail.com>
 -----
-Last Modified: Thursday February 19th 2026 7:45:12 pm
+Last Modified: Wednesday March 4th 2026 9:35:41 pm
 Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
@@ -169,6 +169,24 @@ OUTPUT RULES:
 - Dates must be in the format "DD/MM/YYYY" and be stored as "happened_at" in the properties of the event nodes.
 - You must extract the most important entities that can be used to reconstruct a meaningful narrative,
 the unique action instances (events), and the quantitative units without omitting any concepts.
+
+Begin!
+"""
+
+SCOUT_AGENT_EXTRACT_STRUCTURED_ENTITIES_PROMPT = """
+Carefully read the text and extract ALL the entities, unique action instances (events), and quantitative units.
+
+The following are the entities already identified that you can skip:
+{current_entities}
+
+Text: {text}
+
+OUTPUT RULES:
+- Return a JSON list of objects.
+- Each object must include: "type", "name", and optional "properties" and "description".
+- Nodes/Entities MUST be atomic and not composite (phrases) (eg: "Went to San Francisco" is not atomic, "Went to" + "San Francisco" is atomic)
+- Dates must be in the format "DD/MM/YYYY" and be stored as "happened_at" in the properties of the event nodes.
+- You must extract ALL the building blocks without omitting any concepts.
 
 Begin!
 """
