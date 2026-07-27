@@ -67,7 +67,7 @@ async def retrieve(
     text: str = Query(..., description="The text to search for."),
     limit: int = Query(10, description="The number of results to return."),
     preferred_entities: str = Query(
-        ...,
+        "",
         description="The entities to prioritize in the relationships, separated by commas.",
     ),
     brain_id: str = Depends(get_brain_id),
