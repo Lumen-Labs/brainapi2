@@ -129,6 +129,20 @@ def test_light_backup_includes_per_brain_postgres_databases():
     assert "brain_*.dump" in source
 
 
+def test_heavy_neo4j_dump_runs_as_root_with_admin_entrypoint():
+    source = (DEPLOY / "backup_restore.py").read_text(encoding="utf-8")
+    assert '"--user"' in source
+    assert '"0"' in source
+    assert '"--entrypoint"' in source
+    assert '"neo4j-admin"' in source
+    assert "/data/databases" in source
+    assert "mindepth" in source
+    assert "CREATE DATABASE" in source
+    assert '("system", "neo4j")' not in source
+    assert '["up", "-d", "--wait", "neo4j"]' in source
+    assert '["stop", "neo4j"]' in source
+
+
 def test_recommendation_openapi_surface_is_preview():
     from src.services.api.app import app
 

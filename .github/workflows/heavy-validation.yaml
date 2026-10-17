@@ -6,12 +6,61 @@ on:
     branches: [main]
   workflow_dispatch:
 
+concurrency:
+  group: heavy-validation
+  cancel-in-progress: false
+
 permissions:
   contents: read
   actions: read
+  id-token: write
 
 jobs:
+  start-heavy-runner:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_HEAVY_RUNNER_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_HEAVY_RUNNER_REGION }}
+      - name: Start the heavy runner VM
+        env:
+          INSTANCE_ID: ${{ vars.AWS_HEAVY_RUNNER_INSTANCE_ID }}
+        run: |
+          set -euo pipefail
+          state="$(aws ec2 describe-instances --instance-ids "$INSTANCE_ID" --query 'Reservations[0].Instances[0].State.Name' --output text)"
+          echo "instance state=$state"
+          if [[ "$state" == "stopping" || "$state" == "shutting-down" ]]; then
+            aws ec2 wait instance-stopped --instance-ids "$INSTANCE_ID"
+            state=stopped
+          fi
+          if [[ "$state" != "running" && "$state" != "pending" ]]; then
+            aws ec2 start-instances --instance-ids "$INSTANCE_ID"
+          fi
+          aws ec2 wait instance-running --instance-ids "$INSTANCE_ID"
+          echo "instance running"
+      - name: Wait for SSM and the runner service
+        env:
+          INSTANCE_ID: ${{ vars.AWS_HEAVY_RUNNER_INSTANCE_ID }}
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 40); do
+            ping="$(aws ssm describe-instance-information --filters "Key=InstanceIds,Values=${INSTANCE_ID}" --query 'InstanceInformationList[0].PingStatus' --output text 2>/dev/null || true)"
+            echo "attempt $i ssm=${ping:-missing}"
+            if [[ "$ping" == "Online" ]]; then
+              sleep 20
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "Timed out waiting for SSM on ${INSTANCE_ID}" >&2
+          exit 1
+
   heavy-smoke-and-restore:
+    needs: start-heavy-runner
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, linux, x64, brainapi-heavy]
     timeout-minutes: 90
     env:
@@ -19,6 +68,7 @@ jobs:
       BRAINAPI_ENV_FILE: env.heavy.example
       REDIS_PASSWORD: ci-redis-password
       NEO4J_PASSWORD: ci-neo4j-password
+      MONGO_USERNAME: root
       MONGO_PASSWORD: ci-mongo-password
       MINIO_ACCESS_KEY: ci-minio-access
       MINIO_SECRET_KEY: ci-minio-secret-password
@@ -89,14 +139,20 @@ jobs:
             core.setFailed(`Timed out waiting for successful Quality artifacts for ${shas.join(" or ")}`);
       - name: Load and verify the shared candidate image
         run: |
+          rm -rf quality-artifacts
           unzip -q quality-artifacts.zip -d quality-artifacts
-          image_archive=$(find quality-artifacts -name brainapi-image.tar.gz -print -quit)
-          security_file=$(find quality-artifacts -name security.json -print -quit)
-          test -n "$image_archive"
-          test -n "$security_file"
+          image_archive=quality-artifacts/release-artifacts/brainapi-image.tar.gz
+          security_file=quality-artifacts/release-artifacts/security.json
+          test -f "$image_archive"
+          test -f "$security_file"
+          docker rmi "$BRAINAPI_IMAGE" || true
           gzip -dc "$image_archive" | docker load
-          expected=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["image_digest"])' "$security_file")
-          actual=$(docker image inspect "$BRAINAPI_IMAGE" --format '{{.Id}}')
+          expected=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["archive_sha256"])' "$security_file")
+          actual=$(sha256sum "$image_archive" | awk '{print $1}')
+          echo "expected_tar=$expected"
+          echo "actual_tar=$actual"
+          echo "loaded_id=$(docker image inspect "$BRAINAPI_IMAGE" --format '{{.Id}}')"
+          test -n "$expected"
           test "$actual" = "$expected"
       - name: Require runner capacity
         run: |
@@ -112,7 +168,10 @@ jobs:
       - name: Backup and verify
         id: backup
         run: |
+          set -euo pipefail
           archive=$(deploy/brainapi-backup backup --profile heavy --project-name brainapi-heavy-ci --env-file deploy/env.heavy.example --compose-file deploy/docker-compose.ci.yaml --backup-dir "$BACKUP_DIR" | tail -1)
+          test -d "$archive"
+          test -f "$archive/manifest.json"
           deploy/brainapi-backup verify --profile heavy --env-file deploy/env.heavy.example --archive "$archive"
           cp "$archive/manifest.json" "$RELEASE_ARTIFACT_DIR/backup-heavy-manifest.json"
           echo "archive=$archive" >> "$GITHUB_OUTPUT"
@@ -133,3 +192,22 @@ jobs:
         with:
           name: heavy-production-validation
           path: release-artifacts/
+
+  stop-heavy-runner:
+    if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    needs: [start-heavy-runner, heavy-smoke-and-restore]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_HEAVY_RUNNER_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_HEAVY_RUNNER_REGION }}
+      - name: Stop the heavy runner VM
+        env:
+          INSTANCE_ID: ${{ vars.AWS_HEAVY_RUNNER_INSTANCE_ID }}
+        run: |
+          set -euo pipefail
+          aws ec2 stop-instances --instance-ids "$INSTANCE_ID"
+          aws ec2 wait instance-stopped --instance-ids "$INSTANCE_ID"
+          echo "instance stopped"

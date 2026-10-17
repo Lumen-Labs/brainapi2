@@ -133,7 +133,7 @@ jobs:
       - name: Record exact-image security evidence
         run: |
           cp brainapi.spdx.json "$RELEASE_ARTIFACT_DIR/brainapi.spdx.json"
-          python scripts/write_security_artifact.py --trivy trivy.json --sbom "$RELEASE_ARTIFACT_DIR/brainapi.spdx.json" --image "$BRAINAPI_IMAGE" --output "$RELEASE_ARTIFACT_DIR/security.json"
+          python scripts/write_security_artifact.py --trivy trivy.json --sbom "$RELEASE_ARTIFACT_DIR/brainapi.spdx.json" --image "$BRAINAPI_IMAGE" --archive "$RELEASE_ARTIFACT_DIR/brainapi-image.tar.gz" --output "$RELEASE_ARTIFACT_DIR/security.json"
       - name: Logs on failure
         if: failure()
         run: docker compose --project-name brainapi-ci -f deploy/docker-compose.light.yaml -f deploy/docker-compose.ci.yaml logs --no-color
