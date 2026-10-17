@@ -138,14 +138,18 @@ jobs:
             core.setFailed(`Timed out waiting for successful Quality artifacts for ${shas.join(" or ")}`);
       - name: Load and verify the shared candidate image
         run: |
+          rm -rf quality-artifacts
           unzip -q quality-artifacts.zip -d quality-artifacts
-          image_archive=$(find quality-artifacts -name brainapi-image.tar.gz -print -quit)
-          security_file=$(find quality-artifacts -name security.json -print -quit)
-          test -n "$image_archive"
-          test -n "$security_file"
+          image_archive=quality-artifacts/release-artifacts/brainapi-image.tar.gz
+          security_file=quality-artifacts/release-artifacts/security.json
+          test -f "$image_archive"
+          test -f "$security_file"
+          docker rmi "$BRAINAPI_IMAGE" || true
           gzip -dc "$image_archive" | docker load
-          expected=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["image_digest"])' "$security_file")
+          expected=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["image_digest"])' "$security_file")
           actual=$(docker image inspect "$BRAINAPI_IMAGE" --format '{{.Id}}')
+          echo "expected=$expected"
+          echo "actual=$actual"
           test "$actual" = "$expected"
       - name: Require runner capacity
         run: |
