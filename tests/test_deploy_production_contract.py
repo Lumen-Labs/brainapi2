@@ -135,7 +135,8 @@ def test_heavy_neo4j_dump_runs_as_root_with_admin_entrypoint():
     assert '"0"' in source
     assert '"--entrypoint"' in source
     assert '"neo4j-admin"' in source
-    assert source.count('("neo4j",)') == 2
+    assert "/data/databases" in source
+    assert "CREATE DATABASE" in source
     assert '("system", "neo4j")' not in source
     assert '["up", "-d", "--wait", "neo4j"]' in source
     assert '["stop", "neo4j"]' in source

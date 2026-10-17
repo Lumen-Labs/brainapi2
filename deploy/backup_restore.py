@@ -7,11 +7,13 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shlex
 import stat
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO
@@ -46,6 +48,8 @@ PROFILE_ALL_VOLUMES = {
         "brainapi-plugins",
     ),
 }
+_NEO4J_DB_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{0,62}$")
+
 RESTORE_ORDER = {
     "light": ("redis-data", "postgres", "brainapi-plugins", "stack"),
     "heavy": (
@@ -243,6 +247,84 @@ def _restore_postgres_brain_databases(
                     )
 
 
+def _neo4j_user_databases(stack: Stack) -> list[str]:
+    if stack.dry_run:
+        return ["neo4j"]
+    result = stack.run(
+        [
+            "run",
+            "--rm",
+            "--no-deps",
+            "--user",
+            "0",
+            "--entrypoint",
+            "/bin/ls",
+            "neo4j",
+            "/data/databases",
+        ],
+        capture=True,
+        check=False,
+    )
+    output = ((result.stdout or "") + (result.stderr or "")).strip()
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"failed to list Neo4j databases ({result.returncode}): {output or 'no output'}"
+        )
+    names = []
+    for raw in (result.stdout or "").split():
+        name = raw.strip()
+        if name == "system" or not _NEO4J_DB_NAME.match(name):
+            continue
+        names.append(name)
+    if "neo4j" not in names:
+        names.append("neo4j")
+    return sorted(set(names))
+
+
+def _ensure_neo4j_database(stack: Stack, database: str) -> None:
+    if database == "neo4j" or stack.dry_run:
+        return
+    user = stack.env.get("NEO4J_USERNAME", "neo4j")
+    password = stack.env.get("NEO4J_PASSWORD", "")
+    stack.run(
+        [
+            "exec",
+            "-T",
+            "neo4j",
+            "cypher-shell",
+            "-u",
+            user,
+            "-p",
+            password,
+            "-d",
+            "system",
+            f"CREATE DATABASE `{database}` IF NOT EXISTS",
+        ]
+    )
+    for _ in range(30):
+        status = stack.run(
+            [
+                "exec",
+                "-T",
+                "neo4j",
+                "cypher-shell",
+                "-u",
+                user,
+                "-p",
+                password,
+                "-d",
+                "system",
+                f"SHOW DATABASE `{database}` YIELD currentStatus",
+            ],
+            capture=True,
+            check=False,
+        )
+        if "online" in (status.stdout or "").lower():
+            return
+        time.sleep(0.2)
+    raise RuntimeError(f"Neo4j database {database} did not come online")
+
+
 def _chown_neo4j_data(stack: Stack) -> None:
     stack.docker(
         [
@@ -408,7 +490,7 @@ def backup(stack: Stack, backup_root: Path) -> Path:
             stack.run(["stop", "neo4j", "mongo", "milvus", "etcd", "minio", "redis"])
             neo_dir = destination / "neo4j"
             neo_dir.mkdir(mode=0o777)
-            for database in ("neo4j",):
+            for database in _neo4j_user_databases(stack):
                 _neo4j_admin(
                     stack,
                     f"{neo_dir}:/backup",
@@ -495,12 +577,21 @@ def restore(stack: Stack, backup_dir: Path) -> None:
         )
     else:
         stack.run(["up", "-d", "--wait", "neo4j"])
-        stack.run(["stop", "neo4j"])
         with tempfile.TemporaryDirectory(prefix="brainapi-neo4j-restore-") as tmp:
             tmp_path = Path(tmp)
             if not stack.dry_run:
                 subprocess.run(["tar", "-C", str(tmp_path), "-xzf", str(backup_dir / "neo4j.dumps.tar.gz")], check=True)
-            for database in ("neo4j",):
+            databases = [
+                path.stem
+                for path in sorted(tmp_path.glob("*.dump"))
+                if path.stem != "system" and _NEO4J_DB_NAME.match(path.stem)
+            ]
+            if stack.dry_run:
+                databases = ["neo4j"]
+            for database in databases:
+                _ensure_neo4j_database(stack, database)
+            stack.run(["stop", "neo4j"])
+            for database in databases:
                 _neo4j_admin(
                     stack,
                     f"{tmp_path}:/backup:ro",
