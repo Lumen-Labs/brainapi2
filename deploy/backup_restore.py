@@ -243,6 +243,24 @@ def _restore_postgres_brain_databases(
                     )
 
 
+def _chown_neo4j_data(stack: Stack) -> None:
+    stack.docker(
+        [
+            "run",
+            "--rm",
+            "--user",
+            "0",
+            "-v",
+            f"{stack.volume_name('neo4j-data')}:/data",
+            ARCHIVER_IMAGE,
+            "chown",
+            "-R",
+            "7474:7474",
+            "/data",
+        ]
+    )
+
+
 def _neo4j_admin(stack: Stack, volume: str, args: list[str]) -> None:
     result = stack.run(
         [
@@ -476,6 +494,8 @@ def restore(stack: Stack, backup_dir: Path) -> None:
             stack, backup_dir / "postgres-brains.tar.gz", pg_user
         )
     else:
+        stack.run(["up", "-d", "--wait", "neo4j"])
+        stack.run(["stop", "neo4j"])
         with tempfile.TemporaryDirectory(prefix="brainapi-neo4j-restore-") as tmp:
             tmp_path = Path(tmp)
             if not stack.dry_run:
@@ -492,6 +512,7 @@ def restore(stack: Stack, backup_dir: Path) -> None:
                         "--overwrite-destination=true",
                     ],
                 )
+        _chown_neo4j_data(stack)
         stack.run(["up", "-d", "--wait", "mongo"])
         mongo_user = stack.env.get("MONGO_USERNAME", "brainapi")
         if stack.dry_run:

@@ -137,6 +137,8 @@ def test_heavy_neo4j_dump_runs_as_root_with_admin_entrypoint():
     assert '"neo4j-admin"' in source
     assert source.count('("neo4j",)') == 2
     assert '("system", "neo4j")' not in source
+    assert '["up", "-d", "--wait", "neo4j"]' in source
+    assert '["stop", "neo4j"]' in source
 
 
 def test_recommendation_openapi_surface_is_preview():
