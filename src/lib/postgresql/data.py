@@ -38,6 +38,7 @@ from ._provisioning import (
     get_brain_pool,
     get_system_pool,
     clear_brain_database,
+    drop_brain_database,
     list_brain_database_names,
 )
 
@@ -606,6 +607,7 @@ class PostgreSQLDataClient(DataClient):
                 )
                 deleted = cur.rowcount > 0
             conn.commit()
+        drop_brain_database(brain_id)
         return deleted
 
     def save_kg_changes(self, kg_changes: KGChanges, brain_id: str) -> KGChanges:

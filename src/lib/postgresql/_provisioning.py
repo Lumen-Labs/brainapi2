@@ -111,6 +111,16 @@ class _PoolRegistry:
             else:
                 logger.debug("Evicted LRU pool: %s", evicted_name)
 
+    def close(self, dbname: str) -> None:
+        with self._lock:
+            pool = self._pools.pop(dbname, None)
+        if pool is None:
+            return
+        try:
+            pool.closeall()
+        except Exception as exc:
+            logger.debug("Failed to close pool %s: %s", dbname, exc)
+
 
 _registry = _PoolRegistry()
 
@@ -255,3 +265,34 @@ def clear_brain_database(
                 )
         conn.commit()
     return tables
+
+
+def drop_brain_database(brain_id: str) -> bool:
+    dbname = brain_db_name(brain_id)
+    _registry.close(dbname)
+    _created_dbs.discard(dbname)
+    conn = psycopg2.connect(
+        host=config.postgresql.host,
+        port=config.postgresql.port,
+        user=config.postgresql.username,
+        password=config.postgresql.password,
+        dbname=_maintenance_dbname(),
+    )
+    try:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (dbname,))
+            if cur.fetchone() is None:
+                return False
+            cur.execute(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                "WHERE datname = %s AND pid <> pg_backend_pid()",
+                (dbname,),
+            )
+            cur.execute(
+                sql.SQL("DROP DATABASE IF EXISTS {}").format(sql.Identifier(dbname))
+            )
+            logger.info("Dropped Postgres database: %s", dbname)
+            return True
+    finally:
+        conn.close()
