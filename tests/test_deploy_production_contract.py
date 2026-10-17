@@ -136,6 +136,7 @@ def test_heavy_neo4j_dump_runs_as_root_with_admin_entrypoint():
     assert '"--entrypoint"' in source
     assert '"neo4j-admin"' in source
     assert "/data/databases" in source
+    assert '"-type"' in source
     assert "CREATE DATABASE" in source
     assert '("system", "neo4j")' not in source
     assert '["up", "-d", "--wait", "neo4j"]' in source
