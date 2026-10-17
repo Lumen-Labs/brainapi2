@@ -32,6 +32,10 @@ jobs:
           set -euo pipefail
           state="$(aws ec2 describe-instances --instance-ids "$INSTANCE_ID" --query 'Reservations[0].Instances[0].State.Name' --output text)"
           echo "instance state=$state"
+          if [[ "$state" == "stopping" || "$state" == "shutting-down" ]]; then
+            aws ec2 wait instance-stopped --instance-ids "$INSTANCE_ID"
+            state=stopped
+          fi
           if [[ "$state" != "running" && "$state" != "pending" ]]; then
             aws ec2 start-instances --instance-ids "$INSTANCE_ID"
           fi
