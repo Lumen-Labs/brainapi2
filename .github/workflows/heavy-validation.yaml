@@ -68,6 +68,7 @@ jobs:
       BRAINAPI_ENV_FILE: env.heavy.example
       REDIS_PASSWORD: ci-redis-password
       NEO4J_PASSWORD: ci-neo4j-password
+      MONGO_USERNAME: root
       MONGO_PASSWORD: ci-mongo-password
       MINIO_ACCESS_KEY: ci-minio-access
       MINIO_SECRET_KEY: ci-minio-secret-password
