@@ -6,12 +6,56 @@ on:
     branches: [main]
   workflow_dispatch:
 
+concurrency:
+  group: heavy-validation
+  cancel-in-progress: false
+
 permissions:
   contents: read
   actions: read
+  id-token: write
 
 jobs:
+  start-heavy-runner:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_HEAVY_RUNNER_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_HEAVY_RUNNER_REGION }}
+      - name: Start the heavy runner VM
+        env:
+          INSTANCE_ID: ${{ vars.AWS_HEAVY_RUNNER_INSTANCE_ID }}
+        run: |
+          set -euo pipefail
+          state="$(aws ec2 describe-instances --instance-ids "$INSTANCE_ID" --query 'Reservations[0].Instances[0].State.Name' --output text)"
+          echo "instance state=$state"
+          if [[ "$state" != "running" && "$state" != "pending" ]]; then
+            aws ec2 start-instances --instance-ids "$INSTANCE_ID"
+          fi
+          aws ec2 wait instance-running --instance-ids "$INSTANCE_ID"
+          echo "instance running"
+      - name: Wait for the GitHub runner to come online
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 40); do
+            status="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runners" --jq '.runners[] | select(.name=="brainapi-heavy") | .status' | head -n 1 || true)"
+            echo "attempt $i runner status=${status:-missing}"
+            if [[ "$status" == "online" ]]; then
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "Timed out waiting for brainapi-heavy runner" >&2
+          exit 1
+
   heavy-smoke-and-restore:
+    needs: start-heavy-runner
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, linux, x64, brainapi-heavy]
     timeout-minutes: 90
     env:
@@ -133,3 +177,22 @@ jobs:
         with:
           name: heavy-production-validation
           path: release-artifacts/
+
+  stop-heavy-runner:
+    if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    needs: [start-heavy-runner, heavy-smoke-and-restore]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_HEAVY_RUNNER_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_HEAVY_RUNNER_REGION }}
+      - name: Stop the heavy runner VM
+        env:
+          INSTANCE_ID: ${{ vars.AWS_HEAVY_RUNNER_INSTANCE_ID }}
+        run: |
+          set -euo pipefail
+          aws ec2 stop-instances --instance-ids "$INSTANCE_ID"
+          aws ec2 wait instance-stopped --instance-ids "$INSTANCE_ID"
+          echo "instance stopped"
