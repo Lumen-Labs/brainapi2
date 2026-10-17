@@ -11,9 +11,10 @@ import pytest
 import yaml
 
 from deploy.backup_restore import verify_backup
-from scripts.check_release_readiness import _check_latency
+from scripts.check_release_readiness import _check_latency, evaluate
 from scripts.openai_ci_stub import _embedding
 from scripts.production_smoke import _latency_summary
+from scripts.release_version import parse_release_tag, requires_product_claim_gates
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -198,9 +199,89 @@ def test_release_workflow_enforces_artifact_gate_before_publish():
         encoding="utf-8"
     )
     assert "check_release_readiness.py gate-artifacts" in workflow
+    assert '--tag "$GITHUB_REF_NAME"' in workflow
     assert "needs: [validate-tag, verify-required-checks]" in workflow
     assert 'python scripts/release_version.py "$GITHUB_REF_NAME"' in workflow
     assert "steps.tag.outputs.project_version" in workflow
+
+
+def _gate_artifacts(tmp_path: Path, *, missing_flow: bool = False) -> Path:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    flows = {
+        "authentication": True,
+        "brain_creation": True,
+        "plain_ingestion": True,
+        "structured_ingestion": True,
+        "task_completion": True,
+        "context_retrieval": not missing_flow,
+        "search": True,
+        "console": True,
+        "mcp": True,
+    }
+    smoke = {
+        profile: {"flows": flows, "unexpected_5xx": 0} for profile in ("light", "heavy")
+    }
+    counts = {
+        "brains": 1,
+        "nodes": 2,
+        "edges": 1,
+        "chunks": 3,
+        "vectors": 3,
+        "observations": 0,
+    }
+    restore = {
+        "before": counts,
+        "after": counts,
+        "retrieval_spot_checks": [{"match": True} for _ in range(10)],
+    }
+    latency = {
+        profile: {
+            "context": {
+                "p50_ms": 5000,
+                "p95_ms": 5500,
+                "p99_ms": 5600,
+                "online_llm_retrieval_loops": 0,
+            },
+            "search": {
+                "p50_ms": 12,
+                "p95_ms": 20,
+                "p99_ms": 25,
+                "excludes_embed_query": True,
+            },
+        }
+        for profile in ("light", "heavy")
+    }
+    (tmp_path / "brainapi.spdx.json").write_text("{}\n", encoding="utf-8")
+    (tmp_path / "smoke.json").write_text(json.dumps(smoke), encoding="utf-8")
+    (tmp_path / "latency.json").write_text(json.dumps(latency), encoding="utf-8")
+    (tmp_path / "restore-light.json").write_text(json.dumps(restore), encoding="utf-8")
+    (tmp_path / "restore-heavy.json").write_text(json.dumps(restore), encoding="utf-8")
+    (tmp_path / "security.json").write_text(
+        json.dumps(
+            {
+                "high": 0,
+                "critical": 0,
+                "image_digest": "sha256:" + ("a" * 64),
+                "archive_sha256": "b" * 64,
+                "sbom": "brainapi.spdx.json",
+            }
+        ),
+        encoding="utf-8",
+    )
+    return tmp_path
+
+
+def test_dev_channel_skips_ledger_and_latency_claim_gates(tmp_path):
+    artifacts = _gate_artifacts(tmp_path)
+    assert parse_release_tag("v2.19.1-dev.0").channel == "dev"
+    assert requires_product_claim_gates("v2.19.1-dev.0") is False
+    evaluate(artifacts, tag="v2.19.1-dev.0")
+    with pytest.raises(RuntimeError, match="LongMemEval"):
+        evaluate(artifacts)
+    with pytest.raises(RuntimeError, match="LongMemEval"):
+        evaluate(artifacts, tag="v2.19.1-rc.1")
+    with pytest.raises(RuntimeError, match="missing flows"):
+        evaluate(_gate_artifacts(tmp_path / "broken", missing_flow=True), tag="v2.19.1-dev.0")
 
 
 def test_mcp_has_only_one_lifespan_definition():

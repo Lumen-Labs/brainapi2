@@ -18,13 +18,17 @@ _DEV_TAG = re.compile(
 class ReleaseVersion:
     tag_version: str
     project_version: str
+    channel: str
+
+
+PRODUCT_CLAIM_CHANNELS = frozenset({"stable", "rc"})
 
 
 def parse_release_tag(tag: str) -> ReleaseVersion:
     """Return the container tag version and its PEP 440 project equivalent."""
     if match := _STABLE_TAG.fullmatch(tag):
         base = match.group("base")
-        return ReleaseVersion(tag_version=base, project_version=base)
+        return ReleaseVersion(tag_version=base, project_version=base, channel="stable")
 
     if match := _RC_TAG.fullmatch(tag):
         base = match.group("base")
@@ -32,6 +36,7 @@ def parse_release_tag(tag: str) -> ReleaseVersion:
         return ReleaseVersion(
             tag_version=f"{base}-rc.{number}",
             project_version=f"{base}rc{number}",
+            channel="rc",
         )
 
     if match := _DEV_TAG.fullmatch(tag):
@@ -43,12 +48,19 @@ def parse_release_tag(tag: str) -> ReleaseVersion:
         return ReleaseVersion(
             tag_version=tag_version,
             project_version=f"{base}.dev{number}",
+            channel="dev",
         )
 
     raise ValueError(
         f"Unsupported release tag: {tag}. Expected vX.Y.Z, vX.Y.Z-rc.N, "
         "vX.Y.Z-dev, or vX.Y.Z-dev.N"
     )
+
+
+def requires_product_claim_gates(tag: str | None) -> bool:
+    if not tag:
+        return True
+    return parse_release_tag(tag).channel in PRODUCT_CLAIM_CHANNELS
 
 
 def main(argv: list[str]) -> int:

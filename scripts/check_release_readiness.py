@@ -10,6 +10,11 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.release_version import requires_product_claim_gates
+
 COUNT_KEYS = ("brains", "nodes", "edges", "chunks", "vectors", "observations")
 REQUIRED_FLOWS = {
     "authentication",
@@ -109,18 +114,25 @@ def _check_security(data: dict, artifact_dir: Path) -> None:
         raise RuntimeError("The exact image SBOM is missing")
 
 
+def evaluate(artifact_dir: Path, *, tag: str | None = None) -> None:
+    claim_gates = requires_product_claim_gates(tag)
+    if claim_gates:
+        _check_public_ledgers()
+    _check_smoke(_read(artifact_dir / "smoke.json"))
+    if claim_gates:
+        _check_latency(_read(artifact_dir / "latency.json"))
+    _check_restore("light", _read(artifact_dir / "restore-light.json"))
+    _check_restore("heavy", _read(artifact_dir / "restore-heavy.json"))
+    _check_security(_read(artifact_dir / "security.json"), artifact_dir)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("artifact_dir", type=Path)
+    parser.add_argument("--tag")
     args = parser.parse_args()
-    artifact_dir = args.artifact_dir.resolve()
     try:
-        _check_public_ledgers()
-        _check_smoke(_read(artifact_dir / "smoke.json"))
-        _check_latency(_read(artifact_dir / "latency.json"))
-        _check_restore("light", _read(artifact_dir / "restore-light.json"))
-        _check_restore("heavy", _read(artifact_dir / "restore-heavy.json"))
-        _check_security(_read(artifact_dir / "security.json"), artifact_dir)
+        evaluate(args.artifact_dir.resolve(), tag=args.tag)
     except (KeyError, TypeError, ValueError, RuntimeError) as exc:
         print(f"release gate failed: {exc}", file=sys.stderr)
         return 1
