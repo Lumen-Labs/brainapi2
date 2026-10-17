@@ -6,6 +6,11 @@ from src.adapters.llm import LLMAdapter
 from src.config import config
 from src.lib.redis.client import _redis_client
 
+
+def _is_claude_model(model: str | None) -> bool:
+    return bool(model) and model.lower().startswith("claude")
+
+
 def _build_small_llm(provider: str):
     if provider == "ollama":
         from src.lib.llm.client_ollama import _llm_small_client
@@ -23,11 +28,23 @@ def _build_small_llm(provider: str):
         from src.lib.llm.client_anthropic import _llm_small_client_anthropic
 
         return _llm_small_client_anthropic
+    if provider == "anthropic_vertex":
+        from src.lib.llm.client_anthropic_vertex import (
+            _llm_small_client_anthropic_vertex,
+        )
+
+        return _llm_small_client_anthropic_vertex
     if provider == "deepseek":
         from src.lib.llm.client_deepseek import _llm_small_client_deepseek
 
         return _llm_small_client_deepseek
     if provider == "gcp_vertex":
+        if config.gcp and _is_claude_model(config.gcp.small_llm_model):
+            from src.lib.llm.client_anthropic_vertex import (
+                _llm_small_client_anthropic_vertex,
+            )
+
+            return _llm_small_client_anthropic_vertex
         from src.lib.llm.client_small import _llm_small_client
 
         return _llm_small_client
@@ -55,11 +72,25 @@ def _build_large_llm(provider: str):
         from src.lib.llm.client_anthropic import _llm_large_client_anthropic
 
         return _llm_large_client_anthropic
+    if provider == "anthropic_vertex":
+        from src.lib.llm.client_anthropic_vertex import (
+            _llm_large_client_anthropic_vertex,
+        )
+
+        return _llm_large_client_anthropic_vertex
     if provider == "deepseek":
         from src.lib.llm.client_deepseek import _llm_large_client_deepseek
 
         return _llm_large_client_deepseek
     if provider == "gcp_vertex":
+        if config.gcp and _is_claude_model(
+            config.gcp.large_llm_model or config.gcp.small_llm_model
+        ):
+            from src.lib.llm.client_anthropic_vertex import (
+                _llm_large_client_anthropic_vertex,
+            )
+
+            return _llm_large_client_anthropic_vertex
         from src.lib.llm.client_vertex import _llm_large_client_vertex
 
         return _llm_large_client_vertex
