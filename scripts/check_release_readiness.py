@@ -101,6 +101,9 @@ def _check_security(data: dict, artifact_dir: Path) -> None:
     digest = str(data.get("image_digest", ""))
     if not digest.startswith("sha256:"):
         raise RuntimeError("The exact image digest was not recorded")
+    archive_sha256 = str(data.get("archive_sha256", ""))
+    if len(archive_sha256) != 64:
+        raise RuntimeError("The exact image archive hash was not recorded")
     sbom = artifact_dir / str(data.get("sbom", ""))
     if not sbom.is_file():
         raise RuntimeError("The exact image SBOM is missing")

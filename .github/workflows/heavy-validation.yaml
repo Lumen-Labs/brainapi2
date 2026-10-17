@@ -146,10 +146,12 @@ jobs:
           test -f "$security_file"
           docker rmi "$BRAINAPI_IMAGE" || true
           gzip -dc "$image_archive" | docker load
-          expected=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["image_digest"])' "$security_file")
-          actual=$(docker image inspect "$BRAINAPI_IMAGE" --format '{{.Id}}')
-          echo "expected=$expected"
-          echo "actual=$actual"
+          expected=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["archive_sha256"])' "$security_file")
+          actual=$(sha256sum "$image_archive" | awk '{print $1}')
+          echo "expected_tar=$expected"
+          echo "actual_tar=$actual"
+          echo "loaded_id=$(docker image inspect "$BRAINAPI_IMAGE" --format '{{.Id}}')"
+          test -n "$expected"
           test "$actual" = "$expected"
       - name: Require runner capacity
         run: |
