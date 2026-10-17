@@ -41,20 +41,21 @@ jobs:
           fi
           aws ec2 wait instance-running --instance-ids "$INSTANCE_ID"
           echo "instance running"
-      - name: Wait for the GitHub runner to come online
+      - name: Wait for SSM and the runner service
         env:
-          GH_TOKEN: ${{ github.token }}
+          INSTANCE_ID: ${{ vars.AWS_HEAVY_RUNNER_INSTANCE_ID }}
         run: |
           set -euo pipefail
           for i in $(seq 1 40); do
-            status="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runners" --jq '.runners[] | select(.name=="brainapi-heavy") | .status' | head -n 1 || true)"
-            echo "attempt $i runner status=${status:-missing}"
-            if [[ "$status" == "online" ]]; then
+            ping="$(aws ssm describe-instance-information --filters "Key=InstanceIds,Values=${INSTANCE_ID}" --query 'InstanceInformationList[0].PingStatus' --output text 2>/dev/null || true)"
+            echo "attempt $i ssm=${ping:-missing}"
+            if [[ "$ping" == "Online" ]]; then
+              sleep 20
               exit 0
             fi
             sleep 15
           done
-          echo "Timed out waiting for brainapi-heavy runner" >&2
+          echo "Timed out waiting for SSM on ${INSTANCE_ID}" >&2
           exit 1
 
   heavy-smoke-and-restore:
