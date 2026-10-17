@@ -243,6 +243,35 @@ def _restore_postgres_brain_databases(
                     )
 
 
+def _neo4j_admin(stack: Stack, volume: str, args: list[str]) -> None:
+    result = stack.run(
+        [
+            "run",
+            "--rm",
+            "--no-deps",
+            "--user",
+            "0",
+            "--entrypoint",
+            "neo4j-admin",
+            "-v",
+            volume,
+            "neo4j",
+            *args,
+        ],
+        capture=True,
+        check=False,
+    )
+    output = ((result.stdout or "") + (result.stderr or "")).strip()
+    if output:
+        print(output, file=sys.stderr)
+    if stack.dry_run:
+        return
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"neo4j-admin {' '.join(args)} failed ({result.returncode}): {output or 'no output'}"
+        )
+
+
 def _archive_volume(stack: Stack, key: str, destination: Path) -> None:
     if stack.dry_run:
         stack.docker(["run", "--rm", "-v", f"{stack.volume_name(key)}:/source:ro", ARCHIVER_IMAGE, "tar", "-C", "/source", "-czf", "-", "."])
@@ -360,10 +389,18 @@ def backup(stack: Stack, backup_root: Path) -> Path:
             stack.run(["exec", "-T", "redis", "sh", "-c", 'redis-cli -a "$REDIS_PASSWORD" SAVE'])
             stack.run(["stop", "neo4j", "mongo", "milvus", "etcd", "minio", "redis"])
             neo_dir = destination / "neo4j"
-            neo_dir.mkdir(mode=0o700)
+            neo_dir.mkdir(mode=0o777)
             for database in ("system", "neo4j"):
-                stack.run(
-                    ["run", "--rm", "--no-deps", "-v", f"{neo_dir}:/backup", "neo4j", "neo4j-admin", "database", "dump", database, "--to-path=/backup", "--overwrite-destination=true"]
+                _neo4j_admin(
+                    stack,
+                    f"{neo_dir}:/backup",
+                    [
+                        "database",
+                        "dump",
+                        database,
+                        "--to-path=/backup",
+                        "--overwrite-destination=true",
+                    ],
                 )
             if not stack.dry_run:
                 subprocess.run(["tar", "-C", str(neo_dir), "-czf", str(destination / "neo4j.dumps.tar.gz"), "."], check=True)
@@ -444,7 +481,17 @@ def restore(stack: Stack, backup_dir: Path) -> None:
             if not stack.dry_run:
                 subprocess.run(["tar", "-C", str(tmp_path), "-xzf", str(backup_dir / "neo4j.dumps.tar.gz")], check=True)
             for database in ("system", "neo4j"):
-                stack.run(["run", "--rm", "--no-deps", "-v", f"{tmp_path}:/backup:ro", "neo4j", "neo4j-admin", "database", "load", database, "--from-path=/backup", "--overwrite-destination=true"])
+                _neo4j_admin(
+                    stack,
+                    f"{tmp_path}:/backup:ro",
+                    [
+                        "database",
+                        "load",
+                        database,
+                        "--from-path=/backup",
+                        "--overwrite-destination=true",
+                    ],
+                )
         stack.run(["up", "-d", "--wait", "mongo"])
         mongo_user = stack.env.get("MONGO_USERNAME", "brainapi")
         if stack.dry_run:

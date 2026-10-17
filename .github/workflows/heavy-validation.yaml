@@ -168,7 +168,10 @@ jobs:
       - name: Backup and verify
         id: backup
         run: |
+          set -euo pipefail
           archive=$(deploy/brainapi-backup backup --profile heavy --project-name brainapi-heavy-ci --env-file deploy/env.heavy.example --compose-file deploy/docker-compose.ci.yaml --backup-dir "$BACKUP_DIR" | tail -1)
+          test -d "$archive"
+          test -f "$archive/manifest.json"
           deploy/brainapi-backup verify --profile heavy --env-file deploy/env.heavy.example --archive "$archive"
           cp "$archive/manifest.json" "$RELEASE_ARTIFACT_DIR/backup-heavy-manifest.json"
           echo "archive=$archive" >> "$GITHUB_OUTPUT"
