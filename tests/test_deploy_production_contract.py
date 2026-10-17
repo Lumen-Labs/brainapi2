@@ -203,6 +203,7 @@ def test_release_workflow_enforces_artifact_gate_before_publish():
     assert "needs: [validate-tag, verify-required-checks]" in workflow
     assert 'python scripts/release_version.py "$GITHUB_REF_NAME"' in workflow
     assert "steps.tag.outputs.project_version" in workflow
+    assert "secrets.GHCR_TOKEN" in workflow
 
 
 def _gate_artifacts(tmp_path: Path, *, missing_flow: bool = False) -> Path:
