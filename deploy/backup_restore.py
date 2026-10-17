@@ -390,7 +390,7 @@ def backup(stack: Stack, backup_root: Path) -> Path:
             stack.run(["stop", "neo4j", "mongo", "milvus", "etcd", "minio", "redis"])
             neo_dir = destination / "neo4j"
             neo_dir.mkdir(mode=0o777)
-            for database in ("system", "neo4j"):
+            for database in ("neo4j",):
                 _neo4j_admin(
                     stack,
                     f"{neo_dir}:/backup",
@@ -480,7 +480,7 @@ def restore(stack: Stack, backup_dir: Path) -> None:
             tmp_path = Path(tmp)
             if not stack.dry_run:
                 subprocess.run(["tar", "-C", str(tmp_path), "-xzf", str(backup_dir / "neo4j.dumps.tar.gz")], check=True)
-            for database in ("system", "neo4j"):
+            for database in ("neo4j",):
                 _neo4j_admin(
                     stack,
                     f"{tmp_path}:/backup:ro",
