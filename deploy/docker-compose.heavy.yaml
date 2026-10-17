@@ -115,11 +115,12 @@ services:
       retries: 5
 
   minio:
-    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    image: cgr.dev/chainguard/minio:latest@sha256:c93745c56fccdaf0e5dcb88999a96a65a136428beb045ef5d546255a80d747a7
+    user: "0"
     environment:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY is required}
       MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:?MINIO_SECRET_KEY is required}
-    command: [minio, server, /minio_data, --console-address, ":9001"]
+    command: [server, /minio_data, --console-address, ":9001"]
     volumes: [minio-data:/minio_data]
     networks: [appnet]
     restart: unless-stopped
@@ -127,7 +128,7 @@ services:
     mem_limit: 1g
     cpus: 0.40
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:9000/minio/health/live"]
+      test: ["CMD-SHELL", "timeout 3 bash -c 'echo >/dev/tcp/127.0.0.1/9000'"]
       interval: 15s
       timeout: 10s
       retries: 5
