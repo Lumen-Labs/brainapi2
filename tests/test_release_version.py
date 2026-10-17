@@ -8,10 +8,10 @@ from scripts.release_version import ReleaseVersion, parse_release_tag
 @pytest.mark.parametrize(
     ("tag", "expected"),
     [
-        ("v2.19.0", ReleaseVersion("2.19.0", "2.19.0")),
-        ("v2.19.0-rc.1", ReleaseVersion("2.19.0-rc.1", "2.19.0rc1")),
-        ("v2.19.0-dev", ReleaseVersion("2.19.0-dev", "2.19.0.dev0")),
-        ("v2.19.0-dev.3", ReleaseVersion("2.19.0-dev.3", "2.19.0.dev3")),
+        ("v2.19.0", ReleaseVersion("2.19.0", "2.19.0", "stable")),
+        ("v2.19.0-rc.1", ReleaseVersion("2.19.0-rc.1", "2.19.0rc1", "rc")),
+        ("v2.19.0-dev", ReleaseVersion("2.19.0-dev", "2.19.0.dev0", "dev")),
+        ("v2.19.0-dev.3", ReleaseVersion("2.19.0-dev.3", "2.19.0.dev3", "dev")),
     ],
 )
 def test_parse_release_tag(tag: str, expected: ReleaseVersion):

@@ -1,7 +1,8 @@
 # Production validation artifact contract
 
-Run `scripts/check_release_readiness.py DIR` before creating an RC tag. `DIR`
-must contain the following files produced against the exact candidate image:
+Run `scripts/check_release_readiness.py DIR` before creating an RC or stable
+tag. `DIR` must contain the following files produced against the exact
+candidate image:
 
 - `smoke.json`: `light` and `heavy`, each with `unexpected_5xx: 0` and true
   flow flags for authentication, brain creation, plain/structured ingestion,
@@ -17,6 +18,11 @@ must contain the following files produced against the exact candidate image:
 The public ledger must also contain a representative LongMemEval result and a
 WANDS representative Search row. LoCoMo and BEAM rows retain their explicit
 sample scopes and are not promoted into broader claims by this gate.
+
+Dev tags (`vX.Y.Z-dev` / `vX.Y.Z-dev.N`) still require smoke, restore, and
+security on the exact image. They skip the public-ledger and latency SLO
+claims so a working image can publish before those product scores exist.
+Pass `--tag` so the publish workflow can apply that distinction.
 
 `scripts/production_smoke.py exercise` produces profile-scoped smoke, latency,
 and pre-restore state evidence; `verify-restore` produces the matching restore
