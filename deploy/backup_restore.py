@@ -250,25 +250,18 @@ def _restore_postgres_brain_databases(
 def _neo4j_user_databases(stack: Stack) -> list[str]:
     if stack.dry_run:
         return ["neo4j"]
-    result = stack.run(
+    result = stack.docker(
         [
             "run",
             "--rm",
-            "--no-deps",
             "--user",
             "0",
-            "--entrypoint",
-            "/bin/find",
-            "neo4j",
-            "/data/databases",
-            "-mindepth",
-            "1",
-            "-maxdepth",
-            "1",
-            "-type",
-            "d",
-            "-printf",
-            "%f\\n",
+            "-v",
+            f"{stack.volume_name('neo4j-data')}:/data:ro",
+            ARCHIVER_IMAGE,
+            "sh",
+            "-c",
+            "find /data/databases -mindepth 1 -maxdepth 1 -type d | sed 's|.*/||'",
         ],
         capture=True,
         check=False,
