@@ -240,6 +240,9 @@ class GCPConfig:
         logger.debug("GCP credentials_path: %s", credentials_path)
         self.credentials_path = credentials_path
         self.project_id = os.getenv("GCP_PROJECT_ID")
+        self.location = (
+            os.getenv("GCP_VERTEX_REGION") or os.getenv("GCP_LOCATION") or "global"
+        )
         self.small_llm_model = os.getenv("GCP_SMALL_LLM_MODEL")
         self.large_llm_model = os.getenv("GCP_LARGE_LLM_MODEL")
         self.embedding_model = os.getenv("GCP_EMBEDDING_MODEL", "text-embedding-005")
@@ -510,6 +513,7 @@ _PROVIDERS = (
     "azure",
     "openai",
     "anthropic",
+    "anthropic_vertex",
     "deepseek",
     "gcp_vertex",
     "amazon_bedrock",
@@ -560,8 +564,11 @@ class Config:
 
         use_azure_llm = self.llm_small_provider == "azure" or self.llm_large_provider == "azure"
         use_azure_embeddings = self.embeddings_provider == "azure"
-        use_gcp_llm = self.llm_small_provider == "gcp_vertex" or self.llm_large_provider == "gcp_vertex"
-        use_gcp_large = self.llm_large_provider == "gcp_vertex"
+        use_gcp_llm = self.llm_small_provider in (
+            "gcp_vertex",
+            "anthropic_vertex",
+        ) or self.llm_large_provider in ("gcp_vertex", "anthropic_vertex")
+        use_gcp_large = self.llm_large_provider in ("gcp_vertex", "anthropic_vertex")
         use_gcp_embeddings = self.embeddings_provider == "gcp_vertex"
         use_bedrock_llm = (
             self.llm_small_provider == "amazon_bedrock"

@@ -14,8 +14,8 @@ export const OLLAMA_DEFAULT_PORT = 11434;
 export const OLLAMA_DEFAULT_SMALL_MODEL = "hf.co/unsloth/Qwen3-14B-GGUF:Q4_K_M";
 export const OLLAMA_DEFAULT_LARGE_MODEL = "hf.co/unsloth/Qwen3-14B-GGUF:Q4_K_M";
 
-export const GCP_DEFAULT_SMALL_MODEL = "gemini-3-flash-preview";
-export const GCP_DEFAULT_LARGE_MODEL = "gemini-3-flash-preview";
+export const GCP_DEFAULT_SMALL_MODEL = "claude-haiku-5-5";
+export const GCP_DEFAULT_LARGE_MODEL = "claude-haiku-5-5";
 export const GCP_DEFAULT_EMBEDDING_MODEL = "text-embedding-005";
 
 export const AZURE_DEFAULT_LARGE_MODEL = "gpt-4o";
