@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://discord.gg/VTngQTaeDf"><img src="https://img.shields.io/badge/Discord-Join%20Lumen%20Brain-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"/></a>
-  <img src="https://img.shields.io/badge/version-2.19.1--dev.0-blue?style=for-the-badge" alt="Version"/>
+  <img src="https://img.shields.io/badge/version-2.20.0--dev.0-blue?style=for-the-badge" alt="Version"/>
   <img src="https://img.shields.io/badge/python-3.11+-green?style=for-the-badge&logo=python&logoColor=white" alt="Python"/>
   <img src="https://img.shields.io/badge/license-BUSL--1.1-blue?style=for-the-badge" alt="License"/>
 </p>
