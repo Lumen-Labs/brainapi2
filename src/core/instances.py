@@ -1,4 +1,5 @@
 from src.adapters.cache import CacheAdapter
+from src.adapters.crawler import CrawlerAdapter
 from src.adapters.data import DataAdapter
 from src.adapters.embeddings import EmbeddingsAdapter, VectorStoreAdapter
 from src.adapters.graph import GraphAdapter
@@ -125,6 +126,18 @@ def _build_embeddings(provider: str):
     raise ValueError(f"Unsupported embeddings provider: {provider}")
 
 
+def _build_crawler(provider: str):
+    if provider == "lumen":
+        from src.lib.crawler.client_lumen import LumenCrawlerClient
+
+        return LumenCrawlerClient(
+            api_key=config.lumen_crawler_key,
+            endpoint=config.lumen_crawler_endpoint,
+            poll_timeout_seconds=config.crawler_poll_timeout_seconds,
+        )
+    raise ValueError(f"Unsupported crawler provider: {provider}")
+
+
 _llm_small = LLMAdapter()
 _llm_small.add_client(_build_small_llm(config.llm_small_provider))
 _llm_large = LLMAdapter()
@@ -182,3 +195,6 @@ elif config.vector_db == "postgresql":
 
     vector_store_adapter = VectorStoreAdapter()
     vector_store_adapter.add_client(get_postgresql_vector_store_client())
+
+crawler_adapter = CrawlerAdapter()
+crawler_adapter.add_client(_build_crawler(config.crawler_provider))

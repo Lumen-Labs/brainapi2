@@ -1646,3 +1646,117 @@ def ingest_file(self, content_b64: str, filename: str, brain_id: str):
         expires_in=3600 * 24 * 7,
     )
     return {"task_id": self.request.id, "task_ids": task_ids}
+
+
+def build_url_page_ingest_payload(
+    brain_id: str,
+    page,
+    skip_enrichment: bool = False,
+) -> dict:
+    meta_keys = {}
+    if getattr(page, "url", None):
+        meta_keys["source_url"] = page.url
+    if getattr(page, "title", None):
+        meta_keys["source_title"] = page.title
+    if getattr(page, "content_hash", None):
+        meta_keys["content_hash"] = page.content_hash
+    if getattr(page, "page_type", None):
+        meta_keys["page_type"] = page.page_type
+    payload = {
+        "data": IngestionTaskTextArgs(
+            data_type="text", text_data=page.text
+        ).model_dump(),
+        "brain_id": brain_id,
+        "skip_enrichment": skip_enrichment,
+    }
+    if meta_keys:
+        payload["meta_keys"] = meta_keys
+    return payload
+
+
+@ingestion_app.task(bind=True)
+def ingest_url(self, args: dict):
+    from celery.exceptions import OperationalError
+
+    from src.adapters.interfaces.crawler import CrawlRequest
+    from src.core.instances import crawler_adapter
+    from src.lib.crawler.errors import (
+        CrawlerConfigError,
+        CrawlerFailedError,
+        CrawlerQuotaError,
+        CrawlerTimeoutError,
+    )
+
+    brain_id = args.get("brain_id", "default")
+    skip_enrichment = bool(args.get("skip_enrichment", False))
+    try:
+        set_ingestion_task_status(
+            self.request.id,
+            brain_id,
+            "started",
+            stage="crawling",
+        )
+        pages = crawler_adapter.crawl_pages(
+            CrawlRequest(
+                url=args["url"],
+                max_pages=int(args.get("max_pages") or 10),
+                allowed_domains=args.get("allowed_domains") or [],
+                idempotency_key=self.request.id,
+            )
+        )
+        ingestible = [page for page in pages if (page.text or "").strip()]
+        task_ids = [str(uuid4()) for _ in ingestible]
+        for page_task_id in task_ids:
+            set_ingestion_task_status(
+                page_task_id,
+                brain_id,
+                "queued",
+                stage="queued",
+            )
+        for page_task_id, page in zip(task_ids, ingestible):
+            payload = build_url_page_ingest_payload(
+                brain_id,
+                page,
+                skip_enrichment=skip_enrichment,
+            )
+            for attempt in range(FILE_INGEST_MAX_RETRIES):
+                try:
+                    ingest_data.apply_async(
+                        args=[payload],
+                        task_id=page_task_id,
+                    )
+                    break
+                except OperationalError:
+                    if attempt == FILE_INGEST_MAX_RETRIES - 1:
+                        raise
+                    time.sleep(FILE_INGEST_RETRY_DELAY * (attempt + 1))
+        set_ingestion_task_status(
+            self.request.id,
+            brain_id,
+            "completed",
+            counts={"pages": len(task_ids), "task_ids": task_ids},
+        )
+        return {"task_id": self.request.id, "task_ids": task_ids}
+    except (
+        CrawlerConfigError,
+        CrawlerQuotaError,
+        CrawlerFailedError,
+        CrawlerTimeoutError,
+    ) as exc:
+        set_ingestion_task_status(
+            self.request.id,
+            brain_id,
+            "failed",
+            stage="failed",
+            error=str(exc),
+        )
+        raise
+    except Exception as exc:
+        set_ingestion_task_status(
+            self.request.id,
+            brain_id,
+            "failed",
+            stage="failed",
+            error=str(exc),
+        )
+        raise

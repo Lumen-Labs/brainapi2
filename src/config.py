@@ -695,6 +695,14 @@ class Config:
         self.docparser_endpoint = os.getenv("DOCPARSER_ENDPOINT")
         self.docparser_token = os.getenv("DOCPARSER_TOKEN")
         self.app_host = os.getenv("APP_HOST")
+        self.crawler_provider = os.getenv("CRAWLER_PROVIDER", "lumen").strip().lower()
+        self.lumen_crawler_key = (os.getenv("LUMEN_CRAWLER_KEY") or "").strip()
+        self.lumen_crawler_endpoint = (
+            os.getenv("LUMEN_CRAWLER_ENDPOINT") or "https://crawler.lumen-labs.ai"
+        ).rstrip("/")
+        self.crawler_poll_timeout_seconds = int(
+            os.getenv("CRAWLER_POLL_TIMEOUT_SECONDS", "900")
+        )
         self.pipeline_mode: Literal["lightweight", "accurate"] = validate_pipeline_mode(
             os.getenv("PIPELINE_MODE", "accurate")
         )
@@ -743,6 +751,12 @@ class Config:
             bm25_k1=self.search_bm25_k1,
             bm25_b=self.search_bm25_b,
         )
+
+    @property
+    def crawler_is_configured(self) -> bool:
+        if self.crawler_provider == "lumen":
+            return bool(self.lumen_crawler_key)
+        return False
 
     def search_fts_regconfig_for_brain(self, brain_id: str) -> str | None:
         bid = (brain_id or "").strip()
