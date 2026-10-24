@@ -24,11 +24,13 @@ from src.services.api.dependencies import get_brain_id
 from src.services.api.constants.requests import (
     IngestionRequestBody,
     IngestionStructuredRequestBody,
+    IngestionUrlRequestBody,
 )
 from src.services.api.constants.responses import IngestionAcceptedResponse
 from src.services.input.agents import cache_adapter
 from src.workers.tasks.ingestion import ingest_data as ingest_data_task
 from src.workers.tasks.ingestion import ingest_file as ingest_file_task
+from src.workers.tasks.ingestion import ingest_url as ingest_url_task
 from src.workers.tasks.ingestion import (
     ingest_structured_data as ingest_structured_data_task,
 )
@@ -121,6 +123,49 @@ async def ingest_structured_data(
     return JSONResponse(
         status_code=202,
         content={"message": "Structured ingestion accepted", "task_id": task_id},
+    )
+
+
+@ingest_router.post(
+    path="/url", status_code=202, response_model=IngestionAcceptedResponse
+)
+async def ingest_url(
+    data: IngestionUrlRequestBody,
+    brain_id: str = Depends(get_brain_id),
+):
+    """
+    Accept a public https URL for asynchronous crawl-and-ingest.
+    """
+    if not config.crawler_is_configured:
+        raise HTTPException(status_code=503, detail="URL crawler is not configured")
+
+    payload = data.model_dump()
+    payload["brain_id"] = brain_id
+    task_id = str(uuid4())
+    set_ingestion_task_status(task_id, brain_id, "queued", stage="queued")
+
+    for attempt in range(MAX_TASK_RETRIES):
+        try:
+            ingest_url_task.apply_async(
+                args=[payload],
+                task_id=task_id,
+            )
+            break
+        except OperationalError:
+            if attempt == MAX_TASK_RETRIES - 1:
+                set_ingestion_task_status(
+                    task_id,
+                    brain_id,
+                    "failed",
+                    stage="queue",
+                    error="Task queue unavailable",
+                )
+                raise HTTPException(status_code=503, detail="Task queue unavailable")
+            await asyncio.sleep(RETRY_DELAY_BASE * (attempt + 1))
+
+    return JSONResponse(
+        status_code=202,
+        content={"message": "URL ingestion accepted", "task_id": task_id},
     )
 
 

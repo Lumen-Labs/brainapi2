@@ -9,6 +9,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 """
 
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_serializer, field_validator, model_validator
 
@@ -28,6 +29,41 @@ class IngestionRequestBody(IngestionTaskArgs):
     """
     Request body for the ingestion endpoint.
     """
+
+
+class IngestionUrlRequestBody(BaseModel):
+    url: str = Field(description="Public https URL to crawl.")
+    max_pages: int = Field(
+        default=10,
+        ge=1,
+        le=100,
+        description="Maximum pages to crawl. Each cleaned page becomes one ingest job.",
+    )
+    allowed_domains: List[str] = Field(
+        default_factory=list,
+        description="Extra eTLD+1 hosts to include, max 20.",
+    )
+    skip_enrichment: bool = Field(
+        default=False,
+        description="Persist cleaned page text and embeddings only. Skip Scout/Architect.",
+    )
+
+    @field_validator("url")
+    @classmethod
+    def require_https_url(cls, value: str) -> str:
+        parsed = urlparse((value or "").strip())
+        if parsed.scheme != "https" or not parsed.netloc:
+            raise ValueError("url must be a public https URL")
+        return (value or "").strip()
+
+    @field_validator("allowed_domains")
+    @classmethod
+    def validate_allowed_domains(cls, value: List[str]) -> List[str]:
+        if value is None:
+            return []
+        if len(value) > 20:
+            raise ValueError("allowed_domains accepts at most 20 hosts")
+        return [item.strip() for item in value if item and str(item).strip()]
 
 
 class IngestionStructuredDataElement(BaseModel):

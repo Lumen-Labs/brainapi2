@@ -141,6 +141,15 @@ curl -X POST http://localhost:8000/ingest/ \
   -d '{"data": {"data_type": "text", "text_data": "Emily organized the AI Ethics Meetup in London on 2024-03-08."}, "brain_id": "default"}'
 ```
 
+To ingest a public website, set `LUMEN_CRAWLER_KEY` and POST a seed URL. BrainAPI crawls through Lumen Crawler, waits for cleanup JSON, and ingests title, headings, core content, and facts — not raw page Markdown:
+
+```sh
+curl -X POST http://localhost:8000/ingest/url \
+  -H "Authorization: Bearer $BRAINPAT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://example.com", "max_pages": 10}'
+```
+
 ---
 
 ## 🖥️ The Console

@@ -333,6 +333,11 @@ class OpenApiContractTests(unittest.TestCase):
         self.assertIn("/system/brains/{brain_id}", schema["paths"])
         self.assertIn("delete", schema["paths"]["/system/brains/{brain_id}"])
         self.assertIn("202", schema["paths"]["/ingest/file"]["post"]["responses"])
+        self.assertIn("202", schema["paths"]["/ingest/url"]["post"]["responses"])
+        self.assertIn(
+            "503",
+            schema["paths"]["/ingest/url"]["post"]["responses"],
+        )
 
         generic_refs = [
             response["content"]["application/json"]["schema"].get("$ref", "")
