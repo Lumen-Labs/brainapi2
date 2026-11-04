@@ -12,6 +12,18 @@ permissions:
 jobs:
   python:
     runs-on: ubuntu-latest
+    services:
+      pipeline-postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: pipeline-test-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -28,6 +40,8 @@ jobs:
       - run: poetry install
       - run: poetry run python -m compileall -q src tests deploy/backup_restore.py
       - run: poetry run pytest -q
+        env:
+          PROGRESSIVE_POSTGRES_TEST_URI: postgresql://postgres:pipeline-test-only@localhost:5432/postgres
       - name: Audit actual Python environment
         run: uvx pip-audit --path .venv/lib/python3.12/site-packages
 

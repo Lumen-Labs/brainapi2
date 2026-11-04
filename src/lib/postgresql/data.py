@@ -331,6 +331,8 @@ class PostgreSQLDataClient(DataClient):
                     if needs_base:
                         cur.execute(_BRAIN_DDL)
                         cur.execute(_INGEST_GROUP_DDL)
+                        from src.core.saving.pipeline_store import DDL as PIPELINE_DDL
+                        cur.execute(PIPELINE_DDL)
                     if needs_search:
                         cur.execute(_SEARCH_DDL)
                     if needs_alt and alt_regconfig is not None:

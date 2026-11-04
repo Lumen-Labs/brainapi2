@@ -15,12 +15,14 @@ TERMINAL = {"completed", "failed", "partial_failed"}
 
 def collection(brain_id):
     from src.services.data.main import data_adapter
-    return data_adapter.data.get_collection("ingest_manifests", database=brain_id)
+    from src.core.saving.pipeline_store import collection as pipeline_collection
+    return pipeline_collection(brain_id, "ingest_manifests")
 
 
 def sections_collection(brain_id):
     from src.services.data.main import data_adapter
-    col = data_adapter.data.get_collection("ingest_sections", database=brain_id)
+    from src.core.saving.pipeline_store import collection as pipeline_collection
+    col = pipeline_collection(brain_id, "ingest_sections")
     col.create_index([("import_id", 1), ("ordinal", 1)])
     col.create_index("task_id", unique=True)
     return col

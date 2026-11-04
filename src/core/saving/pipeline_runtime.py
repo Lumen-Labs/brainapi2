@@ -90,7 +90,8 @@ def record_call(response, error=None, identity=None, quality=None):
         "cache_write_tokens":details.get("cache_creation", usage.get("cache_write_input_tokens", usage.get("cache_creation_input_tokens", 0))),
         "quality":quality or ("reported" if usage else "unavailable"), "outcome":"error" if error else "completed",
         "configuration_version":(context.get("configuration") or {}).get("version", "legacy")}
-    data_adapter.data.get_collection("pipeline_usage_events", database=context["brain_id"]).insert_one(event)
+    from src.core.saving.pipeline_store import collection
+    collection(context["brain_id"], "pipeline_usage_events").insert_one(event)
 
 
 def instrument_model(model):

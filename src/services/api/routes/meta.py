@@ -102,7 +102,8 @@ async def get_ingest_group_meter(
 async def ingestion_capabilities():
     import os
     from src.services.data.main import data_adapter
-    return {"progressive": os.getenv("PROGRESSIVE_INGESTION_ENABLED") == "1" and callable(getattr(data_adapter.data,"get_collection",None)),
+    from src.core.saving.pipeline_store import supports_storage
+    return {"progressive": os.getenv("PROGRESSIVE_INGESTION_ENABLED") == "1" and supports_storage(data_adapter.data),
         "version":"sections-v1","concurrency":2}
 
 

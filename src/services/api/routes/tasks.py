@@ -129,7 +129,8 @@ async def task_usage(task_id: str, request: Request, brain_id: str = Depends(get
     if not verify_control(brain_id, task_id, "usage", body.get("token")):
         raise HTTPException(403, "Platform administration required")
     offset = max(0, int(body.get("offset", 0)))
-    events = data_adapter.data.get_collection("pipeline_usage_events", database=brain_id)
+    from src.core.saving.pipeline_store import collection
+    events = collection(brain_id, "pipeline_usage_events")
     ack_ids = body.get("ack_ids")
     if ack_ids is not None:
         if not isinstance(ack_ids,list) or len(ack_ids)>100 or any(not isinstance(v,str) for v in ack_ids):
