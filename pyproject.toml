@@ -35,7 +35,10 @@ dependencies = [
     "pymilvus (>=2.6.2,<3.0.0)",
     "levenshtein (>=0.27.1,<0.28.0)",
     "python-multipart (>=0.0.32,<0.1.0)",
-    "pillow (>=12.3.0,<13.0.0)",
+    "pillow (>=13.0.0,<14.0.0)",
+    "certifi (>=2026.10.18)",
+    "dnspython (>=2.9.0,<3.0.0)",
+    "pyasn1 (>=0.6.5,<0.7.0)",
     "tenacity (>=8.2.3,<10.0.0)",
     "sympy (>=1.12.1,<1.14.0)",
     "numpy (>=1.26.0,<2.0.0)",
@@ -96,7 +99,10 @@ google-genai = ">=1.46.0,<2.0.0"
 langchain-google-vertexai = ">=3.0.1,<4.0.0"
 pymilvus = ">=2.6.2,<3.0.0"
 levenshtein = ">=0.27.1,<0.28.0"
-pillow = ">=12.3.0,<13.0.0"
+pillow = ">=13.0.0,<14.0.0"
+certifi = ">=2026.10.18"
+dnspython = ">=2.9.0,<3.0.0"
+pyasn1 = ">=0.6.5,<0.7.0"
 tenacity = ">=8.2.3,<10.0.0"
 python-multipart = ">=0.0.32,<0.1.0"
 sympy = ">=1.12.1,<1.14.0"

@@ -475,14 +475,14 @@ zstd = ["zstandard (==0.23.0)"]
 
 [[package]]
 name = "certifi"
-version = "2025.10.5"
+version = "2026.10.23"
 description = "Python package for providing Mozilla's CA Bundle."
 optional = false
 python-versions = ">=3.7"
 groups = ["main", "docling-ocr", "local-ml"]
 files = [
-    {file = "certifi-2025.10.5-py3-none-any.whl", hash = "sha256:0f212c2744a9bb6de0c56639a6f68afe01ecd92d91f14ae897c4fe7bbeeef0de"},
-    {file = "certifi-2025.10.5.tar.gz", hash = "sha256:47c09d31ccf2acf0be3f701ea53595ee7e0b8fa08801c6624be771df09ae7b43"},
+    {file = "certifi-2026.10.23-py3-none-any.whl", hash = "sha256:e9b54de76e530bb6cf0ccd036787103acb58fd42ba930ea8bf948ddbaa2f61d1"},
+    {file = "certifi-2026.10.23.tar.gz", hash = "sha256:a9895e6e2758b371e0545e321a3a8fd1fcfd9829ada8824a936dfb16aaaf36cd"},
 ]
 
 [[package]]
@@ -1080,35 +1080,35 @@ files = [
 
 [[package]]
 name = "dnspython"
-version = "2.8.0"
+version = "2.9.2"
 description = "DNS toolkit"
 optional = false
-python-versions = ">=3.10"
+python-versions = ">=3.11"
 groups = ["main"]
 files = [
-    {file = "dnspython-2.8.0-py3-none-any.whl", hash = "sha256:01d9bbc4a2d76bf0db7c1f729812ded6d912bd318d3b1cf81d30c0f845dbf3af"},
-    {file = "dnspython-2.8.0.tar.gz", hash = "sha256:181d3c6996452cb1189c4046c61599b84a5a86e099562ffde77d26984ff26d0f"},
+    {file = "dnspython-2.9.2-py3-none-any.whl", hash = "sha256:af15f7d385a6ae2fb35a796fde2138004c8c42c7389090e2addc83e3b3340fd8"},
+    {file = "dnspython-2.9.2.tar.gz", hash = "sha256:8d4d39a513e649d634004ce4d39ade2352efcea472a0247535a5c2d18a9d7ba9"},
 ]
 
 [package.extras]
-dev = ["black (>=25.1.0)", "coverage (>=7.0)", "flake8 (>=7)", "hypercorn (>=0.17.0)", "mypy (>=1.17)", "pylint (>=3)", "pytest (>=8.4)", "pytest-cov (>=6.2.0)", "quart-trio (>=0.12.0)", "sphinx (>=8.2.0)", "sphinx-rtd-theme (>=3.0.0)", "twine (>=6.1.0)", "wheel (>=0.45.0)"]
-dnssec = ["cryptography (>=45)"]
-doh = ["h2 (>=4.2.0)", "httpcore (>=1.0.0)", "httpx (>=0.28.0)"]
-doq = ["aioquic (>=1.2.0)"]
-idna = ["idna (>=3.10)"]
-trio = ["trio (>=0.30)"]
-wmi = ["wmi (>=1.5.1) ; platform_system == \"Windows\""]
+dev = ["black (>=26.5)", "coverage (>=7.15)", "hypercorn (>=0.18.0)", "pyright (>=1.1.411)", "pytest (>=9.1)", "pytest-cov (>=7.1)", "quart-trio (>=0.12.0)", "ruff (>=0.16.0)", "sphinx (>=9.1.0) ; python_full_version >= \"3.12.0\"", "sphinx-rtd-theme (>=3.1.0) ; python_full_version >= \"3.12.0\"", "trustme (>=1.2.1)", "ty (>=0.0.85)"]
+dnssec = ["cryptography (>=50)"]
+doh = ["h2 (>=4.4)", "httpcore2 (>=2.13)", "httpx2 (>=2.13)"]
+doq = ["aioquic (>=1.3.0)"]
+idna = ["idna (>=3.20)"]
+trio = ["trio (>=0.34)"]
+wmi = ["wmi (>=1.5.1) ; sys_platform == \"win32\""]
 
 [[package]]
 name = "doclang"
-version = "0.7.3"
+version = "0.9.0"
 description = "DocLang reference toolkit"
 optional = false
 python-versions = ">=3.10"
 groups = ["main", "docling-ocr"]
 files = [
-    {file = "doclang-0.7.3-py3-none-any.whl", hash = "sha256:9440c4ca9f7e061a7b8d33bdf15b1029be69a4c13cd8952dd6ce541884e4c685"},
-    {file = "doclang-0.7.3.tar.gz", hash = "sha256:ca50615357e46ebf9597bb9065b9112367103ec24bd539f8ae12649224cf50b0"},
+    {file = "doclang-0.9.0-py3-none-any.whl", hash = "sha256:86e8fafa09946389e16218d9b4fb40e161fa02dc965d72be1b9785e2eeea1f4a"},
+    {file = "doclang-0.9.0.tar.gz", hash = "sha256:732c1d8b9e14945836df6bf8ae16e8d4603d77fc160363ce2c5e2aeb3ec4d9cf"},
 ]
 
 [package.dependencies]
@@ -1120,51 +1120,51 @@ schematron-saxon = ["saxonche (>=12.9.0)"]
 
 [[package]]
 name = "docling"
-version = "2.121.0"
+version = "2.147.0"
 description = "SDK and CLI for parsing PDF, DOCX, HTML, and more, to a unified document representation for powering downstream workflows such as gen AI applications."
 optional = false
 python-versions = "<4.0,>=3.10"
 groups = ["main", "docling-ocr"]
 files = [
-    {file = "docling-2.121.0-py3-none-any.whl", hash = "sha256:d1577ac7660ac6cb3ac7e213f1541f8bed1990ff8da4274d94b5bfc91e0fec55"},
-    {file = "docling-2.121.0.tar.gz", hash = "sha256:c8970cbd3907892db218c7f342ff62db5b393ca3cf568db50c8f2384e248a22d"},
+    {file = "docling-2.147.0-py3-none-any.whl", hash = "sha256:d3096304ff566d2fc4064cb02fd9b413232b1eb5290ed98dc5108f0a32e03ada"},
+    {file = "docling-2.147.0.tar.gz", hash = "sha256:10b759dafdb888aead837cb76ae5537bffd364d9c7497084e0b12986c5df4045"},
 ]
 
 [package.dependencies]
-docling-slim = {version = "2.121.0", extras = ["standard"]}
+docling-slim = {version = "2.147.0", extras = ["standard"]}
 
 [package.extras]
-asr = ["docling-slim[format-audio] (==2.121.0)"]
-easyocr = ["docling-slim[feat-ocr-easyocr] (==2.121.0)"]
-htmlrender = ["docling-slim[format-html-render] (==2.121.0)"]
-ocrmac = ["docling-slim[feat-ocr-mac] (==2.121.0)"]
-onnxruntime = ["docling-slim[models-onnxruntime] (==2.121.0)"]
-rapidocr = ["docling-slim[feat-ocr-rapidocr-onnx] (==2.121.0)"]
-remote-serving = ["docling-slim[models-remote] (==2.121.0)"]
-tesserocr = ["docling-slim[feat-ocr-tesserocr] (==2.121.0)"]
-vlm = ["docling-slim[models-vlm-inline] (==2.121.0)"]
-xbrl = ["docling-slim[format-xml-xbrl] (==2.121.0)"]
+asr = ["docling-slim[format-audio] (==2.147.0)"]
+easyocr = ["docling-slim[feat-ocr-easyocr] (==2.147.0)"]
+htmlrender = ["docling-slim[format-html-render] (==2.147.0)"]
+ocrmac = ["docling-slim[feat-ocr-mac] (==2.147.0)"]
+onnxruntime = ["docling-slim[models-onnxruntime] (==2.147.0)"]
+rapidocr = ["docling-slim[feat-ocr-rapidocr-onnx] (==2.147.0)"]
+remote-serving = ["docling-slim[models-remote] (==2.147.0)"]
+tesserocr = ["docling-slim[feat-ocr-tesserocr] (==2.147.0)"]
+vlm = ["docling-slim[models-vlm-inline] (==2.147.0)"]
+xbrl = ["docling-slim[format-xml-xbrl] (==2.147.0)"]
 
 [[package]]
 name = "docling-core"
-version = "2.101.1"
+version = "2.106.0"
 description = "A python library to define and validate data types in Docling."
 optional = false
 python-versions = "<4.0,>=3.10"
 groups = ["main", "docling-ocr"]
 files = [
-    {file = "docling_core-2.101.1-py3-none-any.whl", hash = "sha256:0fbadbf21fb1389f75c2ec4c5c979016c0fe532f29d001467d5a82f92410cc6b"},
-    {file = "docling_core-2.101.1.tar.gz", hash = "sha256:4b338a4c69e20145a256809eef3cb9954b5baa0ff51e84d41c25268143f6ce24"},
+    {file = "docling_core-2.106.0-py3-none-any.whl", hash = "sha256:6d7615f7e8e50593239f5dc87a769badc4e3ef5d9753b0a08585e185ba0d7b7f"},
+    {file = "docling_core-2.106.0.tar.gz", hash = "sha256:bad9feb0c33184ad53951ae74c3d3f01e18291f9bdc60beecfb61f2e4e3d790a"},
 ]
 
 [package.dependencies]
 defusedxml = ">=0.7.1,<0.8.0"
-doclang = ">=0.7,<0.8"
+doclang = ">=0.9,<0.10"
 jsonref = ">=1.1.0,<2.0.0"
 jsonschema = ">=4.16.0,<5.0.0"
 latex2mathml = ">=3.77.0,<4.0.0"
 pandas = ">=2.1.4,<4.0.0"
-pillow = ">=10.0.0,<13.0.0"
+pillow = ">=10.0.0,<14.0.0"
 pydantic = ">=2.6.0,<2.10.0 || >2.10.0,<2.10.1 || >2.10.1,<2.10.2 || >2.10.2,<3.0.0"
 pydantic-settings = ">=2.14.0"
 pyyaml = ">=5.1,<7.0.0"
@@ -1177,74 +1177,35 @@ tree-sitter-c = {version = ">=0.23.4", optional = true, markers = "extra == \"ch
 tree-sitter-javascript = {version = ">=0.23.1", optional = true, markers = "extra == \"chunking\""}
 tree-sitter-python = {version = ">=0.23.6", optional = true, markers = "extra == \"chunking\""}
 tree-sitter-typescript = {version = ">=0.23.2", optional = true, markers = "extra == \"chunking\""}
-typer = ">=0.12.5,<0.27.0"
+typer = ">=0.12.5,<0.28.0"
 typing-extensions = ">=4.12.2,<5.0.0"
 
 [package.extras]
 chunking = ["semchunk (>=2.2.0,<4.0.0)", "transformers (>=4.42.0,<6.0.0)", "tree-sitter (>=0.25.0,<0.27.0)", "tree-sitter-c (>=0.23.4)", "tree-sitter-javascript (>=0.23.1)", "tree-sitter-python (>=0.23.6)", "tree-sitter-typescript (>=0.23.2)"]
-chunking-openai = ["semchunk (>=2.2.0,<4.0.0)", "tiktoken (>=0.9.0,<0.13.0)", "tree-sitter (>=0.25.0,<0.27.0)", "tree-sitter-c (>=0.23.4)", "tree-sitter-javascript (>=0.23.1)", "tree-sitter-python (>=0.23.6)", "tree-sitter-typescript (>=0.23.2)"]
-dclq = ["click (>=8.0.0)", "doclang (>=0.7,<0.8)", "lxml (>=6.0.2)", "typer (>=0.15.1,<0.25.0)"]
+chunking-openai = ["semchunk (>=2.2.0,<4.0.0)", "tiktoken (>=0.9.0,<0.15.0)", "tree-sitter (>=0.25.0,<0.27.0)", "tree-sitter-c (>=0.23.4)", "tree-sitter-javascript (>=0.23.1)", "tree-sitter-python (>=0.23.6)", "tree-sitter-typescript (>=0.23.2)"]
+dclq = ["doclang (>=0.9,<0.10)", "lxml (>=6.0.2)", "typer (>=0.26.0,<0.28.0)"]
 examples = ["datasets (>=4.0.0)", "matplotlib (>=3.7.0)", "openpyxl (>=3.1.5)"]
 
 [[package]]
 name = "docling-ibm-models"
-version = "3.13.2"
+version = "4.0.4"
 description = "This package contains the AI models used by the Docling PDF conversion package"
 optional = false
 python-versions = "<4.0,>=3.10"
 groups = ["main", "docling-ocr"]
-markers = "sys_platform == \"darwin\""
 files = [
-    {file = "docling_ibm_models-3.13.2-py3-none-any.whl", hash = "sha256:5fa0838bf15a4e06d2fcb686d756a6f4c329ea0a8820d085f06d07abe96269ed"},
-    {file = "docling_ibm_models-3.13.2.tar.gz", hash = "sha256:195e02dd119df34d2ce5f76ac614da82825851013e4898db7b0468cdf8740a3d"},
+    {file = "docling_ibm_models-4.0.4-py3-none-any.whl", hash = "sha256:5236a13d440135aa074e211981529424f7fd15acf7938c38431381e623430a3e"},
+    {file = "docling_ibm_models-4.0.4.tar.gz", hash = "sha256:f10cbcd2986ab3f55ac87890bda04353c10d312074433f1c8885cc33b33c3c13"},
 ]
 
 [package.dependencies]
-accelerate = ">=1.2.1,<2.0.0"
-docling-core = ">=2.19.0,<3.0.0"
 huggingface_hub = ">=0.23,<2"
-jsonlines = ">=3.1.0,<5.0.0"
 numpy = ">=1.24.4,<3.0.0"
-Pillow = ">=10.0.0,<13.0.0"
-pydantic = ">=2.0.0,<3.0.0"
-rtree = ">=1.0.0"
+Pillow = ">=10.0.0,<14.0.0"
 safetensors = {version = ">=0.4.3,<1", extras = ["torch"]}
 torch = ">=2.2.2,<3.0.0"
 torchvision = ">=0,<1"
-tqdm = ">=4.64.0,<5.0.0"
-transformers = ">=4.42.0,<5.0.dev0 || >=5.4.dev0,<6.0.0"
-
-[package.extras]
-opencv-python = ["opencv-python (>=4.6.0.66,<5.0.0.0)"]
-opencv-python-headless = ["opencv-python-headless (>=4.6.0.66,<5.0.0.0)"]
-
-[[package]]
-name = "docling-ibm-models"
-version = "3.14.0"
-description = "This package contains the AI models used by the Docling PDF conversion package"
-optional = false
-python-versions = "<4.0,>=3.10"
-groups = ["main", "docling-ocr"]
-markers = "sys_platform != \"darwin\""
-files = [
-    {file = "docling_ibm_models-3.14.0-py3-none-any.whl", hash = "sha256:795d39cd0f7b1e14a702e681b0ef0f9bd31deaedddb4e2686ad577296ecb8fc9"},
-    {file = "docling_ibm_models-3.14.0.tar.gz", hash = "sha256:def964e3d524f66c7321ef9d48d4021278f14319f01d3f78058cd2324f641e22"},
-]
-
-[package.dependencies]
-accelerate = ">=1.2.1,<2.0.0"
-docling-core = ">=2.19.0,<3.0.0"
-huggingface_hub = ">=0.23,<2"
-jsonlines = ">=3.1.0,<5.0.0"
-numpy = ">=1.24.4,<3.0.0"
-Pillow = ">=10.0.0,<13.0.0"
-pydantic = ">=2.0.0,<3.0.0"
-rtree = ">=1.0.0"
-safetensors = {version = ">=0.4.3,<1", extras = ["torch"]}
-torch = ">=2.2.2,<3.0.0"
-torchvision = ">=0,<1"
-tqdm = ">=4.64.0,<5.0.0"
-transformers = {version = ">=4.42.0,<5.0.dev0 || >=5.4.dev0,<6.0.0", markers = "sys_platform != \"darwin\""}
+transformers = ">=4.42.0,<6.0.0"
 
 [package.extras]
 opencv-python = ["opencv-python (>=4.6.0.66,<5.0.0.0)"]
@@ -1252,56 +1213,61 @@ opencv-python-headless = ["opencv-python-headless (>=4.6.0.66,<5.0.0.0)"]
 
 [[package]]
 name = "docling-parse"
-version = "7.15.0"
+version = "7.24.2"
 description = "Simple package to extract text with coordinates from programmatic PDFs"
 optional = false
 python-versions = ">=3.10"
 groups = ["main", "docling-ocr"]
 files = [
-    {file = "docling_parse-7.15.0-cp310-cp310-macosx_14_0_arm64.whl", hash = "sha256:bfe13c2c0ed982b24ceefb2ace083a22aa632ba4e2b9427d274f992c41019df1"},
-    {file = "docling_parse-7.15.0-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:67f0ed5053426bd4f82b407ec48fbe501c706286fa7d6fd92ff7510aef2e24e6"},
-    {file = "docling_parse-7.15.0-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:7299cb9614ff0776618b155e2b55a92f2f27cf9828adfbcf90e5f1127b19ec5b"},
-    {file = "docling_parse-7.15.0-cp310-cp310-win_amd64.whl", hash = "sha256:2905b77daff3849c559cf6f6f39ed7fbd451b79e20948ed325b721014e0dccb9"},
-    {file = "docling_parse-7.15.0-cp310-cp310-win_arm64.whl", hash = "sha256:7a70f37eba73e676e13a3b71f7bbbdafc291b94f8bb4426294d27b52bd6559fd"},
-    {file = "docling_parse-7.15.0-cp311-cp311-macosx_14_0_arm64.whl", hash = "sha256:b6453b243d998a73a2fbd1245d202dd315fb1f915e1ccfafdce98d391cade8ae"},
-    {file = "docling_parse-7.15.0-cp311-cp311-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:a00c19112264b4e6b0d7d5baa9ccd74997b6252924e512f1c88cf30de5bea1f5"},
-    {file = "docling_parse-7.15.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:4cb6494f8ca158c774cd7b68d96b11054ec8a92f64fb3e8cc355a8cc858997fc"},
-    {file = "docling_parse-7.15.0-cp311-cp311-win_amd64.whl", hash = "sha256:bbb301b0e7a283745fa54fa20c4279a95a0500a2228362cff5a4a6f82e740fd5"},
-    {file = "docling_parse-7.15.0-cp311-cp311-win_arm64.whl", hash = "sha256:b59940048cf0216e09a9de9c5c1bd86d061f89e7fe0ca49f6388061626d79043"},
-    {file = "docling_parse-7.15.0-cp312-cp312-macosx_14_0_arm64.whl", hash = "sha256:a425599d40aa8b72a443c5fc9e22c120163d398a341af988c953e0e70f1ad0f3"},
-    {file = "docling_parse-7.15.0-cp312-cp312-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:4ea8d79e870319a583a68b3e88e95d048dfa496d8b6e5928f5333fe26cc597e3"},
-    {file = "docling_parse-7.15.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:ca982b7df91f05b0bdcb28f437b2637623baccd205b941297f43b9e93aeb1f14"},
-    {file = "docling_parse-7.15.0-cp312-cp312-win_amd64.whl", hash = "sha256:6143e824b00dbaf14bd3692792bd0b41348f582fa7ed221ff462079935c127f6"},
-    {file = "docling_parse-7.15.0-cp312-cp312-win_arm64.whl", hash = "sha256:f528916ec21c1bec5916db2e9c6ecac4c472fedd6aae4a9cf308f59cf8fcbd7b"},
-    {file = "docling_parse-7.15.0-cp313-cp313-macosx_14_0_arm64.whl", hash = "sha256:01d853d3b7f9c231351f9d15c1cb0746ab56c3d8329a850a1b706ef279af09ed"},
-    {file = "docling_parse-7.15.0-cp313-cp313-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:aa573d66c428ceed2fb3ae968823af79eb529abffaf95d60a7ed74cde9f9cc5b"},
-    {file = "docling_parse-7.15.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:3523b631ca10180fe414c2d9cd11579171289936353fa5af3dd29caba541458d"},
-    {file = "docling_parse-7.15.0-cp313-cp313-win_amd64.whl", hash = "sha256:6ff600dfeb2c2d9e0e66a00efeb15d59c8d543b38c6f1bcfcb1f86156216e086"},
-    {file = "docling_parse-7.15.0-cp313-cp313-win_arm64.whl", hash = "sha256:e4bc3bf49bfd56447f35d1fe2e86897893da3b6c154f0c44643ff311e12ff8b5"},
-    {file = "docling_parse-7.15.0-cp314-cp314-macosx_14_0_arm64.whl", hash = "sha256:59b0dfa1d1ac97bc2d9d7ec457299e97afcf408bf4126e0cdc790818b8781510"},
-    {file = "docling_parse-7.15.0-cp314-cp314-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:88dd0b133febd1ea21cffd43f3aafeb4161b33b74f0c59ae7c7420438d1abd4a"},
-    {file = "docling_parse-7.15.0-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:5fc8ddd9cb3e864f4894d89271fc239277bdf5efc6c8deeecf1560cb163b3c4c"},
-    {file = "docling_parse-7.15.0-cp314-cp314-win_amd64.whl", hash = "sha256:9c8d5aa23a90b5d082ed21b22a3384e13ceac4b45ce3d52230f5e05893f5cc6c"},
-    {file = "docling_parse-7.15.0-cp314-cp314-win_arm64.whl", hash = "sha256:b844748fdc27a48737b6d2f0ee0a07cb25cbd340ad8535ac2ae9048f9e214b18"},
-    {file = "docling_parse-7.15.0.tar.gz", hash = "sha256:fcb1b4e9a0e447f29e8248e46eea502ab4c7a75fe733a2ed911635a9b74b5092"},
+    {file = "docling_parse-7.24.2-cp310-cp310-macosx_14_0_arm64.whl", hash = "sha256:7f3ad42684d7c66def099ed485e0b4c8465d822c83af6bdc83443659c2197743"},
+    {file = "docling_parse-7.24.2-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:a335aef1dfc3478e9515d213b2cd1ff3fd32227021bc92d515489be37a8d3c05"},
+    {file = "docling_parse-7.24.2-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:419301604b626112eace62fb52ac5ad27763912f9f767f8288a0d5f1e33b6c94"},
+    {file = "docling_parse-7.24.2-cp310-cp310-win_amd64.whl", hash = "sha256:81d216b866fd0f6d26c85d898124f5014f8918406052f911e55e715832b647ba"},
+    {file = "docling_parse-7.24.2-cp310-cp310-win_arm64.whl", hash = "sha256:f2f5cd3988bdb530e512c9519caba6cf1871ef12a17a32d54324f3f3952a62e8"},
+    {file = "docling_parse-7.24.2-cp311-cp311-macosx_14_0_arm64.whl", hash = "sha256:6e7c84d9373842885166db3354ca578d99aa3ae9722cdeca2d3c817ef316b691"},
+    {file = "docling_parse-7.24.2-cp311-cp311-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:103d6a9170b9a83c504ee6dddda56d73766dd45366c810fd42aa09fb9f4d62b3"},
+    {file = "docling_parse-7.24.2-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:0fbb3ef3ef3f6085b521f348abbaec74633a7f818d40e44069ab37801599d29f"},
+    {file = "docling_parse-7.24.2-cp311-cp311-win_amd64.whl", hash = "sha256:82750613985e2f7ba1480f6752a817ce6cfe698f39c3ab9f4a4d8c30214f2fa1"},
+    {file = "docling_parse-7.24.2-cp311-cp311-win_arm64.whl", hash = "sha256:ab22a51ef98959996fa9635b89f62d1ab953a5f0bd0c6ee57a039553f329e04a"},
+    {file = "docling_parse-7.24.2-cp312-cp312-macosx_14_0_arm64.whl", hash = "sha256:92af96014529364acdb17099c33fd1652ac0adf96abc4c8b067d8cdaa6f7ca1f"},
+    {file = "docling_parse-7.24.2-cp312-cp312-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:6f6d0df1552ed1af65b0e952f66ce862252bc4e21818091ba9566aff2589524a"},
+    {file = "docling_parse-7.24.2-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:6e0172b2d58fe565b77727e102e7a12d39a86235b1c6092f9564c9ea8f079ccd"},
+    {file = "docling_parse-7.24.2-cp312-cp312-win_amd64.whl", hash = "sha256:c5f1bf37a39843cf1c9f9f53eb3c8a0a16d8db8d56c03be282435701068050ef"},
+    {file = "docling_parse-7.24.2-cp312-cp312-win_arm64.whl", hash = "sha256:c2954ce727be4e32d6fe246400257129c0c3db41c9f13c28e19697b71348a9c9"},
+    {file = "docling_parse-7.24.2-cp313-cp313-macosx_14_0_arm64.whl", hash = "sha256:1c1ab801c753691d560778c9e6ff3a772e8d2bfd913574d9be17d160344713d8"},
+    {file = "docling_parse-7.24.2-cp313-cp313-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:bcbe0a10150322ceeaf62cf4d16885eb3f3a2fd595424d58f2fefa8479b15efd"},
+    {file = "docling_parse-7.24.2-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:2c9cf2a3315da349a759b409f40de6a35910b01028f75b4ad4d8ecdd0e841e6a"},
+    {file = "docling_parse-7.24.2-cp313-cp313-win_amd64.whl", hash = "sha256:430d794cc2c01ecf7752398341d6821899bd88a1dfa6efaa363bd42afd0155cf"},
+    {file = "docling_parse-7.24.2-cp313-cp313-win_arm64.whl", hash = "sha256:5f88f7eab532f401b7344d07b5b62fc40b4074d26ff830e27bd249acb1e695b9"},
+    {file = "docling_parse-7.24.2-cp314-cp314-macosx_14_0_arm64.whl", hash = "sha256:039a3336cd7117442ded29d73b0e8af54f5fe12555a96d894daa7ff3dd6c94e5"},
+    {file = "docling_parse-7.24.2-cp314-cp314-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:58d0c98500180ed2385ea72d7e025ba1cceeab838770d328ffe1ef2ca57dc116"},
+    {file = "docling_parse-7.24.2-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:b008ea796796c6cba53f035ebe925df3006e8b521c4b616a7370e2fe1a217f69"},
+    {file = "docling_parse-7.24.2-cp314-cp314-win_amd64.whl", hash = "sha256:37c891f769177bae2ded2fa4df244ec74119c765cb457b41fe139bac865106bf"},
+    {file = "docling_parse-7.24.2-cp314-cp314-win_arm64.whl", hash = "sha256:9ebbb597ff901f5f16f9f877a2a8397857e03ec422810bbcbe49818634057220"},
+    {file = "docling_parse-7.24.2-cp315-cp315-macosx_14_0_arm64.whl", hash = "sha256:ffa9590295286f45d2b9d093ac02cc184ea846b3d8ddb5fe3f0387092f4b3de8"},
+    {file = "docling_parse-7.24.2-cp315-cp315-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:3ed9ea0feac790aa41553ce54d4f7b7d32b000cf96f603425d204eeac1b80ea9"},
+    {file = "docling_parse-7.24.2-cp315-cp315-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:a880ef0dd6b30381a60cd78b42dd7614da4b2aacfb0cffa1462b9a94a8bdf8a4"},
+    {file = "docling_parse-7.24.2-cp315-cp315-win_amd64.whl", hash = "sha256:eeae84b8b9bcb5e705695af1991271fffc88cee4c9cc0d2fd39b28ffb2fb3906"},
+    {file = "docling_parse-7.24.2-cp315-cp315-win_arm64.whl", hash = "sha256:53e9399f993155454fbeada513286098fbbe325f6690eb1591277da5e9e32b67"},
+    {file = "docling_parse-7.24.2.tar.gz", hash = "sha256:8b4e98e0a836dbe7e48e3f041a552ac252bd437ed0a52a62cf4a5f6f8fe73cb0"},
 ]
 
 [package.dependencies]
-docling-core = ">=2.85.0,<3.0.0"
-pillow = ">=10.0.0,<13.0.0"
+docling-core = ">=2.99.0,<3.0.0"
+pillow = ">=10.0.0,<14.0.0"
 pydantic = ">=2.0.0"
 pywin32 = {version = ">=305", markers = "sys_platform == \"win32\""}
 
 [[package]]
 name = "docling-slim"
-version = "2.121.0"
+version = "2.147.0"
 description = "Modular version of the Docling package: SDK and CLI for parsing PDF, DOCX, HTML, and more, to a unified document representation for powering downstream workflows such as gen AI applications."
 optional = false
 python-versions = "<4.0,>=3.10"
 groups = ["main", "docling-ocr"]
 files = [
-    {file = "docling_slim-2.121.0-py3-none-any.whl", hash = "sha256:c97fc9cd889b61a66b9cf5d2d87c6b6935f29fe7aacfd8fd39802be7425e4996"},
-    {file = "docling_slim-2.121.0.tar.gz", hash = "sha256:f3069ded34f62f4e6a4d2ffda78cba0baad2ced4944a4b2d70cb646670ef327b"},
+    {file = "docling_slim-2.147.0-py3-none-any.whl", hash = "sha256:a7a23b84c76514dfc06455cafc15abee436e769a1f2eeefd6d19159d352a9b7e"},
+    {file = "docling_slim-2.147.0.tar.gz", hash = "sha256:0d44ae21034b21b6b53f48ed2f9ceeb19b445e0f62e2726d6869df25c1584cc5"},
 ]
 
 [package.dependencies]
@@ -1310,19 +1276,20 @@ beautifulsoup4 = {version = ">=4.12.3,<5.0.0", optional = true, markers = "extra
 certifi = ">=2024.7.4"
 defusedxml = {version = ">=0.7.1,<0.8.0", optional = true, markers = "extra == \"standard\""}
 docling-core = [
-    {version = ">=2.91.0,<3.0.0"},
-    {version = ">=2.73.0,<3.0.0", extras = ["chunking"], optional = true, markers = "extra == \"standard\""},
+    {version = ">=2.106.0,<3.0.0"},
+    {version = ">=2.106.0,<3.0.0", extras = ["chunking"], optional = true, markers = "extra == \"standard\""},
 ]
-docling-ibm-models = {version = ">=3.13.0,<4", optional = true, markers = "extra == \"standard\""}
-docling-parse = {version = ">=7.12.0,<8.0.0", optional = true, markers = "extra == \"standard\""}
+docling-ibm-models = {version = ">=4.0.2,<5", optional = true, markers = "extra == \"standard\""}
+docling-parse = {version = ">=7.22.2,<8.0.0", optional = true, markers = "extra == \"standard\""}
 filetype = ">=1.2.0,<2.0.0"
 httpx = {version = ">=0.28,<1.0.0", optional = true, markers = "extra == \"standard\""}
-huggingface-hub = {version = ">=0.23,<2", optional = true, markers = "extra == \"standard\""}
+huggingface-hub = {version = ">=0.23,<3", optional = true, markers = "extra == \"standard\""}
+langcodes = ">=3.5.0,<4.0.0"
 mail-parser = {version = ">=4.1.4,<5.0.0", optional = true, markers = "extra == \"standard\""}
 marko = {version = ">=2.1.2,<3.0.0", optional = true, markers = "extra == \"standard\""}
 numpy = {version = ">=1.24.0,<3.0.0", optional = true, markers = "extra == \"standard\""}
 openpyxl = {version = ">=3.1.5,<4.0.0", optional = true, markers = "extra == \"standard\""}
-pillow = {version = ">=10.0.0,<13.0.0", optional = true, markers = "extra == \"standard\""}
+pillow = {version = ">=10.0.0,<14.0.0", optional = true, markers = "extra == \"standard\""}
 pluggy = ">=1.0.0,<2.0.0"
 polyfactory = {version = ">=2.22.2", optional = true, markers = "extra == \"standard\""}
 pydantic = ">=2.0.0,<3.0.0"
@@ -1337,26 +1304,27 @@ rapidocr = {version = ">=3.9.1,<4.0.0", optional = true, markers = "extra == \"s
 requests = ">=2.32.2,<3.0.0"
 rich = {version = ">=13.0.0", optional = true, markers = "extra == \"standard\""}
 rtree = {version = ">=1.3.0,<2.0.0", optional = true, markers = "extra == \"standard\""}
-scipy = {version = ">=1.6.0,<2.0.0", optional = true, markers = "extra == \"standard\""}
+scipy = {version = ">=1.9.0,<2.0.0", optional = true, markers = "extra == \"standard\""}
 torch = {version = ">=2.2.2,<3.0.0", optional = true, markers = "extra == \"standard\""}
 torchvision = {version = ">=0,<1", optional = true, markers = "extra == \"standard\""}
 tqdm = ">=4.65.0,<5.0.0"
-typer = {version = ">=0.12.5,<0.27.0", optional = true, markers = "extra == \"standard\""}
-websockets = {version = ">=14.0,<17.0", optional = true, markers = "extra == \"standard\""}
+typer = {version = ">=0.19.0,<0.28.0", optional = true, markers = "extra == \"standard\""}
+websockets = {version = ">=14.0,<18.0", optional = true, markers = "extra == \"standard\""}
 
 [package.extras]
-all = ["accelerate (>=1.0.0,<2)", "accelerate (>=1.2.1,<2.0.0)", "arelle-release (>=2.38.17,<3.0.0)", "beautifulsoup4 (>=4.12.3,<5.0.0)", "defusedxml (>=0.7.1,<0.8.0)", "docling-core[chunking] (>=2.73.0,<3.0.0)", "docling-ibm-models (>=3.13.0,<4)", "docling-parse (>=7.12.0,<8.0.0)", "easyocr (>=1.7,<2.0)", "httpx (>=0.28,<1.0.0)", "huggingface-hub (>=0.23,<2)", "lxml (>=4.0.0,<7.0.0)", "mail-parser (>=4.1.4,<5.0.0)", "marko (>=2.1.2,<3.0.0)", "mlx-vlm (>=0.4.3,<1.0.0) ; python_version >= \"3.10\" and sys_platform == \"darwin\" and platform_machine == \"arm64\"", "mlx-whisper (>=0.4.3) ; python_version >= \"3.10\" and sys_platform == \"darwin\" and platform_machine == \"arm64\"", "numba (>=0.63.0)", "numpy (>=1.24.0,<3.0.0)", "ocrmac (>=1.0.0,<2.0.0) ; sys_platform == \"darwin\"", "onnxruntime (<1.24) ; python_version < \"3.14\" and sys_platform == \"darwin\"", "onnxruntime-gpu (<1.24) ; python_version < \"3.14\" and (sys_platform == \"linux\" or sys_platform == \"win32\")", "openai-whisper (>=20250625)", "openpyxl (>=3.1.5,<4.0.0)", "pandas (>=2.1.4,<4.0.0)", "peft (>=0.18.1)", "pillow (>=10.0.0,<13.0.0)", "playwright (>=1.58.0)", "polyfactory (>=2.22.2)", "pylatexenc (>=2.10,<3.0)", "pypdfium2 (>=4.30.0,!=4.30.1,<6.0.0)", "python-docx (>=1.2.0,<2.0.0)", "python-dotenv (>=1.0,<2.0)", "python-oxmsg (>=0.0.2,<0.1.0)", "python-pptx (>=1.0.2,<2.0.0)", "qwen-vl-utils (>=0.0.11)", "rapidocr (>=3.9.1,<4.0.0)", "rich (>=13.0.0)", "rtree (>=1.3.0,<2.0.0)", "scikit-image (>=0.19)", "scipy (>=1.6.0,<2.0.0)", "tesserocr (>=2.7.1,<3.0.0)", "torch (>=2.2.2,<3.0.0)", "torchvision (>=0,<1)", "transformers (>=4.42.0,<5.0.dev0 || >=5.4.dev0,<5.9.0) ; sys_platform == \"darwin\"", "transformers (>=4.42.0,<5.0.dev0 || >=5.4.dev0,<6.0.0) ; sys_platform != \"darwin\"", "tritonclient[grpc] (>=2.65.0,<3.0.0)", "typer (>=0.12.5,<0.27.0)", "websockets (>=14.0,<17.0)", "whisper-s2t-reborn (>=1.7.1,<2.0.0) ; sys_platform != \"darwin\" or platform_machine != \"arm64\""]
-cli = ["python-dotenv (>=1.0,<2.0)", "rich (>=13.0.0)", "typer (>=0.12.5,<0.27.0)"]
-convert-core = ["numpy (>=1.24.0,<3.0.0)", "pillow (>=10.0.0,<13.0.0)", "rtree (>=1.3.0,<2.0.0)", "scipy (>=1.6.0,<2.0.0)"]
-extract-core = ["numpy (>=1.24.0,<3.0.0)", "pillow (>=10.0.0,<13.0.0)", "polyfactory (>=2.22.2)", "rtree (>=1.3.0,<2.0.0)", "scipy (>=1.6.0,<2.0.0)"]
-feat-chunking = ["docling-core[chunking] (>=2.73.0,<3.0.0)"]
+all = ["accelerate (>=1.0.0,<2)", "accelerate (>=1.2.1,<2.0.0)", "arelle-release (>=2.38.17,<3.0.0)", "beautifulsoup4 (>=4.12.3,<5.0.0)", "defusedxml (>=0.7.1,<0.8.0)", "docling-core[chunking] (>=2.106.0,<3.0.0)", "docling-ibm-models (>=4.0.2,<5)", "docling-parse (>=7.22.2,<8.0.0)", "easyocr (>=1.7,<2.0)", "einops (>=0.8.1,<1.0.0)", "httpx (>=0.28,<1.0.0)", "huggingface-hub (>=0.23,<3)", "lxml (>=4.0.0,<7.0.0)", "mail-parser (>=4.1.4,<5.0.0)", "marko (>=2.1.2,<3.0.0)", "mlx-vlm (>=0.7.0,<1.0.0) ; python_version >= \"3.10\" and sys_platform == \"darwin\" and platform_machine == \"arm64\"", "mlx-whisper (>=0.4.3) ; python_version >= \"3.10\" and sys_platform == \"darwin\" and platform_machine == \"arm64\"", "numba (>=0.63.0)", "numpy (>=1.24.0,<3.0.0)", "ocrmac (>=1.0.0,<2.0.0) ; sys_platform == \"darwin\"", "onnxruntime (<1.24) ; python_version < \"3.11\" and sys_platform == \"darwin\"", "onnxruntime (<2.0.0) ; python_version >= \"3.11\" and python_version < \"3.14\" and sys_platform == \"darwin\"", "onnxruntime (>=1.24.1,<2.0.0) ; python_version >= \"3.14\" and sys_platform == \"darwin\"", "onnxruntime-gpu (<1.24) ; python_version < \"3.11\" and (sys_platform == \"linux\" or sys_platform == \"win32\")", "onnxruntime-gpu (<2.0.0) ; python_version >= \"3.11\" and python_version < \"3.14\" and (sys_platform == \"linux\" or sys_platform == \"win32\")", "onnxruntime-gpu (>=1.24.1,<2.0.0) ; python_version >= \"3.14\" and (sys_platform == \"linux\" or sys_platform == \"win32\")", "open-clip-torch (>=3.2.0,<4.0.0)", "openai-whisper (>=20250625)", "openpyxl (>=3.1.5,<4.0.0)", "pandas (>=2.1.4,<4.0.0)", "peft (>=0.18.1)", "pillow (>=10.0.0,<14.0.0)", "playwright (>=1.58.0)", "polyfactory (>=2.22.2)", "pylatexenc (>=2.10,<3.0)", "pypdfium2 (>=4.30.0,!=4.30.1,<6.0.0)", "python-docx (>=1.2.0,<2.0.0)", "python-dotenv (>=1.0,<2.0)", "python-oxmsg (>=0.0.2,<0.1.0)", "python-pptx (>=1.0.2,<2.0.0)", "qwen-vl-utils (>=0.0.11)", "rapidocr (>=3.9.1,<4.0.0)", "rich (>=13.0.0)", "rtree (>=1.3.0,<2.0.0)", "scikit-image (>=0.19)", "scipy (>=1.9.0,<2.0.0)", "tesserocr (>=2.7.1,<3.0.0)", "timm (>=1.0.22,<2.0.0)", "torch (>=2.2.2,<3.0.0)", "torchvision (>=0,<1)", "transformers (>=4.42.0,<5.0.dev0 || >=5.4.dev0,!=5.13.0,<6.0.0) ; sys_platform != \"darwin\"", "transformers (>=4.42.0,<5.0.dev0 || >=5.4.dev0,<5.9.dev0 || >=5.16.dev0,<6.0.0) ; sys_platform == \"darwin\"", "tritonclient[grpc] (>=2.65.0,<3.0.0)", "typer (>=0.19.0,<0.28.0)", "websockets (>=14.0,<18.0)", "whisper-s2t-reborn (>=1.8.0,<2.0.0) ; sys_platform != \"darwin\" or platform_machine != \"arm64\""]
+cli = ["python-dotenv (>=1.0,<2.0)", "rich (>=13.0.0)", "typer (>=0.19.0,<0.28.0)"]
+convert-core = ["numpy (>=1.24.0,<3.0.0)", "pillow (>=10.0.0,<14.0.0)", "rtree (>=1.3.0,<2.0.0)", "scipy (>=1.9.0,<2.0.0)"]
+extract-core = ["numpy (>=1.24.0,<3.0.0)", "pillow (>=10.0.0,<14.0.0)", "polyfactory (>=2.22.2)", "rtree (>=1.3.0,<2.0.0)", "scipy (>=1.9.0,<2.0.0)"]
+feat-asr-transformers = ["mlx-whisper (>=0.4.3) ; python_version >= \"3.10\" and sys_platform == \"darwin\" and platform_machine == \"arm64\"", "numba (>=0.63.0)", "openai-whisper (>=20250625)", "torchaudio (>=2.2.2,<3.0.0)", "transformers (>=5.16.0,<6.0.0)", "whisper-s2t-reborn (>=1.8.0,<2.0.0) ; sys_platform != \"darwin\" or platform_machine != \"arm64\""]
+feat-chunking = ["docling-core[chunking] (>=2.106.0,<3.0.0)"]
 feat-ocr-easyocr = ["easyocr (>=1.7,<2.0)", "scikit-image (>=0.19)"]
 feat-ocr-mac = ["ocrmac (>=1.0.0,<2.0.0) ; sys_platform == \"darwin\""]
 feat-ocr-nemotron = ["nemotron-ocr (>=2.0.0) ; python_version == \"3.12\" and sys_platform == \"linux\" and platform_machine == \"x86_64\""]
 feat-ocr-rapidocr = ["rapidocr (>=3.9.1,<4.0.0)"]
-feat-ocr-rapidocr-onnx = ["onnxruntime (>=1.7.0,<2.0.0) ; python_version < \"3.14\"", "rapidocr (>=3.9.1,<4.0.0)"]
+feat-ocr-rapidocr-onnx = ["onnxruntime (>=1.24.1,<2.0.0) ; python_version >= \"3.14\"", "onnxruntime (>=1.7.0,<1.24) ; python_version < \"3.11\"", "onnxruntime (>=1.7.0,<2.0.0) ; python_version >= \"3.11\" and python_version < \"3.14\"", "rapidocr (>=3.9.1,<4.0.0)"]
 feat-ocr-tesserocr = ["pandas (>=2.1.4,<4.0.0)", "tesserocr (>=2.7.1,<3.0.0)"]
-format-audio = ["mlx-whisper (>=0.4.3) ; python_version >= \"3.10\" and sys_platform == \"darwin\" and platform_machine == \"arm64\"", "numba (>=0.63.0)", "openai-whisper (>=20250625)", "whisper-s2t-reborn (>=1.7.1,<2.0.0) ; sys_platform != \"darwin\" or platform_machine != \"arm64\""]
+format-audio = ["mlx-whisper (>=0.4.3) ; python_version >= \"3.10\" and sys_platform == \"darwin\" and platform_machine == \"arm64\"", "numba (>=0.63.0)", "openai-whisper (>=20250625)", "whisper-s2t-reborn (>=1.8.0,<2.0.0) ; sys_platform != \"darwin\" or platform_machine != \"arm64\""]
 format-docx = ["python-docx (>=1.2.0,<2.0.0)"]
 format-email = ["beautifulsoup4 (>=4.12.3,<5.0.0)", "mail-parser (>=4.1.4,<5.0.0)", "python-oxmsg (>=0.0.2,<0.1.0)"]
 format-html = ["beautifulsoup4 (>=4.12.3,<5.0.0)"]
@@ -1364,24 +1332,24 @@ format-html-render = ["playwright (>=1.58.0)"]
 format-iwork = ["defusedxml (>=0.7.1,<0.8.0)"]
 format-latex = ["pylatexenc (>=2.10,<3.0)"]
 format-markdown = ["marko (>=2.1.2,<3.0.0)"]
-format-office = ["openpyxl (>=3.1.5,<4.0.0)", "python-docx (>=1.2.0,<2.0.0)", "python-pptx (>=1.0.2,<2.0.0)"]
+format-office = ["openpyxl (>=3.1.5,<4.0.0)", "pylatexenc (>=2.10,<3.0)", "python-docx (>=1.2.0,<2.0.0)", "python-pptx (>=1.0.2,<2.0.0)"]
 format-opendocument = ["odfdo (>=3.22.0,<4.0.0)"]
-format-pdf = ["docling-parse (>=7.12.0,<8.0.0)", "pypdfium2 (>=4.30.0,!=4.30.1,<6.0.0)"]
-format-pdf-docling = ["docling-parse (>=7.12.0,<8.0.0)", "pypdfium2 (>=4.30.0,!=4.30.1,<6.0.0)"]
+format-pdf = ["docling-parse (>=7.22.2,<8.0.0)", "pypdfium2 (>=4.30.0,!=4.30.1,<6.0.0)"]
+format-pdf-docling = ["docling-parse (>=7.22.2,<8.0.0)"]
 format-pdf-pypdfium2 = ["pypdfium2 (>=4.30.0,!=4.30.1,<6.0.0)"]
-format-pptx = ["python-pptx (>=1.0.2,<2.0.0)"]
-format-video = ["librosa (>=0.10.0,<1.0.0)", "mlx-whisper (>=0.4.3) ; python_version >= \"3.10\" and sys_platform == \"darwin\" and platform_machine == \"arm64\"", "numba (>=0.63.0)", "openai-whisper (>=20250625)", "resemblyzer (>=0.1.4,<0.2.0)", "scikit-learn (>=1.3.0,<2.0.0)", "soundfile (>=0.12.1,<1.0.0)", "whisper-s2t-reborn (>=1.7.1,<2.0.0) ; sys_platform != \"darwin\" or platform_machine != \"arm64\""]
+format-pptx = ["pylatexenc (>=2.10,<3.0)", "python-pptx (>=1.0.2,<2.0.0)"]
+format-video = ["librosa (>=0.10.0,<2.0.0)", "mlx-whisper (>=0.4.3) ; python_version >= \"3.10\" and sys_platform == \"darwin\" and platform_machine == \"arm64\"", "numba (>=0.63.0)", "openai-whisper (>=20250625)", "resemblyzer (>=0.1.4,<0.2.0)", "scikit-learn (>=1.3.0,<2.0.0)", "soundfile (>=0.12.1,<1.0.0)", "whisper-s2t-reborn (>=1.8.0,<2.0.0) ; sys_platform != \"darwin\" or platform_machine != \"arm64\""]
 format-web = ["beautifulsoup4 (>=4.12.3,<5.0.0)", "marko (>=2.1.2,<3.0.0)"]
 format-xlsx = ["openpyxl (>=3.1.5,<4.0.0)"]
 format-xml-jats = ["beautifulsoup4 (>=4.12.3,<5.0.0)", "lxml (>=4.0.0,<7.0.0)"]
 format-xml-uspto = ["beautifulsoup4 (>=4.12.3,<5.0.0)", "defusedxml (>=0.7.1,<0.8.0)"]
 format-xml-xbrl = ["arelle-release (>=2.38.17,<3.0.0)"]
-models-local = ["accelerate (>=1.0.0,<2)", "defusedxml (>=0.7.1,<0.8.0)", "docling-ibm-models (>=3.13.0,<4)", "huggingface-hub (>=0.23,<2)", "torch (>=2.2.2,<3.0.0)", "torchvision (>=0,<1)"]
-models-onnxruntime = ["onnxruntime (<1.24) ; python_version < \"3.14\" and sys_platform == \"darwin\"", "onnxruntime-gpu (<1.24) ; python_version < \"3.14\" and (sys_platform == \"linux\" or sys_platform == \"win32\")"]
+models-local = ["accelerate (>=1.0.0,<2)", "defusedxml (>=0.7.1,<0.8.0)", "docling-ibm-models (>=4.0.2,<5)", "huggingface-hub (>=0.23,<3)", "torch (>=2.2.2,<3.0.0)", "torchvision (>=0,<1)"]
+models-onnxruntime = ["onnxruntime (<1.24) ; python_version < \"3.11\" and sys_platform == \"darwin\"", "onnxruntime (<2.0.0) ; python_version >= \"3.11\" and python_version < \"3.14\" and sys_platform == \"darwin\"", "onnxruntime (>=1.24.1,<2.0.0) ; python_version >= \"3.14\" and sys_platform == \"darwin\"", "onnxruntime-gpu (<1.24) ; python_version < \"3.11\" and (sys_platform == \"linux\" or sys_platform == \"win32\")", "onnxruntime-gpu (<2.0.0) ; python_version >= \"3.11\" and python_version < \"3.14\" and (sys_platform == \"linux\" or sys_platform == \"win32\")", "onnxruntime-gpu (>=1.24.1,<2.0.0) ; python_version >= \"3.14\" and (sys_platform == \"linux\" or sys_platform == \"win32\")"]
 models-remote = ["tritonclient[grpc] (>=2.65.0,<3.0.0)"]
-models-vlm-inline = ["accelerate (>=1.2.1,<2.0.0)", "mlx-vlm (>=0.4.3,<1.0.0) ; python_version >= \"3.10\" and sys_platform == \"darwin\" and platform_machine == \"arm64\"", "peft (>=0.18.1)", "qwen-vl-utils (>=0.0.11)", "transformers (>=4.42.0,<5.0.dev0 || >=5.4.dev0,<5.9.0) ; sys_platform == \"darwin\"", "transformers (>=4.42.0,<5.0.dev0 || >=5.4.dev0,<6.0.0) ; sys_platform != \"darwin\""]
-service-client = ["httpx (>=0.28,<1.0.0)", "python-dotenv (>=1.0,<2.0)", "rich (>=13.0.0)", "typer (>=0.12.5,<0.27.0)", "websockets (>=14.0,<17.0)"]
-standard = ["accelerate (>=1.0.0,<2)", "beautifulsoup4 (>=4.12.3,<5.0.0)", "defusedxml (>=0.7.1,<0.8.0)", "docling-core[chunking] (>=2.73.0,<3.0.0)", "docling-ibm-models (>=3.13.0,<4)", "docling-parse (>=7.12.0,<8.0.0)", "httpx (>=0.28,<1.0.0)", "huggingface-hub (>=0.23,<2)", "mail-parser (>=4.1.4,<5.0.0)", "marko (>=2.1.2,<3.0.0)", "numpy (>=1.24.0,<3.0.0)", "openpyxl (>=3.1.5,<4.0.0)", "pillow (>=10.0.0,<13.0.0)", "polyfactory (>=2.22.2)", "pylatexenc (>=2.10,<3.0)", "pypdfium2 (>=4.30.0,!=4.30.1,<6.0.0)", "python-docx (>=1.2.0,<2.0.0)", "python-dotenv (>=1.0,<2.0)", "python-oxmsg (>=0.0.2,<0.1.0)", "python-pptx (>=1.0.2,<2.0.0)", "rapidocr (>=3.9.1,<4.0.0)", "rich (>=13.0.0)", "rtree (>=1.3.0,<2.0.0)", "scipy (>=1.6.0,<2.0.0)", "torch (>=2.2.2,<3.0.0)", "torchvision (>=0,<1)", "typer (>=0.12.5,<0.27.0)", "websockets (>=14.0,<17.0)"]
+models-vlm-inline = ["accelerate (>=1.2.1,<2.0.0)", "einops (>=0.8.1,<1.0.0)", "mlx-vlm (>=0.7.0,<1.0.0) ; python_version >= \"3.10\" and sys_platform == \"darwin\" and platform_machine == \"arm64\"", "open-clip-torch (>=3.2.0,<4.0.0)", "peft (>=0.18.1)", "qwen-vl-utils (>=0.0.11)", "timm (>=1.0.22,<2.0.0)", "transformers (>=4.42.0,<5.0.dev0 || >=5.4.dev0,!=5.13.0,<6.0.0) ; sys_platform != \"darwin\"", "transformers (>=4.42.0,<5.0.dev0 || >=5.4.dev0,<5.9.dev0 || >=5.16.dev0,<6.0.0) ; sys_platform == \"darwin\""]
+service-client = ["httpx (>=0.28,<1.0.0)", "python-dotenv (>=1.0,<2.0)", "rich (>=13.0.0)", "typer (>=0.19.0,<0.28.0)", "websockets (>=14.0,<18.0)"]
+standard = ["accelerate (>=1.0.0,<2)", "beautifulsoup4 (>=4.12.3,<5.0.0)", "defusedxml (>=0.7.1,<0.8.0)", "docling-core[chunking] (>=2.106.0,<3.0.0)", "docling-ibm-models (>=4.0.2,<5)", "docling-parse (>=7.22.2,<8.0.0)", "httpx (>=0.28,<1.0.0)", "huggingface-hub (>=0.23,<3)", "mail-parser (>=4.1.4,<5.0.0)", "marko (>=2.1.2,<3.0.0)", "numpy (>=1.24.0,<3.0.0)", "openpyxl (>=3.1.5,<4.0.0)", "pillow (>=10.0.0,<14.0.0)", "polyfactory (>=2.22.2)", "pylatexenc (>=2.10,<3.0)", "pypdfium2 (>=4.30.0,!=4.30.1,<6.0.0)", "python-docx (>=1.2.0,<2.0.0)", "python-dotenv (>=1.0,<2.0)", "python-oxmsg (>=0.0.2,<0.1.0)", "python-pptx (>=1.0.2,<2.0.0)", "rapidocr (>=3.9.1,<4.0.0)", "rich (>=13.0.0)", "rtree (>=1.3.0,<2.0.0)", "scipy (>=1.9.0,<2.0.0)", "torch (>=2.2.2,<3.0.0)", "torchvision (>=0,<1)", "typer (>=0.19.0,<0.28.0)", "websockets (>=14.0,<18.0)"]
 
 [[package]]
 name = "docstring-parser"
@@ -2334,21 +2302,6 @@ files = [
 ]
 
 [[package]]
-name = "jsonlines"
-version = "4.0.0"
-description = "Library with helpers for the jsonlines file format"
-optional = false
-python-versions = ">=3.8"
-groups = ["main", "docling-ocr"]
-files = [
-    {file = "jsonlines-4.0.0-py3-none-any.whl", hash = "sha256:185b334ff2ca5a91362993f42e83588a360cf95ce4b71a73548502bda52a7c55"},
-    {file = "jsonlines-4.0.0.tar.gz", hash = "sha256:0c6d2c09117550c089995247f605ae4cf77dd1533041d366351f6f298822ea74"},
-]
-
-[package.dependencies]
-attrs = ">=19.2.0"
-
-[[package]]
 name = "jsonpatch"
 version = "1.33"
 description = "Apply JSON-Patches (RFC 6902)"
@@ -2614,8 +2567,7 @@ version = "3.5.1"
 description = "Tools for labeling human languages with IETF language tags"
 optional = false
 python-versions = ">=3.9"
-groups = ["main"]
-markers = "python_version >= \"3.14\""
+groups = ["main", "docling-ocr"]
 files = [
     {file = "langcodes-3.5.1-py3-none-any.whl", hash = "sha256:b6a9c25c603804e2d169165091d0cdb23934610524a21d226e4f463e8e958a72"},
     {file = "langcodes-3.5.1.tar.gz", hash = "sha256:40bff315e01b01d11c2ae3928dd4f5cbd74dd38f9bd912c12b9a3606c143f731"},
@@ -4504,99 +4456,95 @@ numpy = "*"
 
 [[package]]
 name = "pillow"
-version = "12.3.0"
+version = "13.0.0"
 description = "Python Imaging Library (fork)"
 optional = false
-python-versions = ">=3.10"
+python-versions = ">=3.11"
 groups = ["main", "docling-ocr"]
 files = [
-    {file = "pillow-12.3.0-cp310-cp310-macosx_10_10_x86_64.whl", hash = "sha256:6c0016e7b354317c4e9e525b937ac8596c38d2d232b419529b9cd7a1cd46e39a"},
-    {file = "pillow-12.3.0-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:bcc33feacfaefce60c12fd500a277533bdc02b10a19f7f6d348763d8140bbba7"},
-    {file = "pillow-12.3.0-cp310-cp310-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:5594fc43d548a7ed94949d139aa1341b270f1863f11cfd37f5a6c8b778a6b67f"},
-    {file = "pillow-12.3.0-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:f0606c8bf2cdefea14a43530f7657cbbb7ecf1c4222512492ef4a4434a9501ec"},
-    {file = "pillow-12.3.0-cp310-cp310-musllinux_1_2_aarch64.whl", hash = "sha256:85f998ea1848bc6757289e739cfbdda3a04adfd58b02fc018ce54d754a5ce468"},
-    {file = "pillow-12.3.0-cp310-cp310-musllinux_1_2_x86_64.whl", hash = "sha256:25b9b82bb22e6e2b3cd07b39c68b7b862001226cb3dff7130d1cb914121b39ed"},
-    {file = "pillow-12.3.0-cp310-cp310-win32.whl", hash = "sha256:37dc8f7bbb66efe481bb60defacef820c950c24713fb44962ed6aa2a50966de1"},
-    {file = "pillow-12.3.0-cp310-cp310-win_amd64.whl", hash = "sha256:300557495eb45ebb8aec96c2da9c4be642fbf7cd937278b4013ba894ea8eb0eb"},
-    {file = "pillow-12.3.0-cp310-cp310-win_arm64.whl", hash = "sha256:514435a37670e3e5e08f3945b68718b6ed329bb84367777e16f9f4dfe1e61a0f"},
-    {file = "pillow-12.3.0-cp311-cp311-macosx_10_10_x86_64.whl", hash = "sha256:00808c5e14ef63ac5161091d242999076604ff74b883423a11e5d7bbb38bf756"},
-    {file = "pillow-12.3.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:37d6d0a00072fd2948eb22bce7e1475f34569d90c87c59f7a2ec59541b77f7a6"},
-    {file = "pillow-12.3.0-cp311-cp311-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:bcb46e2f9feff8d06323983bd83ed00c201fdcab3d74973e7072a889b3979fcd"},
-    {file = "pillow-12.3.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:23d27a3e0307ec2244cc51e7287b919aa68d097504ebe19df4e76a98a3eea5bd"},
-    {file = "pillow-12.3.0-cp311-cp311-musllinux_1_2_aarch64.whl", hash = "sha256:4f883547d4b7f0495ebe7056b0cc2aea76094e7a4abc8e933540f3271df27d9c"},
-    {file = "pillow-12.3.0-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:236ff70b9312fb68943c703aa842ca6a758abfa45ac187a5e7c1452e96ef72b5"},
-    {file = "pillow-12.3.0-cp311-cp311-win32.whl", hash = "sha256:10e41f0fbf1eec8cfd234b8fe17a4caac7c9d0db4c204d3c173a8f9f6ef3232b"},
-    {file = "pillow-12.3.0-cp311-cp311-win_amd64.whl", hash = "sha256:8e95e1385e4998ae9694eeaa4730ba5457ff61185b3a55e2e7bea0880aef452a"},
-    {file = "pillow-12.3.0-cp311-cp311-win_arm64.whl", hash = "sha256:ebaea975e03d3141d9d3a507df75c9b3ec90fa9d2ffd07567b3a978d9d790b26"},
-    {file = "pillow-12.3.0-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:ba09209fbe443b4acccebe845d8a138b89a8f4fbaeedd44953490b5315d5e965"},
-    {file = "pillow-12.3.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:ffd0c5368496f41b0944be820fcb7a838aa6e623d250b01acf2643939c3f99d7"},
-    {file = "pillow-12.3.0-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:d9c7f76c0673154f044e9d78c8655fb4213f6ca31a836df48b40fe5d187717b9"},
-    {file = "pillow-12.3.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:78cb2c6865a35ab8ff8b75fd122f6033b92a62c82801110e48ddd6c936a45d91"},
-    {file = "pillow-12.3.0-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:e491916b378fba47242221bb9ead245211b70d504f495d105d17b14a24b4907c"},
-    {file = "pillow-12.3.0-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:0dd2064cbc55aaec028ef5fbb60fa47bb6c3e7918e07ff17935284b227a9d2df"},
-    {file = "pillow-12.3.0-cp312-cp312-win32.whl", hash = "sha256:dbce0b29841537a2fa4a214c2bbf14de3587c9680caa9b4e217568472490b28f"},
-    {file = "pillow-12.3.0-cp312-cp312-win_amd64.whl", hash = "sha256:a2b55dd6b2a4c4b7d87ffa56bdb33fdc5fdb9a462173861a7bc097f17d91cb09"},
-    {file = "pillow-12.3.0-cp312-cp312-win_arm64.whl", hash = "sha256:331b624368d4f1d069149002f25f44bc61c8919ce8ddb3c45bdad8f6e2d89510"},
-    {file = "pillow-12.3.0-cp313-cp313-ios_13_0_arm64_iphoneos.whl", hash = "sha256:21900ce7ba264168cd50defae43cd75d25c833ad4ad6e73ffc5596d12e25ac89"},
-    {file = "pillow-12.3.0-cp313-cp313-ios_13_0_arm64_iphonesimulator.whl", hash = "sha256:4e8c2a84d977f50b9daed6eeaf3baef67d00d5d74d932288f02cb94518ee3ace"},
-    {file = "pillow-12.3.0-cp313-cp313-ios_13_0_x86_64_iphonesimulator.whl", hash = "sha256:ae26d61dfa7a47befdc7572b521024e8745f3d809bd95ca9505a7bba9ef849ec"},
-    {file = "pillow-12.3.0-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:7a743ff716f746fc19a9557f60dab1600d4613255f8a7aeb3cdde4db7eb15a66"},
-    {file = "pillow-12.3.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:d69141514cc30b774ceea5e3ed3a6635c8d8a96edf664689b890f4089111fb35"},
-    {file = "pillow-12.3.0-cp313-cp313-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:f7401aebd7f581d7f83a439d87d474999317ee099218e5ad25d125290990ba65"},
-    {file = "pillow-12.3.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:0847a763afefb695bc912d7c131e7e0632d4edc1d8698f58ddabec8e46b8b6d3"},
-    {file = "pillow-12.3.0-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:571b9fcb07b97ef3a492028fb3d2dc0993ca23a06138b0315286566d29ef718a"},
-    {file = "pillow-12.3.0-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:756c768d0c9c2955feb7a56c37ea24aea2e369f8d36a88da270b6a9f19e62b5e"},
-    {file = "pillow-12.3.0-cp313-cp313-win32.whl", hash = "sha256:a876864214e136f0eb367788dbd7df045f4806801518e2cfe9e13229cfe06d8f"},
-    {file = "pillow-12.3.0-cp313-cp313-win_amd64.whl", hash = "sha256:1cca606cd25738df4ed873d5ad46bbdb3d83b5cbca291f6b4ff13a4df6b0bbe8"},
-    {file = "pillow-12.3.0-cp313-cp313-win_arm64.whl", hash = "sha256:b629de27fda84b42cde7edef0d85f13b958b47f6e9bbcbba9b673c562a89bd8b"},
-    {file = "pillow-12.3.0-cp314-cp314-ios_13_0_arm64_iphoneos.whl", hash = "sha256:9cf95fe4d0f84c82d282745d9bb08ad9f926efa00be4697e767b814ce40d4330"},
-    {file = "pillow-12.3.0-cp314-cp314-ios_13_0_arm64_iphonesimulator.whl", hash = "sha256:8728f216dcdb6e6d555cf971cb34076139ad74b31fc2c14da4fafc741c5f6217"},
-    {file = "pillow-12.3.0-cp314-cp314-ios_13_0_x86_64_iphonesimulator.whl", hash = "sha256:a45650e8ce7fafffd731db8550230db6b0d306d181a90b67d3e6bca2f1990930"},
-    {file = "pillow-12.3.0-cp314-cp314-macosx_10_15_x86_64.whl", hash = "sha256:ba54cfebe86920a559a7c4d6b9050791c20513650a1952ebe3368c7dc70306f8"},
-    {file = "pillow-12.3.0-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:e158cb00350dc278f3b91551101aa7d12415a66ebf2c91d8d5ac14e56ddd3ad0"},
-    {file = "pillow-12.3.0-cp314-cp314-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:e9aeb04d6aef139de265b29683e119b638208f88cf73cdd1658aa07221165321"},
-    {file = "pillow-12.3.0-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:251bf95b67017e27b13d82f5b326234ca62d70f9cf4c2b9032de2358a3b12c7b"},
-    {file = "pillow-12.3.0-cp314-cp314-musllinux_1_2_aarch64.whl", hash = "sha256:fe3cca2e4e8a592be0f269a1ca4835c25199d9f3ce815c8491048f785b0a0198"},
-    {file = "pillow-12.3.0-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:23aceaa007d6172b02c277f0cd359c79492bbb14f7072b4ede9fbcaf20648130"},
-    {file = "pillow-12.3.0-cp314-cp314-win32.whl", hash = "sha256:af8d94b0db561cf68b88a267c5c44b49e134f525d0dc2cb7ed413a66bc23559a"},
-    {file = "pillow-12.3.0-cp314-cp314-win_amd64.whl", hash = "sha256:fdafc9cce40277e0f7a0feabce0ee50dd2fa1800f3b38015e51296b5e814048d"},
-    {file = "pillow-12.3.0-cp314-cp314-win_arm64.whl", hash = "sha256:e91206ee562682b51b98ef4b26a6ef48fd84e15fd4c4bc5ec768eb641d206838"},
-    {file = "pillow-12.3.0-cp314-cp314t-macosx_10_15_x86_64.whl", hash = "sha256:164b31cd1a0490ab6efae01aa5df49da7061be0af1b30e035b6e9a1bfe34ee6e"},
-    {file = "pillow-12.3.0-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:5afb51d599ea772b8365ae807ae557f18bccfe46ab261fd1c2a9ed700fc6eb17"},
-    {file = "pillow-12.3.0-cp314-cp314t-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:3edce1d53195db527e0191f84b71d02022de0540bf43a16ed734ed7537b07385"},
-    {file = "pillow-12.3.0-cp314-cp314t-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:bf16ba1b4d0b6b7c8e534936632270cf70eb00dbe09005bc345b2677b726855c"},
-    {file = "pillow-12.3.0-cp314-cp314t-musllinux_1_2_aarch64.whl", hash = "sha256:24870b09b224f7ae3c39ed07d10e819d06f8720bc551847b1d623832b5b0e28d"},
-    {file = "pillow-12.3.0-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:30f2aa603c41533cc25c05acd0da21636e84a315768feb631c937177db558931"},
-    {file = "pillow-12.3.0-cp314-cp314t-win32.whl", hash = "sha256:4b0a7fe987b14c31ebda6083f74f22b561fd3739bc0ac51e019622e3d72668c7"},
-    {file = "pillow-12.3.0-cp314-cp314t-win_amd64.whl", hash = "sha256:962864dc93511324d51ddbb5b9f8731bf71675b93ca612a07441896f4688fb8c"},
-    {file = "pillow-12.3.0-cp314-cp314t-win_arm64.whl", hash = "sha256:0740a512dc522224c77d9aa5a8d70d8b7d73fb91f2c21125d8d025d3b8990e45"},
-    {file = "pillow-12.3.0-cp315-cp315-ios_13_0_arm64_iphoneos.whl", hash = "sha256:0feb2e9d6ad6c9e3c06effe9d00f3f1e618a6643273576b016f591e9315a7139"},
-    {file = "pillow-12.3.0-cp315-cp315-ios_13_0_arm64_iphonesimulator.whl", hash = "sha256:9e881fca225083806662a5c43d627d215f258ff43c890f831966c7d7ba9c7402"},
-    {file = "pillow-12.3.0-cp315-cp315-ios_13_0_x86_64_iphonesimulator.whl", hash = "sha256:4998562bf62a445225f22e07c896bb04b35b1b1f2eb6d760584c9c51d7a5f78c"},
-    {file = "pillow-12.3.0-cp315-cp315-macosx_10_15_x86_64.whl", hash = "sha256:dc624f6bc473dacdf7ef7eb8678d0d08edf15cd94fad6ae5c7d6cc67a4e4902f"},
-    {file = "pillow-12.3.0-cp315-cp315-macosx_11_0_arm64.whl", hash = "sha256:71d6097b330eea8fd15097780c8e89cb1a8ce7838669f48c5bacd6f663dd4701"},
-    {file = "pillow-12.3.0-cp315-cp315-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:28ce87c5ab450a9dd970b52e5aca5fe63ed432d18a2eaddd1979a00a1ba24ace"},
-    {file = "pillow-12.3.0-cp315-cp315-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:6b02afb9b97f65fbca5f31db6a2a3ba21aa93030225f150fa3f249717e938fb4"},
-    {file = "pillow-12.3.0-cp315-cp315-musllinux_1_2_aarch64.whl", hash = "sha256:1182d52bc2d5e5d7d0949503aa7e36d12f42205dc287e4883f407b1988820d39"},
-    {file = "pillow-12.3.0-cp315-cp315-musllinux_1_2_x86_64.whl", hash = "sha256:e795b7eb908249c4e43c7c99fac7c2c75dab0c43566e37db472a355f63693d71"},
-    {file = "pillow-12.3.0-cp315-cp315-win32.whl", hash = "sha256:57b3d78c95ba9059768b10e28b813002261d3f3dfc55cc48b0c988f625175827"},
-    {file = "pillow-12.3.0-cp315-cp315-win_amd64.whl", hash = "sha256:fa4ecea169a355be7a3ade2c783e2ed12f0e40d2c5621cda8b3297faf7fbb9f5"},
-    {file = "pillow-12.3.0-cp315-cp315-win_arm64.whl", hash = "sha256:877c3f311ff35410f690861c4409e7ccbf0cd2f878e50628a28e5a0bb689e658"},
-    {file = "pillow-12.3.0-cp315-cp315t-macosx_10_15_x86_64.whl", hash = "sha256:e9871b1ffbfa9656b60aeee92ed5136a5742696006fa322b29ea3d8da0ecc9cf"},
-    {file = "pillow-12.3.0-cp315-cp315t-macosx_11_0_arm64.whl", hash = "sha256:53aa02d20d10c3d814d536aa4e5ac9b84ca0ff5a88377963b085ad6822f93e64"},
-    {file = "pillow-12.3.0-cp315-cp315t-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:446c34dcc4324b084a53b705127dc15717b22c5e140ae0a3c38349d4efec071e"},
-    {file = "pillow-12.3.0-cp315-cp315t-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:cf1845d02ad822a369a49f2bb9345b1614744267682e7a03527dc3bf6eea1777"},
-    {file = "pillow-12.3.0-cp315-cp315t-musllinux_1_2_aarch64.whl", hash = "sha256:186941b6aef820ad110fb01fb06eb925374dc3a21b17e37ec9a53b250c6fe2d1"},
-    {file = "pillow-12.3.0-cp315-cp315t-musllinux_1_2_x86_64.whl", hash = "sha256:f13c32a3abd6079a66d9526e18dad9b6d280384d49d7c54040cd57b6424041d9"},
-    {file = "pillow-12.3.0-cp315-cp315t-win32.whl", hash = "sha256:1657923d2d45afb66526e5b933e5b3052e6bdea196c90d3abb2424e18c77dae8"},
-    {file = "pillow-12.3.0-cp315-cp315t-win_amd64.whl", hash = "sha256:8cd2f7bdda092d99c9fc2fb7391354f306d01443d22785d0cbfafa2e2c8bb418"},
-    {file = "pillow-12.3.0-cp315-cp315t-win_arm64.whl", hash = "sha256:06ff022112bc9cbf83b60f8e028d94ad87b60621706487e65f673de61610ab59"},
-    {file = "pillow-12.3.0-pp311-pypy311_pp73-macosx_10_15_x86_64.whl", hash = "sha256:b3c777e849237620b022f7f297dd67705f9f5cf1685f09f02e46f93e92725468"},
-    {file = "pillow-12.3.0-pp311-pypy311_pp73-macosx_11_0_arm64.whl", hash = "sha256:b343699e8308bdc51978310e1c959c584e7869cc8c40780058c87da7781a1e94"},
-    {file = "pillow-12.3.0-pp311-pypy311_pp73-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:fbd139c8447d25dd750ab79ee274cc5e1fe80fc56340ab10b18a195e1b6eca3e"},
-    {file = "pillow-12.3.0-pp311-pypy311_pp73-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:e7e480451b9fa137494bccd3a7d69adbe8ac65a87d97be61e11f1b1050a5bac3"},
-    {file = "pillow-12.3.0-pp311-pypy311_pp73-win_amd64.whl", hash = "sha256:04f01d28a6aaff387bf842a13be313df23ba0597a44f1a976c9feb3c6ff4711a"},
-    {file = "pillow-12.3.0.tar.gz", hash = "sha256:3b8182a766685eaa002637e28b4ec8d6b18819a0c71f579bf0dbaa5830297cce"},
+    {file = "pillow-13.0.0-cp311-cp311-macosx_10_10_x86_64.whl", hash = "sha256:6f38f3f885a09cafc93fd667b1173a92f379e43785d635e7983c893f0da319fb"},
+    {file = "pillow-13.0.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:37290fbef0c73e2d51d594eb78fded7dc7170d1c3ad0a890269e6fd8c8c4e061"},
+    {file = "pillow-13.0.0-cp311-cp311-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:7c88c10dd432f3b39ccdafc9ed81d0c21b8fd634502574da76d1bfa4fe2c76d0"},
+    {file = "pillow-13.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:a625df9a2a5597fa5e5266e01aefc82604bb85d291e3547981e863560d75da6c"},
+    {file = "pillow-13.0.0-cp311-cp311-musllinux_1_2_aarch64.whl", hash = "sha256:10b5019883c98f1dd819ca48ffc6f33a91cee04948fe637c605f4345c7cafd6f"},
+    {file = "pillow-13.0.0-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:f391dc92a015c478745192fe4f2e120c2af2aba18d9fe0616341cbf537599806"},
+    {file = "pillow-13.0.0-cp311-cp311-win32.whl", hash = "sha256:6a0920cb55df5a4d3f6862964908078c0bd59332bdd1bcd20d14e8c70ef27cc5"},
+    {file = "pillow-13.0.0-cp311-cp311-win_amd64.whl", hash = "sha256:d7710eb676e9bb68965cb045be0d333b4c0d7f9dfbaa7fbf121385b1588683d3"},
+    {file = "pillow-13.0.0-cp311-cp311-win_arm64.whl", hash = "sha256:12fbb851cf323cc19aac3eea1df5ad17b57e91e9fe3cfd06100dba7bb8208c13"},
+    {file = "pillow-13.0.0-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:67c8d44ad89fa7eb88de5d6ef6199b1e03dd24974f85a67639fc8badb801fe79"},
+    {file = "pillow-13.0.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:fc481f742ccda20e9ed760b8f978dff50f2a4e9bc253ac167fb0a05b0783ef52"},
+    {file = "pillow-13.0.0-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:8bf295fe459343bc6093c8e5e0df60bfa189e0fcb775a22e2c2488fdeccc6c0d"},
+    {file = "pillow-13.0.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:42d63be3af4f9b951b199b0a9d23365d37ab14687e6d77b74940432c8515c4ca"},
+    {file = "pillow-13.0.0-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:4bd024d567eca931b668978d672dba914d4b8e2628e2c3073a2ad178de8a2620"},
+    {file = "pillow-13.0.0-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:23edf4ec4b6f4f240e8df6e4985e9ee2ced86474632433e55fb1e2548744bf40"},
+    {file = "pillow-13.0.0-cp312-cp312-win32.whl", hash = "sha256:02464da86f561f410e13b061ec37c3068a9cb557a095494157742d07b3c24a27"},
+    {file = "pillow-13.0.0-cp312-cp312-win_amd64.whl", hash = "sha256:ff3fe9eb621fbb9db4c4be33ab946f6bac5f98ab50ca8d3260503653656c961b"},
+    {file = "pillow-13.0.0-cp312-cp312-win_arm64.whl", hash = "sha256:c3bc8ee0271387e0b1e3ad0ff893645990a656e79bf9c42f4f734a3642b11d51"},
+    {file = "pillow-13.0.0-cp313-cp313-ios_13_0_arm64_iphoneos.whl", hash = "sha256:e98b4f91f99b24b1da72e10621ba181f7281922384a7403094debb4199de6c00"},
+    {file = "pillow-13.0.0-cp313-cp313-ios_13_0_arm64_iphonesimulator.whl", hash = "sha256:34fb3db1149c879343861831728c243c432d4a5afc8f1878ca7612ef8de2a033"},
+    {file = "pillow-13.0.0-cp313-cp313-ios_13_0_x86_64_iphonesimulator.whl", hash = "sha256:2d50500a4a3bc6469adcdb319cf05d688b08ca3bf0f22a05339f3b25b433a599"},
+    {file = "pillow-13.0.0-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:ef5fe6b7db3f501c56000ba8fe7c7e1a35ca1d45824fbeb95a67daa85cff4dbe"},
+    {file = "pillow-13.0.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:f11a3c1358bb3c68012a7b1f41b223c3db9f7bfde90b481df028cfe1c3363313"},
+    {file = "pillow-13.0.0-cp313-cp313-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:19b66ca0a4d25cc0200b381ce824c7ea090db61427315e73cfb05dbf1b35c369"},
+    {file = "pillow-13.0.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:5f56499c1a74d2b862beb0c33b8016f99d095858455df9d21583bbbc1c15b582"},
+    {file = "pillow-13.0.0-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:a2a14cd73d5e6c927f644b0110ee81f59c4ef506259ec9183904747f2caacc81"},
+    {file = "pillow-13.0.0-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:08b826a9bf1265c76de04a42061d61ea6b109418b7826f28ff1ecdfaa26c5502"},
+    {file = "pillow-13.0.0-cp313-cp313-win32.whl", hash = "sha256:12b0fa15879fe5a9d9eebe66e4e2d74128a773b1a4448010c9c714f45e04b9d8"},
+    {file = "pillow-13.0.0-cp313-cp313-win_amd64.whl", hash = "sha256:9dda0788a9932776a75d8bcc020076edc308ce2508b51f6739a45e3158b3fc42"},
+    {file = "pillow-13.0.0-cp313-cp313-win_arm64.whl", hash = "sha256:40a266371ece581e5de13b6635ef78d7487824af80561b6ca27694a88c19bc0f"},
+    {file = "pillow-13.0.0-cp314-cp314-ios_13_0_arm64_iphoneos.whl", hash = "sha256:44629d4498c9cb6b2051806155f22141df0d8a929c56134b166655232dfb2f8c"},
+    {file = "pillow-13.0.0-cp314-cp314-ios_13_0_arm64_iphonesimulator.whl", hash = "sha256:bf97ba1b5542050e9b0c74e632323b6d8136cc99d64e193abebee22fe6013c76"},
+    {file = "pillow-13.0.0-cp314-cp314-ios_13_0_x86_64_iphonesimulator.whl", hash = "sha256:aa694c49787040943570d61c9b8fc01271bd2a2cfdd55f0d896f8aecdce1a981"},
+    {file = "pillow-13.0.0-cp314-cp314-macosx_10_15_x86_64.whl", hash = "sha256:49c12af515073e9bf511e4ef736743bf70d531a643668722279314b937742ba4"},
+    {file = "pillow-13.0.0-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:d9b0a2bee3f3e03e9f29057aedb807dbf1e1d96ee1b9d0f422d9db6c8583271d"},
+    {file = "pillow-13.0.0-cp314-cp314-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:5933fcea5a5ba64c686f55c886a115cbfd92f2900460784a1e79909fdbafd7b6"},
+    {file = "pillow-13.0.0-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:e91c2b1cbeae768c98752e67e717e283d68dae45717b41f2d91eaee648e37b7d"},
+    {file = "pillow-13.0.0-cp314-cp314-musllinux_1_2_aarch64.whl", hash = "sha256:7f6299e494e46253d40c34653cac369412f44ca53b5f85d848d3f95b1ed0546c"},
+    {file = "pillow-13.0.0-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:f9bd7d260d986f3553518c5d723544346fa48031f8aef3265d786aeb59845bc0"},
+    {file = "pillow-13.0.0-cp314-cp314-win32.whl", hash = "sha256:2e31c4e68cffd7b1f116127626813b82fcba19edf6b940a7b0c266d6484d0055"},
+    {file = "pillow-13.0.0-cp314-cp314-win_amd64.whl", hash = "sha256:f7cbb7a64e7ec664775195e4f81923bc8a93d9451b963f844e59118f63147a7a"},
+    {file = "pillow-13.0.0-cp314-cp314-win_arm64.whl", hash = "sha256:a6aaa7871aebca081eb5c45f83e845bbd9712ae99fa9286dbfdcee835e63f4b4"},
+    {file = "pillow-13.0.0-cp314-cp314t-macosx_10_15_x86_64.whl", hash = "sha256:7b999816b5850a35ada08443e6e03945f1f6488144a83afe2d37b240a552aafa"},
+    {file = "pillow-13.0.0-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:67871a13cf47275201553b536c025da777f997fa562a19eb798af4ad4b97c18f"},
+    {file = "pillow-13.0.0-cp314-cp314t-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:e8ca8f69b7c77fa96dad99f8638c1fc4f1c0bed4acaa1baf7a3c31bdb80a0ab1"},
+    {file = "pillow-13.0.0-cp314-cp314t-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:6bce6a29c3898191f4c9998e4d4e8f69790caeabde46e54da4bc235ce5bde683"},
+    {file = "pillow-13.0.0-cp314-cp314t-musllinux_1_2_aarch64.whl", hash = "sha256:816752a5ef76a80484c8c441c85593b7ea9304f6231fc5776ad1fbff7e773058"},
+    {file = "pillow-13.0.0-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:5bdb38ba220b61b4ec31dd1046dea6b016d3c6850a23f43ed8b58332b2fc668e"},
+    {file = "pillow-13.0.0-cp314-cp314t-win32.whl", hash = "sha256:06903aac074d00c988e77a1fc435286dc498506d4ca8d6f69df9babddf4ecc15"},
+    {file = "pillow-13.0.0-cp314-cp314t-win_amd64.whl", hash = "sha256:9a635068d9793c7f0d929f39f18b58f1bd86c236e8e7b64167b86af9232ebca0"},
+    {file = "pillow-13.0.0-cp314-cp314t-win_arm64.whl", hash = "sha256:0d1a9cf7bc6917538b20f8d06b9ab2147e542f68849e96fc58eb66bdf6acc692"},
+    {file = "pillow-13.0.0-cp315-cp315-ios_13_0_arm64_iphoneos.whl", hash = "sha256:7d5e097eabd5d4915c27ac9f6e9325bb1e01a7c94d7348b5c4451d3fc30e8521"},
+    {file = "pillow-13.0.0-cp315-cp315-ios_13_0_arm64_iphonesimulator.whl", hash = "sha256:51ebb529fc5e8abdd55302f6c3f8943037348ec2384329a3e55677f69ae2fdfc"},
+    {file = "pillow-13.0.0-cp315-cp315-ios_13_0_x86_64_iphonesimulator.whl", hash = "sha256:c87a04e7f152ee4db5dbe15f0bfa3fe628a1aeedbe66b81c43b87f52c813f9ac"},
+    {file = "pillow-13.0.0-cp315-cp315-macosx_10_15_x86_64.whl", hash = "sha256:20722cd5375533ad754053363a80b8fb30c79d37930a6f7228030e237ce3bd5d"},
+    {file = "pillow-13.0.0-cp315-cp315-macosx_11_0_arm64.whl", hash = "sha256:04a63720f79e22fd54d897c233a68314c50ca0603360f54ce2bd5db8f0f43782"},
+    {file = "pillow-13.0.0-cp315-cp315-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:4f8db54177035a2b5f717f94475b74907e12a96dc74f6d487f3966b0a4694071"},
+    {file = "pillow-13.0.0-cp315-cp315-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:8f36aa77f74b14a2103622b196402c71330e4e7cf4122ee45c854e9a01e0eecf"},
+    {file = "pillow-13.0.0-cp315-cp315-musllinux_1_2_aarch64.whl", hash = "sha256:149a1c323ba366f90b48e6f1a6db6582eb50512df374588de56fc909abc0f0f3"},
+    {file = "pillow-13.0.0-cp315-cp315-musllinux_1_2_x86_64.whl", hash = "sha256:e892354a424b1e82a78ba16785822bdd40de06f19446a3d4a28047df1a4f8932"},
+    {file = "pillow-13.0.0-cp315-cp315-win32.whl", hash = "sha256:8e459b613cf31f8980f584387b4fe47bf08e076e288d61aa8eba1f7fd4ddbb81"},
+    {file = "pillow-13.0.0-cp315-cp315-win_amd64.whl", hash = "sha256:d4737f50d23ddd11d6685faacbb9252887dde0bc7997127757247983d74399d6"},
+    {file = "pillow-13.0.0-cp315-cp315-win_arm64.whl", hash = "sha256:2310e2adfc13c6d457d7d0f2ffdd5c56a74a317650cf765887df8d515a647ac0"},
+    {file = "pillow-13.0.0-cp315-cp315t-macosx_10_15_x86_64.whl", hash = "sha256:21c32061a5512dc13f87cc7303e120e4d77c2f70df89a35af0e3ce246e5ac57f"},
+    {file = "pillow-13.0.0-cp315-cp315t-macosx_11_0_arm64.whl", hash = "sha256:1c774b9c0ba0d0b356f71530677b39028878a2cae5a93e0a13779cfd17120f88"},
+    {file = "pillow-13.0.0-cp315-cp315t-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:20822140c9a2ba9c5e42df342b0a892ab2e102fc0e3db967a133bb9ce3f898bb"},
+    {file = "pillow-13.0.0-cp315-cp315t-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:ffea6b2986a797c84b6d1d27d4f43e0b83c73fc16281a930891cd237cf0d08fe"},
+    {file = "pillow-13.0.0-cp315-cp315t-musllinux_1_2_aarch64.whl", hash = "sha256:05cd2cd39055d0b9650060e4513ef4a9a0aea870083950bd046a0d6490f93a22"},
+    {file = "pillow-13.0.0-cp315-cp315t-musllinux_1_2_x86_64.whl", hash = "sha256:c6fd031333dedcad7ce3e03d244093f43504f209e86925ebdb2b868fa4037630"},
+    {file = "pillow-13.0.0-cp315-cp315t-win32.whl", hash = "sha256:c50c80e3591e5cf9a8dfa6007d4f10732f02e32263850999286e56ccd650cfb2"},
+    {file = "pillow-13.0.0-cp315-cp315t-win_amd64.whl", hash = "sha256:adb3c2124c68e480f4632d06cb7caa3b48a51678475f483b4edb1c6dee29ea43"},
+    {file = "pillow-13.0.0-cp315-cp315t-win_arm64.whl", hash = "sha256:4a25756244bdcce3b50580baadf320fa48297f0eeb8e114ba64139a40d4d0fc8"},
+    {file = "pillow-13.0.0-pp311-pypy311_pp80-macosx_10_15_x86_64.whl", hash = "sha256:405be6058e206a86fedce2f715ecc2343f94072d7925251632dffa2c05f70dca"},
+    {file = "pillow-13.0.0-pp311-pypy311_pp80-macosx_11_0_arm64.whl", hash = "sha256:b84be41387fc00db28c13c02e30d42b02d8d8f6a4a741a1aee6012ca7f1f6039"},
+    {file = "pillow-13.0.0-pp311-pypy311_pp80-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:a192360d512305fe92d3053e4f7627bbad1f7708f1f4ad38cccd9336acabe9ad"},
+    {file = "pillow-13.0.0-pp311-pypy311_pp80-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:83b37abd87b590acd8f47ca8a61f70893322b11834d36e07c2298dacad4d14d2"},
+    {file = "pillow-13.0.0-pp311-pypy311_pp80-win_amd64.whl", hash = "sha256:73ee25cf8cf8b75d5a5aeed7cb6588f5e5dbfbb0fde51707b630bbb23897645c"},
+    {file = "pillow-13.0.0-pp312-pypy312_pp80-macosx_10_15_x86_64.whl", hash = "sha256:8619685cad8efc4c38c66d3b36aad854523297c43d748b3b6f0cc03c90ba3463"},
+    {file = "pillow-13.0.0-pp312-pypy312_pp80-macosx_11_0_arm64.whl", hash = "sha256:7e91e97a929232cdb828889ee6ad0e48d7f40f4ec38818f4e4a8968b2b1af22e"},
+    {file = "pillow-13.0.0-pp312-pypy312_pp80-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:93ff9c9c3663ce23aaa5d0b6b6abac55359e2a0c06c7e30f3771829af816be63"},
+    {file = "pillow-13.0.0-pp312-pypy312_pp80-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:e65dd6e75de67b2362a4fa3e16aa627595f65054dc4ec73d64680c84d592fa61"},
+    {file = "pillow-13.0.0-pp312-pypy312_pp80-win_amd64.whl", hash = "sha256:567f20f1c75897d7663830da6ea8af719e03d712b1d9ee7f813319f9ece42e5a"},
+    {file = "pillow-13.0.0.tar.gz", hash = "sha256:cdcd1ba258178f7356d74170c9a81ba4eab6a5d55748bc402a5a2a6fe6be3510"},
 ]
 
 [package.extras]
@@ -4604,7 +4552,7 @@ docs = ["furo", "olefile", "sphinx (>=8.2)", "sphinx-autobuild", "sphinx-copybut
 fpx = ["olefile"]
 mic = ["olefile"]
 test-arrow = ["arro3-compute", "arro3-core", "nanoarrow", "pyarrow"]
-tests = ["coverage (>=7.4.2)", "defusedxml", "markdown2", "olefile", "packaging", "pytest", "pytest-cov", "pytest-timeout", "pytest-xdist", "setuptools", "trove-classifiers (>=2024.10.12)"]
+tests = ["coverage (>=7.4.2)", "defusedxml", "markdown2", "olefile", "packaging", "psutil ; sys_platform == \"linux\" or sys_platform == \"darwin\"", "pytest", "pytest-cov", "pytest-timeout", "pytest-xdist", "setuptools", "trove-classifiers (>=2024.10.12)"]
 xmp = ["defusedxml"]
 
 [[package]]
@@ -5012,14 +4960,14 @@ files = [
 
 [[package]]
 name = "pyasn1"
-version = "0.6.4"
+version = "0.6.5"
 description = "Pure-Python implementation of ASN.1 types and DER/BER/CER codecs (X.208)"
 optional = false
 python-versions = ">=3.8"
 groups = ["main"]
 files = [
-    {file = "pyasn1-0.6.4-py3-none-any.whl", hash = "sha256:deda9277cfd454080ec40b207fb6df82206a3a2688735233cdcd8d3d565f088b"},
-    {file = "pyasn1-0.6.4.tar.gz", hash = "sha256:9c447d8431c947fe4c8febc4ed9e760bc29011a5b01e5c74b67025bd9fb8ce81"},
+    {file = "pyasn1-0.6.5-py3-none-any.whl", hash = "sha256:4017b0fce125096b8573b39c989fdb1a4b19cf761e683398184550fea0e66587"},
+    {file = "pyasn1-0.6.5.tar.gz", hash = "sha256:6b11616a6bcf3a40e635f082bb232fa57b5e0dd7f517bd7ddd69ec3794508a47"},
 ]
 
 [[package]]
@@ -8873,4 +8821,4 @@ postgresql-backend = ["networkx", "pgvector", "psycopg2-binary"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<4.0.0"
-content-hash = "c85f900cb48f00c3157a9de0624ae966edaf68e1149557e8566b18b75082392f"
+content-hash = "c9ffcdc5793b2183cb7eb05245ad64d530271bcade777bbc9872a9d9aabb88c0"
