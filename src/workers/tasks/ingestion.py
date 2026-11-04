@@ -107,11 +107,16 @@ def set_ingestion_task_status(
     errors: Optional[list] = None,
     counts: Optional[dict] = None,
     cost: Optional[dict] = None,
+    group_tracking: Optional[str] = None,
 ) -> dict:
     from src.core.saving.ingest_cost import IngestCostLedger, merge_cost_into_status_payload
 
     key = f"task:{task_id}"
     existing_raw = cache_adapter.get(key, brain_id=brain_id)
+    if not existing_raw:
+        getter = getattr(cache_adapter, "get_task", None)
+        if callable(getter):
+            existing_raw = getter(task_id, brain_id=brain_id)
     existing: dict = {}
     if existing_raw:
         try:
@@ -152,13 +157,44 @@ def set_ingestion_task_status(
         payload = merge_cost_into_status_payload(
             payload, IngestCostLedger.from_dict(cost)
         )
+    from src.core.saving.ingest_groups import normalize_group_tracking
+
+    stamped = normalize_group_tracking(
+        group_tracking if group_tracking is not None else payload.get("group_tracking"),
+        strict=False,
+    )
+    if stamped:
+        payload["group_tracking"] = stamped
+    else:
+        payload.pop("group_tracking", None)
     cache_adapter.set(
         key=key,
         value=json.dumps(payload),
         brain_id=brain_id,
         expires_in=3600 * 24 * 7,
     )
+    if (
+        status in TERMINAL_TASK_STATUSES
+        and payload.get("group_tracking")
+        and payload.get("cost")
+    ):
+        try:
+            from src.core.saving.ingest_groups import credit_ingest_group
+
+            credit_ingest_group(
+                brain_id,
+                payload.get("group_tracking"),
+                task_id,
+                status,
+                payload.get("cost"),
+            )
+        except Exception as exc:
+            print(f"[ingest-groups] credit failed for {task_id}: {exc}")
+    if os.getenv("PROGRESSIVE_INGESTION_ENABLED") == "1":
+        from src.core.saving.ingest_manifest import update_section
+        update_section(brain_id, task_id, status, stage, payload.get("cost"), error)
     return payload
+
 
 
 def nearest_existing_vector(candidates, exclude_id) -> Optional[object]:
@@ -579,7 +615,7 @@ def source_text_from_payload(payload: IngestionTaskArgs) -> str:
     return json.dumps(payload.data.json_data)
 
 
-@ingestion_app.task(bind=True)
+@ingestion_app.task(bind=True, acks_late=True, reject_on_worker_lost=True)
 def ingest_data(self, args: dict):
     """
     Ingest a payload into the system, persist its content and metadata, generate embeddings and observations, and trigger knowledge-graph enrichment.
@@ -591,6 +627,10 @@ def ingest_data(self, args: dict):
         task_id (str): The identifier of the ingestion task (Celery request id) that was created/updated.
     """
 
+    if os.getenv("PROGRESSIVE_INGESTION_ENABLED") == "1":
+        from src.core.saving.ingest_manifest import claim_section_execution
+        if not claim_section_execution(args.get("brain_id", "default"), self.request.id, bool((getattr(self.request, "delivery_info", None) or {}).get("redelivered"))):
+            return self.request.id
     payload = None
     try:
         payload = IngestionTaskArgs(**args)
@@ -603,6 +643,7 @@ def ingest_data(self, args: dict):
             payload.brain_id,
             "started",
             stage="source",
+            group_tracking=payload.group_tracking,
         )
 
         payload.meta_keys = (
@@ -760,7 +801,12 @@ def ingest_data(self, args: dict):
         )
         from celery import chain
 
-        chain(*steps).apply_async()
+        from src.core.saving.pipeline_runtime import _context
+        context = _context.get()
+        if context:
+            for step in steps:
+                step.set(headers={"pipeline_operation":context})
+        chain(*steps).apply_async(link_error=mark_ingestion_chain_failed.s(parent_task_id, payload.brain_id))
         return parent_task_id
 
     except Exception as e:
@@ -773,6 +819,7 @@ def ingest_data(self, args: dict):
             error=str(e),
         )
         raise
+
 
 
 @ingestion_app.task(bind=True)
@@ -1535,7 +1582,12 @@ def consolidate_graph_async(
             tags=["consolidate_graph", "janitor", "kg_agent"],
             metadata=tracing_metadata,
         ):
-            consolidate_graph(relationship_models, brain_id=brain_id)
+            from src.core.saving.pipeline_runtime import _stage
+            token = _stage.set("consolidation")
+            try:
+                consolidate_graph(relationship_models, brain_id=brain_id)
+            finally:
+                _stage.reset(token)
         try:
             from langchain_core.tracers.langchain import wait_for_all_tracers
 
@@ -1555,12 +1607,19 @@ def consolidate_graph_async(
         raise
 
 
+
 FILE_INGEST_MAX_RETRIES = 3
 FILE_INGEST_RETRY_DELAY = 0.1
 
 
 @ingestion_app.task(bind=True)
-def ingest_file(self, content_b64: str, filename: str, brain_id: str):
+def ingest_file(
+    self,
+    content_b64: str,
+    filename: str,
+    brain_id: str,
+    group_tracking: Optional[str] = None,
+):
     """
     Ingest a file via Docling: convert to markdown (per page), enqueue one
     ingest_data task per page.
@@ -1577,11 +1636,12 @@ def ingest_file(self, content_b64: str, filename: str, brain_id: str):
             "Alternatively set OCR_MODE=docparser in your .env to use the remote OCR pipeline."
         ) from exc
 
-    cache_adapter.set(
-        key=f"task:{self.request.id}",
-        value=json.dumps({"status": "started", "task_id": self.request.id}),
-        brain_id=brain_id,
-        expires_in=3600 * 24 * 7,
+    set_ingestion_task_status(
+        self.request.id,
+        brain_id,
+        "started",
+        stage="source",
+        group_tracking=group_tracking,
     )
     content = base64.b64decode(content_b64)
     suffix = ""
@@ -1609,50 +1669,48 @@ def ingest_file(self, content_b64: str, filename: str, brain_id: str):
         os.unlink(tmp_path)
     task_ids = [str(uuid4()) for _ in page_markdowns]
     for page_task_id in task_ids:
-        cache_adapter.set(
-            key=f"task:{page_task_id}",
-            value=json.dumps({"status": "queued", "task_id": page_task_id}),
-            brain_id=brain_id,
-            expires_in=3600 * 24 * 7,
+        set_ingestion_task_status(
+            page_task_id,
+            brain_id,
+            "queued",
+            stage="queued",
+            group_tracking=group_tracking,
         )
     for page_task_id, markdown in zip(task_ids, page_markdowns):
-        payload = {
-            "data": IngestionTaskTextArgs(
-                data_type="text", text_data=markdown
-            ).model_dump(),
-            "brain_id": brain_id,
-        }
+        payload = build_file_page_ingest_payload(
+            brain_id, markdown, group_tracking=group_tracking
+        )
         for attempt in range(FILE_INGEST_MAX_RETRIES):
             try:
                 ingest_data.apply_async(
                     args=[payload],
                     task_id=page_task_id,
+                    **child_pipeline_headers(self, page_task_id),
                 )
                 break
             except OperationalError:
                 if attempt == FILE_INGEST_MAX_RETRIES - 1:
                     raise
                 time.sleep(FILE_INGEST_RETRY_DELAY * (attempt + 1))
-    cache_adapter.set(
-        key=f"task:{self.request.id}",
-        value=json.dumps(
-            {
-                "status": "completed",
-                "task_id": self.request.id,
-                "task_ids": task_ids,
-            }
-        ),
-        brain_id=brain_id,
-        expires_in=3600 * 24 * 7,
+    set_ingestion_task_status(
+        self.request.id,
+        brain_id,
+        "completed",
+        counts={"pages": len(task_ids), "task_ids": task_ids},
+        group_tracking=group_tracking,
     )
     return {"task_id": self.request.id, "task_ids": task_ids}
+
 
 
 def build_url_page_ingest_payload(
     brain_id: str,
     page,
+    group_tracking: Optional[str] = None,
     skip_enrichment: bool = False,
 ) -> dict:
+    from src.core.saving.ingest_groups import normalize_group_tracking
+
     meta_keys = {}
     if getattr(page, "url", None):
         meta_keys["source_url"] = page.url
@@ -1671,10 +1729,14 @@ def build_url_page_ingest_payload(
     }
     if meta_keys:
         payload["meta_keys"] = meta_keys
+    key = normalize_group_tracking(group_tracking, strict=False)
+    if key:
+        payload["group_tracking"] = key
     return payload
 
 
-@ingestion_app.task(bind=True)
+
+@ingestion_app.task(bind=True, acks_late=True, reject_on_worker_lost=True)
 def ingest_url(self, args: dict):
     from celery.exceptions import OperationalError
 
@@ -1688,6 +1750,7 @@ def ingest_url(self, args: dict):
     )
 
     brain_id = args.get("brain_id", "default")
+    group_tracking = args.get("group_tracking")
     skip_enrichment = bool(args.get("skip_enrichment", False))
     try:
         set_ingestion_task_status(
@@ -1695,6 +1758,7 @@ def ingest_url(self, args: dict):
             brain_id,
             "started",
             stage="crawling",
+            group_tracking=group_tracking,
         )
         pages = crawler_adapter.crawl_pages(
             CrawlRequest(
@@ -1702,8 +1766,14 @@ def ingest_url(self, args: dict):
                 max_pages=int(args.get("max_pages") or 10),
                 allowed_domains=args.get("allowed_domains") or [],
                 idempotency_key=self.request.id,
+                on_progress=(lambda event: set_ingestion_task_status(self.request.id, brain_id, "started", stage=event["stage"])) if args.get("progressive") else None,
             )
         )
+        if args.get("progressive"):
+            from src.core.saving.ingest_manifest import create_manifest
+            create_manifest(brain_id, self.request.id, pages, args)
+            set_ingestion_task_status(self.request.id, brain_id, "started", stage="ingesting", counts={"manifest_version":"sections-v1"}, group_tracking=group_tracking)
+            return {"task_id": self.request.id, "manifest_version": "sections-v1"}
         ingestible = [page for page in pages if (page.text or "").strip()]
         task_ids = [str(uuid4()) for _ in ingestible]
         for page_task_id in task_ids:
@@ -1712,11 +1782,13 @@ def ingest_url(self, args: dict):
                 brain_id,
                 "queued",
                 stage="queued",
+                group_tracking=group_tracking,
             )
         for page_task_id, page in zip(task_ids, ingestible):
             payload = build_url_page_ingest_payload(
                 brain_id,
                 page,
+                group_tracking=group_tracking,
                 skip_enrichment=skip_enrichment,
             )
             for attempt in range(FILE_INGEST_MAX_RETRIES):
@@ -1724,6 +1796,7 @@ def ingest_url(self, args: dict):
                     ingest_data.apply_async(
                         args=[payload],
                         task_id=page_task_id,
+                        **child_pipeline_headers(self, page_task_id),
                     )
                     break
                 except OperationalError:
@@ -1735,6 +1808,7 @@ def ingest_url(self, args: dict):
             brain_id,
             "completed",
             counts={"pages": len(task_ids), "task_ids": task_ids},
+            group_tracking=group_tracking,
         )
         return {"task_id": self.request.id, "task_ids": task_ids}
     except (
@@ -1749,6 +1823,7 @@ def ingest_url(self, args: dict):
             "failed",
             stage="failed",
             error=str(exc),
+            group_tracking=group_tracking,
         )
         raise
     except Exception as exc:
@@ -1758,5 +1833,36 @@ def ingest_url(self, args: dict):
             "failed",
             stage="failed",
             error=str(exc),
+            group_tracking=group_tracking,
         )
         raise
+
+
+
+def build_file_page_ingest_payload(
+    brain_id: str,
+    markdown: str,
+    group_tracking: Optional[str] = None,
+) -> dict:
+    from src.core.saving.ingest_groups import normalize_group_tracking
+
+    payload = {
+        "data": IngestionTaskTextArgs(
+            data_type="text", text_data=markdown
+        ).model_dump(),
+        "brain_id": brain_id,
+    }
+    key = normalize_group_tracking(group_tracking, strict=False)
+    if key:
+        payload["group_tracking"] = key
+    return payload
+
+
+
+from src.core.saving.pipeline_runtime import child_pipeline_headers
+from src.core.saving.ingest_manifest import install_task_context
+install_task_context()
+
+@ingestion_app.task
+def mark_ingestion_chain_failed(request, exc, traceback, parent_task_id, brain_id):
+    set_ingestion_task_status(parent_task_id, brain_id, "failed", stage="failed", error=str(exc))

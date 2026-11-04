@@ -22,6 +22,7 @@ from src.constants.kg import (
     Relationship,
 )
 from src.constants.tasks.ingestion import IngestionTaskArgs
+from src.core.saving.ingest_groups import InvalidGroupTracking, normalize_group_tracking
 from src.core.search.entity_info import MatchPath
 
 
@@ -32,6 +33,8 @@ class IngestionRequestBody(IngestionTaskArgs):
 
 
 class IngestionUrlRequestBody(BaseModel):
+    progressive: bool = False
+
     url: str = Field(description="Public https URL to crawl.")
     max_pages: int = Field(
         default=10,
@@ -42,6 +45,10 @@ class IngestionUrlRequestBody(BaseModel):
     allowed_domains: List[str] = Field(
         default_factory=list,
         description="Extra eTLD+1 hosts to include, max 20.",
+    )
+    group_tracking: Optional[str] = Field(
+        default=None,
+        description="Optional ingest-cost rollup key for this request (1-128 chars, [A-Za-z0-9._:-]).",
     )
     skip_enrichment: bool = Field(
         default=False,
@@ -64,6 +71,15 @@ class IngestionUrlRequestBody(BaseModel):
         if len(value) > 20:
             raise ValueError("allowed_domains accepts at most 20 hosts")
         return [item.strip() for item in value if item and str(item).strip()]
+
+    @field_validator("group_tracking", mode="before")
+    @classmethod
+    def _normalize_group_tracking(cls, value: Any) -> Optional[str]:
+        try:
+            return normalize_group_tracking(value, strict=True)
+        except InvalidGroupTracking as exc:
+            raise ValueError(str(exc)) from exc
+
 
 
 class IngestionStructuredDataElement(BaseModel):
@@ -231,6 +247,18 @@ class IngestionStructuredRequestBody(BaseModel):
     brain_id: str = Field(
         default="default", description="The brain identifier to store the data in."
     )
+    group_tracking: Optional[str] = Field(
+        default=None,
+        description="Optional ingest-cost rollup key for this request (1-128 chars, [A-Za-z0-9._:-]).",
+    )
+
+    @field_validator("group_tracking", mode="before")
+    @classmethod
+    def _normalize_group_tracking(cls, value):
+        try:
+            return normalize_group_tracking(value, strict=True)
+        except InvalidGroupTracking as exc:
+            raise ValueError(str(exc)) from exc
 
     @field_validator("anchor", mode="before")
     @classmethod
@@ -245,6 +273,7 @@ class IngestionStructuredRequestBody(BaseModel):
         if self.mode is not None:
             return self.mode
         return "hybrid" if self.text else "deterministic"
+
 
 
 class RetrieveRequestResponse(BaseModel):

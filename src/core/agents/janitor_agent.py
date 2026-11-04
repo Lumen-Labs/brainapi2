@@ -1,3 +1,4 @@
+from src.core.saving.pipeline_runtime import routing_stage
 """
 File: /janitor_agent.py
 Created Date: Sunday December 21st 2025
@@ -241,6 +242,7 @@ class JanitorAgent:
             content_only.append({"role": role, "content": content})
         return content_only
 
+    @routing_stage("janitor")
     def run_graph_consolidator(
         self,
         new_relationships: List[ArchitectAgentRelationship],
@@ -411,6 +413,7 @@ class JanitorAgent:
         else:
             return []
 
+    @routing_stage("janitor")
     def run(
         self,
         input_output: JanitorAgentInputOutput,
@@ -569,6 +572,7 @@ class JanitorAgent:
                 entity=None,
             )
 
+    @routing_stage("janitor")
     def run_atomic_janitor(
         self,
         input_relationships: List[ArchitectAgentRelationship],

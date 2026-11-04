@@ -1,3 +1,5 @@
+from src.core.saving.ingest_groups import InvalidGroupTracking, get_ingest_group
+from src.services.api.constants.responses import IngestGroupMeterResponse
 """
 File: /meta.py
 Created Date: Friday November 7th 2025
@@ -75,3 +77,15 @@ async def get_entity_properties(brain_id: str):
     """
     result = await asyncio.to_thread(graph_adapter.get_graph_node_properties, brain_id)
     return result
+
+
+async def get_ingest_group_meter(
+    brain_id: str, group_tracking: str
+) -> IngestGroupMeterResponse:
+    try:
+        meter = await asyncio.to_thread(get_ingest_group, brain_id, group_tracking)
+    except InvalidGroupTracking as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not meter:
+        raise HTTPException(status_code=404, detail="Ingest group not found")
+    return IngestGroupMeterResponse.model_validate(meter)

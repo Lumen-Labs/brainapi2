@@ -15,7 +15,7 @@ from uuid import uuid4
 
 import requests
 from celery.exceptions import OperationalError
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from starlette.responses import JSONResponse
 from typing_extensions import Annotated
 
@@ -26,6 +26,7 @@ from src.services.api.constants.requests import (
     IngestionStructuredRequestBody,
     IngestionUrlRequestBody,
 )
+from src.core.saving.ingest_groups import InvalidGroupTracking, normalize_group_tracking
 from src.services.api.constants.responses import IngestionAcceptedResponse
 from src.services.input.agents import cache_adapter
 from src.workers.tasks.ingestion import ingest_data as ingest_data_task
@@ -58,14 +59,23 @@ async def ingest_data(
 
     flow_task_identifier = request.headers.get("Task-Identifier")
     task_id = flow_task_identifier or str(uuid4())
+    from src.core.saving.ingest_manifest import pipeline_context
+    context = pipeline_context(request, brain_id, task_id)
 
-    set_ingestion_task_status(task_id, data.brain_id, "queued", stage="queued")
+    set_ingestion_task_status(
+        task_id,
+        data.brain_id,
+        "queued",
+        stage="queued",
+        group_tracking=data.group_tracking,
+    )
 
     for attempt in range(MAX_TASK_RETRIES):
         try:
             ingest_data_task.apply_async(
                 args=[data.model_dump()],
                 task_id=task_id,
+                **({"headers":{"pipeline_operation":context}} if context else {}),
             )
             break
         except OperationalError:
@@ -91,6 +101,7 @@ async def ingest_data(
 )
 async def ingest_structured_data(
     data: IngestionStructuredRequestBody,
+    request: Request,
     brain_id: str = Depends(get_brain_id),
 ):
     """
@@ -99,13 +110,22 @@ async def ingest_structured_data(
     data.brain_id = brain_id
     print("[IngestStructured] received task for brain: ", brain_id)
     task_id = str(uuid4())
-    set_ingestion_task_status(task_id, data.brain_id, "queued", stage="queued")
+    from src.core.saving.ingest_manifest import pipeline_context
+    context = pipeline_context(request, brain_id, task_id)
+    set_ingestion_task_status(
+        task_id,
+        data.brain_id,
+        "queued",
+        stage="queued",
+        group_tracking=data.group_tracking,
+    )
 
     for attempt in range(MAX_TASK_RETRIES):
         try:
             ingest_structured_data_task.apply_async(
                 args=[data.model_dump()],
                 task_id=task_id,
+                **({"headers":{"pipeline_operation":context}} if context else {}),
             )
             break
         except OperationalError:
@@ -131,6 +151,7 @@ async def ingest_structured_data(
 )
 async def ingest_url(
     data: IngestionUrlRequestBody,
+    request: Request,
     brain_id: str = Depends(get_brain_id),
 ):
     """
@@ -139,16 +160,34 @@ async def ingest_url(
     if not config.crawler_is_configured:
         raise HTTPException(status_code=503, detail="URL crawler is not configured")
 
+    if data.progressive:
+        import os
+        from src.core.saving.ingest_manifest import pipeline_context
+        if not pipeline_context(request, brain_id, "accept") :
+            raise HTTPException(403, "Platform settlement required")
+        if os.getenv("PROGRESSIVE_INGESTION_ENABLED") != "1":
+            raise HTTPException(409, "Progressive ingestion is not enabled")
     payload = data.model_dump()
     payload["brain_id"] = brain_id
     task_id = str(uuid4())
-    set_ingestion_task_status(task_id, brain_id, "queued", stage="queued")
+    from src.core.saving.ingest_manifest import pipeline_context
+    context = pipeline_context(request, brain_id, task_id)
+    if context:
+        payload["pipeline_configuration"] = context["configuration"]
+    set_ingestion_task_status(
+        task_id,
+        brain_id,
+        "queued",
+        stage="queued",
+        group_tracking=data.group_tracking,
+    )
 
     for attempt in range(MAX_TASK_RETRIES):
         try:
             ingest_url_task.apply_async(
                 args=[payload],
                 task_id=task_id,
+                **({"headers":{"pipeline_operation":context}} if context else {}),
             )
             break
         except OperationalError:
@@ -176,6 +215,7 @@ async def ingest_file(
     request: Request,
     file: Annotated[UploadFile, File()],
     brain_id: str = Depends(get_brain_id),
+    group_tracking: Annotated[str | None, Form()] = None,
 ):
     """
     Ingest a file into the processing pipeline and save to the memory.
@@ -183,6 +223,13 @@ async def ingest_file(
     print("[IngestFile] received task for brain: ", brain_id)
 
     task = str(uuid4())
+    from src.core.saving.ingest_manifest import pipeline_context
+    context = pipeline_context(request, brain_id, task)
+    raw_group = group_tracking or request.query_params.get("group_tracking")
+    try:
+        group_key = normalize_group_tracking(raw_group, strict=True)
+    except InvalidGroupTracking as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     try:
         file.file.seek(0)
@@ -190,12 +237,19 @@ async def ingest_file(
         if config.ocr_mode == "docling":
             content_b64 = base64.b64encode(file.file.read()).decode("ascii")
             filename = file.filename or "file"
-            set_ingestion_task_status(task, brain_id, "queued", stage="queued")
+            set_ingestion_task_status(
+                task,
+                brain_id,
+                "queued",
+                stage="queued",
+                group_tracking=group_key,
+            )
             for attempt in range(MAX_TASK_RETRIES):
                 try:
                     ingest_file_task.apply_async(
-                        args=[content_b64, filename, brain_id],
+                        args=[content_b64, filename, brain_id, group_key],
                         task_id=task,
+                        **({"headers":{"pipeline_operation":context}} if context else {}),
                     )
                     break
                 except OperationalError:
@@ -219,15 +273,24 @@ async def ingest_file(
             )
             app_host = f"{forwarded_proto}://{forwarded_host}".rstrip("/")
             print(f"app_host: {app_host}")
-            set_ingestion_task_status(task, brain_id, "queued", stage="queued")
+            set_ingestion_task_status(
+                task,
+                brain_id,
+                "queued",
+                stage="queued",
+                group_tracking=group_key,
+            )
+            parser_data = {
+                "brain_id": brain_id,
+                "webhook_callback": f"{app_host}/ingest/",
+                "identifier": task,
+            }
+            if group_key:
+                parser_data["group_tracking"] = group_key
             response = requests.post(
                 f"{config.docparser_endpoint}/ingest",
                 files={"file": (file.filename or "file", file.file, file.content_type)},
-                data={
-                    "brain_id": brain_id,
-                    "webhook_callback": f"{app_host}/ingest",
-                    "identifier": task,
-                },
+                data=parser_data,
                 headers={"Authorization": f"Bearer {config.docparser_token}"},
             )
             if response.status_code != 200:

@@ -183,7 +183,9 @@ def test_create_poll_and_cleaned_pages():
         monotonic=clock.monotonic,
     )
     pages = client.crawl_pages(_request())
-    assert len(pages) == 1
+    assert len(pages) == 2
+    assert pages[1].skip_reason
+    assert pages[1].text == ""
     assert pages[0].url == "https://example.com/"
     assert pages[0].title == "Home"
     assert pages[0].page_type == "landing"

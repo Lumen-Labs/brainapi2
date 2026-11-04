@@ -175,7 +175,9 @@ class ParentCompletionChainTests(unittest.TestCase):
             def __init__(self, *steps):
                 chained.extend(steps)
 
-            def apply_async(self):
+            def apply_async(self, **kwargs):
+                self_error = kwargs.get("link_error")
+                assert self_error is not None
                 return MagicMock(id="chain-1")
 
         with patch.object(

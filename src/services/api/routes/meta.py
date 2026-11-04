@@ -1,3 +1,5 @@
+from src.services.api.controllers.meta import get_ingest_group_meter as get_ingest_group_meter_controller
+from src.services.api.constants.responses import IngestGroupMeterResponse, IngestionCapabilitiesResponse
 """
 File: /meta.py
 Created Date: Friday November 7th 2025
@@ -72,3 +74,49 @@ async def get_entity_properties(
         list[str]: A list of property key names present on entities in the graph.
     """
     return await get_entity_properties_controller(brain_id)
+
+
+@meta_router.get(
+    path="/ingest-groups/{group_tracking}",
+    response_model=IngestGroupMeterResponse,
+)
+async def get_ingest_group_meter(
+    group_tracking: str,
+    request: Request,
+    brain_id: str = Depends(get_brain_id),
+):
+    """
+    Return the durable ingest-cost rollup for a group_tracking key in this brain.
+    """
+    import os
+    from fastapi import HTTPException
+    from src.utils.tokens import pat_matches
+    token = request.headers.get("BrainPAT") or request.headers.get("Authorization", "").removeprefix("Bearer ")
+    if not pat_matches(token, os.getenv("BRAINPAT_TOKEN")):
+        raise HTTPException(403, "Internal usage requires platform administration")
+    return await get_ingest_group_meter_controller(brain_id, group_tracking)
+
+
+
+@meta_router.get("/ingestion-capabilities", response_model=IngestionCapabilitiesResponse)
+async def ingestion_capabilities():
+    import os
+    from src.services.data.main import data_adapter
+    return {"progressive": os.getenv("PROGRESSIVE_INGESTION_ENABLED") == "1" and callable(getattr(data_adapter.data,"get_collection",None)),
+        "version":"sections-v1","concurrency":2}
+
+
+
+@meta_router.post("/runtime-models", include_in_schema=False)
+async def runtime_models(request: Request, brain_id: str = Depends(get_brain_id)):
+    from fastapi import HTTPException
+    from src.core.saving.ingest_manifest import verify_control
+    from src.core.saving.pipeline_runtime import configured_model
+    body = await request.json()
+    if not verify_control(brain_id,"runtime","models",body.get("token")):
+        raise HTTPException(403,"Platform administration required")
+    defaults = {}
+    for role in ("small","large"):
+        provider, model = configured_model(role)
+        defaults[role] = {"provider":provider,"model":model}
+    return {"defaults":defaults}

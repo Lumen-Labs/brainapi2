@@ -1,3 +1,4 @@
+from src.core.saving.pipeline_runtime import routing_stage
 """
 File: /scout_agent.py
 Created Date: Sunday December 21st 2025
@@ -158,6 +159,7 @@ class ScoutAgent:
             use_custom_backend=(mode == "coarse"),
         )
 
+    @routing_stage("scout")
     def run_structured(
         self,
         text: str,
@@ -380,6 +382,7 @@ class ScoutAgent:
                     merged[key] = entity
         return ScoutAgentResponse(entities=list(merged.values()))
 
+    @routing_stage("scout")
     def _run_chunk(
         self,
         text: str,

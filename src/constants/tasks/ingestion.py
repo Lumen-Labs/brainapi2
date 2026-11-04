@@ -9,8 +9,10 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 """
 
 from enum import Enum
-from typing import List, Optional, Union, Annotated, Literal
-from pydantic import BaseModel, Field, Discriminator
+from typing import Any, List, Optional, Union, Annotated, Literal
+from pydantic import BaseModel, Field, Discriminator, field_validator
+
+from src.core.saving.ingest_groups import InvalidGroupTracking, normalize_group_tracking
 
 
 class IngestionTaskDataType(Enum):
@@ -92,3 +94,15 @@ class IngestionTaskArgs(BaseModel):
             "knowledge-graph enrichment (Scout/Architect)."
         ),
     )
+    group_tracking: Optional[str] = Field(
+        default=None,
+        description="Optional ingest-cost rollup key for this request (1-128 chars, [A-Za-z0-9._:-]).",
+    )
+
+    @field_validator("group_tracking", mode="before")
+    @classmethod
+    def _normalize_group_tracking(cls, value: Any) -> Optional[str]:
+        try:
+            return normalize_group_tracking(value, strict=True)
+        except InvalidGroupTracking as exc:
+            raise ValueError(str(exc)) from exc

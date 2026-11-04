@@ -8,7 +8,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
-from typing import List, Literal, Tuple
+from typing import Any, List, Literal, Optional, Tuple
 from src.adapters.interfaces.data import DataClient, SearchResult
 from src.constants.data import Brain, KGChanges, Observation, StructuredData, TextChunk
 
@@ -285,3 +285,28 @@ class DataAdapter:
         Get the last structured data from the data client.
         """
         return self.data.get_last_structured_data(brain_id=brain_id, limit=limit)
+
+
+    def credit_ingest_group(
+        self,
+        brain_id: str,
+        group_tracking: str,
+        task_id: str,
+        status: str,
+        cost: Optional[dict[str, Any]] = None,
+    ) -> bool:
+        return self.data.credit_ingest_group(
+            brain_id=brain_id,
+            group_tracking=group_tracking,
+            task_id=task_id,
+            status=status,
+            cost=cost,
+        )
+
+
+    def get_ingest_group(
+        self, brain_id: str, group_tracking: str
+    ) -> Optional[dict[str, Any]]:
+        return self.data.get_ingest_group(
+            brain_id=brain_id, group_tracking=group_tracking
+        )

@@ -22,6 +22,8 @@ class RuntimeAgentFactory:
         architecture: str = "custom",
         use_custom_backend: bool = False,
     ):
+        from src.core.saving.pipeline_runtime import instrument_model
+        model = instrument_model(model)
         if use_custom_backend or architecture == "custom":
             custom_agent_cls = self._custom_agent_cls
             if custom_agent_cls is None:

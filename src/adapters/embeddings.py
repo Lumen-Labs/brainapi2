@@ -104,7 +104,14 @@ class EmbeddingsAdapter:
         retry=retry_if_exception_type(EmbeddingError),
     )
     def _embed_text_with_retry(self, text: str) -> list[float]:
-        return self.embeddings.embed_text(text)
+        from src.core.saving.pipeline_runtime import record_embedding
+        try:
+            result = self.embeddings.embed_text(text)
+        except Exception as error:
+            record_embedding(self.embeddings, [text], error)
+            raise
+        record_embedding(self.embeddings, [text])
+        return result
 
     @retry(
         stop=stop_after_attempt(5),
@@ -112,7 +119,14 @@ class EmbeddingsAdapter:
         retry=retry_if_exception_type(EmbeddingError),
     )
     def _embed_texts_with_retry(self, texts: list[str]) -> list[list[float]]:
-        return self.embeddings.embed_texts(texts)
+        from src.core.saving.pipeline_runtime import record_embedding
+        try:
+            result = self.embeddings.embed_texts(texts)
+        except Exception as error:
+            record_embedding(self.embeddings, texts, error)
+            raise
+        record_embedding(self.embeddings, texts)
+        return result
 
     def embed_text(self, text: str) -> Vector:
         """

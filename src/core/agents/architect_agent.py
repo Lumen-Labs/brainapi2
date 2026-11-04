@@ -1,3 +1,4 @@
+from src.core.saving.pipeline_runtime import routing_stage
 """
 File: /architect_agent.py
 Created Date: Sunday December 21st 2025
@@ -686,6 +687,7 @@ class ArchitectAgent:
             )
         return self._SYSTEM_PROMPT_BUILDERS[key](resolved_extra_system_prompt)
 
+    @routing_stage("architect")
     def run(
         self,
         text: str,
@@ -1141,6 +1143,7 @@ class ArchitectAgent:
         )
         return wrong_relationships, janitor_new_entities
 
+    @routing_stage("architect")
     def run_structured(
         self,
         text: str,
@@ -1528,6 +1531,7 @@ class ArchitectAgent:
             relationships=relationships_to_persist,
         )
 
+    @routing_stage("architect")
     def run_batch_extract(
         self,
         text: str,
@@ -1778,6 +1782,7 @@ Description: {targeting.description}
 
         return list(self.relationships_set) if self.relationships_set else accepted_rels
 
+    @routing_stage("architect")
     def run_tooler(
         self,
         text: str,
@@ -1990,4 +1995,3 @@ Description: {targeting.description}
         _invoke_and_process(accumulated_messages)
 
         return list(self.relationships_set)
-

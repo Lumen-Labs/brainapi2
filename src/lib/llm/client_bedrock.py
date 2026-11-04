@@ -33,6 +33,9 @@ class _BedrockLLMBase(LLM):
         if max_new_tokens:
             payload["inferenceConfig"] = {"maxTokens": max_new_tokens}
         response = self.client.converse(**payload)
+        from src.core.saving.pipeline_runtime import record_call
+        usage = response.get("usage") or {}
+        record_call({"usage_metadata": {"input_tokens": usage.get("inputTokens"), "output_tokens": usage.get("outputTokens"), "cache_read_input_tokens": usage.get("cacheReadInputTokens", 0), "cache_write_input_tokens": usage.get("cacheWriteInputTokens", 0)}} if usage else None, identity=("amazon_bedrock", self.model))
         content = response["output"]["message"]["content"]
         texts = [part.get("text", "") for part in content if isinstance(part, dict)]
         return "".join(texts).strip()

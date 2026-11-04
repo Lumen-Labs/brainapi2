@@ -71,6 +71,8 @@ class IngestionUrlRequestTests(unittest.TestCase):
                 url="https://example.com",
                 allowed_domains=[f"host{i}.com" for i in range(21)],
             )
+        with self.assertRaises(ValidationError):
+            IngestionUrlRequestBody(url="https://example.com", group_tracking="nope!")
 
 
 class IngestUrlRouteTests(unittest.TestCase):
@@ -180,6 +182,7 @@ class IngestUrlTaskTests(unittest.TestCase):
                     "url": "https://example.com",
                     "max_pages": 10,
                     "brain_id": "brain-a",
+                    "group_tracking": "chapter-3",
                     "skip_enrichment": True,
                 },
             )
@@ -190,6 +193,7 @@ class IngestUrlTaskTests(unittest.TestCase):
         self.assertEqual(payload["meta_keys"]["source_url"], "https://example.com/")
         self.assertEqual(payload["meta_keys"]["source_title"], "Home")
         self.assertEqual(payload["skip_enrichment"], True)
+        self.assertEqual(payload["group_tracking"], "chapter-3")
         self.assertIn("Welcome to Example.", payload["data"]["text_data"])
         self.assertEqual(statuses[-1][:2], ("url-parent", "completed"))
         crawl_request = crawler.crawl_pages.call_args.args[0]

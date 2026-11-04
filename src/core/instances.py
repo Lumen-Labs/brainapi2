@@ -138,9 +138,9 @@ def _build_crawler(provider: str):
     raise ValueError(f"Unsupported crawler provider: {provider}")
 
 
-_llm_small = LLMAdapter()
+_llm_small = LLMAdapter("small")
 _llm_small.add_client(_build_small_llm(config.llm_small_provider))
-_llm_large = LLMAdapter()
+_llm_large = LLMAdapter("large")
 _llm_large.add_client(_build_large_llm(config.llm_large_provider))
 
 llm_small_adapter = _llm_small

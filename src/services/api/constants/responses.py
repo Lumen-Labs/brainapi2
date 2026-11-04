@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, JsonValue, RootModel
 
@@ -152,3 +152,40 @@ class TaskStateResponse(BaseModel):
 
 class TaskListResponse(BaseModel):
     tasks: list[TaskStateResponse]
+
+
+class IngestGroupStageTotals(BaseModel):
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cached_tokens: int = 0
+    total_tokens: int = 0
+    latency_ms: float = 0.0
+    calls: int = 0
+
+
+
+class IngestGroupMeterResponse(BaseModel):
+    group_tracking: str
+    task_count: int
+    completed: int
+    failed: int
+    partial_failed: int
+    total_llm_tokens: int
+    total_input_tokens: int
+    total_output_tokens: int
+    total_cached_tokens: int = 0
+    source_chars: int
+    source_tokens: int
+    stages: dict[str, IngestGroupStageTotals]
+    updated_at: Optional[str] = None
+    task_ids: list[str] = []
+
+
+class IngestionCapabilitiesResponse(BaseModel):
+    progressive: bool
+    version: str
+    concurrency: int
+
+
+class IngestionActivityResponse(RootModel[dict[str, JsonValue]]):
+    pass

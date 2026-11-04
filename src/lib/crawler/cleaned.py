@@ -82,3 +82,36 @@ def format_cleaned_page(cleaned: dict) -> str:
 def cleaned_title(cleaned: dict, fallback: Optional[str] = None) -> Optional[str]:
     content = _as_dict(cleaned.get("content"))
     return _text(content.get("title")) or _text(fallback) or None
+
+
+def cleaned_sections(cleaned: dict) -> list:
+    """Only use explicit content boundaries; a headings list is not a section map."""
+    from src.adapters.interfaces.crawler import CrawledSection
+
+    content = _as_dict(cleaned.get("content"))
+    sections = []
+    explicit = _as_list(content.get("sections"))
+    for item in explicit:
+        if not isinstance(item, dict):
+            continue
+        text = _text(item.get("text") or item.get("content"))
+        if text:
+            title = _text(item.get("title") or item.get("heading")) or "Main content"
+            path = item.get("heading_path")
+            sections.append(CrawledSection(title=title, text=text,
+                heading_path=[str(v) for v in path] if isinstance(path, list) else [title]))
+    if not sections:
+        core = _text(content.get("core"))
+        if core:
+            sections.append(CrawledSection(title="Main content", text=core))
+    facts = _as_dict(cleaned.get("facts"))
+    contacts = _as_dict(facts.get("contacts"))
+    lines = []
+    for key in ("emails", "phones", "addresses"):
+        lines.extend(_text(v) for v in _as_list(contacts.get(key)) if _text(v))
+    if lines:
+        sections.append(CrawledSection(title="Contacts", text="\n".join(lines)))
+    ctas = [_text(v) for v in _as_list(facts.get("ctas")) if _text(v)]
+    if ctas:
+        sections.append(CrawledSection(title="Calls to action", text="\n".join(ctas)))
+    return sections

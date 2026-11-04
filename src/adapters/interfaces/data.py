@@ -9,7 +9,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 """
 
 from abc import ABC, abstractmethod
-from typing import List, Literal, Optional, Tuple
+from typing import Any, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel
 
@@ -294,3 +294,28 @@ class DataClient(ABC):
         Get the last structured data from the data client.
         """
         raise NotImplementedError("get_last_structured_data method not implemented")
+
+
+    @abstractmethod
+    def credit_ingest_group(
+        self,
+        brain_id: str,
+        group_tracking: str,
+        task_id: str,
+        status: str,
+        cost: Optional[dict[str, Any]] = None,
+    ) -> bool:
+        """
+        Credit a finished ingest task into the durable per-brain group meter once.
+        """
+        raise NotImplementedError("credit_ingest_group method not implemented")
+
+
+    @abstractmethod
+    def get_ingest_group(
+        self, brain_id: str, group_tracking: str
+    ) -> Optional[dict[str, Any]]:
+        """
+        Fetch the durable ingest-group meter for a brain, or None if never credited.
+        """
+        raise NotImplementedError("get_ingest_group method not implemented")

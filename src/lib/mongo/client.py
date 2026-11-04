@@ -1,3 +1,4 @@
+from typing import Any, Optional
 """
 File: /client.py
 Created Date: Saturday October 25th 2025
@@ -12,6 +13,7 @@ from typing import List, Tuple
 from pymongo import MongoClient as PyMongoClient
 from pymongo.database import Database
 from pymongo.collection import Collection
+from pymongo.errors import DuplicateKeyError
 from src.adapters.interfaces.data import DataClient, SearchResult
 from src.config import config
 from src.constants.data import Brain, KGChanges, Observation, StructuredData, TextChunk
@@ -23,6 +25,7 @@ class MongoClient(DataClient):
     """
 
     def __init__(self):
+        self._ingest_group_ready: set[str] = set()
         if (
             hasattr(config.mongo, "connection_string")
             and config.mongo.connection_string
@@ -512,6 +515,92 @@ class MongoClient(DataClient):
             )
             for result in results
         ]
+
+
+    def _ensure_ingest_group_indexes(self, brain_id: str) -> None:
+        if brain_id in self._ingest_group_ready:
+            return
+        credits = self.get_collection("ingest_group_credits", database=brain_id)
+        credits.create_index(
+            [("group_tracking", 1), ("task_id", 1)],
+            unique=True,
+            name="uniq_group_task",
+        )
+        self._ingest_group_ready.add(brain_id)
+
+
+    def credit_ingest_group(
+        self,
+        brain_id: str,
+        group_tracking: str,
+        task_id: str,
+        status: str,
+        cost: Optional[dict[str, Any]] = None,
+    ) -> bool:
+        from src.core.saving.ingest_groups import (
+            apply_credit_to_meter,
+            empty_group_meter,
+            normalize_meter_document,
+        )
+
+        self._ensure_ingest_group_indexes(brain_id)
+        credits = self.get_collection("ingest_group_credits", database=brain_id)
+        meters = self.get_collection("ingest_group_meters", database=brain_id)
+        try:
+            credits.insert_one(
+                {
+                    "group_tracking": group_tracking,
+                    "task_id": task_id,
+                    "status": status,
+                }
+            )
+        except DuplicateKeyError:
+            return False
+        for _ in range(8):
+            current = meters.find_one({"_id": group_tracking})
+            base = (
+                normalize_meter_document(current)
+                if current
+                else empty_group_meter(group_tracking)
+            )
+            updated = apply_credit_to_meter(
+                base,
+                task_id=task_id,
+                status=status,
+                cost=cost or {},
+            )
+            updated["_id"] = group_tracking
+            updated["group_tracking"] = group_tracking
+            if current is None:
+                try:
+                    meters.insert_one(updated)
+                    return True
+                except DuplicateKeyError:
+                    continue
+            result = meters.replace_one(
+                {
+                    "_id": group_tracking,
+                    "updated_at": current.get("updated_at"),
+                },
+                updated,
+            )
+            if result.modified_count:
+                return True
+        meters.replace_one({"_id": group_tracking}, updated, upsert=True)
+        return True
+
+
+    def get_ingest_group(
+        self, brain_id: str, group_tracking: str
+    ) -> Optional[dict[str, Any]]:
+        from src.core.saving.ingest_groups import normalize_meter_document
+
+        meters = self.get_collection("ingest_group_meters", database=brain_id)
+        doc = meters.find_one({"_id": group_tracking})
+        if not doc:
+            return None
+        return normalize_meter_document(doc)
+
 
 
 _mongo_client = MongoClient()

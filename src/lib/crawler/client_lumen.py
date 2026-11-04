@@ -7,7 +7,7 @@ from urllib.parse import urljoin
 import httpx
 
 from src.adapters.interfaces.crawler import CrawledPage, CrawlerClient, CrawlRequest
-from src.lib.crawler.cleaned import cleaned_title, format_cleaned_page
+from src.lib.crawler.cleaned import cleaned_title, format_cleaned_page, cleaned_sections
 from src.lib.crawler.errors import (
     CrawlerConfigError,
     CrawlerFailedError,
@@ -62,7 +62,7 @@ class LumenCrawlerClient(CrawlerClient):
             raise CrawlerConfigError("LUMEN_CRAWLER_KEY is not set")
         with self._client() as client:
             crawl_id = self._create_crawl(client, request)
-            self._poll_until_cleaned(client, crawl_id)
+            self._poll_until_cleaned(client, crawl_id, request.on_progress)
             return self._list_cleaned_pages(client, crawl_id)
 
     def _create_crawl(self, client: httpx.Client, request: CrawlRequest) -> str:
@@ -84,7 +84,7 @@ class LumenCrawlerClient(CrawlerClient):
             raise CrawlerFailedError("Crawler did not return a crawl id")
         return str(crawl_id)
 
-    def _poll_until_cleaned(self, client: httpx.Client, crawl_id: str) -> None:
+    def _poll_until_cleaned(self, client: httpx.Client, crawl_id: str, on_progress=None) -> None:
         deadline = self._monotonic() + self.poll_timeout_seconds
         interval = POLL_INTERVAL_START
         while True:
@@ -96,6 +96,8 @@ class LumenCrawlerClient(CrawlerClient):
             body = response.json()
             status = body.get("status")
             cleanup_status = (body.get("cleanup") or {}).get("status")
+            if on_progress:
+                on_progress({"stage": "cleaning" if status == "completed" else "crawling"})
             if status in TERMINAL_CRAWL_STATUSES:
                 if status != "completed":
                     reason = body.get("stop_reason") or status
@@ -146,25 +148,33 @@ class LumenCrawlerClient(CrawlerClient):
                 return pages
 
     def _to_crawled_page(self, item: dict) -> Optional[CrawledPage]:
+        fallback_url = item.get("canonical_url") or item.get("url")
+        def skipped(reason):
+            if not fallback_url:
+                return None
+            return CrawledPage(url=str(fallback_url), text="", title=item.get("title"),
+                status_code=item.get("status_code"), skip_reason=reason)
         if not item.get("ok"):
-            return None
+            return skipped("The crawler could not read this page")
         cleaned = item.get("cleaned")
         if not isinstance(cleaned, dict):
-            return None
-        text = format_cleaned_page(cleaned)
-        if not text:
-            return None
-        url = cleaned.get("canonical_url") or cleaned.get("url") or item.get("url")
+            return skipped("Cleaned content is unavailable")
+        url = cleaned.get("canonical_url") or cleaned.get("url") or fallback_url
         if not url:
             return None
+        from src.core.saving.pipeline_runtime import record_cleanup_usage
+        record_cleanup_usage(cleaned, str(url))
+        text = format_cleaned_page(cleaned)
+        if not text:
+            return skipped("No readable content")
+        sections = cleaned_sections(cleaned)
         return CrawledPage(
             url=str(url),
             canonical_url=cleaned.get("canonical_url") or item.get("canonical_url"),
             title=cleaned_title(cleaned, item.get("title")),
-            page_type=cleaned.get("page_type"),
-            text=text,
-            content_hash=item.get("content_hash"),
-            status_code=item.get("status_code"),
+            page_type=cleaned.get("page_type"), text=text,
+            content_hash=item.get("content_hash"), status_code=item.get("status_code"),
+            sections=sections, skip_reason=None if sections else "No readable content",
         )
 
     def _raise_for_status(self, response: httpx.Response) -> None:

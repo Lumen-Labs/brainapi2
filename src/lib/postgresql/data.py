@@ -238,6 +238,23 @@ def _validate_changelog(document: dict) -> Optional[KGChanges]:
     return KGChanges.model_validate(document)
 
 
+_INGEST_GROUP_DDL = """
+CREATE TABLE IF NOT EXISTS data_ingest_group_credits (
+    group_tracking TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    status TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (group_tracking, task_id)
+);
+
+CREATE TABLE IF NOT EXISTS data_ingest_group_meters (
+    group_tracking TEXT PRIMARY KEY,
+    document JSONB NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+"""
+
+
 class PostgreSQLDataClient(DataClient):
     """
     Data client backed by PostgreSQL with JSONB-stored documents.
@@ -313,6 +330,7 @@ class PostgreSQLDataClient(DataClient):
                 with conn.cursor() as cur:
                     if needs_base:
                         cur.execute(_BRAIN_DDL)
+                        cur.execute(_INGEST_GROUP_DDL)
                     if needs_search:
                         cur.execute(_SEARCH_DDL)
                     if needs_alt and alt_regconfig is not None:
@@ -947,6 +965,92 @@ class PostgreSQLDataClient(DataClient):
                 )
                 rows = cur.fetchall()
         return [StructuredData.model_validate(row["document"]) for row in rows]
+
+
+    def credit_ingest_group(
+        self,
+        brain_id: str,
+        group_tracking: str,
+        task_id: str,
+        status: str,
+        cost: Optional[dict[str, Any]] = None,
+    ) -> bool:
+        from src.core.saving.ingest_groups import (
+            apply_credit_to_meter,
+            empty_group_meter,
+        )
+
+        with self._brain_connection(brain_id) as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    INSERT INTO data_ingest_group_credits
+                        (group_tracking, task_id, status)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (group_tracking, task_id) DO NOTHING
+                    RETURNING task_id
+                    """,
+                    (group_tracking, task_id, status),
+                )
+                inserted = cur.fetchone()
+                if not inserted:
+                    conn.commit()
+                    return False
+                cur.execute(
+                    """
+                    SELECT document FROM data_ingest_group_meters
+                    WHERE group_tracking = %s
+                    FOR UPDATE
+                    """,
+                    (group_tracking,),
+                )
+                row = cur.fetchone()
+                meter = (
+                    dict(row["document"])
+                    if row and row.get("document")
+                    else empty_group_meter(group_tracking)
+                )
+                meter["group_tracking"] = group_tracking
+                updated = apply_credit_to_meter(
+                    meter,
+                    task_id=task_id,
+                    status=status,
+                    cost=cost or {},
+                )
+                cur.execute(
+                    """
+                    INSERT INTO data_ingest_group_meters
+                        (group_tracking, document, updated_at)
+                    VALUES (%s, %s::jsonb, NOW())
+                    ON CONFLICT (group_tracking) DO UPDATE SET
+                        document = EXCLUDED.document,
+                        updated_at = NOW()
+                    """,
+                    (group_tracking, json.dumps(updated, default=str)),
+                )
+            conn.commit()
+        return True
+
+
+    def get_ingest_group(
+        self, brain_id: str, group_tracking: str
+    ) -> Optional[dict[str, Any]]:
+        from src.core.saving.ingest_groups import normalize_meter_document
+
+        with self._brain_connection(brain_id) as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT document FROM data_ingest_group_meters
+                    WHERE group_tracking = %s
+                    """,
+                    (group_tracking,),
+                )
+                row = cur.fetchone()
+        if not row:
+            return None
+        return normalize_meter_document(dict(row["document"]))
+
 
 
 _postgresql_data_client: Optional[PostgreSQLDataClient] = None

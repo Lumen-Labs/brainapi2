@@ -383,6 +383,13 @@ def estimate_tokens(text: str) -> int:
 @contextmanager
 def track_stage(ledger: IngestCostLedger, name: str) -> Iterator[StageCost]:
     stage = ledger.stage(name)
+    from src.core.saving.pipeline_runtime import _stage
+    token_name = _stage.set(name)
+    from src.core.saving.pipeline_runtime import _context
+    context = _context.get()
+    if context and context.get("section_id"):
+        from src.core.saving.ingest_manifest import update_section
+        update_section(context["brain_id"], context["task_id"], "started", stage=name)
     token_stage = _active_stage.set(stage)
     token_ledger = _active_ledger.set(ledger)
     started = time.perf_counter()
@@ -390,8 +397,10 @@ def track_stage(ledger: IngestCostLedger, name: str) -> Iterator[StageCost]:
         yield stage
     finally:
         stage.latency_ms += (time.perf_counter() - started) * 1000.0
+        _stage.reset(token_name)
         _active_stage.reset(token_stage)
         _active_ledger.reset(token_ledger)
+
 
 
 @contextmanager
