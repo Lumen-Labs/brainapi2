@@ -78,6 +78,8 @@ TASK_QUEUES = (
 ) + _PLUGIN_QUEUES
 
 TASK_ROUTES = {
+    "src.workers.tasks.ingestion.ingest_url": {"queue": "ingest_data"},
+    "src.workers.tasks.ingestion.mark_ingestion_chain_failed": {"queue": "ingest_data"},
     "src.workers.tasks.ingestion.ingest_data": {"queue": "ingest_data"},
     "src.workers.tasks.ingestion.process_architect_relationships": {
         "queue": "process_architect_relationships"

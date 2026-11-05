@@ -278,3 +278,12 @@ class IngestUrlTaskTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class IngestionQueueRoutingTests(unittest.TestCase):
+    def test_url_and_failure_tasks_route_to_a_consumed_queue(self):
+        from src.workers.app import ingestion_app
+        for name in ('ingest_url', 'mark_ingestion_chain_failed'):
+            route = ingestion_app.amqp.router.route({}, 'src.workers.tasks.ingestion.' + name)
+            self.assertEqual(route['queue'].name, 'ingest_data')
+            self.assertIn(route['queue'].name, {queue.name for queue in ingestion_app.conf.task_queues})
