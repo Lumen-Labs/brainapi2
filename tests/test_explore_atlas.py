@@ -97,7 +97,7 @@ def api():
 
 def test_api_passes_authorized_brain_and_filters(api):
     store = Mock()
-    store.read.return_value = {"version": 1}
+    store.read.return_value = {"version": 1, "status": "ready"}
     with (
         patch("src.services.api.routes.explore.config.graph_db", "networkx"),
         patch("src.services.api.routes.explore.atlas_store", return_value=store),

@@ -1,6 +1,9 @@
 """Versioned, authenticated progressive exploration endpoints."""
 
+from typing import Literal
+
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from src.config import config
@@ -8,6 +11,76 @@ from src.services.api.dependencies import get_brain_id
 from src.services.explore.store import InvalidCursor, SnapshotExpired, atlas_store
 
 explore_router = APIRouter(prefix="/explore/v1", tags=["explore"])
+
+
+class AtlasReference(BaseModel):
+    id: str
+    name: str
+
+
+class AtlasRepresentative(AtlasReference):
+    types: list[str]
+
+
+class AtlasGroup(AtlasRepresentative):
+    parentId: str | None
+    count: int
+    representatives: list[AtlasRepresentative]
+
+
+class AtlasLink(BaseModel):
+    id: str
+    fromId: str
+    toId: str
+
+
+class AtlasGroupLink(AtlasLink):
+    count: int
+
+
+DetailValue = str | int | float | bool | None
+
+
+class AtlasDetails(BaseModel):
+    description: str | None
+    details: dict[str, DetailValue | list[DetailValue]]
+    updatedAt: str | None
+    advanced: dict[str, DetailValue]
+
+
+class AtlasThing(AtlasRepresentative, AtlasDetails):
+    typeLabels: list[str]
+
+
+class AtlasConnection(AtlasLink, AtlasDetails):
+    type: str
+    typeLabel: str
+    direction: Literal["in", "out", "neutral"]
+
+
+class AtlasTotals(BaseModel):
+    things: int | None = None
+    connections: int | None = None
+
+
+class AtlasCoverage(AtlasTotals):
+    aggregated: bool
+
+
+class AtlasResponse(BaseModel):
+    version: Literal[1]
+    snapshotId: str | None = None
+    builtAt: str | None = None
+    status: Literal["ready", "building", "refreshing", "failed"]
+    groups: list[AtlasGroup] = Field(default_factory=list)
+    groupLinks: list[AtlasGroupLink] = Field(default_factory=list)
+    groupLinksTruncated: bool = False
+    things: list[AtlasThing] = Field(default_factory=list)
+    connections: list[AtlasConnection] = Field(default_factory=list)
+    nextCursor: str | None = None
+    totals: AtlasTotals = Field(default_factory=AtlasTotals)
+    ancestors: list[AtlasReference] = Field(default_factory=list)
+    coverage: AtlasCoverage | None = None
 
 
 def filters(value):
@@ -36,7 +109,7 @@ async def read(brain_id, **kwargs):
         raise HTTPException(404, detail="Entity not found") from None
 
 
-@explore_router.get("/overview")
+@explore_router.get("/overview", response_model=AtlasResponse)
 async def overview(
     brain_id: str = Depends(get_brain_id),
     types: str = Query("", max_length=6500),
@@ -47,7 +120,7 @@ async def overview(
     )
 
 
-@explore_router.get("/communities/{community_id}")
+@explore_router.get("/communities/{community_id}", response_model=AtlasResponse)
 async def community(
     community_id: str,
     snapshot: str = Query(..., max_length=64),
@@ -66,7 +139,7 @@ async def community(
     )
 
 
-@explore_router.get("/neighbors/{entity_id}")
+@explore_router.get("/neighbors/{entity_id}", response_model=AtlasResponse)
 async def neighbors(
     entity_id: str,
     cursor: str = Query("", max_length=2048),
