@@ -40,6 +40,7 @@ from src.constants.prompts.scout_agent import (
     SCOUT_AGENT_SYSTEM_PROMPT,
 )
 from src.core.agents.core import parse_structured_from_messages, runtime_agent_factory
+from src.core.agents.core.parsing import get_finish_reason_from_response
 from src.core.plugins.prompts import prompt_registry
 from src.services.api.constants.requests import IngestionTripleSet
 from src.utils.text_chunking import chunk_text as _chunk_text
@@ -499,6 +500,28 @@ class ScoutAgent:
             ) from last_attempt.exception()
         except TimeoutError:
             raise
+
+        messages = response.get("messages", [])
+        finish_reason = (
+            get_finish_reason_from_response(messages[-1]) if messages else None
+        )
+        if str(finish_reason).upper() in {"MAX_TOKENS", "LENGTH", "MAX_LENGTH"}:
+            if len(text.strip()) <= 256:
+                raise ValueError(
+                    "Entity extraction exceeded the model output limit on a short section."
+                )
+            return self.run(
+                text,
+                targeting=targeting,
+                brain_id=brain_id,
+                timeout=timeout,
+                max_retries=max_retries,
+                ingestion_session_id=ingestion_session_id,
+                mode=mode,
+                reference_time=reference_time,
+                preferred_extraction_entities=preferred_extraction_entities,
+                max_chars_per_chunk=len(text.strip()) // 2,
+            )
 
         structured = response.get("structured_response")
         if isinstance(structured, dict):

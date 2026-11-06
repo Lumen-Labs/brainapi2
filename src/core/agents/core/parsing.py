@@ -397,17 +397,17 @@ def get_reasoning_from_response(msg: Any) -> Optional[str]:
 
 
 def get_finish_reason_from_response(response: Any) -> Optional[str]:
-    if response is None:
-        return None
     if isinstance(response, dict):
         metadata = response.get("response_metadata") or {}
-        if isinstance(metadata, dict) and metadata.get("finish_reason"):
-            return metadata.get("finish_reason")
-        return (response.get("additional_kwargs") or {}).get("finish_reason")
-    metadata = getattr(response, "response_metadata", None) or {}
-    if isinstance(metadata, dict) and metadata.get("finish_reason"):
-        return metadata.get("finish_reason")
-    return (getattr(response, "additional_kwargs", None) or {}).get("finish_reason")
+        extra = response.get("additional_kwargs") or {}
+    else:
+        metadata = getattr(response, "response_metadata", None) or {}
+        extra = getattr(response, "additional_kwargs", None) or {}
+    if isinstance(metadata, dict):
+        reason = metadata.get("finish_reason") or metadata.get("stopReason")
+        if reason:
+            return reason
+    return extra.get("finish_reason")
 
 
 def normalize_invoke_response(response: Any) -> Any:
