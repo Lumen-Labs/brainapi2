@@ -65,6 +65,26 @@ class VectorSimilarityContractTests(unittest.TestCase):
         results = adapter.search_vectors([1.0], brain_id="b", store="nodes", k=2)
         self.assertEqual([v.metadata["uuid"] for v in results], ["a", "z"])
 
+    def test_pgvector_neighbor_search_binds_read_embeddings_as_python_floats(self):
+        import numpy as np
+        from psycopg2.extensions import adapt
+
+        from src.lib.postgresql.vectors import PostgreSQLVectorStoreClient
+
+        client = PostgreSQLVectorStoreClient.__new__(PostgreSQLVectorStoreClient)
+        client._ensure_store = MagicMock()
+        client._connection = MagicMock()
+        connection = client._connection.return_value.__enter__.return_value
+        cursor = connection.cursor.return_value.__enter__.return_value
+        cursor.fetchall.side_effect = [
+            [{"id": 1, "embeddings": np.array([1, 0, 0], dtype=np.float32)}],
+            [],
+        ]
+
+        self.assertEqual(client.search_similar_by_ids(["1"], "brain", "nodes", 0.5), {"1": []})
+        _, params = cursor.execute.call_args.args
+        self.assertEqual(adapt(params[0]).getquoted(), b"ARRAY[1.0,0.0,0.0]")
+
     def test_milvus_converts_similarity_score_to_cosine_distance(self):
         from src.constants.embeddings import Vector
         from src.lib.milvus.client import MilvusClient

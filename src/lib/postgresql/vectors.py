@@ -354,9 +354,7 @@ class PostgreSQLVectorStoreClient(VectorStoreClient):
             embedding = row["embeddings"]
             if embedding is None:
                 continue
-            if not isinstance(embedding, list):
-                embedding = list(embedding)
-            embeddings_by_id[row["id"]] = embedding
+            embeddings_by_id[row["id"]] = [float(value) for value in embedding]
 
         out: dict[str, list[Vector]] = {str(v_id): [] for v_id in vector_ids}
         if not embeddings_by_id:
