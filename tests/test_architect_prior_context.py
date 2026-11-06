@@ -301,3 +301,37 @@ def test_enrich_loop_uses_scratchpad_not_raw_prior_for_batch():
     assert "wedding plans extensively" not in second
     assert current_chunk in second
     assert "Caroline" in second
+
+
+def test_enrichment_splits_truncated_relationship_batch_and_preserves_reset():
+    from src.core.agents.architect_agent import ArchitectOutputLimitError
+    from src.core.saving import auto_kg
+
+    first = "Aurora " * 30 + "Aurora."
+    second = "Kepler " * 30 + "Kepler."
+    text = first + "\n\n" + second
+    scout = MagicMock()
+    scout._run_chunk.return_value.entities = [
+        ScoutEntity(name="Aurora", type="Project"),
+        ScoutEntity(name="Kepler", type="Project"),
+    ]
+    architect = MagicMock()
+    architect.run_batch_extract.side_effect = [ArchitectOutputLimitError(), [], []]
+    architect.take_pending_relationships.return_value = []
+    with (
+        patch.object(auto_kg, "ScoutAgent", return_value=scout),
+        patch.object(auto_kg, "ArchitectAgent", return_value=architect),
+        patch.object(auto_kg, "IngestionManager", return_value=MagicMock()),
+        patch.object(auto_kg.config, "pipeline_mode", "accurate"),
+        patch.object(auto_kg.config, "ingest_architect_mode", "batch"),
+        patch.object(auto_kg.config, "ingest_architect_per_unit", True),
+        patch.object(auto_kg.config, "ingest_defer_janitor", False),
+        patch.object(auto_kg.config, "run_graph_consolidator", False),
+    ):
+        auto_kg.enrich_kg_from_input(text, brain_id="brain-retry")
+
+    calls = architect.run_batch_extract.call_args_list
+    assert [call.args[0] for call in calls] == [text, first, second]
+    assert [call.kwargs["reset"] for call in calls] == [True, True, False]
+    assert [entity.name for entity in calls[1].args[1]] == ["Aurora"]
+    assert [entity.name for entity in calls[2].args[1]] == ["Kepler"]

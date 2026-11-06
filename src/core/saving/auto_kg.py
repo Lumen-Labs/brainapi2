@@ -11,12 +11,16 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 import os
 import uuid
 from dataclasses import dataclass, field
-from typing import List, Optional
+from functools import partial
+from typing import Callable, List, Optional
 
 from src.config import config
 from src.constants.kg import Node
 from src.core.agents.scout_agent import ScoutAgent, ScoutEntity
-from src.core.agents.architect_agent import ArchitectAgent
+from src.core.agents.architect_agent import (
+    ArchitectAgent,
+    ArchitectOutputLimitError,
+)
 from src.core.saving.architect_scratchpad import (
     build_scratchpad,
     format_unit_with_scratchpad,
@@ -227,23 +231,37 @@ def _enrich_kg_impl(
         unit_entities: List[ScoutEntity],
         *,
         reset: bool,
+        with_context: Optional[Callable[[str], str]] = None,
     ) -> None:
         if architect_mode in ("schema", "batch"):
-            architect_agent.run_batch_extract(
-                unit_text,
-                unit_entities,
-                targeting=targeting,
-                brain_id=brain_id,
-                timeout=20000,
-                ingestion_session_id=ingestion_session_id,
-                mode=("coarse" if mode == "coarse" else "granular"),
-                reset=reset,
-                cost_ledger=cost_ledger,
-                escalate=bool(config.ingest_architect_escalate),
-            )
+            try:
+                architect_agent.run_batch_extract(
+                    with_context(unit_text) if with_context else unit_text,
+                    unit_entities,
+                    targeting=targeting,
+                    brain_id=brain_id,
+                    timeout=20000,
+                    ingestion_session_id=ingestion_session_id,
+                    mode=("coarse" if mode == "coarse" else "granular"),
+                    reset=reset,
+                    cost_ledger=cost_ledger,
+                    escalate=bool(config.ingest_architect_escalate),
+                )
+            except ArchitectOutputLimitError:
+                cleaned = unit_text.strip()
+                if len(cleaned) <= 256:
+                    raise
+                parts = chunk_text(cleaned, max_chars=len(cleaned) // 2)
+                for index, part in enumerate(parts):
+                    _run_architect_unit(
+                        part,
+                        _filter_entities_for_text(unit_entities, part),
+                        reset=reset and index == 0,
+                        with_context=with_context,
+                    )
         else:
             architect_agent.run_tooler(
-                unit_text,
+                with_context(unit_text) if with_context else unit_text,
                 unit_entities,
                 targeting=targeting,
                 brain_id=brain_id,
@@ -296,13 +314,14 @@ def _enrich_kg_impl(
                     )
                 for part in architect_parts:
                     part_entities = _filter_entities_for_text(unit_entities, part)
+                    with_context = None
                     if prior_context_mode == "scratchpad" and not first_unit:
                         window_start = max(0, idx - _PRIOR_UNIT_WINDOW)
                         prior_ents: List[ScoutEntity] = []
                         for prior_idx in range(window_start, idx):
                             prior_ents.extend(per_chunk_entities[prior_idx])
-                        unit_text = _architect_unit_text_scratchpad(
-                            part,
+                        with_context = partial(
+                            _architect_unit_text_scratchpad,
                             prior_entities=prior_ents,
                             prior_relationships=list(
                                 getattr(architect_agent, "relationships_set", []) or []
@@ -310,11 +329,9 @@ def _enrich_kg_impl(
                             token_cap=scratchpad_token_cap,
                         )
                     elif prior_context_mode == "raw" and not first_unit:
-                        unit_text = _architect_unit_text(part, chunks[:idx])
-                    else:
-                        unit_text = part
+                        with_context = partial(_architect_unit_text, prior_chunks=chunks[:idx])
                     _run_architect_unit(
-                        unit_text, part_entities, reset=first_unit
+                        part, part_entities, reset=first_unit, with_context=with_context
                     )
                     first_unit = False
     else:

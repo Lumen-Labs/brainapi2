@@ -230,3 +230,26 @@ def test_run_batched_janitor_caps_llm_calls():
         str(r).startswith("janitor_budget_exhausted")
         for r in ledger.janitor_drop_reasons
     )
+
+
+def test_truncated_bedrock_batch_is_reported_before_tool_escalation():
+    import pytest
+
+    from src.core.agents.architect_agent import ArchitectOutputLimitError
+
+    agent = ArchitectAgent(
+        llm_adapter=MagicMock(),
+        cache_adapter=MagicMock(),
+        kg=MagicMock(),
+        vector_store=MagicMock(),
+        embeddings=MagicMock(),
+        ingestion_manager=MagicMock(),
+    )
+    agent.agent = MagicMock()
+    agent.agent.invoke.return_value = {
+        "messages": [{"response_metadata": {"stopReason": "max_tokens"}}]
+    }
+    with patch.object(agent, "_get_agent"), patch.object(agent, "run_tooler") as tooler:
+        with pytest.raises(ArchitectOutputLimitError):
+            agent.run_batch_extract("Alice met Bob.", [_entity("1", "Alice", "PERSON")])
+        tooler.assert_not_called()

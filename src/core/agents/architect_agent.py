@@ -84,6 +84,10 @@ from src.utils.similarity.vectors import cosine_similarity
 #     KGAgentSearchGraphTool,
 # )
 
+class ArchitectOutputLimitError(ValueError):
+    """A relationship batch was cut off before its output could be validated."""
+
+
 HISTORY_MAX_MESSAGES = 25
 HISTORY_MAX_MESSAGES_DELETE = 8
 MAX_RECURSION_LIMIT = 100
@@ -1550,7 +1554,10 @@ class ArchitectAgent:
         Pure tools=[] schema extract: one primary call, at most one repair, then
         optional escalate to run_tooler. No graph side effects before validation.
         """
-        from src.core.agents.core.parsing import parse_structured_from_messages
+        from src.core.agents.core.parsing import (
+            get_finish_reason_from_response,
+            parse_structured_from_messages,
+        )
         from src.core.saving.architect_batch import (
             BatchExtractResponse,
             event_leg_incomplete,
@@ -1641,6 +1648,14 @@ Description: {targeting.description}
 
             response = _with_timeout()
             schema_calls += 1
+            messages = response.get("messages", [])
+            finish_reason = (
+                get_finish_reason_from_response(messages[-1]) if messages else None
+            )
+            if str(finish_reason).upper() in {"MAX_TOKENS", "LENGTH", "MAX_LENGTH"}:
+                raise ArchitectOutputLimitError(
+                    "Relationship extraction exceeded the model output limit."
+                )
             structured = response.get("structured_response")
             if isinstance(structured, dict):
                 try:
@@ -1679,11 +1694,15 @@ Description: {targeting.description}
                 text=text,
                 entities=entity_payload,
             )
-            extracted = _invoke(repair_prompt)
             repair_calls += 1
-            repaired_validation = validate_batch_extract(
-                extracted, source_text=text, scout_entities=entities
-            )
+            try:
+                extracted = _invoke(repair_prompt)
+            except ArchitectOutputLimitError:
+                repaired_validation = primary_validation
+            else:
+                repaired_validation = validate_batch_extract(
+                    extracted, source_text=text, scout_entities=entities
+                )
             # Keep the more usable extract; do not discard a good primary
             # when repair returns fewer accepted edges.
             if len(repaired_validation.accepted) > len(primary_validation.accepted):
