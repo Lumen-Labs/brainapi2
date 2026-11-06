@@ -61,7 +61,7 @@ ingestion_app = Celery(
         if os.getenv("CELERY_BACKEND") == "rabbitmq"
         else REDIS_URL
     ),
-    include=["src.workers.tasks.ingestion"],
+    include=["src.workers.tasks.ingestion", "src.workers.tasks.explore"],
 )
 
 _PLUGIN_QUEUES, _PLUGIN_ROUTES = discover_plugin_celery(default_plugins_dir(_project_root))

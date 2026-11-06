@@ -85,7 +85,11 @@ from src.services.api.controllers.vectors import (
     list_vectors as list_vectors_controller,
 )
 
+from src.services.api.routes.explore import explore_router
+
+
 retrieve_router = APIRouter(prefix="/retrieve", tags=["retrieve"])
+retrieve_router.include_router(explore_router)
 
 
 @retrieve_router.get("/", response_model=RetrieveRequestResponse)
