@@ -182,6 +182,27 @@ def test_reconciler_retries_dispatch_and_discard(run, monkeypatch, tmp_path):
     publish.assert_not_called()
 
 
+def test_rollback_failure_is_terminal_and_reopens_access(run, monkeypatch, tmp_path):
+    from src.core.saving import ingest_access_gate as gate, ingest_recovery, ingest_staging as staging
+
+    monkeypatch.setenv("INGEST_PUBLICATION_LOCK_DIR", str(tmp_path))
+    monkeypatch.setattr(gate, "_gates", cancellation._runs)
+    monkeypatch.setattr(ingest_recovery, "discard_outputs", Mock(side_effect=RuntimeError("cleanup failed")))
+
+    staging.create_run("brain", "staged", message={"payload": {"text": "private"}})
+    cancellation.request_cancellation("brain", "staged", "rollback")
+    for _ in range(staging.MAX_ROLLBACK_FAILURES - 1):
+        with pytest.raises(RuntimeError, match="cleanup failed"):
+            ingest_recovery.reconcile_run("brain", "staged", Mock(), Mock())
+        assert cancellation.public_state("brain", "staged", {})["status"] == "cancelling"
+
+    ingest_recovery.reconcile_run("brain", "staged", Mock(), Mock())
+    assert cancellation.public_state("brain", "staged", {})["status"] == "rollback_failed"
+    assert cancellation.request_cancellation("brain", "staged", "rollback")["status"] == "rollback_failed"
+    with gate.brain_access("brain"):
+        pass
+
+
 def test_publication_drains_existing_access_and_rejects_new_access(run, monkeypatch, tmp_path):
     from src.core.saving import ingest_access_gate as gate
 

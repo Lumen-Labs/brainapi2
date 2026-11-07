@@ -3,7 +3,6 @@
 from src.core.saving import ingest_access_gate, ingest_cancellation, ingest_staging
 from src.core.saving.ingest_staged_output import discard_outputs
 
-
 def reconcile_run(brain_id, root_id, dispatch, publish):
     """Retry pending work. Publish must acquire the brain's publication gate."""
     run = ingest_cancellation._runs(brain_id).find_one({"_id": root_id})
@@ -29,5 +28,10 @@ def reconcile_run(brain_id, root_id, dispatch, publish):
         publish(brain_id, root_id)
     elif run["status"] == "discarding":
         with ingest_access_gate.publication_gate(brain_id, root_id):
-            discard_outputs(brain_id, root_id)
+            try:
+                discard_outputs(brain_id, root_id)
+            except Exception:
+                if not ingest_staging.record_rollback_failure(brain_id, root_id):
+                    raise
+                return
             ingest_staging.finish_discard(brain_id, root_id)
