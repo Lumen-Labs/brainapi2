@@ -32,8 +32,8 @@ def register(brain_id, task_id):
     return {"ingestion_root": task_id}
 
 
-def _change(brain_id, task_id, transition):
-    runs = _runs(brain_id)
+def _change(brain_id, task_id, transition, *, store=None):
+    runs = (store or _runs)(brain_id)
     while True:
         run = runs.find_one({"_id": task_id})
         if run is None:
