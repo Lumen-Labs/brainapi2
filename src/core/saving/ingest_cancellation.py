@@ -82,6 +82,9 @@ def public_state(brain_id, task_id, payload):
     if run and run.get("mode"):
         status = cancellation_status(run)
         return {**payload, "status": status, "stage": status, "cancellation_mode": run["mode"]}
+    if run and run["status"] in {"active", "staging"}:
+        modes = ["keep_saved", "rollback"] if run["status"] == "staging" else ["keep_saved"]
+        return {**payload, "cancellation_modes": modes}
     return payload
 
 
