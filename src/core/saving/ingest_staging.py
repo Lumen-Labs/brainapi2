@@ -10,7 +10,7 @@ DISPATCH_RETRY_SECONDS = 30
 MAX_UNIT_FAILURES = 3
 
 
-def create_run(brain_id, root_id, *, callback_deadline=None, message=None, discovery=False):
+def create_run(brain_id, root_id, *, callback_deadline=None, upload_deadline=None, message=None, discovery=False):
     """Create the run and, for direct submissions, its first dispatch intent."""
     unit_id = None
     units = {}
@@ -28,10 +28,21 @@ def create_run(brain_id, root_id, *, callback_deadline=None, message=None, disco
             "publication_cursor": 0,
             "sealed": message is not None and not discovery,
             "callback_deadline": callback_deadline,
+            "upload_deadline": upload_deadline,
         }},
         upsert=True,
     )
     return unit_id
+
+
+def expire_file_upload(brain_id, root_id):
+    def transition(run):
+        deadline = run.get("upload_deadline")
+        if run["status"] == "staging" and not run["units"] and deadline and deadline <= time():
+            return {"status": "discarding", "discard_result": "failed"}
+        return None
+
+    return ingest_cancellation._change(brain_id, root_id, transition)
 
 
 def register_unit(brain_id, root_id, key, message, *, seal=False, task_id=None):

@@ -11,6 +11,10 @@ def reconcile_run(brain_id, root_id, dispatch, publish):
         return
 
     if run["status"] == "staging":
+        if run.get("upload_deadline") and not run["units"]:
+            run = ingest_staging.expire_file_upload(brain_id, root_id)
+            if run is None:
+                return
         if run.get("callback_deadline"):
             run = ingest_staging.expire_remote_ocr(brain_id, root_id)
             if not run or run["status"] != "staging":

@@ -41,5 +41,8 @@ def commit_output(brain_id, root_id, unit_id, attempt, operations):
 
 
 def discard_outputs(brain_id, root_id):
-    """Remove only the staged output owned by this brain and run."""
+    """Remove private staging data owned by this brain and run."""
+    from src.core.saving.ingest_staged_input import discard_inputs
+
+    discard_inputs(brain_id, root_id)
     collection(brain_id, "ingest_staged_outputs").delete_many({"import_id": root_id})
