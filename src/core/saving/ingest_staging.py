@@ -16,6 +16,7 @@ def create_run(brain_id, root_id):
             "revision": "",
             "units": {},
             "publication_cursor": 0,
+            "sealed": False,
         }},
         upsert=True,
     )
@@ -26,11 +27,15 @@ def register_unit(brain_id, root_id, key, message):
     unit_id = uuid5(NAMESPACE_URL, f"brainapi:ingest:{root_id}:{key}").hex
 
     def transition(run):
-        if run["status"] != "staging" or unit_id in run["units"]:
+        if run["status"] != "staging" or run.get("sealed") or unit_id in run["units"]:
             return None
         return {"units": {
             **run["units"],
-            unit_id: {"state": "pending", "message": message},
+            unit_id: {
+                "state": "pending",
+                "ordinal": len(run["units"]),
+                "message": message,
+            },
         }}
 
     run = ingest_cancellation._change(brain_id, root_id, transition)
@@ -84,7 +89,12 @@ def complete_unit(brain_id, root_id, unit_id, token, output_ref):
     def complete(unit):
         if unit.get("token") != token or unit["expires_at"] <= time():
             return None
-        return {"state": "complete", "attempt": token, "output_ref": output_ref}
+        return {
+            "state": "complete",
+            "ordinal": unit["ordinal"],
+            "attempt": token,
+            "output_ref": output_ref,
+        }
 
     unit = _update_unit(brain_id, root_id, unit_id, complete)
     return bool(unit and unit.get("attempt") == token and unit.get("output_ref") == output_ref)
@@ -111,9 +121,55 @@ def close_staging(brain_id, root_id, mode=None):
         if run["status"] != "staging":
             return None
         if mode is None and (
-            not run["units"] or any(unit["state"] != "complete" for unit in run["units"].values())
+            not run.get("sealed")
+            or not run["units"]
+            or any(unit["state"] != "complete" for unit in run["units"].values())
         ):
             return None
         return {"status": "discarding" if mode == "rollback" else "publishing", "mode": mode}
+
+    return ingest_cancellation._change(brain_id, root_id, transition)
+
+
+def seal_units(brain_id, root_id):
+    """Close discovery after every dispatch intent has been registered."""
+    return ingest_cancellation._change(
+        brain_id, root_id,
+        lambda run: {"sealed": True}
+        if run["status"] == "staging" and not run.get("sealed") else None,
+    )
+
+
+def _completed_units(run):
+    return sorted(
+        (unit for unit in run["units"].values() if unit["state"] == "complete"),
+        key=lambda unit: unit["ordinal"],
+    )
+
+
+def next_publication_unit(brain_id, root_id):
+    """Read the durable cursor. Replaying the same position uses the same ID."""
+    run = ingest_cancellation._runs(brain_id).find_one({"_id": root_id})
+    if not run or run["status"] != "publishing":
+        return None
+    cursor = run["publication_cursor"]
+    units = _completed_units(run)
+    if cursor >= len(units):
+        return None
+    return {
+        "cursor": cursor,
+        "operation_id": uuid5(NAMESPACE_URL, f"brainapi:publish:{root_id}:{cursor}").hex,
+        "output_ref": units[cursor]["output_ref"],
+    }
+
+
+def advance_publication(brain_id, root_id, cursor):
+    """Advance after the adapter confirms the operation is durable."""
+    def transition(run):
+        if run["status"] != "publishing" or run["publication_cursor"] != cursor:
+            return None
+        if cursor >= len(_completed_units(run)):
+            return None
+        return {"publication_cursor": cursor + 1}
 
     return ingest_cancellation._change(brain_id, root_id, transition)

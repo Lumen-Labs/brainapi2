@@ -105,3 +105,30 @@ def test_staged_cancellation_fences_late_completion(run, mode, status):
     assert not staging.complete_unit("brain", "staged", unit, claim, "late")
     assert staging.register_unit("brain", "staged", "page:2", {}) is None
     assert staging.pending_dispatches("brain", "staged") == []
+
+
+def test_publication_waits_for_discovery_and_resumes_from_cursor(run):
+    from src.core.saving import ingest_staging as staging
+
+    staging.create_run("brain", "staged")
+    for key in ("first", "second"):
+        unit = staging.register_unit("brain", "staged", key, {})
+        claim = staging.claim_unit("brain", "staged", unit)
+        assert staging.complete_unit("brain", "staged", unit, claim, key)
+
+    assert staging.close_staging("brain", "staged")["status"] == "staging"
+    staging.seal_units("brain", "staged")
+    assert staging.register_unit("brain", "staged", "late", {}) is None
+    assert staging.close_staging("brain", "staged")["status"] == "publishing"
+    assert staging.close_staging("brain", "staged", "rollback")["mode"] is None
+
+    first = staging.next_publication_unit("brain", "staged")
+    assert first["output_ref"] == "first"
+    assert staging.next_publication_unit("brain", "staged") == first
+    staging.advance_publication("brain", "staged", first["cursor"])
+    staging.advance_publication("brain", "staged", first["cursor"])
+    second = staging.next_publication_unit("brain", "staged")
+    assert second["output_ref"] == "second"
+    assert second["operation_id"] != first["operation_id"]
+    staging.advance_publication("brain", "staged", second["cursor"])
+    assert staging.next_publication_unit("brain", "staged") is None
