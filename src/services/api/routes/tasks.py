@@ -91,7 +91,7 @@ async def cancel_ingestion(
     body: CancelIngestionRequest,
     brain_id: str = Depends(get_brain_id),
 ):
-    if not ingest_cancellation.enabled():
+    if not ingest_cancellation.task_control_enabled():
         raise HTTPException(404, "Cancellable ingestion not found")
     try:
         run = ingest_cancellation.request_cancellation(brain_id, task_id, body.mode)

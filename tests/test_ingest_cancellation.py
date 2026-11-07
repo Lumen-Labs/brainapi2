@@ -237,3 +237,22 @@ def test_discovery_registers_pages_atomically_and_seals_run(run):
     assert discovery not in {unit for unit, _ in pending}
     cancellation.request_cancellation("brain", "staged", "rollback")
     assert staging.pending_dispatches("brain", "staged") == []
+
+
+def test_dispatch_reservation_retries_after_window_without_blocking_worker(run, monkeypatch):
+    from src.core.saving import ingest_staging as staging
+
+    now = 1000
+    monkeypatch.setattr(staging, "time", lambda: now)
+    staging.create_run("brain", "staged")
+    message = {"payload": {"text": "one"}}
+    unit = staging.register_unit("brain", "staged", "source", message)
+    assert staging.reserve_dispatch("brain", "staged", unit) == message
+    assert staging.reserve_dispatch("brain", "staged", unit) is None
+    assert staging.pending_dispatches("brain", "staged") == []
+    now += staging.DISPATCH_RETRY_SECONDS
+    assert staging.pending_dispatches("brain", "staged") == [(unit, message)]
+    assert staging.reserve_dispatch("brain", "staged", unit) == message
+    assert staging.claim_unit("brain", "staged", unit)
+    now += staging.DISPATCH_RETRY_SECONDS
+    assert staging.reserve_dispatch("brain", "staged", unit) is None

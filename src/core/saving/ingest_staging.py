@@ -6,6 +6,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 from src.core.saving import ingest_cancellation
 
 CLAIM_SECONDS = 120
+DISPATCH_RETRY_SECONDS = 30
 
 
 def create_run(brain_id, root_id):
@@ -101,6 +102,30 @@ def complete_unit(brain_id, root_id, unit_id, token, output_ref):
     return bool(unit and unit.get("attempt") == token and unit.get("output_ref") == output_ref)
 
 
+def reserve_dispatch(brain_id, root_id, unit_id):
+    """Return the persisted message once per dispatch retry window."""
+    dispatch_id = uuid4().hex
+
+    def reserve(unit):
+        now = time()
+        if (
+            unit["state"] == "complete"
+            or unit.get("expires_at", 0) > now
+            or unit.get("dispatch_after", 0) > now
+        ):
+            return None
+        return {
+            **unit,
+            "dispatch_id": dispatch_id,
+            "dispatch_after": now + DISPATCH_RETRY_SECONDS,
+        }
+
+    unit = _update_unit(brain_id, root_id, unit_id, reserve)
+    if unit and unit.get("dispatch_id") == dispatch_id:
+        return unit["message"]
+    return None
+
+
 def pending_dispatches(brain_id, root_id):
     run = ingest_cancellation._runs(brain_id).find_one({"_id": root_id})
     if not run or run["status"] != "staging":
@@ -109,7 +134,9 @@ def pending_dispatches(brain_id, root_id):
     return [
         (unit_id, unit["message"])
         for unit_id, unit in run["units"].items()
-        if unit["state"] != "complete" and unit.get("expires_at", 0) <= now
+        if unit["state"] != "complete"
+        and unit.get("expires_at", 0) <= now
+        and unit.get("dispatch_after", 0) <= now
     ]
 
 

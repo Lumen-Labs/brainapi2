@@ -21,6 +21,10 @@ def enabled():
     return os.getenv("INGESTION_CANCELLATION_ENABLED") == "1"
 
 
+def task_control_enabled():
+    return enabled() or os.getenv("STAGED_INGESTION_ENABLED") == "1"
+
+
 def register(brain_id, task_id):
     if not enabled():
         return {}
@@ -76,7 +80,7 @@ def cancellation_status(run):
 
 
 def public_state(brain_id, task_id, payload):
-    if not enabled():
+    if not task_control_enabled():
         return payload
     run = _runs(brain_id).find_one({"_id": task_id})
     if run and run.get("mode"):
