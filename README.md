@@ -120,17 +120,7 @@ make start-console-dev  # terminal 2 → http://localhost:5173/console/
 
 **Other handy targets:** `make start-api`, `make start-mcp`, `make stop-all`, and `make install-extras` (auto-installs heavy ML extras like local OCR based on your `.env`).
 
-**Docker only** (pick a [deploy profile](deploy/README.md)):
-
-```sh
-# light — Postgres + DeepSeek + OpenAI embeddings
-cp deploy/env.light.example .env   # fill in secrets, then:
-docker compose -f deploy/docker-compose.light.yaml up -d
-
-# heavy — Neo4j + Milvus + Mongo + GCP/Azure (full resources)
-cp deploy/env.heavy.example .env
-docker compose -f deploy/docker-compose.heavy.yaml up -d
-```
+**Docker only.** Follow the [deployment quick start](deploy/README.md) for the light or heavy profile. The examples below use the local development API on port 8000. For the bundled Compose deployment, use the nginx address instead (port 80 on localhost).
 
 Then ingest your first data point:
 
@@ -149,6 +139,10 @@ curl -X POST http://localhost:8000/ingest/url \
   -H "Content-Type: application/json" \
   -d '{"url": "https://example.com", "max_pages": 10}'
 ```
+
+Ingestion requests return a `task_id` with HTTP 202. Poll `GET /tasks/{task_id}` with the same brain and credentials. When the task advertises `cancellation_modes`, send `POST /tasks/{task_id}/cancel` with `{"mode":"keep_saved"}` or `{"mode":"rollback"}`. The [ingestion task guide](https://brainapi.lumen-labs.ai/docs/v2/ingestion/tasks) covers polling and conflicts. See [staged ingestion deployment](deploy/README.md#staged-ingestion-and-cancellation) to enable both modes on your own stack.
+
+The PostgreSQL graph driver also supports [progressive Explore](docs/explore-atlas.md) for navigating larger graphs in bounded pages.
 
 ---
 

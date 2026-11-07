@@ -57,6 +57,16 @@ nginx server file; do not expose port 80 beyond a trusted proxy without HTTPS.
 - Do not mix profiles under the same Compose project name. Their volume layouts
   and restore order differ.
 
+## Staged ingestion and cancellation
+
+Set `STAGED_INGESTION_ENABLED=1` in the profile environment to stage eligible imports. Text and URL requests that skip enrichment can use staging with this flag alone. Set `STAGED_ENRICHMENT_ENABLED=1` as well to stage enriched imports, structured inputs, and files. Both flags default to off.
+
+Use the same configuration on the API and ingestion worker. The supplied profiles mount the same named volume at `/app/ingest-publication-locks` and set `INGEST_PUBLICATION_LOCK_DIR` to that path. Custom deployments need one shared, writable filesystem with compatible file locks for all participating API and worker processes. Startup checks the directory when staging is enabled.
+
+Workers stage data, graph, and vector changes privately. The publication lock drains existing brain operations and protects readers from seeing only part of an import. New operations can receive HTTP 503 with `Retry-After` during publication. Preserve the shared lock configuration and backend state across restarts so the worker can resume an interrupted publication.
+
+Use the root task's `cancellation_modes` field to determine availability. Deployments may also have older imports with keep-only cancellation or no cancellation support. Hosted progressive imports require platform coordination in addition to crawler configuration. See the [ingestion task guide](https://brainapi.lumen-labs.ai/docs/v2/ingestion/tasks).
+
 ## Backup and restore
 
 Backups default to `/srv/brainapi/backups` and are created with mode `0700`.
