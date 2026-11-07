@@ -51,3 +51,21 @@ def test_data_adapter_captures_writes_in_attempt_scope():
     adapter.data.save_text_chunk.assert_not_called()
     adapter.save_text_chunk(chunk, "brain")
     adapter.data.save_text_chunk.assert_called_once_with(text_chunk=chunk, brain_id="brain")
+
+
+def test_publication_replays_same_operation_ids_after_failure(monkeypatch):
+    from src.core.saving import ingest_publication as publisher
+
+    unit = {"output_ref": "output", "operation_id": "unit", "cursor": 3}
+    monkeypatch.setattr(publisher, "next_publication_unit", lambda *_: unit)
+    monkeypatch.setattr(publisher, "load_output", lambda *_: ["first", "second"])
+    advance = Mock()
+    monkeypatch.setattr(publisher, "advance_publication", advance)
+    replay = Mock(side_effect=[None, RuntimeError("interrupted"), None, None])
+
+    with pytest.raises(RuntimeError, match="interrupted"):
+        publisher.publish_next_unit("brain", "root", replay)
+    advance.assert_not_called()
+    assert publisher.publish_next_unit("brain", "root", replay)
+    assert replay.call_args_list[:2] == replay.call_args_list[2:]
+    advance.assert_called_once_with("brain", "root", 3)
