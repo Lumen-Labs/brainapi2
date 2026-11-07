@@ -101,12 +101,17 @@ def manifest_snapshot(brain_id, import_id, offset=0, limit=50, internal=False):
             if result.modified_count == 1:
                 row.update(status="failed",stage="failed",error="Worker stopped reporting for 24 hours")
     staged_state = None
+    cancellation = {}
     if manifest.get("staged"):
         from src.core.saving import ingest_cancellation
 
         run = ingest_cancellation._runs(brain_id).find_one({"_id": import_id})
         if run:
             staged_state = ingest_cancellation.cancellation_status(run)
+            if run.get("mode"):
+                cancellation["cancellation_mode"] = run["mode"]
+            elif staged_state == "staging":
+                cancellation["cancellation_modes"] = ["keep_saved", "rollback"]
             units = run.get("units", {})
             for row in rows:
                 unit = units.get(row["task_id"])
@@ -139,7 +144,7 @@ def manifest_snapshot(brain_id, import_id, offset=0, limit=50, internal=False):
         if internal:
             item["cost"] = row.get("cost")
         public_rows.append(item)
-    return {"version": VERSION, "task_id": import_id, "status": status, "stage": "ingesting",
+    return {"version": VERSION, "task_id": import_id, "status": status, "stage": "ingesting", **cancellation,
         "pages": page_rows, "sections": public_rows,
         "progress": {"done": done + failed, "total": len(rows), "succeeded": done, "failed": failed},
         "characters_completed": sum(row["chars"] for row in rows if row["status"] == "completed"),
