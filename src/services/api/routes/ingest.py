@@ -191,7 +191,6 @@ async def ingest_url(
         raise HTTPException(status_code=503, detail="URL crawler is not configured")
 
     if data.progressive:
-        import os
         from src.core.saving.ingest_manifest import pipeline_context
         if not pipeline_context(request, brain_id, "accept") :
             raise HTTPException(403, "Platform settlement required")
@@ -211,6 +210,25 @@ async def ingest_url(
         stage="queued",
         group_tracking=data.group_tracking,
     )
+
+    if os.getenv("STAGED_INGESTION_ENABLED") == "1" and payload.get("skip_enrichment") and not data.progressive:
+        from src.core.saving import ingest_staging
+        from src.core.saving.ingest_worker import dispatch_staged_source
+
+        message = {"kind": "url_discovery", "payload": payload}
+        if context:
+            message["headers"] = {"pipeline_operation": context}
+        ingest_staging.create_run(brain_id, task_id)
+        unit_id = ingest_staging.register_unit(brain_id, task_id, "discovery", message)
+        if unit_id is not None:
+            try:
+                dispatch_staged_source(brain_id, task_id, unit_id, message)
+            except OperationalError as exc:
+                raise HTTPException(503, "Task queue unavailable") from exc
+        return JSONResponse(
+            status_code=202,
+            content={"message": "URL ingestion accepted", "task_id": task_id},
+        )
 
     for attempt in range(MAX_TASK_RETRIES):
         try:

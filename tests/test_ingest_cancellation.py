@@ -221,3 +221,19 @@ def test_background_writer_retries_during_publication(run, monkeypatch, tmp_path
 
     assert worker(task, "brain") == "completed"
     task.retry.assert_called_once()
+
+
+def test_discovery_registers_pages_atomically_and_seals_run(run):
+    from src.core.saving import ingest_staging as staging
+
+    staging.create_run("brain", "staged")
+    discovery = staging.register_unit("brain", "staged", "discovery", {"kind": "url_discovery"})
+    token = staging.claim_unit("brain", "staged", discovery)
+    messages = [{"payload": {"text": "page one"}}, {"payload": {"text": "page two"}}]
+    result = staging.complete_discovery("brain", "staged", discovery, token, messages)
+    assert result["sealed"]
+    pending = staging.pending_dispatches("brain", "staged")
+    assert [message for _, message in pending] == messages
+    assert discovery not in {unit for unit, _ in pending}
+    cancellation.request_cancellation("brain", "staged", "rollback")
+    assert staging.pending_dispatches("brain", "staged") == []

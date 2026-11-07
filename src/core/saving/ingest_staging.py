@@ -123,7 +123,7 @@ def close_staging(brain_id, root_id, mode=None):
             return None
         if mode is None and (
             not run.get("sealed")
-            or not run["units"]
+            or (not run["units"] and "discovered" not in run)
             or any(unit["state"] != "complete" for unit in run["units"].values())
         ):
             return None
@@ -194,3 +194,25 @@ def finish_discard(brain_id, root_id):
         brain_id, root_id,
         lambda run: {"status": "cancelled"} if run["status"] == "discarding" else None,
     )
+
+
+def complete_discovery(brain_id, root_id, unit_id, token, messages):
+    """Atomically register discovered source units and seal the run."""
+    def transition(run):
+        if run["status"] != "staging" or run.get("sealed"):
+            return None
+        units = run["units"]
+        discovery = units.get(unit_id, {})
+        if discovery.get("token") != token or discovery["expires_at"] <= time():
+            return None
+        children = {
+            uuid5(NAMESPACE_URL, f"brainapi:ingest:{root_id}:page:{index}").hex: {
+                "state": "pending",
+                "ordinal": index,
+                "message": message,
+            }
+            for index, message in enumerate(messages)
+        }
+        return {"units": children, "sealed": True, "discovered": len(children)}
+
+    return ingest_cancellation._change(brain_id, root_id, transition)

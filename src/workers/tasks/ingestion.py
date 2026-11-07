@@ -1820,6 +1820,27 @@ def ingest_url(self, args: dict):
     brain_id = args.get("brain_id", "default")
     group_tracking = args.get("group_tracking")
     skip_enrichment = bool(args.get("skip_enrichment", False))
+    staged_root = (getattr(self.request, "headers", None) or {}).get("staged_ingestion_root")
+    if isinstance(staged_root, str) and staged_root:
+        from src.core.saving.ingest_worker import execute_staged_unit
+
+        def discover():
+            pages = crawler_adapter.crawl_pages(CrawlRequest(
+                url=args["url"],
+                max_pages=int(args.get("max_pages") or 10),
+                allowed_domains=args.get("allowed_domains") or [],
+                idempotency_key=self.request.id,
+            ))
+            return [
+                {"payload": build_url_page_ingest_payload(
+                    brain_id, page, group_tracking=group_tracking, skip_enrichment=True,
+                )}
+                for page in pages if (page.text or "").strip()
+            ]
+
+        execute_staged_unit(brain_id, staged_root, self.request.id, discover, discovery=True)
+        return self.request.id
+
     try:
         set_ingestion_task_status(
             self.request.id,
