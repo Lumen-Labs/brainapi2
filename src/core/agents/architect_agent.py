@@ -430,10 +430,18 @@ class ArchitectAgent:
 
         size = max(1, int(batch_size or 20))
         max_llm_calls = max(0, int(getattr(config, "ingest_janitor_max_llm_calls", 2)))
-        llm_calls = 0
-        for i in range(0, len(need), size):
-            if llm_calls >= max_llm_calls:
-                remaining = len(need) - i
+        from collections import deque
+
+        from src.core.saving.ingest_limits import invocation_limits, is_size_error
+
+        batches = deque(
+            (need[i : i + size], False) for i in range(0, len(need), size)
+        )
+        logical_calls = 0
+        while batches:
+            batch, is_subdivision = batches.popleft()
+            if not is_subdivision and logical_calls >= max_llm_calls:
+                remaining = len(batch) + sum(len(remaining) for remaining, _ in batches)
                 print(
                     "[DEBUG (run_batched_janitor)]: janitor LLM budget exhausted "
                     f"max_calls={max_llm_calls}; dropping remaining ambiguous={remaining}"
@@ -443,7 +451,8 @@ class ArchitectAgent:
                         f"janitor_budget_exhausted:{remaining}"
                     )
                 break
-            batch = need[i : i + size]
+            if not is_subdivision:
+                logical_calls += 1
             input_rels = [
                 _ArchitectAgentRelationship(
                     tip=rel.tip,
@@ -453,21 +462,28 @@ class ArchitectAgent:
                     properties=getattr(rel, "properties", {}) or {},
                     **(
                         {"amount": rel.amount}
-                        if getattr(rel, "amount", None)
+                        if getattr(rel, "amount", None) is not None
                         else {}
                     ),
                 )
                 for rel in batch
             ]
-            response = janitor_agent.run_atomic_janitor(
-                input_relationships=input_rels,
-                text=text,
-                targeting=targeting,
-                brain_id=brain_id,
-                timeout=300,
-                max_retries=3,
-            )
-            llm_calls += 1
+            try:
+                response = janitor_agent.run_atomic_janitor(
+                    input_relationships=input_rels,
+                    text=text,
+                    targeting=targeting,
+                    brain_id=brain_id,
+                    timeout=300,
+                    max_retries=3,
+                )
+            except Exception as exc:
+                if invocation_limits.get() is None or not is_size_error(exc) or len(batch) <= 1:
+                    raise
+                middle = len(batch) // 2
+                batches.appendleft((batch[middle:], True))
+                batches.appendleft((batch[:middle], True))
+                continue
             if cost_ledger is not None:
                 cost_ledger.janitor_ran += 1
 
@@ -531,7 +547,7 @@ class ArchitectAgent:
                         properties=getattr(rel, "properties", {}) or {},
                         **(
                             {"amount": getattr(rel, "amount", None)}
-                            if getattr(rel, "amount", None)
+                            if getattr(rel, "amount", None) is not None
                             else {}
                         ),
                     )
@@ -976,7 +992,7 @@ class ArchitectAgent:
                 name=rel.name,
                 description=rel.description,
                 properties=getattr(rel, "properties", {}) or {},
-                **({"amount": rel.amount} if getattr(rel, "amount", None) else {}),
+                **({"amount": rel.amount} if getattr(rel, "amount", None) is not None else {}),
             )
             for rel in relationships
         ]
@@ -1047,7 +1063,7 @@ class ArchitectAgent:
                             properties=getattr(rel, "properties", {}),
                             **(
                                 {"amount": getattr(rel, "amount", None)}
-                                if getattr(rel, "amount", None)
+                                if getattr(rel, "amount", None) is not None
                                 else {}
                             ),
                         )
@@ -1126,7 +1142,7 @@ class ArchitectAgent:
                         properties=getattr(rel, "properties", {}),
                         **(
                             {"amount": getattr(rel, "amount", None)}
-                            if getattr(rel, "amount", None)
+                            if getattr(rel, "amount", None) is not None
                             else {}
                         ),
                     )

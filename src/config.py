@@ -653,6 +653,9 @@ class Config:
         )
         self.run_observations = os.getenv("RUN_OBSERVATIONS", "false") == "true"
         self.janitor_batch_size = int(os.getenv("JANITOR_BATCH_SIZE", "20"))
+        self.ingest_max_new_tokens = int(os.getenv("INGEST_MAX_NEW_TOKENS", "0"))
+        if self.ingest_max_new_tokens < 0:
+            raise ValueError("INGEST_MAX_NEW_TOKENS must be zero or a positive integer")
         self.ingest_janitor_max_llm_calls = int(
             os.getenv("INGEST_JANITOR_MAX_LLM_CALLS", "2")
         )

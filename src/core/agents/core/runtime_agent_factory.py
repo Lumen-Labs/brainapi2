@@ -23,7 +23,9 @@ class RuntimeAgentFactory:
         use_custom_backend: bool = False,
     ):
         from src.core.saving.pipeline_runtime import instrument_model
-        model = instrument_model(model)
+        from src.core.saving.ingest_limits import invocation_limits, limit_output, wrap_enrichment_model_call
+
+        model = instrument_model(limit_output(model))
         if use_custom_backend or architecture == "custom":
             custom_agent_cls = self._custom_agent_cls
             if custom_agent_cls is None:
@@ -37,11 +39,17 @@ class RuntimeAgentFactory:
                 output_schema=output_schema,
                 debug=debug,
             )
+        options = {}
+        if invocation_limits.get() is not None:
+            from langchain.agents.middleware import wrap_model_call
+
+            options["middleware"] = [wrap_model_call(wrap_enrichment_model_call)]
         return self._create_agent_fn(
             model=model,
             tools=tools,
             system_prompt=system_prompt,
             response_format=output_schema,
+            **options,
             debug=debug,
         )
 

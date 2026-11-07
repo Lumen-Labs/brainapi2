@@ -5,6 +5,7 @@ from typing import Any, Optional, Sequence
 
 from pydantic import BaseModel, Field
 
+from src.constants.agents import RelationshipAmount
 from src.core.saving.grounding import (
     align_span,
     endpoints_well_formed,
@@ -28,7 +29,7 @@ class BatchRelationship(BaseModel):
     tip: BatchEndpoint
     name: str
     description: Optional[str] = None
-    amount: Optional[float] = None
+    amount: RelationshipAmount = None
     source_span: str = ""
     span_start: Optional[int] = None
     span_end: Optional[int] = None

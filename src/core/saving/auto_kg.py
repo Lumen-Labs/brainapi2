@@ -8,18 +8,17 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
+import json
 import os
 import uuid
 from dataclasses import dataclass, field
-from functools import partial
-from typing import Callable, List, Optional
+from typing import List, Optional
 
 from src.config import config
 from src.constants.kg import Node
 from src.core.agents.scout_agent import ScoutAgent, ScoutEntity
 from src.core.agents.architect_agent import (
     ArchitectAgent,
-    ArchitectOutputLimitError,
 )
 from src.core.saving.architect_scratchpad import (
     build_scratchpad,
@@ -28,7 +27,7 @@ from src.core.saving.architect_scratchpad import (
     serialize_scratchpad,
 )
 from src.core.saving.ingestion_manager import IngestionManager
-from src.core.saving.ingest_cost import IngestCostLedger, track_stage
+from src.core.saving.ingest_cost import IngestCostLedger, count_source_tokens, track_stage
 from src.services.input.agents import (
     cache_adapter,
     embeddings_adapter,
@@ -36,7 +35,14 @@ from src.services.input.agents import (
     llm_small_adapter,
     vector_store_adapter,
 )
-from src.utils.text_chunking import chunk_text
+from src.utils.text_chunking import chunk_text, source_context, source_cut
+from src.core.saving.ingest_limits import (
+    IngestModelLimitError,
+    invocation_limits,
+    is_size_error,
+    source_span_tokens,
+    scout_payload_size,
+)
 
 import langsmith
 
@@ -169,15 +175,19 @@ def enrich_kg_from_input(
             "source_timestamp": source_timestamp,
         },
     ):
-        return _enrich_kg_impl(
-            input,
-            targeting,
-            brain_id,
-            ingestion_session_id,
-            source_chunk_id=source_chunk_id,
-            source_timestamp=source_timestamp,
-            preferred_extraction_entities=preferred_extraction_entities,
-        )
+        token = invocation_limits.set((config.ingest_max_new_tokens or None,))
+        try:
+            return _enrich_kg_impl(
+                input,
+                targeting,
+                brain_id,
+                ingestion_session_id,
+                source_chunk_id=source_chunk_id,
+                source_timestamp=source_timestamp,
+                preferred_extraction_entities=preferred_extraction_entities,
+            )
+        finally:
+            invocation_limits.reset(token)
 
 
 def _enrich_kg_impl(
@@ -231,37 +241,23 @@ def _enrich_kg_impl(
         unit_entities: List[ScoutEntity],
         *,
         reset: bool,
-        with_context: Optional[Callable[[str], str]] = None,
     ) -> None:
         if architect_mode in ("schema", "batch"):
-            try:
-                architect_agent.run_batch_extract(
-                    with_context(unit_text) if with_context else unit_text,
-                    unit_entities,
-                    targeting=targeting,
-                    brain_id=brain_id,
-                    timeout=20000,
-                    ingestion_session_id=ingestion_session_id,
-                    mode=("coarse" if mode == "coarse" else "granular"),
-                    reset=reset,
-                    cost_ledger=cost_ledger,
-                    escalate=bool(config.ingest_architect_escalate),
-                )
-            except ArchitectOutputLimitError:
-                cleaned = unit_text.strip()
-                if len(cleaned) <= 256:
-                    raise
-                parts = chunk_text(cleaned, max_chars=len(cleaned) // 2)
-                for index, part in enumerate(parts):
-                    _run_architect_unit(
-                        part,
-                        _filter_entities_for_text(unit_entities, part),
-                        reset=reset and index == 0,
-                        with_context=with_context,
-                    )
+            architect_agent.run_batch_extract(
+                unit_text,
+                unit_entities,
+                targeting=targeting,
+                brain_id=brain_id,
+                timeout=20000,
+                ingestion_session_id=ingestion_session_id,
+                mode=("coarse" if mode == "coarse" else "granular"),
+                reset=reset,
+                cost_ledger=cost_ledger,
+                escalate=bool(config.ingest_architect_escalate),
+            )
         else:
             architect_agent.run_tooler(
-                with_context(unit_text) if with_context else unit_text,
+                unit_text,
                 unit_entities,
                 targeting=targeting,
                 brain_id=brain_id,
@@ -272,95 +268,95 @@ def _enrich_kg_impl(
             )
             cost_ledger.record_architect_unit(escalated=False)
 
-    if config.ingest_architect_per_unit:
-        chunks = chunk_text(input, max_chars=6000)
-        per_chunk_entities: List[List[ScoutEntity]] = []
-        with track_stage(cost_ledger, "scout"):
-            for chunk in chunks:
+    pending = []
+    recent_entities = []
+
+    def ingest_span(start: int, end: int, depth: int = 0) -> None:
+        source = input[start:end]
+        if not source.strip():
+            return
+        unit_text = source_context(input, start) + source
+        stage = "scout"
+        span_token = source_span_tokens.set(count_source_tokens(source)[0])
+        try:
+            with track_stage(cost_ledger, stage):
                 response = scout_agent._run_chunk(
-                    chunk,
+                    unit_text,
                     targeting=targeting,
                     brain_id=brain_id,
                     ingestion_session_id=ingestion_session_id,
-                    mode=("coarse" if mode == "coarse" else "granular"),
+                    mode=mode,
                     reference_time=source_timestamp,
                     preferred_extraction_entities=preferred_extraction_entities,
                 )
-                per_chunk_entities.append(list(response.entities))
+            entities = list(response.entities)
+            if not entities:
+                return
 
-        entities = _merge_entities(per_chunk_entities)
-        print("[DEBUG (initial_scout_entities)]: ", entities)
-
-        with track_stage(cost_ledger, "architect"):
-            first_unit = True
-            for idx, chunk in enumerate(chunks):
-                chunk_entities = (
-                    per_chunk_entities[idx] if idx < len(per_chunk_entities) else []
-                )
-                if not chunk_entities and not entities:
-                    continue
-                unit_entities = chunk_entities if chunk_entities else entities
-                architect_parts = _dense_architect_parts(
-                    chunk,
-                    unit_entities,
+            stage = "architect"
+            if config.ingest_architect_per_unit:
+                dense_parts = _dense_architect_parts(
+                    source,
+                    entities,
                     entity_threshold=config.ingest_architect_dense_entity_threshold,
                     dense_max_chars=config.ingest_architect_dense_max_chars,
                 )
-                if len(architect_parts) > 1:
-                    print(
-                        "[DEBUG (enrich_kg_from_input)]: dense architect rechunk "
-                        f"entities={len(unit_entities)} parts={len(architect_parts)} "
-                        f"max_chars={config.ingest_architect_dense_max_chars}"
-                    )
-                for part in architect_parts:
-                    part_entities = _filter_entities_for_text(unit_entities, part)
-                    with_context = None
-                    if prior_context_mode == "scratchpad" and not first_unit:
-                        window_start = max(0, idx - _PRIOR_UNIT_WINDOW)
-                        prior_ents: List[ScoutEntity] = []
-                        for prior_idx in range(window_start, idx):
-                            prior_ents.extend(per_chunk_entities[prior_idx])
-                        with_context = partial(
-                            _architect_unit_text_scratchpad,
-                            prior_entities=prior_ents,
-                            prior_relationships=list(
-                                getattr(architect_agent, "relationships_set", []) or []
-                            ),
-                            token_cap=scratchpad_token_cap,
-                        )
-                    elif prior_context_mode == "raw" and not first_unit:
-                        with_context = partial(_architect_unit_text, prior_chunks=chunks[:idx])
-                    _run_architect_unit(
-                        part, part_entities, reset=first_unit, with_context=with_context
-                    )
-                    first_unit = False
-    else:
-        with track_stage(cost_ledger, "scout"):
-            scout_response = scout_agent.run(
-                input,
-                targeting=targeting,
-                brain_id=brain_id,
-                ingestion_session_id=ingestion_session_id,
-                mode=("coarse" if mode == "coarse" else "granular"),
-                reference_time=source_timestamp,
-                preferred_extraction_entities=preferred_extraction_entities,
-            )
-        entities = list(scout_response.entities)
-        print("[DEBUG (initial_scout_entities)]: ", entities)
-        with track_stage(cost_ledger, "architect"):
-            _run_architect_unit(input, entities, reset=True)
+                if len(dense_parts) > 1:
+                    raise IngestModelLimitError("Source span exceeds the dense entity policy")
 
-    if mode == "granular" and config.ingest_defer_janitor:
-        with track_stage(cost_ledger, "janitor"):
-            architect_agent.run_batched_janitor(
-                text=input,
-                brain_id=brain_id,
-                targeting=targeting,
-                batch_size=config.janitor_batch_size,
-                cost_ledger=cost_ledger,
-            )
+            architect_text = unit_text
+            if prior_context_mode == "scratchpad" and recent_entities:
+                architect_text = _architect_unit_text_scratchpad(
+                    source_context(input, start, include_excerpt=False) + source,
+                    prior_entities=_merge_entities(recent_entities[-_PRIOR_UNIT_WINDOW:]),
+                    prior_relationships=pending[-32:],
+                    token_cap=scratchpad_token_cap,
+                )
+            distinct_entities = _merge_entities([entities])
+            payload_tokens = count_source_tokens(
+                json.dumps([entity.model_dump(mode="json", exclude={"properties"}) for entity in distinct_entities], ensure_ascii=False)
+            )[0]
+            payload_token = scout_payload_size.set((len(distinct_entities), payload_tokens))
+            try:
+                with track_stage(cost_ledger, stage):
+                    _run_architect_unit(architect_text, entities, reset=True)
+            finally:
+                scout_payload_size.reset(payload_token)
 
-    pending = architect_agent.take_pending_relationships()
+            if mode == "granular" and config.ingest_defer_janitor:
+                stage = "janitor"
+                with track_stage(cost_ledger, stage):
+                    architect_agent.run_batched_janitor(
+                        text=unit_text,
+                        brain_id=brain_id,
+                        targeting=targeting,
+                        batch_size=config.janitor_batch_size,
+                        cost_ledger=cost_ledger,
+                    )
+            pending.extend(architect_agent.take_pending_relationships())
+            recent_entities.append(entities)
+            del recent_entities[:-_PRIOR_UNIT_WINDOW]
+        except Exception as exc:
+            if not is_size_error(exc):
+                raise
+            if len(source) <= 1 or depth >= 12:
+                raise IngestModelLimitError(
+                    f"Ingestion {stage} could not fit source span [{start}, {end})"
+                ) from exc
+            cut = start + source_cut(source, len(source) // 2)
+            ingest_span(start, cut, depth + 1)
+            ingest_span(cut, end, depth + 1)
+        finally:
+            source_span_tokens.reset(span_token)
+
+    start = 0
+    while start < len(input):
+        # Keep the existing source-unit policy for deployments that enable it.
+        size = 6000 if config.ingest_architect_per_unit else len(input)
+        end = start + source_cut(input[start:], size)
+        ingest_span(start, end)
+        start = end
+
     enrichment_relationships = []
     for rel in pending:
         payload = rel.model_dump(mode="json")

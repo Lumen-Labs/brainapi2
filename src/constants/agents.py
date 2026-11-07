@@ -8,8 +8,9 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
-from pydantic import BaseModel, Field
-from typing import Literal, Optional, List, Tuple
+from pydantic import BaseModel, BeforeValidator, Field
+from typing import Annotated, Literal, Optional, List, Tuple
+import math
 import uuid
 
 
@@ -59,6 +60,20 @@ class ArchitectAgentNew(BaseModel):
     description: Optional[str] = None
 
 
+def _relationship_amount(value):
+    """Keep numeric quantities and omit malformed model-generated amounts."""
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        return None
+    try:
+        number = float(value)
+    except (ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+RelationshipAmount = Annotated[Optional[float], BeforeValidator(_relationship_amount)]
+
+
 class _ArchitectAgentRelationship(BaseModel):
     """
     Architect agent relationship.
@@ -73,7 +88,7 @@ class _ArchitectAgentRelationship(BaseModel):
     tip: ArchitectAgentEntity = Field(
         description="The DESTINATION of the relationship (the object/target where the arrow points, e.g. the Event in 'Actor --MADE--> Event')."
     )
-    amount: Optional[float] = Field(
+    amount: RelationshipAmount = Field(
         default=None,
         description="The amount of the relationship.",
     )

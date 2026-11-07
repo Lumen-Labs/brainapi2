@@ -1,5 +1,6 @@
 import os
 
+from src.core.saving.ingest_limits import check_output, invoke_enrichment_model, is_size_error
 from src.lib.tracing import TraceSeverity, tracer
 from src.utils.cleanup import strip_json
 
@@ -159,10 +160,11 @@ def _run_invoke_loop_impl(
         while n_message is None:
             _did_retry_unknown_finish = False
             if agent.output_schema is not None and not agent.tools:
-                _n_message = agent.model.invoke(agent.messages, config)
+                _n_message = invoke_enrichment_model(agent, config)
                 _n_message = normalize_invoke_response(_n_message)
                 model_responses.append(_n_message)
                 _log_token_usage(_n_message)
+                check_output(_n_message)
                 raw_content = normalize_message_content(
                     _n_message.get("content")
                     if isinstance(_n_message, dict)
@@ -185,7 +187,7 @@ def _run_invoke_loop_impl(
                 for _invoke_attempt in range(_invoke_attempts):
                     model_invoke_attempt_count += 1
                     try:
-                        _n_message = agent.model.invoke(agent.messages, config)
+                        _n_message = invoke_enrichment_model(agent, config)
                     except Exception as _invoke_exc:
                         tracer.exception(
                             "agent.model.invoke.failed",
@@ -198,6 +200,8 @@ def _run_invoke_loop_impl(
                                 "attempt": _invoke_attempt + 1,
                             },
                         )
+                        if is_size_error(_invoke_exc):
+                            raise
                         _exc_str = str(_invoke_exc).lower()
                         if agent._tools_bound and (
                             "invalid message format" in _exc_str
@@ -205,12 +209,13 @@ def _run_invoke_loop_impl(
                             or "tool" in _exc_str
                         ):
                             agent._unbind_tools()
-                            _n_message = agent.model.invoke(agent.messages, config)
+                            _n_message = invoke_enrichment_model(agent, config)
                         else:
                             raise
                     _n_message = normalize_invoke_response(_n_message)
                     model_responses.append(_n_message)
                     _log_token_usage(_n_message)
+                    check_output(_n_message)
                     raw_content = normalize_message_content(
                         _n_message.get("content")
                         if isinstance(_n_message, dict)
@@ -482,7 +487,7 @@ def _run_invoke_loop_impl(
                                     "content": _last_content + _hint,
                                 }
                         try:
-                            next_response = agent.model.invoke(agent.messages, config)
+                            next_response = invoke_enrichment_model(agent, config)
                         except Exception as _next_exc:
                             tracer.exception(
                                 "agent.model.next_invoke.failed",
@@ -510,6 +515,7 @@ def _run_invoke_loop_impl(
                                 raise
                         next_response = normalize_invoke_response(next_response)
                         _log_token_usage(next_response)
+                        check_output(next_response)
                         if agent.debug:
                             print(
                                 "[DEBUG (agent_base)]: Next response: ",

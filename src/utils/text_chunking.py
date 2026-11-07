@@ -39,3 +39,39 @@ def chunk_text(text: str, max_chars: int = 6000) -> list[str]:
     if current:
         chunks.append(current)
     return chunks or [cleaned]
+
+
+def source_cut(text: str, limit: int) -> int:
+    """Choose a contiguous source boundary at or before the character limit."""
+    import re
+
+    if len(text) <= limit:
+        return len(text)
+    prefix = text[:limit]
+    floor = limit // 2
+    for pattern in (r"\n(?=[ \t]*#{1,6}[ \t])", r"\n[ \t]*\n", r"\n", r"[.!?。！？](?:[ \t]+|$)", r"\s+"):
+        boundary = max((match.end() for match in re.finditer(pattern, prefix)), default=0)
+        if boundary > floor:
+            return boundary
+    return limit
+
+
+def source_context(text: str, start: int, *, include_excerpt: bool = True) -> str:
+    """Attach headings and a short preceding excerpt as context only."""
+    import re
+
+    if not start:
+        return ""
+    headings = []
+    for match in re.finditer(r"(?m)^\s*(#{1,6})[ \t]+([^\n]+)", text[:start]):
+        level = len(match[1])
+        headings = [(depth, title) for depth, title in headings if depth < level]
+        headings.append((level, match[2][:120]))
+    heading_path = " > ".join(title for _, title in headings)
+    excerpt = text[max(0, start - 480):start].strip() if include_excerpt else ""
+    if not heading_path and not excerpt:
+        return ""
+    return (
+        f"[Prior context for reference only. Extract from the current span.]\n"
+        f"{heading_path}\n{excerpt}\n\n[Current span]\n"
+    )

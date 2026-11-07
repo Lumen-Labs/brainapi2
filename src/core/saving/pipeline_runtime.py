@@ -7,6 +7,10 @@ _context = ContextVar("pipeline_operation", default=None)
 _stage = ContextVar("pipeline_stage_name", default=None)
 
 
+def current_stage():
+    return _stage.get()
+
+
 def bind_operation(value):
     return _context.set(value)
 

@@ -31,6 +31,8 @@ for key, value in ENV_DEFAULTS.items():
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from src.constants.agents import ArchitectAgentEntity, ArchitectAgentRelationship
 from src.core.agents.scout_agent import ScoutEntity
 from src.core.saving.architect_scratchpad import (
@@ -274,7 +276,7 @@ def test_enrich_loop_uses_scratchpad_not_raw_prior_for_batch():
     with patch.object(auto_kg, "ScoutAgent", return_value=scout), patch.object(
         auto_kg, "ArchitectAgent", return_value=architect
     ), patch.object(auto_kg, "IngestionManager", return_value=MagicMock()), patch.object(
-        auto_kg, "chunk_text", return_value=[prior_chunk, current_chunk]
+        auto_kg, "source_cut", side_effect=[len(prior_chunk) + 1, len(current_chunk)]
     ), patch.object(
         auto_kg.config, "pipeline_mode", "accurate"
     ), patch.object(
@@ -311,9 +313,12 @@ def test_enrichment_splits_truncated_relationship_batch_and_preserves_reset():
     second = "Kepler " * 30 + "Kepler."
     text = first + "\n\n" + second
     scout = MagicMock()
-    scout._run_chunk.return_value.entities = [
-        ScoutEntity(name="Aurora", type="Project"),
-        ScoutEntity(name="Kepler", type="Project"),
+    aurora = ScoutEntity(name="Aurora", type="Project")
+    kepler = ScoutEntity(name="Kepler", type="Project")
+    scout._run_chunk.side_effect = [
+        MagicMock(entities=[aurora, kepler]),
+        MagicMock(entities=[aurora]),
+        MagicMock(entities=[kepler]),
     ]
     architect = MagicMock()
     architect.run_batch_extract.side_effect = [ArchitectOutputLimitError(), [], []]
@@ -331,7 +336,65 @@ def test_enrichment_splits_truncated_relationship_batch_and_preserves_reset():
         auto_kg.enrich_kg_from_input(text, brain_id="brain-retry")
 
     calls = architect.run_batch_extract.call_args_list
-    assert [call.args[0] for call in calls] == [text, first, second]
-    assert [call.kwargs["reset"] for call in calls] == [True, True, False]
+    assert calls[0].args[0] == text
+    assert calls[1].args[0].strip() == first
+    assert calls[2].args[0].rstrip().endswith(second)
+    assert [call.kwargs["reset"] for call in calls] == [True, True, True]
     assert [entity.name for entity in calls[1].args[1]] == ["Aurora"]
     assert [entity.name for entity in calls[2].args[1]] == ["Kepler"]
+
+
+@pytest.mark.parametrize("dense_scout", [False, True])
+def test_model_overflow_retries_in_order_without_collecting_failed_unit(monkeypatch, dense_scout):
+    from types import SimpleNamespace
+
+    from src.core.saving import auto_kg
+    from src.core.saving.ingest_limits import IngestModelLimitError, invocation_limits, scout_payload_size
+
+    scout = MagicMock()
+    architect = MagicMock()
+    entity = ScoutEntity(uuid="alice", name="Alice", type="PERSON")
+    events = []
+
+    def run_scout(text, **kwargs):
+        assert invocation_limits.get() == (128,)
+        events.append(("scout", text))
+        if dense_scout and len(events) == 1:
+            return SimpleNamespace(entities=[
+                entity, ScoutEntity(uuid="bob", name="Bob", type="PERSON")
+            ])
+        return SimpleNamespace(entities=[entity])
+
+    def run_architect(text, entities, **kwargs):
+        events.append(("architect", text))
+        if dense_scout and scout_payload_size.get()[0] > 1:
+            raise IngestModelLimitError("Estimated extraction capacity exceeded")
+        if not dense_scout and len(events) == 2:
+            raise IngestModelLimitError("Model response exceeded the output limit")
+
+    scout._run_chunk.side_effect = run_scout
+    architect.run_batch_extract.side_effect = run_architect
+    architect.run_batched_janitor.side_effect = lambda **kw: events.append(
+        ("janitor", kw["text"])
+    )
+    architect.take_pending_relationships.return_value = []
+    monkeypatch.setattr(auto_kg, "ScoutAgent", lambda *a, **kw: scout)
+    monkeypatch.setattr(auto_kg, "ArchitectAgent", lambda *a, **kw: architect)
+    monkeypatch.setattr(auto_kg.config, "pipeline_mode", "accurate")
+    monkeypatch.setattr(auto_kg.config, "ingest_architect_mode", "batch")
+    monkeypatch.setattr(auto_kg.config, "ingest_architect_per_unit", False)
+    monkeypatch.setattr(auto_kg.config, "ingest_defer_janitor", True)
+
+    source = "Alice joined a team.\n\nShe became its lead."
+    monkeypatch.setattr(auto_kg.config, "ingest_max_new_tokens", 128)
+    auto_kg.enrich_kg_from_input(source)
+
+    assert [stage for stage, _ in events] == [
+        "scout", "architect", "scout", "architect", "janitor",
+        "scout", "architect", "janitor",
+    ]
+    assert architect.take_pending_relationships.call_count == 2
+    first, second = [text for stage, text in events if stage == "janitor"]
+    assert first + second.split("[Current span]\n")[1] == source
+    assert "Alice" in second.split("[Current span]\n")[0]
+    assert invocation_limits.get() is None
