@@ -6,8 +6,8 @@ from urllib.parse import urljoin
 
 import httpx
 
-from src.adapters.interfaces.crawler import CrawledPage, CrawlerClient, CrawlRequest
-from src.lib.crawler.cleaned import cleaned_title, format_cleaned_page, cleaned_sections
+from src.adapters.interfaces.crawler import CrawledPage, CrawledSection, CrawlerClient, CrawlRequest
+from src.lib.crawler.cleaned import cleaned_fact_sections, cleaned_title, format_cleaned_page, cleaned_sections
 from src.lib.crawler.errors import (
     CrawlerConfigError,
     CrawlerFailedError,
@@ -63,7 +63,10 @@ class LumenCrawlerClient(CrawlerClient):
         with self._client() as client:
             crawl_id = self._create_crawl(client, request)
             self._poll_until_cleaned(client, crawl_id, request.on_progress)
-            return self._list_cleaned_pages(client, crawl_id)
+            grouped = self._list_grouped_entries(client, crawl_id)
+            if grouped is None:
+                return self._list_cleaned_pages(client, crawl_id)
+            return self._grouped_pages(client, crawl_id, grouped)
 
     def _create_crawl(self, client: httpx.Client, request: CrawlRequest) -> str:
         response = client.post(
@@ -123,13 +126,85 @@ class LumenCrawlerClient(CrawlerClient):
         except httpx.HTTPError:
             return
 
-    def _list_cleaned_pages(
+    def _list_grouped_entries(
         self, client: httpx.Client, crawl_id: str
-    ) -> list[CrawledPage]:
-        pages: list[CrawledPage] = []
-        cursor: Optional[str] = None
+    ) -> Optional[list[dict]]:
+        entries = []
+        cursor = None
+        seen_cursors = set()
         while True:
-            params: dict[str, Any] = {"include": "cleaned", "limit": PAGE_LIMIT}
+            params = {"include": "markdown", "limit": 5}
+            if cursor:
+                params["cursor"] = cursor
+            response = client.get(
+                self._url(f"/v1/crawls/{crawl_id}/content"),
+                headers=self._headers(),
+                params=params,
+            )
+            if not entries and response.status_code in {404, 405}:
+                return None  # Older crawler deployments only expose Pages.
+            self._raise_for_status(response)
+            body = response.json()
+            if not entries and body.get("layout") == "pages":
+                return None
+            if body.get("layout") != "grouped" or not isinstance(body.get("items"), list):
+                raise CrawlerFailedError("Crawler returned an invalid grouped content page")
+            entries.extend(body["items"])
+            cursor = body.get("next_cursor")
+            if not cursor:
+                return entries
+            if cursor in seen_cursors:
+                raise CrawlerFailedError("Crawler repeated a grouped content cursor")
+            seen_cursors.add(cursor)
+
+    def _grouped_pages(
+        self, client: httpx.Client, crawl_id: str, entries: list[dict]
+    ) -> list[CrawledPage]:
+        from src.core.saving.pipeline_runtime import record_cleanup_usage
+
+        urls = {entry["source_url"] for entry in entries}
+        metadata = {}
+        for item in self._iter_raw_pages(client, crawl_id):
+            cleaned = item.get("cleaned")
+            if not item.get("ok") or not isinstance(cleaned, dict):
+                continue
+            url = cleaned.get("canonical_url") or cleaned.get("url") or item.get("url")
+            if url:
+                record_cleanup_usage(cleaned, str(url))
+            for key in (url, item.get("url"), item.get("canonical_url")):
+                if key in urls and key not in metadata:
+                    metadata[key] = (cleaned.get("page_type"), item.get("status_code"), cleaned_fact_sections(cleaned))
+
+        grouped = {}
+        for entry in entries:
+            url = entry["source_url"]
+            title = entry["title"]
+            markdown = entry.get("markdown")
+            if not isinstance(markdown, str) or not markdown.strip():
+                raise CrawlerFailedError("Crawler grouped entry has no Markdown")
+            grouped.setdefault(url, []).append(
+                CrawledSection(title=title, text=markdown, heading_path=[title])
+            )
+
+        pages = []
+        for url, chapters in grouped.items():
+            page_type, status_code, facts = metadata.get(url, (None, None, []))
+            sections = [*chapters, *facts]
+            pages.append(CrawledPage(
+                url=url,
+                canonical_url=url,
+                title=chapters[0].title,
+                page_type=page_type,
+                status_code=status_code,
+                text="\n\n".join(section.text for section in sections),
+                sections=sections,
+            ))
+        return pages
+
+    def _iter_raw_pages(self, client: httpx.Client, crawl_id: str):
+        cursor = None
+        while True:
+            params = {"include": "cleaned", "limit": PAGE_LIMIT}
             if cursor:
                 params["cursor"] = cursor
             response = client.get(
@@ -139,13 +214,18 @@ class LumenCrawlerClient(CrawlerClient):
             )
             self._raise_for_status(response)
             body = response.json()
-            for item in body.get("items") or []:
-                page = self._to_crawled_page(item)
-                if page is not None:
-                    pages.append(page)
+            yield from body.get("items") or []
             cursor = body.get("next_cursor")
             if not cursor:
-                return pages
+                return
+
+    def _list_cleaned_pages(
+        self, client: httpx.Client, crawl_id: str
+    ) -> list[CrawledPage]:
+        return [
+            page for item in self._iter_raw_pages(client, crawl_id)
+            if (page := self._to_crawled_page(item)) is not None
+        ]
 
     def _to_crawled_page(self, item: dict) -> Optional[CrawledPage]:
         fallback_url = item.get("canonical_url") or item.get("url")

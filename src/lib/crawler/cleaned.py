@@ -104,6 +104,13 @@ def cleaned_sections(cleaned: dict) -> list:
         core = _text(content.get("core"))
         if core:
             sections.append(CrawledSection(title="Main content", text=core))
+    return [*sections, *cleaned_fact_sections(cleaned)]
+
+
+def cleaned_fact_sections(cleaned: dict) -> list:
+    from src.adapters.interfaces.crawler import CrawledSection
+
+    sections = []
     facts = _as_dict(cleaned.get("facts"))
     contacts = _as_dict(facts.get("contacts"))
     lines = []

@@ -148,6 +148,8 @@ def test_create_poll_and_cleaned_pages():
                     "cleanup": {"status": "completed"},
                 },
             )
+        if path == f"/v1/crawls/{CRAWL_ID}/content":
+            return _json(request, 200, {"layout": "pages", "items": [], "next_cursor": None})
         if request.method == "GET" and path == f"/v1/crawls/{CRAWL_ID}/pages":
             assert request.url.params.get("include") == "cleaned"
             return _json(
@@ -279,3 +281,46 @@ def test_adapter_delegates_crawl_pages():
     adapter.add_client(FakeClient())
     result = adapter.crawl_pages(_request())
     assert result == [page]
+
+
+def test_grouped_markdown_paginates_without_ingesting_repeated_cleaned_body():
+    root = CLEANED_PAGE["url"]
+    alias = root + "chapter-alias"
+
+    def handler(request):
+        path = request.url.path
+        if path == "/v1/crawls":
+            return _json(request, 202, {"id": CRAWL_ID})
+        if path == f"/v1/crawls/{CRAWL_ID}":
+            return _json(request, 200, {"status": "completed", "cleanup": {"status": "completed"}})
+        if path.endswith("/content"):
+            assert request.url.params.get("include") == "markdown"
+            second = request.url.params.get("cursor") == "next"
+            title = "Chapter 1" if second else "Introduction"
+            return _json(request, 200, {
+                "layout": "grouped",
+                "items": [{"source_url": root, "title": title, "markdown": f"# {title}\n\nUnique text."}],
+                "next_cursor": None if second else "next",
+            })
+        assert path.endswith("/pages")
+        return _json(request, 200, {
+            "items": [
+                {"url": url, "ok": True, "status_code": 200,
+                 "cleaned": {**CLEANED_PAGE, "url": url, "canonical_url": url}}
+                for url in (root, alias)
+            ],
+            "next_cursor": None,
+        })
+
+    client = LumenCrawlerClient(api_key="test", transport=httpx.MockTransport(handler))
+    pages = client.crawl_pages(_request())
+    assert len(pages) == 1
+    page = pages[0]
+    assert page.url == root
+    assert page.page_type == "landing"
+    assert page.status_code == 200
+    assert [section.title for section in page.sections] == [
+        "Introduction", "Chapter 1", "Contacts", "Calls to action",
+    ]
+    assert "Welcome to Example." not in page.text
+    assert page.text.count("hi@example.com") == 1
