@@ -5,6 +5,7 @@ x-brainapi-common: &brainapi-common
   env_file:
     - ${BRAINAPI_ENV_FILE:?BRAINAPI_ENV_FILE is required}
   environment: &brainapi-environment
+    INGEST_PUBLICATION_LOCK_DIR: /app/ingest-publication-locks
     ENV: production
     PLUGIN_FAILURE_POLICY: ${PLUGIN_FAILURE_POLICY:-fail}
     REDIS_HOST: redis
@@ -26,7 +27,9 @@ x-brainapi-common: &brainapi-common
     PLUGIN_REGISTRY_URL: ${PLUGIN_REGISTRY_URL:-}
     PLUGIN_PUBLISHER_ID: ${PLUGIN_PUBLISHER_ID:-}
     PLUGIN_PUBLISHER_API_KEY: ${PLUGIN_PUBLISHER_API_KEY:-}
-  volumes: [brainapi-plugins:/app/plugins]
+  volumes:
+    - brainapi-plugins:/app/plugins
+    - ingest-publication-locks:/app/ingest-publication-locks
   networks: [appnet]
   restart: unless-stopped
 
@@ -258,3 +261,4 @@ volumes:
   mongo-data:
   mongo-config:
   brainapi-plugins:
+  ingest-publication-locks:
