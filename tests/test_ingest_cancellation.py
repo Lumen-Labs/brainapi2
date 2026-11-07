@@ -150,8 +150,11 @@ def test_staged_cancellation_reports_pending_until_finalized(run, mode):
     assert cancellation.public_state("brain", "staged", {})["status"] == "cancelled"
 
 
-def test_reconciler_retries_dispatch_and_discard(run, monkeypatch):
-    from src.core.saving import ingest_recovery, ingest_staging as staging
+def test_reconciler_retries_dispatch_and_discard(run, monkeypatch, tmp_path):
+    from src.core.saving import ingest_access_gate as gate, ingest_recovery, ingest_staging as staging
+
+    monkeypatch.setenv("INGEST_PUBLICATION_LOCK_DIR", str(tmp_path))
+    monkeypatch.setattr(gate, "_gates", cancellation._runs)
 
     staging.create_run("brain", "staged")
     unit = staging.register_unit("brain", "staged", "page:1", {"task": "page"})
@@ -160,9 +163,14 @@ def test_reconciler_retries_dispatch_and_discard(run, monkeypatch):
     ingest_recovery.reconcile_run("brain", "staged", dispatch, publish)
     dispatch.assert_called_once_with("brain", "staged", unit, {"task": "page"})
 
-    cancellation.request_cancellation("brain", "staged", "rollback")
     discard = Mock(side_effect=[RuntimeError("interrupted"), None])
     monkeypatch.setattr(ingest_recovery, "discard_outputs", discard)
+    with gate.brain_access("brain"):
+        cancellation.request_cancellation("brain", "staged", "rollback")
+        with pytest.raises(gate.BrainPublicationBusy):
+            ingest_recovery.reconcile_run("brain", "staged", dispatch, publish)
+        discard.assert_not_called()
+
     with pytest.raises(RuntimeError, match="interrupted"):
         ingest_recovery.reconcile_run("brain", "staged", dispatch, publish)
     assert cancellation.public_state("brain", "staged", {})["status"] == "cancelling"

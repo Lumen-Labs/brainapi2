@@ -1,6 +1,6 @@
 """Reconcile one brain's durable staging state independently of broker delivery."""
 
-from src.core.saving import ingest_cancellation, ingest_staging
+from src.core.saving import ingest_access_gate, ingest_cancellation, ingest_staging
 from src.core.saving.ingest_staged_output import discard_outputs
 
 
@@ -20,5 +20,6 @@ def reconcile_run(brain_id, root_id, dispatch, publish):
     if run["status"] == "publishing":
         publish(brain_id, root_id)
     elif run["status"] == "discarding":
-        discard_outputs(brain_id, root_id)
-        ingest_staging.finish_discard(brain_id, root_id)
+        with ingest_access_gate.publication_gate(brain_id, root_id):
+            discard_outputs(brain_id, root_id)
+            ingest_staging.finish_discard(brain_id, root_id)
