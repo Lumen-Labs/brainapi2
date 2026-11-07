@@ -16,6 +16,10 @@ def capture_writes(brain_id):
         _buffer.reset(token)
 
 
+def writes_are_staged():
+    return _buffer.get() is not None
+
+
 def capture_operation(brain_id, operation):
     scope = _buffer.get()
     if scope is None:
@@ -50,3 +54,17 @@ def capture_vector_write(brain_id, vectors, store):
         "method": "add_vectors",
         "args": {"vectors": [vector.model_dump(mode="json") for vector in vectors], "store": store},
     })
+
+
+def staged_nodes(brain_id, uuids):
+    scope = _buffer.get()
+    if scope is None or scope[0] != brain_id:
+        return {}
+    requested = set(uuids)
+    return {
+        node["uuid"]: node
+        for operation in scope[1]
+        if operation["adapter"] == "graph" and operation["method"] == "add_nodes"
+        for node in operation["args"]["nodes"]
+        if node["uuid"] in requested
+    }

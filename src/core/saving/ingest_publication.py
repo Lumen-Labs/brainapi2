@@ -2,6 +2,7 @@
 
 from src.constants.data import Observation, StructuredData, TextChunk
 from src.constants.embeddings import Vector
+from src.constants.kg import Node, Predicate
 from src.core.saving.ingest_staged_output import load_output
 from src.core.saving.ingest_staging import advance_publication, finish_publication, next_publication_unit
 
@@ -50,6 +51,25 @@ def replay_vector_operation(client, brain_id, operation):
     upsert(vectors, args["store"], brain_id)
 
 
+def replay_graph_operation(client, brain_id, operation):
+    method = operation["method"]
+    args = operation["args"]
+    if method == "add_nodes":
+        nodes = [Node.model_validate(node) for node in args["nodes"]]
+        result = client.add_nodes(nodes, brain_id, args["identification_params"], args["metadata"])
+        if isinstance(result, str):
+            raise RuntimeError("Staged graph nodes could not be applied")
+    elif method == "add_relationship":
+        client.add_relationship(
+            Node.model_validate(args["subject"]),
+            Predicate.model_validate(args["predicate"]),
+            Node.model_validate(args["to_object"]),
+            brain_id,
+        )
+    else:
+        raise ValueError("Unsupported staged graph operation")
+
+
 def publish_next_unit(brain_id, root_id, replay_operation):
     """Advance the cursor only after all replay handlers report durable success."""
     unit = next_publication_unit(brain_id, root_id)
@@ -63,7 +83,7 @@ def publish_next_unit(brain_id, root_id, replay_operation):
 
 
 
-def publish_staged_run(brain_id, root_id, acquire_gate, data_client, vector_client):
+def publish_staged_run(brain_id, root_id, acquire_gate, data_client, vector_client, graph_client=None):
     """Apply staged units while the caller's exclusive brain gate is held."""
     def replay(target, operation_id, operation):
         adapter = operation["adapter"]
@@ -71,6 +91,8 @@ def publish_staged_run(brain_id, root_id, acquire_gate, data_client, vector_clie
             replay_data_operation(data_client, target, operation)
         elif adapter == "vector":
             replay_vector_operation(vector_client, target, operation)
+        elif adapter == "graph" and graph_client is not None:
+            replay_graph_operation(graph_client, target, operation)
         else:
             raise ValueError(f"Unsupported staged operation {operation_id}")
 

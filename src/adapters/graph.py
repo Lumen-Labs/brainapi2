@@ -12,6 +12,7 @@ import re
 from abc import ABC, abstractmethod
 from typing import Dict, List, Literal, Optional, Tuple
 from src.adapters.interfaces.graph import GraphClient, PredicateWithFlowKey
+from src.core.saving.ingest_write_buffer import capture_operation, staged_nodes, writes_are_staged
 from src.constants.embeddings import Vector
 from src.constants.kg import (
     IdentificationParams,
@@ -149,6 +150,17 @@ class GraphAdapter:
         """
         Add nodes to the graph.
         """
+        if writes_are_staged():
+            capture_operation(brain_id, {
+                "adapter": "graph",
+                "method": "add_nodes",
+                "args": {
+                    "nodes": [node.model_dump(mode="json") for node in nodes],
+                    "identification_params": identification_params,
+                    "metadata": metadata,
+                },
+            })
+            return nodes
         return self.graph.add_nodes(nodes, brain_id, identification_params, metadata)
 
     def add_relationship(
@@ -161,6 +173,17 @@ class GraphAdapter:
         """
         Add a relationship between two nodes to the graph.
         """
+        if writes_are_staged():
+            capture_operation(brain_id, {
+                "adapter": "graph",
+                "method": "add_relationship",
+                "args": {
+                    "subject": subject.model_dump(mode="json"),
+                    "predicate": predicate.model_dump(mode="json"),
+                    "to_object": to_object.model_dump(mode="json"),
+                },
+            })
+            return predicate.uuid
         return self.graph.add_relationship(subject, predicate, to_object, brain_id)
 
     def search_graph(
@@ -231,13 +254,21 @@ class GraphAdapter:
         Returns:
             Node: The node matching the provided UUID.
         """
+        staged = staged_nodes(brain_id, [uuid])
+        if uuid in staged:
+            return Node.model_validate(staged[uuid])
         return self.graph.get_by_uuid(uuid, brain_id)
 
     def get_by_uuids(self, uuids: list[str], brain_id: str = "default") -> list[Node]:
         """
         Get nodes by their UUIDs.
         """
-        return self.graph.get_by_uuids(uuids, brain_id)
+        staged = staged_nodes(brain_id, uuids)
+        if not staged:
+            return self.graph.get_by_uuids(uuids, brain_id)
+        missing = [uuid for uuid in uuids if uuid not in staged]
+        live = self.graph.get_by_uuids(missing, brain_id) if missing else []
+        return [*live, *(Node.model_validate(node) for node in staged.values())]
 
     def get_by_identification_params(
         self,
