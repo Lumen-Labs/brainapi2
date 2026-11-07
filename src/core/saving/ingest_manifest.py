@@ -7,6 +7,7 @@ import json
 import os
 import time
 from datetime import datetime, timezone
+from threading import local
 from uuid import uuid4
 
 VERSION = "sections-v1"
@@ -254,24 +255,32 @@ def verify_usage_context(token):
         return False
 
 
-_runtime_tokens = {}
+_task_context = local()
 
 def install_task_context():
     from celery.signals import task_prerun, task_postrun
-    from src.core.saving.pipeline_runtime import bind_operation, reset_operation
-    @task_prerun.connect(weak=False)
+    from src.core.saving.pipeline_runtime import _stage, bind_operation, reset_operation
+
+    @task_prerun.connect(weak=False, dispatch_uid="brainapi.pipeline.task_prerun")
     def begin(task_id=None, task=None, **kwargs):
-        value = (getattr(task.request, "headers", None) or {}).get("pipeline_operation")
-        if value:
-            from src.core.saving.pipeline_runtime import _stage
-            _runtime_tokens[task_id] = (bind_operation(value), _stage.set("source"))
-    @task_postrun.connect(weak=False)
+        request = getattr(task, "request", None)
+        value = (getattr(request, "headers", None) or {}).get("pipeline_operation")
+        if not hasattr(_task_context, "tokens"):
+            _task_context.tokens = {}
+        _task_context.tokens.setdefault(task_id, []).append(
+            (bind_operation(value), _stage.set("source" if value else None))
+        )
+
+    @task_postrun.connect(weak=False, dispatch_uid="brainapi.pipeline.task_postrun")
     def end(task_id=None, **kwargs):
-        token = _runtime_tokens.pop(task_id, None)
-        if token is not None:
-            from src.core.saving.pipeline_runtime import _stage
-            reset_operation(token[0])
-            _stage.reset(token[1])
+        tokens = getattr(_task_context, "tokens", {})
+        stack = tokens.get(task_id)
+        if stack:
+            operation, stage = stack.pop()
+            if not stack:
+                del tokens[task_id]
+            reset_operation(operation)
+            _stage.reset(stage)
 
 
 def dispatch_sections(brain_id, import_id, section_ids, routing=None):

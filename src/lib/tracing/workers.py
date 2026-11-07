@@ -1,12 +1,12 @@
 import time
+from threading import local
 from typing import Any
 
 from celery import signals
 
 from src.lib.tracing.tracker import tracer
 
-_task_starts: dict[str, float] = {}
-_task_context_tokens: dict[str, Any] = {}
+_task_context = local()
 
 
 def _task_id(task_id: str | None, task=None) -> str:
@@ -70,11 +70,13 @@ def install_celery_tracing(_app=None, service_name: str = "brainapi-worker") -> 
 def _trace_task_prerun(sender=None, task_id=None, task=None, args=None, kwargs=None, **_):
     resolved_task_id = _task_id(task_id, task)
     resolved_task_name = _task_name(task, sender)
-    _task_starts[resolved_task_id] = time.perf_counter()
-    _task_context_tokens[resolved_task_id] = tracer.set_context(
+    if not hasattr(_task_context, "runs"):
+        _task_context.runs = {}
+    token = tracer.set_context(
         trace_id=_trace_id(resolved_task_id, kwargs),
         tenant_id=_tenant_id(args, kwargs),
     )
+    _task_context.runs.setdefault(resolved_task_id, []).append((time.perf_counter(), token))
     tracer.publish(
         "latency",
         f"{resolved_task_name}.started",
@@ -87,7 +89,11 @@ def _trace_task_prerun(sender=None, task_id=None, task=None, args=None, kwargs=N
 def _trace_task_postrun(sender=None, task_id=None, task=None, args=None, kwargs=None, retval=None, state=None, **_):
     resolved_task_id = _task_id(task_id, task)
     resolved_task_name = _task_name(task, sender)
-    started_at = _task_starts.pop(resolved_task_id, None)
+    runs = getattr(_task_context, "runs", {})
+    stack = runs.get(resolved_task_id)
+    started_at, token = stack.pop() if stack else (None, None)
+    if stack == []:
+        del runs[resolved_task_id]
     duration_ms = (time.perf_counter() - started_at) * 1000 if started_at else None
     metadata = {
         **_metadata(resolved_task_id, resolved_task_name, args, kwargs),
@@ -104,7 +110,6 @@ def _trace_task_postrun(sender=None, task_id=None, task=None, args=None, kwargs=
             threshold_ms=tracer.default_sla_ms,
             metadata=metadata,
         )
-    token = _task_context_tokens.pop(resolved_task_id, None)
     if token is not None:
         tracer.reset_context(token)
 
@@ -112,7 +117,8 @@ def _trace_task_postrun(sender=None, task_id=None, task=None, args=None, kwargs=
 def _trace_task_failure(sender=None, task_id=None, exception=None, args=None, kwargs=None, einfo=None, **_):
     resolved_task_id = _task_id(task_id, sender)
     resolved_task_name = _task_name(sender=sender)
-    started_at = _task_starts.get(resolved_task_id)
+    stack = getattr(_task_context, "runs", {}).get(resolved_task_id)
+    started_at = stack[-1][0] if stack else None
     duration_ms = (time.perf_counter() - started_at) * 1000 if started_at else None
     metadata = _metadata(resolved_task_id, resolved_task_name, args, kwargs)
     if einfo is not None:

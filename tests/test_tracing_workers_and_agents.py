@@ -14,8 +14,7 @@ class WorkerTracingTests(unittest.TestCase):
 
     def tearDown(self):
         tracing_workers.tracer = self.original_tracer
-        tracing_workers._task_starts.clear()
-        tracing_workers._task_context_tokens.clear()
+        tracing_workers._task_context.runs = {}
 
     def test_worker_signals_record_start_sla_and_failure(self):
         tracing_workers._trace_task_prerun(
@@ -24,7 +23,9 @@ class WorkerTracingTests(unittest.TestCase):
             args=({"brain_id": "tenant-1"},),
             kwargs={},
         )
-        tracing_workers._task_starts["task-1"] -= 2
+        stack = tracing_workers._task_context.runs["task-1"]
+        started_at, token = stack[-1]
+        stack[-1] = (started_at - 2, token)
         tracing_workers._trace_task_failure(
             sender=type("Task", (), {"name": "demo.task"})(),
             task_id="task-1",
@@ -138,3 +139,45 @@ class AgentLoopTracingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_duplicate_delivery_keeps_pipeline_and_trace_context_on_each_thread():
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from types import SimpleNamespace
+
+    from celery import signals
+
+    from src.core.saving.ingest_manifest import install_task_context
+    from src.core.saving.pipeline_runtime import _context
+
+    handlers = []
+
+    def capture(**_):
+        def register(handler):
+            handlers.append(handler)
+            return handler
+        return register
+
+    with patch.object(signals.task_prerun, "connect", side_effect=capture), patch.object(
+        signals.task_postrun, "connect", side_effect=capture
+    ):
+        install_task_context()
+    begin, end = handlers
+    barrier = Barrier(2, timeout=5)
+
+    def delivery(brain_id):
+        headers = {"pipeline_operation": {"brain_id": brain_id}}
+        task = SimpleNamespace(request=SimpleNamespace(headers=headers))
+        tracing_workers._trace_task_prerun(task_id="duplicate", args=({"brain_id": brain_id},))
+        begin(task_id="duplicate", task=task)
+        barrier.wait()
+        assert _context.get()["brain_id"] == brain_id
+        end(task_id="duplicate")
+        tracing_workers._trace_task_postrun(task_id="duplicate")
+        assert _context.get() is None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        deliveries = [pool.submit(delivery, brain) for brain in ("brain-a", "brain-b")]
+        for future in deliveries:
+            future.result()
