@@ -8,9 +8,10 @@ from src.core.saving import ingest_cancellation
 CLAIM_SECONDS = 120
 DISPATCH_RETRY_SECONDS = 30
 MAX_UNIT_FAILURES = 3
+MAX_ROLLBACK_FAILURES = 5
 
 
-def create_run(brain_id, root_id, *, callback_deadline=None, message=None, discovery=False):
+def create_run(brain_id, root_id, *, callback_deadline=None, upload_deadline=None, message=None, discovery=False):
     """Create the run and, for direct submissions, its first dispatch intent."""
     unit_id = None
     units = {}
@@ -28,10 +29,21 @@ def create_run(brain_id, root_id, *, callback_deadline=None, message=None, disco
             "publication_cursor": 0,
             "sealed": message is not None and not discovery,
             "callback_deadline": callback_deadline,
+            "upload_deadline": upload_deadline,
         }},
         upsert=True,
     )
     return unit_id
+
+
+def expire_file_upload(brain_id, root_id):
+    def transition(run):
+        deadline = run.get("upload_deadline")
+        if run["status"] == "staging" and not run["units"] and deadline and deadline <= time():
+            return {"status": "discarding", "discard_result": "failed"}
+        return None
+
+    return ingest_cancellation._change(brain_id, root_id, transition)
 
 
 def register_unit(brain_id, root_id, key, message, *, seal=False, task_id=None):
@@ -270,6 +282,21 @@ def finish_discard(brain_id, root_id):
             "units": _terminal_units(run),
         } if run["status"] == "discarding" else None,
     )
+
+
+def record_rollback_failure(brain_id, root_id):
+    """Report exhausted cleanup retries without holding the brain gate indefinitely."""
+    def transition(run):
+        if run["status"] != "discarding" or run.get("mode") != "rollback":
+            return None
+        failures = run.get("rollback_failures", 0) + 1
+        changes = {"rollback_failures": failures}
+        if failures >= MAX_ROLLBACK_FAILURES:
+            changes.update(status="rollback_failed", units=_terminal_units(run))
+        return changes
+
+    run = ingest_cancellation._change(brain_id, root_id, transition)
+    return bool(run and run["status"] == "rollback_failed")
 
 
 def complete_discovery(brain_id, root_id, unit_id, token, messages, *, wait_for_sections=False):

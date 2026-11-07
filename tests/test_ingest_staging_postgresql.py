@@ -19,6 +19,7 @@ def test_staged_cancellation_with_postgresql_and_pgvector(mode, monkeypatch, tmp
         ingest_access_gate,
         ingest_cancellation,
         ingest_runtime,
+        ingest_staged_input,
         ingest_staged_output,
         ingest_staging,
         ingest_worker,
@@ -36,6 +37,7 @@ def test_staged_cancellation_with_postgresql_and_pgvector(mode, monkeypatch, tmp
     monkeypatch.setattr(ingest_cancellation, "_runs", lambda key: PostgreSQLCollection(data.data, key, "ingest_runs"))
     monkeypatch.setattr(ingest_access_gate, "_gates", lambda key: PostgreSQLCollection(data.data, key, "ingest_access_gates"))
     monkeypatch.setattr(ingest_staged_output, "collection", lambda key, name: PostgreSQLCollection(data.data, key, name))
+    monkeypatch.setattr(ingest_staged_input, "collection", lambda key, name: PostgreSQLCollection(data.data, key, name))
 
     def stage():
         data.save_text_chunk(TextChunk(id="staged", text="new data"), brain)
@@ -53,6 +55,10 @@ def test_staged_cancellation_with_postgresql_and_pgvector(mode, monkeypatch, tmp
 
     data.save_text_chunk(TextChunk(id="existing", text="keep me"), brain)
     ingest_staging.create_batch_run(brain, "root", [{"payload": {}}, {"payload": {}}])
+    monkeypatch.setattr(ingest_staged_input, "PART_SIZE", 4)
+    part_count = ingest_staged_input.save_file(brain, "root", "c3RhZ2Vk")
+    assert part_count == 2
+    assert ingest_staged_input.load_file(brain, "root", part_count) == "c3RhZ2Vk"
     [(first, _), (second, _)] = ingest_staging.pending_dispatches(brain, "root")
     assert ingest_worker.execute_staged_unit(brain, "root", first, stage)
     assert [chunk.id for chunk in stored_chunks()] == ["existing"]
@@ -63,6 +69,7 @@ def test_staged_cancellation_with_postgresql_and_pgvector(mode, monkeypatch, tmp
     ingest_runtime.recover_brain(brain, data.data, vectors.vector_store, None)
 
     assert ingest_cancellation._runs(brain).find_one({"_id": "root"})["status"] == "cancelled"
+    assert PostgreSQLCollection(data.data, brain, "ingest_staged_inputs").count_documents({"import_id": "root"}) == 0
     expected = {"existing", "staged"} if mode == "keep_saved" else {"existing"}
     assert {chunk.id for chunk in stored_chunks()} == expected
     assert bool(stored_vectors()) == (mode == "keep_saved")

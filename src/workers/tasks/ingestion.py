@@ -1748,6 +1748,7 @@ def ingest_file(
     filename: str,
     brain_id: str,
     group_tracking: Optional[str] = None,
+    content_parts: Optional[int] = None,
 ):
     """
     Ingest a file via Docling: convert to markdown (per page), enqueue one
@@ -1760,11 +1761,16 @@ def ingest_file(
         from src.core.saving.ingest_worker import execute_staged_unit
 
         def discover():
+            from src.core.saving.ingest_staged_input import load_file
+
+            content = content_b64 if content_parts is None else load_file(
+                brain_id, staged_root, content_parts,
+            )
             return [
                 {"payload": build_file_page_ingest_payload(
                     brain_id, markdown, group_tracking=group_tracking,
                 )}
-                for markdown in _extract_file_pages(content_b64, filename)
+                for markdown in _extract_file_pages(content, filename)
                 if markdown.strip()
             ]
 

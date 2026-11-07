@@ -14,6 +14,7 @@ from src.core.saving import (
     ingest_access_gate,
     ingest_cancellation,
     ingest_runtime,
+    ingest_staged_input,
     ingest_staged_output,
     ingest_staging,
     ingest_worker,
@@ -32,6 +33,7 @@ def test_cancel_staged_run_with_durable_mongo_storage(mode, monkeypatch, tmp_pat
     monkeypatch.setattr(ingest_cancellation, "_runs", lambda _: database.ingest_runs)
     monkeypatch.setattr(ingest_access_gate, "_gates", lambda _: database.ingest_access_gates)
     monkeypatch.setattr(ingest_staged_output, "collection", lambda *_: database.ingest_staged_outputs)
+    monkeypatch.setattr(ingest_staged_input, "collection", lambda *_: database.ingest_staged_inputs)
 
     from fastapi import FastAPI, Request
     from fastapi.testclient import TestClient
@@ -99,6 +101,64 @@ def test_cancel_staged_run_with_durable_mongo_storage(mode, monkeypatch, tmp_pat
         assert bool(database.text_chunks.find_one({"_id": "staged"})) == (mode == "keep_saved")
         with ingest_access_gate.brain_access(brain):
             pass
+    finally:
+        client.drop_database(brain)
+        client.close()
+
+
+def test_large_docling_file_uses_durable_input_and_discards_it_on_cancel(monkeypatch, tmp_path):
+    import base64
+    from unittest.mock import Mock
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from src.services.api.dependencies import get_brain_id
+    from src.services.api.routes import ingest
+
+    uri = os.getenv("INGEST_TEST_MONGO_URI")
+    if not uri:
+        pytest.skip("Set INGEST_TEST_MONGO_URI to run the Mongo staging integration")
+    client = MongoClient(uri, serverSelectionTimeoutMS=3000)
+    brain = f"ingest_test_{uuid4().hex}"
+    database = client[brain]
+    monkeypatch.setenv("INGEST_PUBLICATION_LOCK_DIR", str(tmp_path))
+    monkeypatch.setenv("STAGED_INGESTION_ENABLED", "1")
+    monkeypatch.setenv("STAGED_ENRICHMENT_ENABLED", "1")
+    monkeypatch.setattr(ingest.config, "ocr_mode", "docling")
+    monkeypatch.setattr(ingest, "set_ingestion_task_status", Mock())
+    monkeypatch.setattr(ingest_cancellation, "_runs", lambda _: database.ingest_runs)
+    monkeypatch.setattr(ingest_access_gate, "_gates", lambda _: database.ingest_access_gates)
+    monkeypatch.setattr(ingest_staged_output, "collection", lambda *_: database.ingest_staged_outputs)
+    monkeypatch.setattr(ingest_staged_input, "collection", lambda *_: database.ingest_staged_inputs)
+    dispatch = Mock()
+    monkeypatch.setattr(ingest_worker, "dispatch_staged_source", dispatch)
+
+    app = FastAPI()
+    app.include_router(ingest.ingest_router)
+    app.dependency_overrides[get_brain_id] = lambda: brain
+    file = b"x" * (13 * 1024 * 1024)
+    try:
+        response = TestClient(app).post("/ingest/file", files={"file": ("large.txt", file)})
+        assert response.status_code == 202
+        root = response.json()["task_id"]
+        [(unit_id, message)] = ingest_staging.pending_dispatches(brain, root)
+        dispatch.assert_called_once_with(brain, root, unit_id)
+        payload = message["payload"]
+        assert not payload["content_b64"]
+        assert payload["content_parts"] > 1
+        assert base64.b64decode(ingest_staged_input.load_file(brain, root, payload["content_parts"])) == file
+
+        ingest_cancellation.request_cancellation(brain, root, "rollback")
+        ingest_runtime.recover_brain(brain, None, None, None)
+        assert database.ingest_runs.find_one({"_id": root})["status"] == "cancelled"
+        assert database.ingest_staged_inputs.count_documents({"import_id": root}) == 0
+
+        ingest_staging.create_run(brain, "interrupted", upload_deadline=1)
+        ingest_staged_input.save_file(brain, "interrupted", "cGFydGlhbA==")
+        ingest_runtime.recover_brain(brain, None, None, None)
+        assert database.ingest_runs.find_one({"_id": "interrupted"})["status"] == "failed"
+        assert database.ingest_staged_inputs.count_documents({"import_id": "interrupted"}) == 0
     finally:
         client.drop_database(brain)
         client.close()

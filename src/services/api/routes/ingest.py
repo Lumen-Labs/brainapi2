@@ -48,16 +48,26 @@ ingest_router = APIRouter(prefix="/ingest", tags=["ingest"])
 logger = logging.getLogger(__name__)
 
 
-def _submit_staged(brain_id, task_id, payload, context, *, kind="source", discovery=False):
+def _submit_staged(brain_id, task_id, payload, context, *, kind="source", discovery=False, file_content=None):
     from src.core.saving import ingest_staging
     from src.core.saving.ingest_worker import dispatch_staged_source
 
     message = {"kind": kind, "payload": payload}
     if context:
         message["headers"] = {"pipeline_operation": context}
-    unit_id = ingest_staging.create_run(
-        brain_id, task_id, message=message, discovery=discovery,
-    )
+    if file_content is None:
+        unit_id = ingest_staging.create_run(
+            brain_id, task_id, message=message, discovery=discovery,
+        )
+    else:
+        from src.core.saving.ingest_staged_input import save_file
+
+        ingest_staging.create_run(brain_id, task_id, upload_deadline=time() + 3600)
+        parts = save_file(brain_id, task_id, file_content)
+        message["payload"] = {**payload, "content_b64": "", "content_parts": parts}
+        unit_id = ingest_staging.register_unit(brain_id, task_id, "discovery", message)
+        if unit_id is None:
+            raise HTTPException(503, "Staged file input could not be accepted")
     try:
         dispatch_staged_source(brain_id, task_id, unit_id)
     except OperationalError:
@@ -339,12 +349,12 @@ async def ingest_file(
             if (
                 os.getenv("STAGED_INGESTION_ENABLED") == "1"
                 and os.getenv("STAGED_ENRICHMENT_ENABLED") == "1"
-                and len(content_b64) <= 8 * 1024 * 1024
             ):
                 _submit_staged(
                     brain_id, task,
-                    {"content_b64": content_b64, "filename": filename, "group_tracking": group_key},
+                    {"filename": filename, "group_tracking": group_key},
                     context, kind="file_discovery", discovery=True,
+                    file_content=content_b64,
                 )
                 return JSONResponse(
                     status_code=202,
