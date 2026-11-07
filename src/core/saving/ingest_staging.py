@@ -10,20 +10,28 @@ DISPATCH_RETRY_SECONDS = 30
 MAX_UNIT_FAILURES = 3
 
 
-def create_run(brain_id, root_id, *, callback_deadline=None):
+def create_run(brain_id, root_id, *, callback_deadline=None, message=None, discovery=False):
+    """Create the run and, for direct submissions, its first dispatch intent."""
+    unit_id = None
+    units = {}
+    if message is not None:
+        key = "discovery" if discovery else "source"
+        unit_id = uuid5(NAMESPACE_URL, f"brainapi:ingest:{root_id}:{key}").hex
+        units[unit_id] = {"state": "pending", "ordinal": 0, "message": message}
     ingest_cancellation._runs(brain_id).update_one(
         {"_id": root_id},
         {"$setOnInsert": {
             "status": "staging",
             "staged": True,
             "revision": "",
-            "units": {},
+            "units": units,
             "publication_cursor": 0,
-            "sealed": False,
+            "sealed": message is not None and not discovery,
             "callback_deadline": callback_deadline,
         }},
         upsert=True,
     )
+    return unit_id
 
 
 def register_unit(brain_id, root_id, key, message, *, seal=False, task_id=None):

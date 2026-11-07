@@ -9,6 +9,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 """
 
 import asyncio
+import logging
 import os
 from time import time
 import base64
@@ -44,6 +45,7 @@ MAX_TASK_RETRIES = 3
 RETRY_DELAY_BASE = 0.1
 
 ingest_router = APIRouter(prefix="/ingest", tags=["ingest"])
+logger = logging.getLogger(__name__)
 
 
 def _submit_staged(brain_id, task_id, payload, context, *, kind="source", discovery=False):
@@ -53,16 +55,13 @@ def _submit_staged(brain_id, task_id, payload, context, *, kind="source", discov
     message = {"kind": kind, "payload": payload}
     if context:
         message["headers"] = {"pipeline_operation": context}
-    ingest_staging.create_run(brain_id, task_id)
-    unit_id = ingest_staging.register_unit(
-        brain_id, task_id, "discovery" if discovery else "source", message, seal=not discovery,
+    unit_id = ingest_staging.create_run(
+        brain_id, task_id, message=message, discovery=discovery,
     )
-    if unit_id is None:
-        return
     try:
         dispatch_staged_source(brain_id, task_id, unit_id)
-    except OperationalError as exc:
-        raise HTTPException(503, "Task queue unavailable") from exc
+    except OperationalError:
+        logger.warning("Staged ingestion %s will be dispatched by reconciliation", task_id)
 
 
 @ingest_router.post(

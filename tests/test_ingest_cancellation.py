@@ -258,6 +258,30 @@ def test_dispatch_reservation_retries_after_window_without_blocking_worker(run, 
     assert staging.reserve_dispatch("brain", "staged", unit) is None
 
 
+@pytest.mark.parametrize("discovery", [False, True])
+def test_staged_submission_survives_initial_dispatch_failure(run, monkeypatch, discovery):
+    from celery.exceptions import OperationalError
+
+    from src.core.saving import ingest_staging, ingest_worker
+    from src.services.api.routes.ingest import _submit_staged
+
+    now = 1000
+    monkeypatch.setattr(ingest_staging, "time", lambda: now)
+
+    def unavailable(brain_id, root_id, unit_id):
+        assert ingest_staging.reserve_dispatch(brain_id, root_id, unit_id)["payload"] == {"text": "one"}
+        raise OperationalError("broker unavailable")
+
+    monkeypatch.setattr(ingest_worker, "dispatch_staged_source", unavailable)
+    _submit_staged("brain", "staged", {"text": "one"}, None, discovery=discovery)
+
+    stored = cancellation._runs("brain").find_one({"_id": "staged"})
+    assert stored["sealed"] is not discovery
+    now += ingest_staging.DISPATCH_RETRY_SECONDS
+    [(unit_id, message)] = ingest_staging.pending_dispatches("brain", "staged")
+    assert ingest_staging.reserve_dispatch("brain", "staged", unit_id) == message
+
+
 def test_staged_unit_stops_retrying_after_failure_budget(run, monkeypatch):
     from src.core.saving import ingest_staging as staging
 
