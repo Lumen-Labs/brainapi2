@@ -121,3 +121,36 @@ ingestion_app.conf.update(
 )
 install_celery_tracing(service_name="brainapi-worker")
 start_runtime_monitoring(service_name="brainapi-worker")
+
+
+if os.getenv("STAGED_INGESTION_ENABLED") == "1" and os.getenv("INGEST_PUBLICATION_LOCK_DIR"):
+    import logging
+    from threading import Event, Thread
+
+    from celery.signals import worker_ready, worker_shutdown
+
+    _recovery_stop = Event()
+
+    def _recover_ingestion():
+        from src.core.instances import data_adapter, graph_adapter, vector_store_adapter
+        from src.core.saving.ingest_runtime import recover_brain
+
+        while not _recovery_stop.is_set():
+            try:
+                for brain in data_adapter.get_brains_list():
+                    recover_brain(
+                        brain.name_key, data_adapter.data,
+                        vector_store_adapter.vector_store, graph_adapter.graph,
+                    )
+            except Exception:
+                logging.getLogger(__name__).exception("Could not scan staged ingestions")
+            _recovery_stop.wait(5)
+
+    @worker_ready.connect
+    def _start_ingestion_recovery(**kwargs):
+        _recovery_stop.clear()
+        Thread(target=_recover_ingestion, name="ingestion-recovery", daemon=True).start()
+
+    @worker_shutdown.connect
+    def _stop_ingestion_recovery(**kwargs):
+        _recovery_stop.set()
