@@ -130,3 +130,27 @@ def test_pages_with_missing_cleanup_remain_visible_as_skipped():
     assert page.url=="https://example.com/empty"
     assert page.skip_reason=="Cleaned content is unavailable"
     assert page.text==""
+
+
+def test_shared_dispatch_leaves_second_slot_for_another_import():
+    from src.core.saving.ingest_manifest import _dispatch_sections_locked
+    from src.workers.tasks.ingestion import ingest_data
+
+    root = MagicMock()
+    root.find_one.return_value = {"group_tracking": None, "skip_enrichment": False}
+    sections = MagicMock()
+    sections.count_documents.side_effect = [0, 1, 0]
+    sections.find_one_and_update.side_effect = [
+        {"_id": "a1", "task_id": "task-a", "url": "https://a.test", "title": "A", "text": "A"},
+        {"_id": "b1", "task_id": "task-b", "url": "https://b.test", "title": "B", "text": "B"},
+    ]
+    with (
+        patch.dict(os.environ, {"INGEST_MAX_ACTIVE_SECTIONS_PER_IMPORT": "1"}),
+        patch("src.core.saving.ingest_manifest.collection", return_value=root),
+        patch("src.core.saving.ingest_manifest.sections_collection", return_value=sections),
+        patch.object(ingest_data, "apply_async") as queue,
+    ):
+        assert _dispatch_sections_locked("brain-a", "import-a", ["a1", "a2"]) == ["a1"]
+        assert _dispatch_sections_locked("brain-a", "import-a", ["a2"]) == []
+        assert _dispatch_sections_locked("brain-b", "import-b", ["b1"]) == ["b1"]
+    assert [call.kwargs["task_id"] for call in queue.call_args_list] == ["task-a", "task-b"]

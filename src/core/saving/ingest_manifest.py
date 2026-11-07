@@ -191,7 +191,8 @@ def _dispatch_sections_locked(brain_id, import_id, section_ids, routing=None):
     for route in configuration.get("routes", []):
         if route.get("stage", "").startswith("ingestion."):
             route_client(route["provider"], route["model"], route.get("region"))
-    slots = max(0, 2 - active)
+    max_active = max(1, int(os.getenv("INGEST_MAX_ACTIVE_SECTIONS_PER_IMPORT", "2")))
+    slots = max(0, max_active - active)
     dispatched = []
     for section_id in section_ids[:slots]:
         row = col.find_one_and_update({"_id": section_id, "import_id": import_id, "status": "pending"},
