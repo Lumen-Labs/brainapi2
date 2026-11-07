@@ -13,6 +13,7 @@ def create_run(brain_id, root_id):
         {"_id": root_id},
         {"$setOnInsert": {
             "status": "staging",
+            "staged": True,
             "revision": "",
             "units": {},
             "publication_cursor": 0,

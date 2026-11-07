@@ -106,3 +106,35 @@ def test_worker_commits_only_while_claim_is_current(monkeypatch):
     commit.assert_not_called()
     assert ingest_worker.execute_staged_unit("brain", "root", "unit", process)
     commit.assert_called_once_with("brain", "root", "unit", "attempt", [])
+
+
+def test_run_publisher_holds_gate_through_completion(monkeypatch):
+    from contextlib import contextmanager
+    from src.core.saving import ingest_publication as publisher
+
+    events = []
+
+    @contextmanager
+    def gate(brain, root):
+        events.append(("enter", brain, root))
+        yield
+        events.append(("exit", brain, root))
+
+    def publish_unit(brain, root, replay):
+        if events[-1][0] == "replay":
+            return False
+        replay(brain, "op:0", {"adapter": "data"})
+        return True
+
+    monkeypatch.setattr(publisher, "publish_next_unit", publish_unit)
+    monkeypatch.setattr(
+        publisher, "replay_data_operation",
+        lambda client, brain, operation: events.append(("replay", brain, operation)),
+    )
+    monkeypatch.setattr(
+        publisher, "finish_publication",
+        lambda brain, root: events.append(("finish", brain, root)),
+    )
+
+    publisher.publish_staged_run("brain", "root", gate, Mock(), Mock())
+    assert [event[0] for event in events] == ["enter", "replay", "finish", "exit"]

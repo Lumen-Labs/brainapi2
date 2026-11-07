@@ -3,7 +3,7 @@
 from src.constants.data import Observation, StructuredData, TextChunk
 from src.constants.embeddings import Vector
 from src.core.saving.ingest_staged_output import load_output
-from src.core.saving.ingest_staging import advance_publication, next_publication_unit
+from src.core.saving.ingest_staging import advance_publication, finish_publication, next_publication_unit
 
 
 _DATA_OPERATIONS = {
@@ -60,3 +60,21 @@ def publish_next_unit(brain_id, root_id, replay_operation):
         replay_operation(brain_id, f'{unit["operation_id"]}:{index}', operation)
     advance_publication(brain_id, root_id, unit["cursor"])
     return True
+
+
+
+def publish_staged_run(brain_id, root_id, acquire_gate, data_client, vector_client):
+    """Apply staged units while the caller's exclusive brain gate is held."""
+    def replay(target, operation_id, operation):
+        adapter = operation["adapter"]
+        if adapter == "data":
+            replay_data_operation(data_client, target, operation)
+        elif adapter == "vector":
+            replay_vector_operation(vector_client, target, operation)
+        else:
+            raise ValueError(f"Unsupported staged operation {operation_id}")
+
+    with acquire_gate(brain_id, root_id):
+        while publish_next_unit(brain_id, root_id, replay):
+            pass
+        return finish_publication(brain_id, root_id)
