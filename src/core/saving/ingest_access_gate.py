@@ -74,3 +74,25 @@ def publication_gate(brain_id, root_id):
     with _brain_lock(brain_id, fcntl.LOCK_EX):
         yield
         release_publication(brain_id, root_id)
+
+
+def guard_worker(brain_from_args):
+    """Reschedule a task that could not enter the brain publication gate."""
+    from functools import wraps
+
+    def decorate(fn):
+        @wraps(fn)
+        def guarded(task, *args, **kwargs):
+            if os.getenv("STAGED_INGESTION_ENABLED") != "1":
+                return fn(task, *args, **kwargs)
+
+            brain_id = brain_from_args(*args, **kwargs)
+            try:
+                with brain_access(brain_id):
+                    return fn(task, *args, **kwargs)
+            except BrainPublicationBusy as exc:
+                raise task.retry(exc=exc, countdown=5, max_retries=17_280) from exc
+
+        return guarded
+
+    return decorate

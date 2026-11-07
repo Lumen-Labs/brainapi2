@@ -58,6 +58,7 @@ from src.core.agents.kg_agent import KGAgent
 from src.core.agents.scout_agent import ScoutAgent, ScoutEntity
 from src.core.plugins.prompts import prompt_registry
 from celery.exceptions import Ignore
+from src.core.saving.ingest_access_gate import guard_worker
 from src.core.saving.ingest_cancellation import (
     chain_headers,
     checkpoint,
@@ -649,6 +650,9 @@ def _save_source(payload, source_text):
 
 
 @ingestion_app.task(bind=True, acks_late=True, reject_on_worker_lost=True)
+@guard_worker(lambda args: args.get("brain_id", "default"))
+@guard_worker(lambda args: args.get("brain_id", "default"))
+@guard_worker(lambda args: args.get("brain_id", "default"))
 @tracked_worker(lambda args: args.get("brain_id", "default"))
 def ingest_data(self, args: dict):
     """
@@ -863,6 +867,7 @@ def ingest_data(self, args: dict):
 
 
 @ingestion_app.task(bind=True)
+@guard_worker(lambda parent_task_id, brain_id="default", *args, **kwargs: brain_id)
 @tracked_worker(lambda parent_task_id, brain_id="default", *args, **kwargs: brain_id)
 def finalize_ingestion_task(
     self,
@@ -892,6 +897,9 @@ def finalize_ingestion_task(
 
 
 @ingestion_app.task(bind=True)
+@guard_worker(lambda args: args.get("brain_id", "default"))
+@guard_worker(lambda args: args.get("brain_id", "default"))
+@guard_worker(lambda args: args.get("brain_id", "default"))
 @tracked_worker(lambda args: args.get("brain_id", "default"))
 def process_architect_relationships(self, args: dict):
     """
@@ -1281,6 +1289,9 @@ def process_architect_relationships(self, args: dict):
 
 
 @ingestion_app.task(bind=True)
+@guard_worker(lambda args: args.get("brain_id", "default"))
+@guard_worker(lambda args: args.get("brain_id", "default"))
+@guard_worker(lambda args: args.get("brain_id", "default"))
 @tracked_worker(lambda args: args.get("brain_id", "default"))
 def ingest_structured_data(self, args: dict):
     """
@@ -1572,6 +1583,7 @@ def ingest_structured_data(self, args: dict):
 
 
 @ingestion_app.task(bind=True)
+@guard_worker(lambda session_id, brain_id="default", *args, **kwargs: brain_id)
 @tracked_worker(lambda session_id, brain_id="default", *args, **kwargs: brain_id)
 def consolidate_graph_async(
     self,
@@ -1667,6 +1679,7 @@ FILE_INGEST_RETRY_DELAY = 0.1
 
 
 @ingestion_app.task(bind=True)
+@guard_worker(lambda content_b64, filename, brain_id, *args, **kwargs: brain_id)
 def ingest_file(
     self,
     content_b64: str,
@@ -1791,6 +1804,7 @@ def build_url_page_ingest_payload(
 
 
 @ingestion_app.task(bind=True, acks_late=True, reject_on_worker_lost=True)
+@guard_worker(lambda args: args.get("brain_id", "default"))
 def ingest_url(self, args: dict):
     from celery.exceptions import OperationalError
 

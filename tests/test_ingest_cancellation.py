@@ -193,3 +193,23 @@ def test_publication_drains_existing_access_and_rejects_new_access(run, monkeypa
         pass
     with gate.brain_access("brain"):
         pass
+
+
+def test_background_writer_retries_during_publication(run, monkeypatch, tmp_path):
+    from src.core.saving import ingest_access_gate as gate
+
+    monkeypatch.setenv("STAGED_INGESTION_ENABLED", "1")
+    monkeypatch.setenv("INGEST_PUBLICATION_LOCK_DIR", str(tmp_path))
+    monkeypatch.setattr(gate, "_gates", cancellation._runs)
+    process = Mock(return_value="completed")
+    worker = gate.guard_worker(lambda brain: brain)(process)
+    task = Mock()
+    task.retry.side_effect = RuntimeError("retry scheduled")
+
+    with gate.publication_gate("brain", "root"):
+        with pytest.raises(RuntimeError, match="retry scheduled"):
+            worker(task, "brain")
+        process.assert_not_called()
+
+    assert worker(task, "brain") == "completed"
+    task.retry.assert_called_once()
