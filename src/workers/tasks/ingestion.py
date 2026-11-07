@@ -668,18 +668,19 @@ def ingest_data(self, args: dict):
     if isinstance(staged_root, str) and staged_root:
         from src.core.saving.ingest_worker import execute_staged_unit
 
-        payload = IngestionTaskArgs(**args)
-        if not payload.skip_enrichment:
-            raise ValueError("Enriched ingestion requires graph staging")
         execute_staged_unit(
-            payload.brain_id,
+            args.get("brain_id", "default"),
             staged_root,
             self.request.id,
-            lambda: _save_source(payload, source_text_from_payload(payload)),
+            lambda: _ingest_data(self, args, staged=True),
         )
         return self.request.id
 
-    if os.getenv("PROGRESSIVE_INGESTION_ENABLED") == "1":
+    return _ingest_data(self, args)
+
+
+def _ingest_data(self, args, *, staged=False):
+    if not staged and os.getenv("PROGRESSIVE_INGESTION_ENABLED") == "1":
         from src.core.saving.ingest_manifest import claim_section_execution
         if not claim_section_execution(args.get("brain_id", "default"), self.request.id, bool((getattr(self.request, "delivery_info", None) or {}).get("redelivered"))):
             return self.request.id
@@ -836,6 +837,12 @@ def ingest_data(self, args: dict):
                 cost_ledger.to_dict(),
             )
         )
+        if staged:
+            for step in steps:
+                checkpoint()
+                step.type.run(*step.args, **step.kwargs)
+            return parent_task_id
+
         from celery import chain
 
         from src.core.saving.pipeline_runtime import _context

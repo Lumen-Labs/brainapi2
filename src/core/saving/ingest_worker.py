@@ -2,6 +2,8 @@
 
 from threading import Event, Thread
 
+from celery.exceptions import Ignore
+
 from src.core.saving import ingest_staging
 from src.core.saving.ingest_staged_output import commit_output
 from src.core.saving.ingest_write_buffer import capture_writes
@@ -22,10 +24,15 @@ def execute_staged_unit(brain_id, root_id, unit_id, process, *, discovery=False)
     heartbeat.start()
     try:
         try:
-            with capture_writes(brain_id) as operations:
+            with capture_writes(
+                brain_id,
+                lambda: ingest_staging.renew_claim(brain_id, root_id, unit_id, attempt),
+            ) as operations:
                 result = process()
             if discovery and (operations or not result):
                 raise ValueError("Discovery must produce source units without staging mutations")
+        except Ignore:
+            return False
         except Exception:
             ingest_staging.record_unit_failure(brain_id, root_id, unit_id, attempt)
             raise

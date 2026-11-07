@@ -7,13 +7,21 @@ _buffer = ContextVar("ingest_write_buffer", default=None)
 
 
 @contextmanager
-def capture_writes(brain_id):
+def capture_writes(brain_id, validate_claim=None):
     operations = []
-    token = _buffer.set((brain_id, operations))
+    token = _buffer.set((brain_id, operations, validate_claim))
     try:
         yield operations
     finally:
         _buffer.reset(token)
+
+
+def check_staged_claim():
+    scope = _buffer.get()
+    if scope is not None and scope[2] is not None and not scope[2]():
+        from celery.exceptions import Ignore
+
+        raise Ignore()
 
 
 def writes_are_staged():
@@ -24,7 +32,7 @@ def capture_operation(brain_id, operation):
     scope = _buffer.get()
     if scope is None:
         return False
-    scoped_brain, operations = scope
+    scoped_brain, operations, _ = scope
     if scoped_brain != brain_id:
         raise ValueError("Staged ingestion cannot write to another brain")
     operations.append(operation)

@@ -72,7 +72,9 @@ async def ingest_data(
         group_tracking=data.group_tracking,
     )
 
-    if os.getenv("STAGED_INGESTION_ENABLED") == "1" and data.skip_enrichment:
+    if os.getenv("STAGED_INGESTION_ENABLED") == "1" and (
+        data.skip_enrichment or os.getenv("STAGED_ENRICHMENT_ENABLED") == "1"
+    ):
         from src.core.saving import ingest_staging
         from src.core.saving.ingest_worker import dispatch_staged_source
 

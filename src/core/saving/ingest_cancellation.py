@@ -105,6 +105,9 @@ def record_terminal(brain_id, task_id, status):
 
 
 def checkpoint():
+    from src.core.saving.ingest_write_buffer import check_staged_claim
+
+    check_staged_claim()
     scope = _current.get()
     if scope and _runs(scope[0]).find_one({"_id": scope[1]})["status"] != "active":
         raise Ignore()

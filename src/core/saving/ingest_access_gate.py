@@ -80,10 +80,12 @@ def guard_worker(brain_from_args):
     """Reschedule a task that could not enter the brain publication gate."""
     from functools import wraps
 
+    from src.core.saving.ingest_write_buffer import writes_are_staged
+
     def decorate(fn):
         @wraps(fn)
         def guarded(task, *args, **kwargs):
-            if os.getenv("STAGED_INGESTION_ENABLED") != "1":
+            if os.getenv("STAGED_INGESTION_ENABLED") != "1" or writes_are_staged():
                 return fn(task, *args, **kwargs)
 
             brain_id = brain_from_args(*args, **kwargs)
