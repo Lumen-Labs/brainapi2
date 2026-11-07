@@ -138,3 +138,31 @@ def test_run_publisher_holds_gate_through_completion(monkeypatch):
 
     publisher.publish_staged_run("brain", "root", gate, Mock(), Mock())
     assert [event[0] for event in events] == ["enter", "replay", "finish", "exit"]
+
+
+def test_http_gate_spans_response_and_allows_task_polling(monkeypatch):
+    import asyncio
+    from contextlib import contextmanager
+    from src.services.api.middlewares import ingest_publication as middleware
+
+    events = []
+
+    @contextmanager
+    def gate(brain):
+        events.append(("enter", brain))
+        yield
+        events.append(("exit", brain))
+
+    async def app(scope, receive, send):
+        events.append(("response", scope["path"]))
+
+    monkeypatch.setenv("STAGED_INGESTION_ENABLED", "1")
+    monkeypatch.setattr(middleware, "brain_access", gate)
+    guarded = middleware.IngestPublicationMiddleware(app)
+    scope = {"type": "http", "method": "GET", "state": {"brain_id": "brain"}}
+    asyncio.run(guarded({**scope, "path": "/retrieve"}, None, None))
+    asyncio.run(guarded({**scope, "path": "/tasks/task"}, None, None))
+    assert events == [
+        ("enter", "brain"), ("response", "/retrieve"), ("exit", "brain"),
+        ("response", "/tasks/task"),
+    ]
