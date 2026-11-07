@@ -343,3 +343,40 @@ def test_batch_has_one_cancellation_cutoff_for_every_unit(run):
     cancellation.request_cancellation("brain", "batch", "keep_saved")
     assert staging.claim_unit("brain", "batch", second) is None
     assert staging.next_publication_unit("brain", "batch")["output_ref"] == "first-output"
+
+
+def test_ocr_callback_registers_work_and_rejects_late_payload(run, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from src.core.saving import ingest_staging, ingest_worker
+    from src.services.api.dependencies import get_brain_id
+    from src.services.api.routes import ingest
+
+    monkeypatch.setenv("STAGED_INGESTION_ENABLED", "1")
+    ingest_staging.create_run("brain", "ocr", callback_deadline=1000)
+    dispatch = Mock()
+    set_status = Mock()
+    monkeypatch.setattr(ingest_worker, "dispatch_staged_source", dispatch)
+    monkeypatch.setattr(ingest, "set_ingestion_task_status", set_status)
+
+    app = FastAPI()
+    app.include_router(ingest.ingest_router)
+    app.dependency_overrides[get_brain_id] = lambda: "brain"
+    api = TestClient(app)
+    payload = {"data": {"data_type": "text", "text_data": "Extracted document"}}
+    headers = {"Task-Identifier": "ocr"}
+
+    accepted = api.post("/ingest/", json=payload, headers=headers)
+    assert accepted.status_code == 202
+    assert accepted.json()["task_id"] == "ocr"
+    [(unit, message)] = ingest_staging.pending_dispatches("brain", "ocr")
+    assert message["payload"]["data"]["text_data"] == "Extracted document"
+    dispatch.assert_called_once_with("brain", "ocr", unit)
+    assert cancellation._runs("brain").find_one({"_id": "ocr"})["sealed"]
+
+    cancellation.request_cancellation("brain", "ocr", "rollback")
+    late = api.post("/ingest/", json=payload, headers=headers)
+    assert late.status_code == 409
+    assert dispatch.call_count == 1
+    set_status.assert_not_called()

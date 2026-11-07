@@ -48,14 +48,21 @@ ingest_router = APIRouter(prefix="/ingest", tags=["ingest"])
 logger = logging.getLogger(__name__)
 
 
-def _submit_staged(brain_id, task_id, payload, context, *, kind="source", discovery=False, file_content=None):
+def _submit_staged(
+    brain_id, task_id, payload, context, *, kind="source", discovery=False,
+    file_content=None, existing_ocr=False,
+):
     from src.core.saving import ingest_staging
     from src.core.saving.ingest_worker import dispatch_staged_source
 
     message = {"kind": kind, "payload": payload}
     if context:
         message["headers"] = {"pipeline_operation": context}
-    if file_content is None:
+    if existing_ocr:
+        unit_id = ingest_staging.register_unit(brain_id, task_id, "source", message, seal=True)
+        if unit_id is None:
+            raise HTTPException(409, "This OCR import no longer accepts data")
+    elif file_content is None:
         unit_id = ingest_staging.create_run(
             brain_id, task_id, message=message, discovery=discovery,
         )
@@ -93,6 +100,18 @@ async def ingest_data(
     from src.core.saving.ingest_manifest import pipeline_context
     context = pipeline_context(request, brain_id, task_id)
 
+    if flow_task_identifier and os.getenv("STAGED_INGESTION_ENABLED") == "1":
+        from src.core.saving.ingest_staging import is_remote_ocr_run
+
+        if is_remote_ocr_run(brain_id, task_id):
+            _submit_staged(
+                brain_id, task_id, data.model_dump(mode="json"), context, existing_ocr=True,
+            )
+            return JSONResponse(
+                status_code=202,
+                content={"message": "Ingestion accepted", "task_id": task_id},
+            )
+
     set_ingestion_task_status(
         task_id,
         data.brain_id,
@@ -100,16 +119,6 @@ async def ingest_data(
         stage="queued",
         group_tracking=data.group_tracking,
     )
-
-    if flow_task_identifier and os.getenv("STAGED_INGESTION_ENABLED") == "1":
-        from src.core.saving.ingest_staging import is_remote_ocr_run
-
-        if is_remote_ocr_run(brain_id, task_id):
-            _submit_staged(brain_id, task_id, data.model_dump(mode="json"), context)
-            return JSONResponse(
-                status_code=202,
-                content={"message": "Ingestion accepted", "task_id": task_id},
-            )
 
     if os.getenv("STAGED_INGESTION_ENABLED") == "1" and (
         data.skip_enrichment or os.getenv("STAGED_ENRICHMENT_ENABLED") == "1"
