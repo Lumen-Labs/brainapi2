@@ -199,6 +199,13 @@ class VectorStoreAdapter:
         """
         Get vectors by their IDs.
         """
+        from src.core.saving.ingest_write_buffer import staged_vector_records
+
+        staged = staged_vector_records(brain_id, store, ids)
+        if staged:
+            missing = [vector_id for vector_id in ids if str(vector_id) not in staged]
+            live = self.vector_store.get_by_ids(missing, store, brain_id) if missing else []
+            return [*live, *(Vector.model_validate(value) for value in staged.values() if value)]
         return self.vector_store.get_by_ids(ids, store, brain_id)
 
     def search_similar_by_ids(

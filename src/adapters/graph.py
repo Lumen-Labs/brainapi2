@@ -792,6 +792,8 @@ class GraphAdapter:
         Returns:
                 true if a matching node exists, false otherwise.
         """
+        if uuid and uuid in staged_nodes(brain_id, [uuid]):
+            return True
         return self.graph.check_node_existence(uuid, name, labels, brain_id)
 
     def get_neighborhood(

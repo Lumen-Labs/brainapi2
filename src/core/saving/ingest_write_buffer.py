@@ -68,3 +68,29 @@ def staged_nodes(brain_id, uuids):
         for node in operation["args"]["nodes"]
         if node["uuid"] in requested
     }
+
+
+def staged_vector_records(brain_id, store, ids):
+    """Resolve staged inserts and tombstones for requested vector identities."""
+    scope = _buffer.get()
+    if scope is None or scope[0] != brain_id:
+        return {}
+    from src.lib.postgresql.vectors import string_to_int64
+
+    requested = {str(vector_id) for vector_id in ids}
+    records = {}
+    for operation in scope[1]:
+        if operation["adapter"] != "vector" or operation["args"]["store"] != store:
+            continue
+        args = operation["args"]
+        if operation["method"] == "add_vectors":
+            for vector in args["vectors"]:
+                primary = str(string_to_int64(vector["id"]))
+                if primary in requested:
+                    records[primary] = vector
+        elif operation["method"] == "remove_vectors":
+            for vector_id in args["ids"]:
+                primary = str(vector_id)
+                if primary in requested:
+                    records[primary] = None
+    return records

@@ -201,3 +201,21 @@ def test_staging_context_can_capture_executor_writes():
         future = executor.submit(copy_context().run, capture_operation, "brain", operation)
         assert future.result()
     assert operations == [operation]
+
+
+def test_staging_vector_lookup_sees_inserts_and_removals():
+    from src.adapters.embeddings import VectorStoreAdapter
+    from src.constants.embeddings import Vector
+    from src.core.saving.ingest_write_buffer import capture_writes
+
+    adapter = VectorStoreAdapter()
+    adapter.add_client(Mock(get_by_ids=Mock(return_value=[])))
+    vector = Vector(id="stable", embeddings=[1.0], metadata={})
+    with capture_writes("brain"):
+        ids = adapter.add_vectors([vector], "relationships", "brain")
+        assert adapter.get_by_ids(ids, "relationships", "brain") == [vector]
+        adapter.remove_vectors(ids, "relationships", "brain")
+        assert adapter.get_by_ids(ids, "relationships", "brain") == []
+    adapter.vector_store.get_by_ids.assert_not_called()
+    adapter.get_by_ids(ids, "relationships", "brain")
+    adapter.vector_store.get_by_ids.assert_called_once_with(ids, "relationships", "brain")
