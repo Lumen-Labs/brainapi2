@@ -15,6 +15,7 @@ import os
 import tempfile
 import time
 import tomllib
+from contextvars import copy_context
 from concurrent.futures import (
     Future,
     ThreadPoolExecutor,
@@ -651,8 +652,6 @@ def _save_source(payload, source_text):
 
 @ingestion_app.task(bind=True, acks_late=True, reject_on_worker_lost=True)
 @guard_worker(lambda args: args.get("brain_id", "default"))
-@guard_worker(lambda args: args.get("brain_id", "default"))
-@guard_worker(lambda args: args.get("brain_id", "default"))
 @tracked_worker(lambda args: args.get("brain_id", "default"))
 def ingest_data(self, args: dict):
     """
@@ -898,8 +897,6 @@ def finalize_ingestion_task(
 
 @ingestion_app.task(bind=True)
 @guard_worker(lambda args: args.get("brain_id", "default"))
-@guard_worker(lambda args: args.get("brain_id", "default"))
-@guard_worker(lambda args: args.get("brain_id", "default"))
 @tracked_worker(lambda args: args.get("brain_id", "default"))
 def process_architect_relationships(self, args: dict):
     """
@@ -989,6 +986,7 @@ def process_architect_relationships(self, args: dict):
                     )
                     continue
                 future = io_executor.submit(
+                    copy_context().run,
                     ingestion_manager.process_rel_vectors,
                     relationship,
                     brain_id,
@@ -1055,6 +1053,7 @@ def process_architect_relationships(self, args: dict):
                     print(f"> Object exists: {object_exists}")
                     if not subject_exists:
                         future = io_executor.submit(
+                            copy_context().run,
                             ingestion_manager.process_node_vectors,
                             relationship.tail,
                             brain_id,
@@ -1062,6 +1061,7 @@ def process_architect_relationships(self, args: dict):
                         node_embedding_futures.append((future, relationship.tail))
                     if not object_exists:
                         future = io_executor.submit(
+                            copy_context().run,
                             ingestion_manager.process_node_vectors,
                             relationship.tip,
                             brain_id,
@@ -1289,8 +1289,6 @@ def process_architect_relationships(self, args: dict):
 
 
 @ingestion_app.task(bind=True)
-@guard_worker(lambda args: args.get("brain_id", "default"))
-@guard_worker(lambda args: args.get("brain_id", "default"))
 @guard_worker(lambda args: args.get("brain_id", "default"))
 @tracked_worker(lambda args: args.get("brain_id", "default"))
 def ingest_structured_data(self, args: dict):

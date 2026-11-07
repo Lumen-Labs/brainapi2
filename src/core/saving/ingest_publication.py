@@ -62,8 +62,8 @@ def replay_graph_operation(client, brain_id, operation):
         result = client.add_nodes(nodes, brain_id, args["identification_params"], args["metadata"])
         if isinstance(result, str):
             raise RuntimeError("Staged graph nodes could not be applied")
-    elif method == "add_relationship":
-        client.add_relationship(
+    elif method in {"add_relationship", "deprecate_relationship"}:
+        getattr(client, method)(
             Node.model_validate(args["subject"]),
             Predicate.model_validate(args["predicate"]),
             Node.model_validate(args["to_object"]),

@@ -416,6 +416,17 @@ class GraphAdapter:
         """
         Deprecate a relationship from the graph.
         """
+        if writes_are_staged():
+            capture_operation(brain_id, {
+                "adapter": "graph",
+                "method": "deprecate_relationship",
+                "args": {
+                    "subject": subject.model_dump(mode="json"),
+                    "predicate": predicate.model_dump(mode="json"),
+                    "to_object": object.model_dump(mode="json"),
+                },
+            })
+            return subject, predicate, object
         return self.graph.deprecate_relationship(subject, predicate, object, brain_id)
 
     def update_properties(

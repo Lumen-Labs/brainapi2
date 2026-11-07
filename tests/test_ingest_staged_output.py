@@ -189,3 +189,15 @@ def test_staged_index_and_vector_removal_do_not_touch_live_stores():
     replay_vector_operation(vectors.vector_store, "brain", operations[1])
     graph.graph.refresh_hub_bridges_for_entities.assert_called_once_with("brain", ["node"])
     vectors.vector_store.remove_vectors.assert_called_once_with(["vector"], "data", "brain")
+
+
+def test_staging_context_can_capture_executor_writes():
+    from concurrent.futures import ThreadPoolExecutor
+    from contextvars import copy_context
+    from src.core.saving.ingest_write_buffer import capture_operation, capture_writes
+
+    operation = {"adapter": "vector", "method": "remove_vectors"}
+    with capture_writes("brain") as operations, ThreadPoolExecutor() as executor:
+        future = executor.submit(copy_context().run, capture_operation, "brain", operation)
+        assert future.result()
+    assert operations == [operation]
