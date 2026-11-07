@@ -21,13 +21,17 @@ def execute_staged_unit(brain_id, root_id, unit_id, process, *, discovery=False)
     heartbeat = Thread(target=renew, daemon=True)
     heartbeat.start()
     try:
-        with capture_writes(brain_id) as operations:
-            result = process()
+        try:
+            with capture_writes(brain_id) as operations:
+                result = process()
+            if discovery and (operations or not result):
+                raise ValueError("Discovery must produce source units without staging mutations")
+        except Exception:
+            ingest_staging.record_unit_failure(brain_id, root_id, unit_id, attempt)
+            raise
         if not ingest_staging.renew_claim(brain_id, root_id, unit_id, attempt):
             return False
         if discovery:
-            if operations:
-                raise ValueError("Discovery must not stage mutations")
             return ingest_staging.complete_discovery(brain_id, root_id, unit_id, attempt, result)
         return commit_output(brain_id, root_id, unit_id, attempt, operations)
     finally:

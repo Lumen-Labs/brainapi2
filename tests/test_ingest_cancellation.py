@@ -256,3 +256,22 @@ def test_dispatch_reservation_retries_after_window_without_blocking_worker(run, 
     assert staging.claim_unit("brain", "staged", unit)
     now += staging.DISPATCH_RETRY_SECONDS
     assert staging.reserve_dispatch("brain", "staged", unit) is None
+
+
+def test_staged_unit_stops_retrying_after_failure_budget(run, monkeypatch):
+    from src.core.saving import ingest_staging as staging
+
+    now = 1000
+    monkeypatch.setattr(staging, "time", lambda: now)
+    staging.create_run("brain", "staged")
+    unit = staging.register_unit("brain", "staged", "source", {"payload": {}})
+    for _ in range(staging.MAX_UNIT_FAILURES):
+        token = staging.claim_unit("brain", "staged", unit)
+        assert token
+        staging.record_unit_failure("brain", "staged", unit, token)
+        assert staging.pending_dispatches("brain", "staged") == []
+        now += staging.DISPATCH_RETRY_SECONDS
+
+    assert staging.claim_unit("brain", "staged", unit) is None
+    assert staging.finish_discard("brain", "staged")["status"] == "failed"
+    assert cancellation.public_state("brain", "staged", {})["status"] == "failed"

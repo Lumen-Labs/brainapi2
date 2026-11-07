@@ -7,6 +7,7 @@ from src.core.saving import ingest_cancellation
 
 CLAIM_SECONDS = 120
 DISPATCH_RETRY_SECONDS = 30
+MAX_UNIT_FAILURES = 3
 
 
 def create_run(brain_id, root_id):
@@ -100,6 +101,32 @@ def complete_unit(brain_id, root_id, unit_id, token, output_ref):
 
     unit = _update_unit(brain_id, root_id, unit_id, complete)
     return bool(unit and unit.get("attempt") == token and unit.get("output_ref") == output_ref)
+
+
+def record_unit_failure(brain_id, root_id, unit_id, token):
+    """Retry failed work with backoff, then discard an exhausted run."""
+    def transition(run):
+        unit = run.get("units", {}).get(unit_id, {})
+        now = time()
+        if (
+            run["status"] != "staging"
+            or unit.get("token") != token
+            or unit["expires_at"] <= now
+        ):
+            return None
+        failures = unit.get("failures", 0) + 1
+        if failures >= MAX_UNIT_FAILURES:
+            return {"status": "discarding", "discard_result": "failed"}
+        retry = {
+            **unit,
+            "state": "pending",
+            "failures": failures,
+            "expires_at": 0,
+            "dispatch_after": now + DISPATCH_RETRY_SECONDS,
+        }
+        return {"units": {**run["units"], unit_id: retry}}
+
+    return ingest_cancellation._change(brain_id, root_id, transition)
 
 
 def reserve_dispatch(brain_id, root_id, unit_id):
@@ -219,7 +246,8 @@ def finish_discard(brain_id, root_id):
     """Record cancellation after staged output cleanup is durable."""
     return ingest_cancellation._change(
         brain_id, root_id,
-        lambda run: {"status": "cancelled"} if run["status"] == "discarding" else None,
+        lambda run: {"status": run.get("discard_result", "cancelled")}
+        if run["status"] == "discarding" else None,
     )
 
 

@@ -86,8 +86,8 @@ def public_state(brain_id, task_id, payload):
     if run and run.get("mode"):
         status = cancellation_status(run)
         return {**payload, "status": status, "stage": status, "cancellation_mode": run["mode"]}
-    if run and run.get("staged") and run["status"] in {"publishing", "completed"}:
-        status = "processing" if run["status"] == "publishing" else "completed"
+    if run and run.get("staged") and run["status"] in {"publishing", "discarding", "completed", "failed"}:
+        status = "processing" if run["status"] in {"publishing", "discarding"} else run["status"]
         return {**payload, "status": status, "stage": run["status"]}
     if run and run["status"] in {"active", "staging"}:
         modes = ["keep_saved", "rollback"] if run["status"] == "staging" else ["keep_saved"]

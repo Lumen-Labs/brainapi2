@@ -22,7 +22,7 @@ def recover_brain(brain_id, data_client, vector_client, graph_client):
     owner = gate.get("publication") if gate else None
     if owner:
         run = runs.find_one({"_id": owner})
-        if run and run["status"] in {"completed", "cancelled"}:
+        if run and run["status"] in {"completed", "cancelled", "failed"}:
             try:
                 with ingest_access_gate.publication_gate(brain_id, owner):
                     pass
