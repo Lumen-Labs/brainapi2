@@ -90,3 +90,19 @@ def test_staged_vector_write_uses_replayable_identity():
     replay_vector_operation(client, "brain", operations[0])
     assert client.upsert_staged_vectors.call_count == 2
     client.upsert_staged_vectors.assert_called_with([vector], "data", "brain")
+
+
+def test_worker_commits_only_while_claim_is_current(monkeypatch):
+    from src.core.saving import ingest_worker
+
+    monkeypatch.setattr(ingest_worker.ingest_staging, "claim_unit", lambda *_: "attempt")
+    renew = Mock(side_effect=[False, True])
+    monkeypatch.setattr(ingest_worker.ingest_staging, "renew_claim", renew)
+    commit = Mock(return_value=True)
+    monkeypatch.setattr(ingest_worker, "commit_output", commit)
+    process = Mock()
+
+    assert not ingest_worker.execute_staged_unit("brain", "root", "unit", process)
+    commit.assert_not_called()
+    assert ingest_worker.execute_staged_unit("brain", "root", "unit", process)
+    commit.assert_called_once_with("brain", "root", "unit", "attempt", [])

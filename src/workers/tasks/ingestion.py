@@ -624,6 +624,30 @@ def source_text_from_payload(payload: IngestionTaskArgs) -> str:
     return json.dumps(payload.data.json_data)
 
 
+def _save_source(payload, source_text):
+    text_chunk = data_adapter.save_text_chunk(
+        TextChunk(
+            text=source_text,
+            metadata=payload.meta_keys,
+            brain_version=BRAIN_VERSION,
+        ),
+        brain_id=payload.brain_id,
+    )
+    text_chunk_vector = embeddings_adapter.embed_text(text_chunk.text)
+
+    text_chunk_vector.metadata = {
+        **(payload.meta_keys if payload.meta_keys else {}),
+        "resource_id": text_chunk.id,
+    }
+    vector_store_adapter.add_vectors(
+        [text_chunk_vector],
+        "data",
+        brain_id=payload.brain_id,
+    )
+
+    return text_chunk
+
+
 @ingestion_app.task(bind=True, acks_late=True, reject_on_worker_lost=True)
 @tracked_worker(lambda args: args.get("brain_id", "default"))
 def ingest_data(self, args: dict):
@@ -636,6 +660,21 @@ def ingest_data(self, args: dict):
     Returns:
         task_id (str): The identifier of the ingestion task (Celery request id) that was created/updated.
     """
+
+    staged_root = (getattr(self.request, "headers", None) or {}).get("staged_ingestion_root")
+    if isinstance(staged_root, str) and staged_root:
+        from src.core.saving.ingest_worker import execute_staged_unit
+
+        payload = IngestionTaskArgs(**args)
+        if not payload.skip_enrichment:
+            raise ValueError("Enriched ingestion requires graph staging")
+        execute_staged_unit(
+            payload.brain_id,
+            staged_root,
+            self.request.id,
+            lambda: _save_source(payload, source_text_from_payload(payload)),
+        )
+        return self.request.id
 
     if os.getenv("PROGRESSIVE_INGESTION_ENABLED") == "1":
         from src.core.saving.ingest_manifest import claim_section_execution
@@ -679,25 +718,7 @@ def ingest_data(self, args: dict):
         source_text = source_text_from_payload(payload)
 
         checkpoint()
-        text_chunk = data_adapter.save_text_chunk(
-            TextChunk(
-                text=source_text,
-                metadata=payload.meta_keys,
-                brain_version=BRAIN_VERSION,
-            ),
-            brain_id=payload.brain_id,
-        )
-        text_chunk_vector = embeddings_adapter.embed_text(text_chunk.text)
-
-        text_chunk_vector.metadata = {
-            **(payload.meta_keys if payload.meta_keys else {}),
-            "resource_id": text_chunk.id,
-        }
-        vector_store_adapter.add_vectors(
-            [text_chunk_vector],
-            "data",
-            brain_id=payload.brain_id,
-        )
+        text_chunk = _save_source(payload, source_text)
 
         if config.pipeline_mode == "lightweight":
             print("[DEBUG (ingest_data)]: Lightweight pipeline mode selected")
