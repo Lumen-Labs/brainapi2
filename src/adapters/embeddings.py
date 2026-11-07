@@ -170,6 +170,12 @@ class VectorStoreAdapter:
         """
         Add vectors to the vector store.
         """
+        from src.core.saving.ingest_write_buffer import capture_vector_write
+
+        if capture_vector_write(brain_id, vectors, store):
+            from src.lib.postgresql.vectors import string_to_int64
+
+            return [string_to_int64(vector.id) for vector in vectors]
         return self.vector_store.add_vectors(vectors, store, brain_id)
 
     def search_vectors(

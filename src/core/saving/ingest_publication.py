@@ -1,6 +1,7 @@
 """Replay a staged unit after the caller has acquired the brain publication gate."""
 
 from src.constants.data import Observation, StructuredData, TextChunk
+from src.constants.embeddings import Vector
 from src.core.saving.ingest_staged_output import load_output
 from src.core.saving.ingest_staging import advance_publication, next_publication_unit
 
@@ -38,6 +39,15 @@ def replay_data_operation(client, brain_id, operation):
         brain_id=brain_id,
         **{argument: records if method == "save_observations" else records[0]},
     )
+
+
+def replay_vector_operation(client, brain_id, operation):
+    if operation["method"] != "add_vectors":
+        raise ValueError("Unsupported staged vector operation")
+    args = operation["args"]
+    vectors = [Vector.model_validate(item) for item in args["vectors"]]
+    upsert = getattr(client, "upsert_staged_vectors", client.add_vectors)
+    upsert(vectors, args["store"], brain_id)
 
 
 def publish_next_unit(brain_id, root_id, replay_operation):
