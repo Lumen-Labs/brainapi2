@@ -275,3 +275,13 @@ def test_staged_unit_stops_retrying_after_failure_budget(run, monkeypatch):
     assert staging.claim_unit("brain", "staged", unit) is None
     assert staging.finish_discard("brain", "staged")["status"] == "failed"
     assert cancellation.public_state("brain", "staged", {})["status"] == "failed"
+
+
+def test_remote_ocr_callback_cannot_revive_cancelled_run(run):
+    from src.core.saving import ingest_staging as staging
+
+    staging.create_run("brain", "ocr", callback_deadline=1000)
+    assert staging.is_remote_ocr_run("brain", "ocr")
+    cancellation.request_cancellation("brain", "ocr", "rollback")
+    assert staging.register_unit("brain", "ocr", "source", {"payload": {}}, seal=True) is None
+    assert staging.pending_dispatches("brain", "ocr") == []

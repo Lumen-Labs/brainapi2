@@ -10,6 +10,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 
 import asyncio
 import os
+from time import time
 import base64
 import json
 from uuid import uuid4
@@ -54,12 +55,10 @@ def _submit_staged(brain_id, task_id, payload, context, *, kind="source", discov
         message["headers"] = {"pipeline_operation": context}
     ingest_staging.create_run(brain_id, task_id)
     unit_id = ingest_staging.register_unit(
-        brain_id, task_id, "discovery" if discovery else "source", message,
+        brain_id, task_id, "discovery" if discovery else "source", message, seal=not discovery,
     )
     if unit_id is None:
         return
-    if not discovery:
-        ingest_staging.seal_units(brain_id, task_id)
     try:
         dispatch_staged_source(brain_id, task_id, unit_id)
     except OperationalError as exc:
@@ -92,6 +91,16 @@ async def ingest_data(
         stage="queued",
         group_tracking=data.group_tracking,
     )
+
+    if flow_task_identifier and os.getenv("STAGED_INGESTION_ENABLED") == "1":
+        from src.core.saving.ingest_staging import is_remote_ocr_run
+
+        if is_remote_ocr_run(brain_id, task_id):
+            _submit_staged(brain_id, task_id, data.model_dump(mode="json"), context)
+            return JSONResponse(
+                status_code=202,
+                content={"message": "Ingestion accepted", "task_id": task_id},
+            )
 
     if os.getenv("STAGED_INGESTION_ENABLED") == "1" and (
         data.skip_enrichment or os.getenv("STAGED_ENRICHMENT_ENABLED") == "1"
@@ -347,6 +356,14 @@ async def ingest_file(
                 stage="queued",
                 group_tracking=group_key,
             )
+            staged_ocr = (
+                os.getenv("STAGED_INGESTION_ENABLED") == "1"
+                and os.getenv("STAGED_ENRICHMENT_ENABLED") == "1"
+            )
+            if staged_ocr:
+                from src.core.saving import ingest_staging
+
+                ingest_staging.create_run(brain_id, task, callback_deadline=time() + 3600)
             parser_data = {
                 "brain_id": brain_id,
                 "webhook_callback": f"{app_host}/ingest/",
@@ -361,6 +378,8 @@ async def ingest_file(
                 headers={"Authorization": f"Bearer {config.docparser_token}"},
             )
             if response.status_code != 200:
+                if staged_ocr:
+                    ingest_staging.expire_remote_ocr(brain_id, task, rejected=True)
                 raise HTTPException(
                     status_code=503,
                     detail="Document parser rejected the ingestion request",

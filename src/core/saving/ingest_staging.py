@@ -10,7 +10,7 @@ DISPATCH_RETRY_SECONDS = 30
 MAX_UNIT_FAILURES = 3
 
 
-def create_run(brain_id, root_id):
+def create_run(brain_id, root_id, *, callback_deadline=None):
     ingest_cancellation._runs(brain_id).update_one(
         {"_id": root_id},
         {"$setOnInsert": {
@@ -20,19 +20,20 @@ def create_run(brain_id, root_id):
             "units": {},
             "publication_cursor": 0,
             "sealed": False,
+            "callback_deadline": callback_deadline,
         }},
         upsert=True,
     )
 
 
-def register_unit(brain_id, root_id, key, message):
+def register_unit(brain_id, root_id, key, message, *, seal=False):
     """Persist a dispatch intent before sending its broker message."""
     unit_id = uuid5(NAMESPACE_URL, f"brainapi:ingest:{root_id}:{key}").hex
 
     def transition(run):
         if run["status"] != "staging" or run.get("sealed") or unit_id in run["units"]:
             return None
-        return {"units": {
+        return {"sealed": seal, "units": {
             **run["units"],
             unit_id: {
                 "state": "pending",
@@ -269,5 +270,23 @@ def complete_discovery(brain_id, root_id, unit_id, token, messages):
             for index, message in enumerate(messages)
         }
         return {"units": children, "sealed": True, "discovered": len(children)}
+
+    return ingest_cancellation._change(brain_id, root_id, transition)
+
+
+def is_remote_ocr_run(brain_id, root_id):
+    run = ingest_cancellation._runs(brain_id).find_one({"_id": root_id})
+    return bool(run and run.get("callback_deadline"))
+
+
+def expire_remote_ocr(brain_id, root_id, *, rejected=False):
+    def transition(run):
+        deadline = run.get("callback_deadline")
+        if (
+            run["status"] == "staging" and deadline and not run["units"]
+            and (rejected or deadline <= time())
+        ):
+            return {"status": "failed"}
+        return None
 
     return ingest_cancellation._change(brain_id, root_id, transition)
