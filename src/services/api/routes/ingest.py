@@ -202,6 +202,35 @@ async def ingest_structured_data(
     )
 
 
+@ingest_router.post("/structured/batch", status_code=202, response_model=IngestionAcceptedResponse)
+async def ingest_structured_batch(
+    batches: list[IngestionStructuredRequestBody],
+    request: Request,
+    brain_id: str = Depends(get_brain_id),
+):
+    if os.getenv("STAGED_INGESTION_ENABLED") != "1" or os.getenv("STAGED_ENRICHMENT_ENABLED") != "1":
+        raise HTTPException(404, "Staged structured batches are unavailable")
+    if not batches or len(batches) > 100:
+        raise HTTPException(422, "Provide between 1 and 100 structured batches")
+    if len(await request.body()) > 12 * 1024 * 1024:
+        raise HTTPException(413, "Staged structured batch is too large")
+    from src.core.saving.ingest_staging import create_batch_run
+    from src.core.saving.ingest_manifest import pipeline_context
+
+    task_id = str(uuid4())
+    context = pipeline_context(request, brain_id, task_id)
+    messages = []
+    for batch in batches:
+        batch.brain_id = brain_id
+        message = {"kind": "structured", "payload": batch.model_dump(mode="json")}
+        if context:
+            message["headers"] = {"pipeline_operation": context}
+        messages.append(message)
+    set_ingestion_task_status(task_id, brain_id, "queued", stage="queued")
+    create_batch_run(brain_id, task_id, messages)
+    return {"message": "Structured ingestion accepted", "task_id": task_id}
+
+
 @ingest_router.post(
     path="/url", status_code=202, response_model=IngestionAcceptedResponse
 )

@@ -290,3 +290,27 @@ def expire_remote_ocr(brain_id, root_id, *, rejected=False):
         return None
 
     return ingest_cancellation._change(brain_id, root_id, transition)
+
+
+def create_batch_run(brain_id, root_id, messages):
+    """Persist all batch dispatch intents and seal the run in one write."""
+    units = {
+        uuid5(NAMESPACE_URL, f"brainapi:ingest:{root_id}:batch:{index}").hex: {
+            "state": "pending",
+            "ordinal": index,
+            "message": message,
+        }
+        for index, message in enumerate(messages)
+    }
+    ingest_cancellation._runs(brain_id).update_one(
+        {"_id": root_id},
+        {"$setOnInsert": {
+            "status": "staging",
+            "staged": True,
+            "revision": "",
+            "units": units,
+            "publication_cursor": 0,
+            "sealed": True,
+        }},
+        upsert=True,
+    )

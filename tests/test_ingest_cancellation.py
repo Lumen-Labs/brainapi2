@@ -285,3 +285,16 @@ def test_remote_ocr_callback_cannot_revive_cancelled_run(run):
     cancellation.request_cancellation("brain", "ocr", "rollback")
     assert staging.register_unit("brain", "ocr", "source", {"payload": {}}, seal=True) is None
     assert staging.pending_dispatches("brain", "ocr") == []
+
+
+def test_batch_has_one_cancellation_cutoff_for_every_unit(run):
+    from src.core.saving import ingest_staging as staging
+
+    staging.create_batch_run("brain", "batch", [{"payload": {}}, {"payload": {}}])
+    [(first, _), (second, _)] = staging.pending_dispatches("brain", "batch")
+    claim = staging.claim_unit("brain", "batch", first)
+    assert staging.complete_unit("brain", "batch", first, claim, "first-output")
+    assert staging.close_staging("brain", "batch")["status"] == "staging"
+    cancellation.request_cancellation("brain", "batch", "keep_saved")
+    assert staging.claim_unit("brain", "batch", second) is None
+    assert staging.next_publication_unit("brain", "batch")["output_ref"] == "first-output"
