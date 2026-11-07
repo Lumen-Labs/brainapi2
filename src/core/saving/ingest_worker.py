@@ -9,7 +9,7 @@ from src.core.saving.ingest_staged_output import commit_output
 from src.core.saving.ingest_write_buffer import capture_writes
 
 
-def execute_staged_unit(brain_id, root_id, unit_id, process, *, discovery=False):
+def execute_staged_unit(brain_id, root_id, unit_id, process, *, discovery=False, wait_for_sections=False):
     attempt = ingest_staging.claim_unit(brain_id, root_id, unit_id)
     if attempt is None:
         return False
@@ -29,7 +29,7 @@ def execute_staged_unit(brain_id, root_id, unit_id, process, *, discovery=False)
                 lambda: ingest_staging.renew_claim(brain_id, root_id, unit_id, attempt),
             ) as operations:
                 result = process()
-            if discovery and (operations or not result):
+            if discovery and (operations or (not result and not wait_for_sections)):
                 raise ValueError("Discovery must produce source units without staging mutations")
         except Ignore:
             return False
@@ -39,7 +39,9 @@ def execute_staged_unit(brain_id, root_id, unit_id, process, *, discovery=False)
         if not ingest_staging.renew_claim(brain_id, root_id, unit_id, attempt):
             return False
         if discovery:
-            return ingest_staging.complete_discovery(brain_id, root_id, unit_id, attempt, result)
+            return ingest_staging.complete_discovery(
+                brain_id, root_id, unit_id, attempt, result, wait_for_sections=wait_for_sections,
+            )
         return commit_output(brain_id, root_id, unit_id, attempt, operations)
     finally:
         stop.set()

@@ -1876,14 +1876,22 @@ def ingest_url(self, args: dict):
                 allowed_domains=args.get("allowed_domains") or [],
                 idempotency_key=self.request.id,
             ))
+            if args.get("progressive"):
+                from src.core.saving.ingest_manifest import create_manifest
+
+                create_manifest(brain_id, staged_root, pages, {**args, "staged": True})
+                return []
             return [
                 {"payload": build_url_page_ingest_payload(
-                    brain_id, page, group_tracking=group_tracking, skip_enrichment=True,
+                    brain_id, page, group_tracking=group_tracking, skip_enrichment=skip_enrichment,
                 )}
                 for page in pages if (page.text or "").strip()
             ]
 
-        execute_staged_unit(brain_id, staged_root, self.request.id, discover, discovery=True)
+        execute_staged_unit(
+            brain_id, staged_root, self.request.id, discover,
+            discovery=True, wait_for_sections=bool(args.get("progressive")),
+        )
         return self.request.id
 
     try:

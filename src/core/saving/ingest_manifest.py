@@ -75,6 +75,7 @@ def create_manifest(brain_id, import_id, pages, args):
             ordinal += 1
     manifests.update_one({"_id": import_id}, {"$setOnInsert": {
         "version": VERSION, "pages": page_rows, "total": ordinal,
+        "staged": bool(args.get("staged")),
         "skip_enrichment": bool(args.get("skip_enrichment")),
         "configuration": args.get("pipeline_configuration"),
         "group_tracking": args.get("group_tracking") or import_id,
@@ -99,10 +100,28 @@ def manifest_snapshot(brain_id, import_id, offset=0, limit=50, internal=False):
             result = sections_collection(brain_id).update_one({"_id":row["_id"],"status":row["status"],"updated_at":row["updated_at"]},{"$set":{"status":"failed","stage":"failed","error":"Worker stopped reporting for 24 hours"}})
             if result.modified_count == 1:
                 row.update(status="failed",stage="failed",error="Worker stopped reporting for 24 hours")
+    staged_state = None
+    if manifest.get("staged"):
+        from src.core.saving import ingest_cancellation
+
+        run = ingest_cancellation._runs(brain_id).find_one({"_id": import_id})
+        if run:
+            staged_state = ingest_cancellation.cancellation_status(run)
+            units = run.get("units", {})
+            for row in rows:
+                unit = units.get(row["task_id"])
+                if unit and unit["state"] == "complete":
+                    row.update(status="completed", stage="completed")
+                elif staged_state == "cancelled":
+                    row.update(status="cancelled", stage="cancelled")
+                elif row["status"] in TERMINAL:
+                    row.update(status="started", stage="persisting")
     done = sum(row["status"] == "completed" for row in rows)
     failed = sum(row["status"] in {"failed", "partial_failed"} for row in rows)
     active = any(row["status"] not in TERMINAL for row in rows)
     status = "started" if active else "partial_failed" if failed and done else "failed" if failed or not rows else "completed"
+    if staged_state is not None:
+        status = "started" if staged_state in {"staging", "publishing", "discarding"} else staged_state
     fields = ("page_id", "title", "heading_path", "chars", "status", "stage", "task_id", "attempt", "updated_at")
     page_rows = []
     for page in manifest["pages"]:
@@ -147,6 +166,13 @@ def _dispatch_sections_locked(brain_id, import_id, section_ids, routing=None):
     manifest = collection(brain_id).find_one({"_id": import_id})
     if not manifest:
         raise ValueError("Import not found")
+    if manifest.get("staged"):
+        from src.core.saving import ingest_cancellation, ingest_staging
+        from src.core.saving.ingest_worker import dispatch_staged_source
+
+        run = ingest_cancellation._runs(brain_id).find_one({"_id": import_id})
+        if not run or run["status"] != "staging" or "discovered" not in run:
+            return []
     col = sections_collection(brain_id)
     active = col.count_documents({"import_id": import_id, "status": {"$in": ["queued", "started", "persisting", "consolidating"]}})
     if routing:
@@ -174,12 +200,25 @@ def _dispatch_sections_locked(brain_id, import_id, section_ids, routing=None):
             "group_tracking": manifest["group_tracking"], "skip_enrichment": manifest["skip_enrichment"]}
         try:
             context = {"brain_id":brain_id, "import_id":import_id, "section_id":row["_id"], "task_id":row["task_id"], "attempt":row.get("attempt", 1), "configuration":configuration}
-            ingest_data.apply_async(args=[payload], task_id=row["task_id"], headers={"pipeline_operation":context})
+            if manifest.get("staged"):
+                unit = ingest_staging.register_unit(
+                    brain_id, import_id, row["_id"],
+                    {"payload": payload, "headers": {"pipeline_operation": context}},
+                    task_id=row["task_id"],
+                )
+                if unit is None:
+                    col.update_one({"_id": row["_id"], "status": "queued"}, {"$set": {"status": "pending"}})
+                    continue
+                dispatch_staged_source(brain_id, import_id, unit)
+            else:
+                ingest_data.apply_async(args=[payload], task_id=row["task_id"], headers={"pipeline_operation":context})
             dispatched.append(section_id)
         except Exception:
             # A failed publish can be retried with the same task identity.
             col.update_one({"_id": row["_id"], "status": "queued"}, {"$set": {"status": "pending"}})
             raise
+    if manifest.get("staged") and not col.count_documents({"import_id": import_id, "status": "pending"}):
+        ingest_staging.seal_units(brain_id, import_id)
     return dispatched
 
 

@@ -237,7 +237,9 @@ async def ingest_url(
         group_tracking=data.group_tracking,
     )
 
-    if os.getenv("STAGED_INGESTION_ENABLED") == "1" and payload.get("skip_enrichment") and not data.progressive:
+    if os.getenv("STAGED_INGESTION_ENABLED") == "1" and (
+        payload.get("skip_enrichment") or os.getenv("STAGED_ENRICHMENT_ENABLED") == "1"
+    ):
         _submit_staged(brain_id, task_id, payload, context, kind="url_discovery", discovery=True)
         return JSONResponse(
             status_code=202,

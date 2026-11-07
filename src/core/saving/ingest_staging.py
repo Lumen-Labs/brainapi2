@@ -26,9 +26,9 @@ def create_run(brain_id, root_id, *, callback_deadline=None):
     )
 
 
-def register_unit(brain_id, root_id, key, message, *, seal=False):
+def register_unit(brain_id, root_id, key, message, *, seal=False, task_id=None):
     """Persist a dispatch intent before sending its broker message."""
-    unit_id = uuid5(NAMESPACE_URL, f"brainapi:ingest:{root_id}:{key}").hex
+    unit_id = task_id or uuid5(NAMESPACE_URL, f"brainapi:ingest:{root_id}:{key}").hex
 
     def transition(run):
         if run["status"] != "staging" or run.get("sealed") or unit_id in run["units"]:
@@ -252,7 +252,7 @@ def finish_discard(brain_id, root_id):
     )
 
 
-def complete_discovery(brain_id, root_id, unit_id, token, messages):
+def complete_discovery(brain_id, root_id, unit_id, token, messages, *, wait_for_sections=False):
     """Atomically register discovered source units and seal the run."""
     def transition(run):
         if run["status"] != "staging" or run.get("sealed"):
@@ -269,7 +269,7 @@ def complete_discovery(brain_id, root_id, unit_id, token, messages):
             }
             for index, message in enumerate(messages)
         }
-        return {"units": children, "sealed": True, "discovered": len(children)}
+        return {"units": children, "sealed": not wait_for_sections, "discovered": len(children)}
 
     return ingest_cancellation._change(brain_id, root_id, transition)
 
