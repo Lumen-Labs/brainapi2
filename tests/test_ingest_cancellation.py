@@ -132,3 +132,19 @@ def test_publication_waits_for_discovery_and_resumes_from_cursor(run):
     assert second["operation_id"] != first["operation_id"]
     staging.advance_publication("brain", "staged", second["cursor"])
     assert staging.next_publication_unit("brain", "staged") is None
+
+
+@pytest.mark.parametrize("mode", ["keep_saved", "rollback"])
+def test_staged_cancellation_reports_pending_until_finalized(run, mode):
+    from src.core.saving import ingest_staging as staging
+
+    staging.create_run("brain", "staged")
+    accepted = cancellation.request_cancellation("brain", "staged", mode)
+    assert cancellation.cancellation_status(accepted) == "cancelling"
+    assert cancellation.request_cancellation("brain", "staged", mode) == accepted
+    other_mode = "keep_saved" if mode == "rollback" else "rollback"
+    with pytest.raises(cancellation.CancellationConflict):
+        cancellation.request_cancellation("brain", "staged", other_mode)
+    finish = staging.finish_discard if mode == "rollback" else staging.finish_publication
+    finish("brain", "staged")
+    assert cancellation.public_state("brain", "staged", {})["status"] == "cancelled"

@@ -57,6 +57,8 @@ def request_cancellation(brain_id, task_id, mode):
     def transition(run):
         if run.get("mode") == mode:
             return None
+        if run["status"] == "staging":
+            return {"mode": mode, "status": "discarding" if mode == "rollback" else "publishing"}
         if run["status"] != "active" or mode != "keep_saved":
             raise CancellationConflict
         return {
@@ -67,12 +69,19 @@ def request_cancellation(brain_id, task_id, mode):
     return _change(brain_id, task_id, transition)
 
 
+def cancellation_status(run):
+    if run.get("mode") and run["status"] in {"publishing", "discarding"}:
+        return "cancelling"
+    return run["status"]
+
+
 def public_state(brain_id, task_id, payload):
     if not enabled():
         return payload
     run = _runs(brain_id).find_one({"_id": task_id})
     if run and run.get("mode"):
-        return {**payload, "status": run["status"], "stage": run["status"]}
+        status = cancellation_status(run)
+        return {**payload, "status": status, "stage": status, "cancellation_mode": run["mode"]}
     return payload
 
 

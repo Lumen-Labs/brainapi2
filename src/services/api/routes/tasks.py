@@ -99,7 +99,7 @@ async def cancel_ingestion(
         raise HTTPException(409, "Cancellation mode is unavailable for this ingestion") from exc
     if run is None:
         raise HTTPException(404, "Cancellable ingestion not found")
-    return {"task_id": task_id, "mode": run["mode"], "status": run["status"]}
+    return {"task_id": task_id, "mode": run["mode"], "status": ingest_cancellation.cancellation_status(run)}
 
 
 @tasks_router.get("/{task_id}/activity", response_model=IngestionActivityResponse)
