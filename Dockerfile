@@ -93,7 +93,8 @@ COPY entrypoint.sh ./
 
 RUN chmod +x /app/entrypoint.sh
 
-RUN mkdir -p /app/plugins && chown appuser:appuser /app/plugins
+RUN mkdir -p /app/plugins /app/ingest-publication-locks \
+    && chown appuser:appuser /app/plugins /app/ingest-publication-locks
 VOLUME ["/app/plugins"]
 
 EXPOSE 8000
