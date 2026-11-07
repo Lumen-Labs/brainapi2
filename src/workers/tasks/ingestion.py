@@ -1702,21 +1702,7 @@ FILE_INGEST_MAX_RETRIES = 3
 FILE_INGEST_RETRY_DELAY = 0.1
 
 
-@ingestion_app.task(bind=True)
-@guard_worker(lambda content_b64, filename, brain_id, *args, **kwargs: brain_id)
-def ingest_file(
-    self,
-    content_b64: str,
-    filename: str,
-    brain_id: str,
-    group_tracking: Optional[str] = None,
-):
-    """
-    Ingest a file via Docling: convert to markdown (per page), enqueue one
-    ingest_data task per page.
-    """
-    from celery.exceptions import OperationalError
-
+def _extract_file_pages(content_b64, filename):
     try:
         from docling.document_converter import DocumentConverter
     except ImportError as exc:
@@ -1727,13 +1713,6 @@ def ingest_file(
             "Alternatively set OCR_MODE=docparser in your .env to use the remote OCR pipeline."
         ) from exc
 
-    set_ingestion_task_status(
-        self.request.id,
-        brain_id,
-        "started",
-        stage="source",
-        group_tracking=group_tracking,
-    )
     content = base64.b64decode(content_b64)
     suffix = ""
     if filename:
@@ -1758,6 +1737,48 @@ def ingest_file(
             ]
     finally:
         os.unlink(tmp_path)
+    return page_markdowns
+
+
+@ingestion_app.task(bind=True)
+@guard_worker(lambda content_b64, filename, brain_id, *args, **kwargs: brain_id)
+def ingest_file(
+    self,
+    content_b64: str,
+    filename: str,
+    brain_id: str,
+    group_tracking: Optional[str] = None,
+):
+    """
+    Ingest a file via Docling: convert to markdown (per page), enqueue one
+    ingest_data task per page.
+    """
+    from celery.exceptions import OperationalError
+
+    staged_root = (getattr(self.request, "headers", None) or {}).get("staged_ingestion_root")
+    if isinstance(staged_root, str) and staged_root:
+        from src.core.saving.ingest_worker import execute_staged_unit
+
+        def discover():
+            return [
+                {"payload": build_file_page_ingest_payload(
+                    brain_id, markdown, group_tracking=group_tracking,
+                )}
+                for markdown in _extract_file_pages(content_b64, filename)
+                if markdown.strip()
+            ]
+
+        execute_staged_unit(brain_id, staged_root, self.request.id, discover, discovery=True)
+        return self.request.id
+
+    set_ingestion_task_status(
+        self.request.id,
+        brain_id,
+        "started",
+        stage="source",
+        group_tracking=group_tracking,
+    )
+    page_markdowns = _extract_file_pages(content_b64, filename)
     task_ids = [str(uuid4()) for _ in page_markdowns]
     for page_task_id in task_ids:
         set_ingestion_task_status(

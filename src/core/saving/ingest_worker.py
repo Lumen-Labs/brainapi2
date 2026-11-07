@@ -48,12 +48,16 @@ def execute_staged_unit(brain_id, root_id, unit_id, process, *, discovery=False)
 
 def dispatch_staged_source(brain_id, root_id, unit_id, _message=None):
     """Send a registered source unit. Recovery can repeat the same dispatch."""
-    from src.workers.tasks.ingestion import ingest_data, ingest_structured_data, ingest_url
+    from src.workers.tasks.ingestion import ingest_data, ingest_file, ingest_structured_data, ingest_url
 
     message = ingest_staging.reserve_dispatch(brain_id, root_id, unit_id)
     if message is None:
         return
     payload = {**message["payload"], "brain_id": brain_id}
+    headers = {**message.get("headers", {}), "staged_ingestion_root": root_id}
+    if message.get("kind") == "file_discovery":
+        ingest_file.apply_async(kwargs=payload, task_id=unit_id, headers=headers)
+        return
     task = {
         "source": ingest_data,
         "structured": ingest_structured_data,
@@ -62,5 +66,5 @@ def dispatch_staged_source(brain_id, root_id, unit_id, _message=None):
     task.apply_async(
         args=[payload],
         task_id=unit_id,
-        headers={**message.get("headers", {}), "staged_ingestion_root": root_id},
+        headers=headers,
     )

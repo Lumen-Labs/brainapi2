@@ -297,6 +297,20 @@ async def ingest_file(
                 stage="queued",
                 group_tracking=group_key,
             )
+            if (
+                os.getenv("STAGED_INGESTION_ENABLED") == "1"
+                and os.getenv("STAGED_ENRICHMENT_ENABLED") == "1"
+                and len(content_b64) <= 8 * 1024 * 1024
+            ):
+                _submit_staged(
+                    brain_id, task,
+                    {"content_b64": content_b64, "filename": filename, "group_tracking": group_key},
+                    context, kind="file_discovery", discovery=True,
+                )
+                return JSONResponse(
+                    status_code=202,
+                    content={"message": "File ingestion accepted", "task_id": task},
+                )
             for attempt in range(MAX_TASK_RETRIES):
                 try:
                     ingest_file_task.apply_async(
