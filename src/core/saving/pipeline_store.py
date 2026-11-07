@@ -138,6 +138,18 @@ class PostgreSQLCollection:
                 cur.execute('SELECT COUNT(*) FROM pipeline_documents WHERE namespace=%s AND (' + sql + ')', [self.name, *args])
                 return cur.fetchone()[0]
 
+    def delete_many(self, query):
+        where, args = predicate(query)
+        with self.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    'DELETE FROM pipeline_documents WHERE namespace = %s AND (' + where + ')',
+                    [self.name, *args],
+                )
+                deleted = cur.rowcount
+            conn.commit()
+        return SimpleNamespace(deleted_count=deleted)
+
     def insert_one(self, document):
         with self.connection() as conn:
             with conn.cursor() as cur:

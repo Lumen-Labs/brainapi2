@@ -38,3 +38,8 @@ def commit_output(brain_id, root_id, unit_id, attempt, operations):
 
     ref = save_output(brain_id, root_id, unit_id, attempt, operations)
     return complete_unit(brain_id, root_id, unit_id, attempt, ref)
+
+
+def discard_outputs(brain_id, root_id):
+    """Remove only the staged output owned by this brain and run."""
+    collection(brain_id, "ingest_staged_outputs").delete_many({"import_id": root_id})

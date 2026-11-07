@@ -148,3 +148,27 @@ def test_staged_cancellation_reports_pending_until_finalized(run, mode):
     finish = staging.finish_discard if mode == "rollback" else staging.finish_publication
     finish("brain", "staged")
     assert cancellation.public_state("brain", "staged", {})["status"] == "cancelled"
+
+
+def test_reconciler_retries_dispatch_and_discard(run, monkeypatch):
+    from src.core.saving import ingest_recovery, ingest_staging as staging
+
+    staging.create_run("brain", "staged")
+    unit = staging.register_unit("brain", "staged", "page:1", {"task": "page"})
+    dispatch = Mock()
+    publish = Mock()
+    ingest_recovery.reconcile_run("brain", "staged", dispatch, publish)
+    dispatch.assert_called_once_with("brain", "staged", unit, {"task": "page"})
+
+    cancellation.request_cancellation("brain", "staged", "rollback")
+    discard = Mock(side_effect=[RuntimeError("interrupted"), None])
+    monkeypatch.setattr(ingest_recovery, "discard_outputs", discard)
+    with pytest.raises(RuntimeError, match="interrupted"):
+        ingest_recovery.reconcile_run("brain", "staged", dispatch, publish)
+    assert cancellation.public_state("brain", "staged", {})["status"] == "cancelling"
+
+    ingest_recovery.reconcile_run("brain", "staged", dispatch, publish)
+    assert cancellation.public_state("brain", "staged", {})["status"] == "cancelled"
+    assert discard.call_count == 2
+    assert dispatch.call_count == 1
+    publish.assert_not_called()
