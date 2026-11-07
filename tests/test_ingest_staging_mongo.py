@@ -1,6 +1,8 @@
 """Staged publication integration using an isolated Mongo database."""
 
 import os
+import subprocess
+import sys
 from uuid import uuid4
 
 import pytest
@@ -71,6 +73,22 @@ def test_cancel_staged_run_with_durable_mongo_storage(mode, monkeypatch, tmp_pat
         assert accepted.status_code == 202
         assert accepted.json()["status"] == "cancelling"
         assert ingest_staging.claim_unit(brain, "root", second) is None
+
+        # Simulate a publisher dying after persisting the reservation.
+        assert ingest_access_gate.reserve_publication(brain, "root")
+        code = (
+            "import fcntl, os, sys; "
+            "lock = open(sys.argv[1], 'a'); "
+            "fcntl.flock(lock, fcntl.LOCK_EX); "
+            "os._exit(7)"
+        )
+        import hashlib
+
+        lock_path = tmp_path / hashlib.sha256(brain.encode()).hexdigest()
+        interrupted = subprocess.run([sys.executable, "-c", code, str(lock_path)], check=False)
+        assert interrupted.returncode == 7
+        with pytest.raises(ingest_access_gate.BrainPublicationBusy), ingest_access_gate.brain_access(brain):
+            pytest.fail("The durable reservation must survive publisher exit")
 
         ingest_runtime.recover_brain(brain, adapter.data, None, None)
         assert api.get("/tasks/root").json()["status"] == "cancelled"
