@@ -24,7 +24,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS pipeline_documents_task
     ON pipeline_documents ((document->>'task_id'))
     WHERE namespace = 'ingest_sections';
 """
-NAMES = frozenset({'ingest_manifests', 'ingest_sections', 'ingest_runs', 'pipeline_usage_events'})
+NAMES = frozenset({'ingest_manifests', 'ingest_sections', 'ingest_runs', 'ingest_staged_outputs', 'pipeline_usage_events'})
 
 
 def supports_storage(client):
