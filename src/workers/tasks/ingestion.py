@@ -57,6 +57,13 @@ from src.core.agents.architect_agent import ArchitectAgent
 from src.core.agents.kg_agent import KGAgent
 from src.core.agents.scout_agent import ScoutAgent, ScoutEntity
 from src.core.plugins.prompts import prompt_registry
+from celery.exceptions import Ignore
+from src.core.saving.ingest_cancellation import (
+    chain_headers,
+    checkpoint,
+    record_terminal,
+    tracked_worker,
+)
 from src.core.saving.auto_kg import enrich_kg_from_input
 from src.core.saving.ingestion_manager import IngestionManager
 from src.services.api.constants.requests import (
@@ -167,6 +174,8 @@ def set_ingestion_task_status(
         payload["group_tracking"] = stamped
     else:
         payload.pop("group_tracking", None)
+    if status in TERMINAL_TASK_STATUSES:
+        record_terminal(brain_id, task_id, status)
     cache_adapter.set(
         key=key,
         value=json.dumps(payload),
@@ -616,6 +625,7 @@ def source_text_from_payload(payload: IngestionTaskArgs) -> str:
 
 
 @ingestion_app.task(bind=True, acks_late=True, reject_on_worker_lost=True)
+@tracked_worker(lambda args: args.get("brain_id", "default"))
 def ingest_data(self, args: dict):
     """
     Ingest a payload into the system, persist its content and metadata, generate embeddings and observations, and trigger knowledge-graph enrichment.
@@ -668,6 +678,7 @@ def ingest_data(self, args: dict):
 
         source_text = source_text_from_payload(payload)
 
+        checkpoint()
         text_chunk = data_adapter.save_text_chunk(
             TextChunk(
                 text=source_text,
@@ -720,6 +731,7 @@ def ingest_data(self, args: dict):
                     calls=1,
                 )
 
+            checkpoint()
             data_adapter.save_observations(
                 [
                     Observation(
@@ -732,6 +744,7 @@ def ingest_data(self, args: dict):
                 brain_id=payload.brain_id,
             )
 
+        checkpoint()
         enrich_result = enrich_kg_from_input(
             source_text,
             brain_id=payload.brain_id,
@@ -803,12 +816,18 @@ def ingest_data(self, args: dict):
 
         from src.core.saving.pipeline_runtime import _context
         context = _context.get()
+        headers = chain_headers()
         if context:
+            headers["pipeline_operation"] = context
+        if headers:
             for step in steps:
-                step.set(headers={"pipeline_operation":context})
+                step.set(headers=headers)
+        checkpoint()
         chain(*steps).apply_async(link_error=mark_ingestion_chain_failed.s(parent_task_id, payload.brain_id))
         return parent_task_id
 
+    except Ignore:
+        raise
     except Exception as e:
         brain_id = payload.brain_id if payload else args.get("brain_id", "default")
         set_ingestion_task_status(
@@ -823,6 +842,7 @@ def ingest_data(self, args: dict):
 
 
 @ingestion_app.task(bind=True)
+@tracked_worker(lambda parent_task_id, brain_id="default", *args, **kwargs: brain_id)
 def finalize_ingestion_task(
     self,
     parent_task_id: str,
@@ -851,6 +871,7 @@ def finalize_ingestion_task(
 
 
 @ingestion_app.task(bind=True)
+@tracked_worker(lambda args: args.get("brain_id", "default"))
 def process_architect_relationships(self, args: dict):
     """
     Process a batch of architect relationships and ingest corresponding nodes, vectors, and graph edges.
@@ -1210,6 +1231,8 @@ def process_architect_relationships(self, args: dict):
 
         return self.request.id
 
+    except Ignore:
+        raise
     except Exception as e:
         current = cache_adapter.get(f"task:{status_task_id}", brain_id=brain_id)
         current_status = None
@@ -1237,6 +1260,7 @@ def process_architect_relationships(self, args: dict):
 
 
 @ingestion_app.task(bind=True)
+@tracked_worker(lambda args: args.get("brain_id", "default"))
 def ingest_structured_data(self, args: dict):
     """
     Ingest event-centric information triples into the knowledge graph enriching subgraphs and registering the information in the memory.
@@ -1381,6 +1405,7 @@ def ingest_structured_data(self, args: dict):
                     )
                     anchor = added_nodes[0]
 
+        checkpoint()
         data_adapter.save_structured_data(
             StructuredData(
                 id=self.request.id,
@@ -1503,9 +1528,16 @@ def ingest_structured_data(self, args: dict):
         )
         from celery import chain
 
-        chain(*steps).apply_async()
+        headers = chain_headers()
+        if headers:
+            for step in steps:
+                step.set(headers=headers)
+        checkpoint()
+        chain(*steps).apply_async(link_error=mark_ingestion_chain_failed.s(parent_task_id, payload.brain_id))
         return parent_task_id
 
+    except Ignore:
+        raise
     except Exception as e:
         brain_id = payload.brain_id if payload else args.get("brain_id", "default")
         set_ingestion_task_status(
@@ -1519,6 +1551,7 @@ def ingest_structured_data(self, args: dict):
 
 
 @ingestion_app.task(bind=True)
+@tracked_worker(lambda session_id, brain_id="default", *args, **kwargs: brain_id)
 def consolidate_graph_async(
     self,
     session_id: str,

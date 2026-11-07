@@ -9,6 +9,10 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 """
 
 import json
+from typing import Literal
+
+from pydantic import BaseModel
+from src.core.saving import ingest_cancellation
 from src.utils.logging import log
 from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from src.services.api.dependencies import get_brain_id
@@ -31,9 +35,11 @@ async def get_tasks(brain_id: str = Depends(get_brain_id)):
             result = json.loads(str_result)
             results.append(
                 {
-                    **customer_task(result, brain_id),
+                    **ingest_cancellation.public_state(
+                        brain_id, task_id,
+                        {**customer_task(result, brain_id), "status": result.get("status", "unknown")},
+                    ),
                     "id": task_id,
-                    "status": result.get("status", "unknown"),
                 }
             )
         return {"tasks": results}
@@ -59,9 +65,11 @@ async def get_task(task_id: str, brain_id: str = Depends(get_brain_id)):
         else:
             result = json.loads(str_result)
         return {
-            **customer_task(result, brain_id),
+            **ingest_cancellation.public_state(
+                brain_id, task_id,
+                {**customer_task(result, brain_id), "status": result.get("status", "unknown")},
+            ),
             "task_id": task_id,
-            "status": result.get("status", "unknown"),
         }
     except HTTPException:
         raise
@@ -71,6 +79,27 @@ async def get_task(task_id: str, brain_id: str = Depends(get_brain_id)):
             status_code=500,
             detail="Could not retrieve task",
         ) from e
+
+
+class CancelIngestionRequest(BaseModel):
+    mode: Literal["keep_saved", "rollback"]
+
+
+@tasks_router.post("/{task_id}/cancel", status_code=202)
+async def cancel_ingestion(
+    task_id: str,
+    body: CancelIngestionRequest,
+    brain_id: str = Depends(get_brain_id),
+):
+    if not ingest_cancellation.enabled():
+        raise HTTPException(404, "Cancellable ingestion not found")
+    try:
+        run = ingest_cancellation.request_cancellation(brain_id, task_id, body.mode)
+    except ingest_cancellation.CancellationConflict as exc:
+        raise HTTPException(409, "Cancellation mode is unavailable for this ingestion") from exc
+    if run is None:
+        raise HTTPException(404, "Cancellable ingestion not found")
+    return {"task_id": task_id, "mode": run["mode"], "status": run["status"]}
 
 
 @tasks_router.get("/{task_id}/activity", response_model=IngestionActivityResponse)

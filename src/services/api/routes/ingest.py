@@ -29,6 +29,7 @@ from src.services.api.constants.requests import (
 from src.core.saving.ingest_groups import InvalidGroupTracking, normalize_group_tracking
 from src.services.api.constants.responses import IngestionAcceptedResponse
 from src.services.input.agents import cache_adapter
+from src.core.saving.ingest_cancellation import register
 from src.workers.tasks.ingestion import ingest_data as ingest_data_task
 from src.workers.tasks.ingestion import ingest_file as ingest_file_task
 from src.workers.tasks.ingestion import ingest_url as ingest_url_task
@@ -70,12 +71,16 @@ async def ingest_data(
         group_tracking=data.group_tracking,
     )
 
+    headers = register(brain_id, task_id)
+    if context:
+        headers["pipeline_operation"] = context
+
     for attempt in range(MAX_TASK_RETRIES):
         try:
             ingest_data_task.apply_async(
                 args=[data.model_dump()],
                 task_id=task_id,
-                **({"headers":{"pipeline_operation":context}} if context else {}),
+                **({"headers": headers} if headers else {}),
             )
             break
         except OperationalError:
@@ -120,12 +125,16 @@ async def ingest_structured_data(
         group_tracking=data.group_tracking,
     )
 
+    headers = register(brain_id, task_id)
+    if context:
+        headers["pipeline_operation"] = context
+
     for attempt in range(MAX_TASK_RETRIES):
         try:
             ingest_structured_data_task.apply_async(
                 args=[data.model_dump()],
                 task_id=task_id,
-                **({"headers":{"pipeline_operation":context}} if context else {}),
+                **({"headers": headers} if headers else {}),
             )
             break
         except OperationalError:
