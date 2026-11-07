@@ -174,12 +174,14 @@ def test_reconciler_retries_dispatch_and_discard(run, monkeypatch):
     publish.assert_not_called()
 
 
-def test_publication_drains_existing_access_and_rejects_new_access(run, monkeypatch):
+def test_publication_drains_existing_access_and_rejects_new_access(run, monkeypatch, tmp_path):
     from src.core.saving import ingest_access_gate as gate
 
     monkeypatch.setattr(gate, "_gates", cancellation._runs)
+    monkeypatch.setenv("INGEST_PUBLICATION_LOCK_DIR", str(tmp_path))
     with gate.brain_access("brain"):
-        assert not gate.reserve_publication("brain", "root")
+        with pytest.raises(gate.BrainPublicationBusy), gate.publication_gate("brain", "root"):
+            pytest.fail("Publication must wait for existing access")
         with pytest.raises(gate.BrainPublicationBusy), gate.brain_access("brain"):
             pytest.fail("Access must be blocked during publication")
     assert gate.reserve_publication("brain", "root")
@@ -187,6 +189,7 @@ def test_publication_drains_existing_access_and_rejects_new_access(run, monkeypa
     gate.release_publication("brain", "other")
     with pytest.raises(gate.BrainPublicationBusy), gate.brain_access("brain"):
         pytest.fail("Another run cannot release the gate")
-    gate.release_publication("brain", "root")
+    with gate.publication_gate("brain", "root"):
+        pass
     with gate.brain_access("brain"):
         pass

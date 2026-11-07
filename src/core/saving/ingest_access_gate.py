@@ -1,7 +1,10 @@
-"""Durable admission control for staged ingestion publication."""
+"""Brain publication admission for processes sharing the deployment lock volume."""
 
+import fcntl
+import hashlib
+import os
 from contextlib import contextmanager
-from uuid import uuid4
+from pathlib import Path
 
 from src.core.saving.ingest_cancellation import _change
 from src.core.saving.pipeline_store import collection
@@ -21,42 +24,39 @@ class BrainPublicationBusy(Exception):
     """The caller should retry once current operations have drained."""
 
 
-def _initialize(brain_id):
-    _gates(brain_id).update_one(
-        {"_id": _GATE_ID},
-        {"$setOnInsert": {"revision": "", "readers": [], "publication": None}},
-        upsert=True,
-    )
+@contextmanager
+def _brain_lock(brain_id, mode):
+    directory = Path(os.environ["INGEST_PUBLICATION_LOCK_DIR"])
+    lock_name = hashlib.sha256(brain_id.encode()).hexdigest()
+    with (directory / lock_name).open("a") as lock:
+        try:
+            fcntl.flock(lock, mode | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise BrainPublicationBusy from exc
+        yield
 
 
 @contextmanager
 def brain_access(brain_id):
-    _initialize(brain_id)
-    token = uuid4().hex
-    result = _update_gate(
-        brain_id,
-        lambda gate: {"readers": [*gate["readers"], token]}
-        if gate["publication"] is None else None,
-    )
-    if token not in result["readers"]:
-        raise BrainPublicationBusy
-    try:
+    with _brain_lock(brain_id, fcntl.LOCK_SH):
+        gate = _gates(brain_id).find_one({"_id": _GATE_ID})
+        if gate and gate.get("publication"):
+            raise BrainPublicationBusy
         yield
-    finally:
-        _update_gate(
-            brain_id,
-            lambda gate: {"readers": [entry for entry in gate["readers"] if entry != token]},
-        )
 
 
 def reserve_publication(brain_id, root_id):
-    """Close admission, returning whether existing operations have drained."""
-    _initialize(brain_id)
+    """Close admission before attempting to acquire exclusive brain access."""
+    _gates(brain_id).update_one(
+        {"_id": _GATE_ID},
+        {"$setOnInsert": {"revision": "", "publication": None}},
+        upsert=True,
+    )
     gate = _update_gate(
         brain_id,
         lambda row: {"publication": root_id} if row["publication"] is None else None,
     )
-    return gate["publication"] == root_id and not gate["readers"]
+    return gate["publication"] == root_id
 
 
 def release_publication(brain_id, root_id):
@@ -65,3 +65,12 @@ def release_publication(brain_id, root_id):
         brain_id,
         lambda gate: {"publication": None} if gate["publication"] == root_id else None,
     )
+
+
+@contextmanager
+def publication_gate(brain_id, root_id):
+    if not reserve_publication(brain_id, root_id):
+        raise BrainPublicationBusy
+    with _brain_lock(brain_id, fcntl.LOCK_EX):
+        yield
+        release_publication(brain_id, root_id)
