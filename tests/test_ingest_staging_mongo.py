@@ -31,6 +31,24 @@ def test_cancel_staged_run_with_durable_mongo_storage(mode, monkeypatch, tmp_pat
     monkeypatch.setattr(ingest_access_gate, "_gates", lambda _: database.ingest_access_gates)
     monkeypatch.setattr(ingest_staged_output, "collection", lambda *_: database.ingest_staged_outputs)
 
+    from fastapi import FastAPI, Request
+    from fastapi.testclient import TestClient
+    from src.services.api.dependencies import get_brain_id
+    from src.services.api.routes import tasks
+
+    monkeypatch.setenv("STAGED_INGESTION_ENABLED", "1")
+    monkeypatch.setattr(tasks.cache_adapter, "get_task", lambda *args, **kwargs: None)
+
+    def brain_from_request(request: Request):
+        return request.headers["X-Brain-ID"]
+
+    app = FastAPI()
+    app.include_router(tasks.tasks_router)
+    app.dependency_overrides[get_brain_id] = brain_from_request
+    api = TestClient(app, headers={"X-Brain-ID": brain})
+    other = f"{brain}_other"
+    monkeypatch.setattr(ingest_cancellation, "_runs", lambda key: client[key].ingest_runs)
+
     class DataClient:
         def get_collection(self, name, database):
             return client[database][name]
@@ -46,12 +64,16 @@ def test_cancel_staged_run_with_durable_mongo_storage(mode, monkeypatch, tmp_pat
             lambda: adapter.save_text_chunk(TextChunk(id="staged", text="new data"), brain),
         )
         assert database.text_chunks.count_documents({}) == 1
-        accepted = ingest_cancellation.request_cancellation(brain, "root", mode)
-        assert ingest_cancellation.cancellation_status(accepted) == "cancelling"
+        assert api.get("/tasks/root").json()["cancellation_modes"] == ["keep_saved", "rollback"]
+        unauthorized = api.post("/tasks/root/cancel", json={"mode": mode}, headers={"X-Brain-ID": other})
+        assert unauthorized.status_code == 404
+        accepted = api.post("/tasks/root/cancel", json={"mode": mode})
+        assert accepted.status_code == 202
+        assert accepted.json()["status"] == "cancelling"
         assert ingest_staging.claim_unit(brain, "root", second) is None
 
         ingest_runtime.recover_brain(brain, adapter.data, None, None)
-        assert database.ingest_runs.find_one({"_id": "root"})["status"] == "cancelled"
+        assert api.get("/tasks/root").json()["status"] == "cancelled"
         assert database.text_chunks.find_one({"_id": "shared"})["text"] == "already present"
         assert bool(database.text_chunks.find_one({"_id": "staged"})) == (mode == "keep_saved")
         with ingest_access_gate.brain_access(brain):

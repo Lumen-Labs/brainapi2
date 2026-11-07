@@ -59,7 +59,10 @@ async def get_task(task_id: str, brain_id: str = Depends(get_brain_id)):
     try:
         str_result = cache_adapter.get_task(task_id, brain_id=brain_id)
         if str_result is None:
-            raise HTTPException(status_code=404, detail="Task not found")
+            durable = ingest_cancellation.public_state(brain_id, task_id, {})
+            if not durable:
+                raise HTTPException(status_code=404, detail="Task not found")
+            return {**durable, "task_id": task_id}
         if isinstance(str_result, bytes):
             result = json.loads(str_result.decode("utf-8"))
         else:

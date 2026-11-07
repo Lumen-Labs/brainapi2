@@ -91,7 +91,7 @@ def public_state(brain_id, task_id, payload):
         return {**payload, "status": status, "stage": run["status"]}
     if run and run["status"] in {"active", "staging"}:
         modes = ["keep_saved", "rollback"] if run["status"] == "staging" else ["keep_saved"]
-        return {**payload, "cancellation_modes": modes}
+        return {"status": "queued", **payload, "cancellation_modes": modes}
     return payload
 
 
