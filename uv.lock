@@ -272,7 +272,7 @@ wheels = [
 
 [[package]]
 name = "brainapi2"
-version = "2.20.1.dev3"
+version = "2.20.1.dev4"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
