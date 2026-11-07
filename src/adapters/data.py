@@ -11,6 +11,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 from typing import Any, List, Literal, Optional, Tuple
 from src.adapters.interfaces.data import DataClient, SearchResult
 from src.constants.data import Brain, KGChanges, Observation, StructuredData, TextChunk
+from src.core.saving.ingest_write_buffer import capture_data_write
 
 
 class DataAdapter:
@@ -33,6 +34,8 @@ class DataAdapter:
         """
         Save a text chunk to the data client.
         """
+        if capture_data_write(brain_id, "save_text_chunk", "text_chunk", text_chunk):
+            return text_chunk
         return self.data.save_text_chunk(text_chunk=text_chunk, brain_id=brain_id)
 
     def save_observations(
@@ -41,6 +44,8 @@ class DataAdapter:
         """
         Save a list of observations to the data client.
         """
+        if capture_data_write(brain_id, "save_observations", "observations", observations):
+            return observations
         return self.data.save_observations(observations=observations, brain_id=brain_id)
 
     def search(self, text: str, brain_id: str = "default") -> SearchResult:
@@ -91,6 +96,8 @@ class DataAdapter:
         """
         Save a structured data to the data client.
         """
+        if capture_data_write(brain_id, "save_structured_data", "structured_data", structured_data):
+            return structured_data
         return self.data.save_structured_data(
             structured_data=structured_data, brain_id=brain_id
         )

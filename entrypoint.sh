@@ -21,6 +21,20 @@ fi
 mkdir -p /app/plugins
 chown -R appuser:appuser /app/plugins 2>/dev/null || true
 
+if [ "${STAGED_INGESTION_ENABLED:-0}" = "1" ]; then
+    if [ -z "${INGEST_PUBLICATION_LOCK_DIR:-}" ] || [ ! -d "$INGEST_PUBLICATION_LOCK_DIR" ]; then
+        echo "[brainapi] Staged ingestion requires a shared publication lock directory" >&2
+        exit 64
+    fi
+    if [ "$INGEST_PUBLICATION_LOCK_DIR" = "/app/ingest-publication-locks" ]; then
+        chown appuser:appuser /app/ingest-publication-locks
+    fi
+    if ! setpriv --reuid=appuser --regid=appuser --init-groups -- test -w "$INGEST_PUBLICATION_LOCK_DIR"; then
+        echo "[brainapi] The publication lock directory must be writable by appuser" >&2
+        exit 64
+    fi
+fi
+
 if [ -n "$BRAINAPI_PLUGINS" ]; then
     IFS=',' read -ra PLUGINS <<< "$BRAINAPI_PLUGINS"
     for plugin_spec in "${PLUGINS[@]}"; do

@@ -12,6 +12,7 @@ import re
 from abc import ABC, abstractmethod
 from typing import Dict, List, Literal, Optional, Tuple
 from src.adapters.interfaces.graph import GraphClient, PredicateWithFlowKey
+from src.core.saving.ingest_write_buffer import capture_operation, staged_nodes, writes_are_staged
 from src.constants.embeddings import Vector
 from src.constants.kg import (
     IdentificationParams,
@@ -149,6 +150,17 @@ class GraphAdapter:
         """
         Add nodes to the graph.
         """
+        if writes_are_staged():
+            capture_operation(brain_id, {
+                "adapter": "graph",
+                "method": "add_nodes",
+                "args": {
+                    "nodes": [node.model_dump(mode="json") for node in nodes],
+                    "identification_params": identification_params,
+                    "metadata": metadata,
+                },
+            })
+            return nodes
         return self.graph.add_nodes(nodes, brain_id, identification_params, metadata)
 
     def add_relationship(
@@ -161,6 +173,17 @@ class GraphAdapter:
         """
         Add a relationship between two nodes to the graph.
         """
+        if writes_are_staged():
+            capture_operation(brain_id, {
+                "adapter": "graph",
+                "method": "add_relationship",
+                "args": {
+                    "subject": subject.model_dump(mode="json"),
+                    "predicate": predicate.model_dump(mode="json"),
+                    "to_object": to_object.model_dump(mode="json"),
+                },
+            })
+            return predicate.uuid
         return self.graph.add_relationship(subject, predicate, to_object, brain_id)
 
     def search_graph(
@@ -231,13 +254,21 @@ class GraphAdapter:
         Returns:
             Node: The node matching the provided UUID.
         """
+        staged = staged_nodes(brain_id, [uuid])
+        if uuid in staged:
+            return Node.model_validate(staged[uuid])
         return self.graph.get_by_uuid(uuid, brain_id)
 
     def get_by_uuids(self, uuids: list[str], brain_id: str = "default") -> list[Node]:
         """
         Get nodes by their UUIDs.
         """
-        return self.graph.get_by_uuids(uuids, brain_id)
+        staged = staged_nodes(brain_id, uuids)
+        if not staged:
+            return self.graph.get_by_uuids(uuids, brain_id)
+        missing = [uuid for uuid in uuids if uuid not in staged]
+        live = self.graph.get_by_uuids(missing, brain_id) if missing else []
+        return [*live, *(Node.model_validate(node) for node in staged.values())]
 
     def get_by_identification_params(
         self,
@@ -385,6 +416,17 @@ class GraphAdapter:
         """
         Deprecate a relationship from the graph.
         """
+        if writes_are_staged():
+            capture_operation(brain_id, {
+                "adapter": "graph",
+                "method": "deprecate_relationship",
+                "args": {
+                    "subject": subject.model_dump(mode="json"),
+                    "predicate": predicate.model_dump(mode="json"),
+                    "to_object": object.model_dump(mode="json"),
+                },
+            })
+            return subject, predicate, object
         return self.graph.deprecate_relationship(subject, predicate, object, brain_id)
 
     def update_properties(
@@ -412,6 +454,17 @@ class GraphAdapter:
             new_properties = {}
         if properties_to_remove is None:
             properties_to_remove = []
+        if capture_operation(brain_id, {
+            "adapter": "graph",
+            "method": "update_properties",
+            "args": {
+                "uuid": uuid,
+                "updating": updating,
+                "new_properties": new_properties,
+                "properties_to_remove": properties_to_remove,
+            },
+        }):
+            return None
         return self.graph.update_properties(
             uuid, updating, brain_id, new_properties, properties_to_remove
         )
@@ -739,6 +792,8 @@ class GraphAdapter:
         Returns:
                 true if a matching node exists, false otherwise.
         """
+        if uuid and uuid in staged_nodes(brain_id, [uuid]):
+            return True
         return self.graph.check_node_existence(uuid, name, labels, brain_id)
 
     def get_neighborhood(
@@ -857,11 +912,19 @@ class GraphAdapter:
         return self.graph.get_event_hub_facts(event_uuids, brain_id)
 
     def rebuild_hub_bridge_index(self, brain_id: str = "default") -> int:
+        if capture_operation(brain_id, {
+            "adapter": "graph", "method": "rebuild_hub_bridge_index", "args": {},
+        }):
+            return 0
         return self.graph.rebuild_hub_bridge_index(brain_id)
 
     def refresh_hub_bridges_for_entities(
         self, entity_uuids: list, brain_id: str = "default"
     ) -> int:
+        if capture_operation(brain_id, {
+            "adapter": "graph", "method": "refresh_hub_bridges_for_entities", "args": {"entity_uuids": list(entity_uuids or [])},
+        }):
+            return 0
         refresh = getattr(self.graph, "refresh_hub_bridges_for_entities", None)
         if refresh is None:
             return self.rebuild_hub_bridge_index(brain_id)
@@ -875,6 +938,10 @@ class GraphAdapter:
         return self.graph.get_hub_bridges(event_uuids, brain_id)
 
     def rebuild_topic_index(self, brain_id: str = "default") -> int:
+        if capture_operation(brain_id, {
+            "adapter": "graph", "method": "rebuild_topic_index", "args": {},
+        }):
+            return 0
         rebuild = getattr(self.graph, "rebuild_topic_index", None)
         if rebuild is None:
             return 0

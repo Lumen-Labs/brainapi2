@@ -238,6 +238,21 @@ class MilvusClient(VectorStoreClient):
         )
         return [v["id"] for v in vs]
 
+    def upsert_staged_vectors(self, vectors: list[Vector], store: str, brain_id: str):
+        if not vectors:
+            return
+        client = self._get_client(brain_id)
+        self._ensure_store(store, brain_id)
+        client.upsert(store, [
+            {
+                **(vector.metadata or {}),
+                "id": string_to_int64(vector.id),
+                "embeddings": vector.embeddings,
+                "uuid": vector.id,
+            }
+            for vector in vectors
+        ])
+
     def search_vectors(
         self, data_vector: list[float], brain_id: str, store: str, k: int = 10
     ) -> list[Vector]:

@@ -9,6 +9,8 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 """
 
 import asyncio
+import os
+from time import time
 import base64
 import json
 from uuid import uuid4
@@ -29,6 +31,7 @@ from src.services.api.constants.requests import (
 from src.core.saving.ingest_groups import InvalidGroupTracking, normalize_group_tracking
 from src.services.api.constants.responses import IngestionAcceptedResponse
 from src.services.input.agents import cache_adapter
+from src.core.saving.ingest_cancellation import register
 from src.workers.tasks.ingestion import ingest_data as ingest_data_task
 from src.workers.tasks.ingestion import ingest_file as ingest_file_task
 from src.workers.tasks.ingestion import ingest_url as ingest_url_task
@@ -41,6 +44,25 @@ MAX_TASK_RETRIES = 3
 RETRY_DELAY_BASE = 0.1
 
 ingest_router = APIRouter(prefix="/ingest", tags=["ingest"])
+
+
+def _submit_staged(brain_id, task_id, payload, context, *, kind="source", discovery=False):
+    from src.core.saving import ingest_staging
+    from src.core.saving.ingest_worker import dispatch_staged_source
+
+    message = {"kind": kind, "payload": payload}
+    if context:
+        message["headers"] = {"pipeline_operation": context}
+    ingest_staging.create_run(brain_id, task_id)
+    unit_id = ingest_staging.register_unit(
+        brain_id, task_id, "discovery" if discovery else "source", message, seal=not discovery,
+    )
+    if unit_id is None:
+        return
+    try:
+        dispatch_staged_source(brain_id, task_id, unit_id)
+    except OperationalError as exc:
+        raise HTTPException(503, "Task queue unavailable") from exc
 
 
 @ingest_router.post(
@@ -70,12 +92,35 @@ async def ingest_data(
         group_tracking=data.group_tracking,
     )
 
+    if flow_task_identifier and os.getenv("STAGED_INGESTION_ENABLED") == "1":
+        from src.core.saving.ingest_staging import is_remote_ocr_run
+
+        if is_remote_ocr_run(brain_id, task_id):
+            _submit_staged(brain_id, task_id, data.model_dump(mode="json"), context)
+            return JSONResponse(
+                status_code=202,
+                content={"message": "Ingestion accepted", "task_id": task_id},
+            )
+
+    if os.getenv("STAGED_INGESTION_ENABLED") == "1" and (
+        data.skip_enrichment or os.getenv("STAGED_ENRICHMENT_ENABLED") == "1"
+    ):
+        _submit_staged(brain_id, task_id, data.model_dump(mode="json"), context)
+        return JSONResponse(
+            status_code=202,
+            content={"message": "Ingestion accepted", "task_id": task_id},
+        )
+
+    headers = register(brain_id, task_id)
+    if context:
+        headers["pipeline_operation"] = context
+
     for attempt in range(MAX_TASK_RETRIES):
         try:
             ingest_data_task.apply_async(
                 args=[data.model_dump()],
                 task_id=task_id,
-                **({"headers":{"pipeline_operation":context}} if context else {}),
+                **({"headers": headers} if headers else {}),
             )
             break
         except OperationalError:
@@ -120,12 +165,23 @@ async def ingest_structured_data(
         group_tracking=data.group_tracking,
     )
 
+    if os.getenv("STAGED_INGESTION_ENABLED") == "1" and os.getenv("STAGED_ENRICHMENT_ENABLED") == "1":
+        _submit_staged(brain_id, task_id, data.model_dump(mode="json"), context, kind="structured")
+        return JSONResponse(
+            status_code=202,
+            content={"message": "Structured ingestion accepted", "task_id": task_id},
+        )
+
+    headers = register(brain_id, task_id)
+    if context:
+        headers["pipeline_operation"] = context
+
     for attempt in range(MAX_TASK_RETRIES):
         try:
             ingest_structured_data_task.apply_async(
                 args=[data.model_dump()],
                 task_id=task_id,
-                **({"headers":{"pipeline_operation":context}} if context else {}),
+                **({"headers": headers} if headers else {}),
             )
             break
         except OperationalError:
@@ -146,6 +202,35 @@ async def ingest_structured_data(
     )
 
 
+@ingest_router.post("/structured/batch", status_code=202, response_model=IngestionAcceptedResponse)
+async def ingest_structured_batch(
+    batches: list[IngestionStructuredRequestBody],
+    request: Request,
+    brain_id: str = Depends(get_brain_id),
+):
+    if os.getenv("STAGED_INGESTION_ENABLED") != "1" or os.getenv("STAGED_ENRICHMENT_ENABLED") != "1":
+        raise HTTPException(404, "Staged structured batches are unavailable")
+    if not batches or len(batches) > 100:
+        raise HTTPException(422, "Provide between 1 and 100 structured batches")
+    if len(await request.body()) > 12 * 1024 * 1024:
+        raise HTTPException(413, "Staged structured batch is too large")
+    from src.core.saving.ingest_staging import create_batch_run
+    from src.core.saving.ingest_manifest import pipeline_context
+
+    task_id = str(uuid4())
+    context = pipeline_context(request, brain_id, task_id)
+    messages = []
+    for batch in batches:
+        batch.brain_id = brain_id
+        message = {"kind": "structured", "payload": batch.model_dump(mode="json")}
+        if context:
+            message["headers"] = {"pipeline_operation": context}
+        messages.append(message)
+    set_ingestion_task_status(task_id, brain_id, "queued", stage="queued")
+    create_batch_run(brain_id, task_id, messages)
+    return {"message": "Structured ingestion accepted", "task_id": task_id}
+
+
 @ingest_router.post(
     path="/url", status_code=202, response_model=IngestionAcceptedResponse
 )
@@ -161,7 +246,6 @@ async def ingest_url(
         raise HTTPException(status_code=503, detail="URL crawler is not configured")
 
     if data.progressive:
-        import os
         from src.core.saving.ingest_manifest import pipeline_context
         if not pipeline_context(request, brain_id, "accept") :
             raise HTTPException(403, "Platform settlement required")
@@ -181,6 +265,15 @@ async def ingest_url(
         stage="queued",
         group_tracking=data.group_tracking,
     )
+
+    if os.getenv("STAGED_INGESTION_ENABLED") == "1" and (
+        payload.get("skip_enrichment") or os.getenv("STAGED_ENRICHMENT_ENABLED") == "1"
+    ):
+        _submit_staged(brain_id, task_id, payload, context, kind="url_discovery", discovery=True)
+        return JSONResponse(
+            status_code=202,
+            content={"message": "URL ingestion accepted", "task_id": task_id},
+        )
 
     for attempt in range(MAX_TASK_RETRIES):
         try:
@@ -244,6 +337,20 @@ async def ingest_file(
                 stage="queued",
                 group_tracking=group_key,
             )
+            if (
+                os.getenv("STAGED_INGESTION_ENABLED") == "1"
+                and os.getenv("STAGED_ENRICHMENT_ENABLED") == "1"
+                and len(content_b64) <= 8 * 1024 * 1024
+            ):
+                _submit_staged(
+                    brain_id, task,
+                    {"content_b64": content_b64, "filename": filename, "group_tracking": group_key},
+                    context, kind="file_discovery", discovery=True,
+                )
+                return JSONResponse(
+                    status_code=202,
+                    content={"message": "File ingestion accepted", "task_id": task},
+                )
             for attempt in range(MAX_TASK_RETRIES):
                 try:
                     ingest_file_task.apply_async(
@@ -280,6 +387,14 @@ async def ingest_file(
                 stage="queued",
                 group_tracking=group_key,
             )
+            staged_ocr = (
+                os.getenv("STAGED_INGESTION_ENABLED") == "1"
+                and os.getenv("STAGED_ENRICHMENT_ENABLED") == "1"
+            )
+            if staged_ocr:
+                from src.core.saving import ingest_staging
+
+                ingest_staging.create_run(brain_id, task, callback_deadline=time() + 3600)
             parser_data = {
                 "brain_id": brain_id,
                 "webhook_callback": f"{app_host}/ingest/",
@@ -294,6 +409,8 @@ async def ingest_file(
                 headers={"Authorization": f"Bearer {config.docparser_token}"},
             )
             if response.status_code != 200:
+                if staged_ocr:
+                    ingest_staging.expire_remote_ocr(brain_id, task, rejected=True)
                 raise HTTPException(
                     status_code=503,
                     detail="Document parser rejected the ingestion request",

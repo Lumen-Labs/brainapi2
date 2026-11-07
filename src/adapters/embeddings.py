@@ -170,6 +170,12 @@ class VectorStoreAdapter:
         """
         Add vectors to the vector store.
         """
+        from src.core.saving.ingest_write_buffer import capture_vector_write
+
+        if capture_vector_write(brain_id, vectors, store):
+            from src.lib.postgresql.vectors import string_to_int64
+
+            return [string_to_int64(vector.id) for vector in vectors]
         return self.vector_store.add_vectors(vectors, store, brain_id)
 
     def search_vectors(
@@ -193,6 +199,13 @@ class VectorStoreAdapter:
         """
         Get vectors by their IDs.
         """
+        from src.core.saving.ingest_write_buffer import staged_vector_records
+
+        staged = staged_vector_records(brain_id, store, ids)
+        if staged:
+            missing = [vector_id for vector_id in ids if str(vector_id) not in staged]
+            live = self.vector_store.get_by_ids(missing, store, brain_id) if missing else []
+            return [*live, *(Vector.model_validate(value) for value in staged.values() if value)]
         return self.vector_store.get_by_ids(ids, store, brain_id)
 
     def search_similar_by_ids(
@@ -228,6 +241,14 @@ class VectorStoreAdapter:
         """
         Remove vectors from the vector store.
         """
+        from src.core.saving.ingest_write_buffer import capture_operation
+
+        if capture_operation(brain_id, {
+            "adapter": "vector",
+            "method": "remove_vectors",
+            "args": {"ids": list(ids), "store": store},
+        }):
+            return None
         return self.vector_store.remove_vectors(ids, store, brain_id)
 
     def list_vectors(

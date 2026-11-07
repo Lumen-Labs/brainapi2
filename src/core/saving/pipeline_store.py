@@ -24,7 +24,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS pipeline_documents_task
     ON pipeline_documents ((document->>'task_id'))
     WHERE namespace = 'ingest_sections';
 """
-NAMES = frozenset({'ingest_manifests', 'ingest_sections', 'pipeline_usage_events'})
+NAMES = frozenset({'ingest_manifests', 'ingest_sections', 'ingest_runs', 'ingest_access_gates', 'ingest_staged_outputs', 'pipeline_usage_events'})
 
 
 def supports_storage(client):
@@ -137,6 +137,18 @@ class PostgreSQLCollection:
             with conn.cursor() as cur:
                 cur.execute('SELECT COUNT(*) FROM pipeline_documents WHERE namespace=%s AND (' + sql + ')', [self.name, *args])
                 return cur.fetchone()[0]
+
+    def delete_many(self, query):
+        where, args = predicate(query)
+        with self.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    'DELETE FROM pipeline_documents WHERE namespace = %s AND (' + where + ')',
+                    [self.name, *args],
+                )
+                deleted = cur.rowcount
+            conn.commit()
+        return SimpleNamespace(deleted_count=deleted)
 
     def insert_one(self, document):
         with self.connection() as conn:

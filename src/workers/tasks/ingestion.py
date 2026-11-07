@@ -15,6 +15,7 @@ import os
 import tempfile
 import time
 import tomllib
+from contextvars import copy_context
 from concurrent.futures import (
     Future,
     ThreadPoolExecutor,
@@ -57,6 +58,14 @@ from src.core.agents.architect_agent import ArchitectAgent
 from src.core.agents.kg_agent import KGAgent
 from src.core.agents.scout_agent import ScoutAgent, ScoutEntity
 from src.core.plugins.prompts import prompt_registry
+from celery.exceptions import Ignore
+from src.core.saving.ingest_access_gate import guard_worker
+from src.core.saving.ingest_cancellation import (
+    chain_headers,
+    checkpoint,
+    record_terminal,
+    tracked_worker,
+)
 from src.core.saving.auto_kg import enrich_kg_from_input
 from src.core.saving.ingestion_manager import IngestionManager
 from src.services.api.constants.requests import (
@@ -167,6 +176,8 @@ def set_ingestion_task_status(
         payload["group_tracking"] = stamped
     else:
         payload.pop("group_tracking", None)
+    if status in TERMINAL_TASK_STATUSES:
+        record_terminal(brain_id, task_id, status)
     cache_adapter.set(
         key=key,
         value=json.dumps(payload),
@@ -615,7 +626,33 @@ def source_text_from_payload(payload: IngestionTaskArgs) -> str:
     return json.dumps(payload.data.json_data)
 
 
+def _save_source(payload, source_text):
+    text_chunk = data_adapter.save_text_chunk(
+        TextChunk(
+            text=source_text,
+            metadata=payload.meta_keys,
+            brain_version=BRAIN_VERSION,
+        ),
+        brain_id=payload.brain_id,
+    )
+    text_chunk_vector = embeddings_adapter.embed_text(text_chunk.text)
+
+    text_chunk_vector.metadata = {
+        **(payload.meta_keys if payload.meta_keys else {}),
+        "resource_id": text_chunk.id,
+    }
+    vector_store_adapter.add_vectors(
+        [text_chunk_vector],
+        "data",
+        brain_id=payload.brain_id,
+    )
+
+    return text_chunk
+
+
 @ingestion_app.task(bind=True, acks_late=True, reject_on_worker_lost=True)
+@guard_worker(lambda args: args.get("brain_id", "default"))
+@tracked_worker(lambda args: args.get("brain_id", "default"))
 def ingest_data(self, args: dict):
     """
     Ingest a payload into the system, persist its content and metadata, generate embeddings and observations, and trigger knowledge-graph enrichment.
@@ -627,7 +664,23 @@ def ingest_data(self, args: dict):
         task_id (str): The identifier of the ingestion task (Celery request id) that was created/updated.
     """
 
-    if os.getenv("PROGRESSIVE_INGESTION_ENABLED") == "1":
+    staged_root = (getattr(self.request, "headers", None) or {}).get("staged_ingestion_root")
+    if isinstance(staged_root, str) and staged_root:
+        from src.core.saving.ingest_worker import execute_staged_unit
+
+        execute_staged_unit(
+            args.get("brain_id", "default"),
+            staged_root,
+            self.request.id,
+            lambda: _ingest_data(self, args, staged=True),
+        )
+        return self.request.id
+
+    return _ingest_data(self, args)
+
+
+def _ingest_data(self, args, *, staged=False):
+    if not staged and os.getenv("PROGRESSIVE_INGESTION_ENABLED") == "1":
         from src.core.saving.ingest_manifest import claim_section_execution
         if not claim_section_execution(args.get("brain_id", "default"), self.request.id, bool((getattr(self.request, "delivery_info", None) or {}).get("redelivered"))):
             return self.request.id
@@ -668,25 +721,8 @@ def ingest_data(self, args: dict):
 
         source_text = source_text_from_payload(payload)
 
-        text_chunk = data_adapter.save_text_chunk(
-            TextChunk(
-                text=source_text,
-                metadata=payload.meta_keys,
-                brain_version=BRAIN_VERSION,
-            ),
-            brain_id=payload.brain_id,
-        )
-        text_chunk_vector = embeddings_adapter.embed_text(text_chunk.text)
-
-        text_chunk_vector.metadata = {
-            **(payload.meta_keys if payload.meta_keys else {}),
-            "resource_id": text_chunk.id,
-        }
-        vector_store_adapter.add_vectors(
-            [text_chunk_vector],
-            "data",
-            brain_id=payload.brain_id,
-        )
+        checkpoint()
+        text_chunk = _save_source(payload, source_text)
 
         if config.pipeline_mode == "lightweight":
             print("[DEBUG (ingest_data)]: Lightweight pipeline mode selected")
@@ -720,6 +756,7 @@ def ingest_data(self, args: dict):
                     calls=1,
                 )
 
+            checkpoint()
             data_adapter.save_observations(
                 [
                     Observation(
@@ -732,6 +769,7 @@ def ingest_data(self, args: dict):
                 brain_id=payload.brain_id,
             )
 
+        checkpoint()
         enrich_result = enrich_kg_from_input(
             source_text,
             brain_id=payload.brain_id,
@@ -799,16 +837,28 @@ def ingest_data(self, args: dict):
                 cost_ledger.to_dict(),
             )
         )
+        if staged:
+            for step in steps:
+                checkpoint()
+                step.type.run(*step.args, **step.kwargs)
+            return parent_task_id
+
         from celery import chain
 
         from src.core.saving.pipeline_runtime import _context
         context = _context.get()
+        headers = chain_headers()
         if context:
+            headers["pipeline_operation"] = context
+        if headers:
             for step in steps:
-                step.set(headers={"pipeline_operation":context})
+                step.set(headers=headers)
+        checkpoint()
         chain(*steps).apply_async(link_error=mark_ingestion_chain_failed.s(parent_task_id, payload.brain_id))
         return parent_task_id
 
+    except Ignore:
+        raise
     except Exception as e:
         brain_id = payload.brain_id if payload else args.get("brain_id", "default")
         set_ingestion_task_status(
@@ -823,6 +873,8 @@ def ingest_data(self, args: dict):
 
 
 @ingestion_app.task(bind=True)
+@guard_worker(lambda parent_task_id, brain_id="default", *args, **kwargs: brain_id)
+@tracked_worker(lambda parent_task_id, brain_id="default", *args, **kwargs: brain_id)
 def finalize_ingestion_task(
     self,
     parent_task_id: str,
@@ -851,6 +903,8 @@ def finalize_ingestion_task(
 
 
 @ingestion_app.task(bind=True)
+@guard_worker(lambda args: args.get("brain_id", "default"))
+@tracked_worker(lambda args: args.get("brain_id", "default"))
 def process_architect_relationships(self, args: dict):
     """
     Process a batch of architect relationships and ingest corresponding nodes, vectors, and graph edges.
@@ -939,6 +993,7 @@ def process_architect_relationships(self, args: dict):
                     )
                     continue
                 future = io_executor.submit(
+                    copy_context().run,
                     ingestion_manager.process_rel_vectors,
                     relationship,
                     brain_id,
@@ -1005,6 +1060,7 @@ def process_architect_relationships(self, args: dict):
                     print(f"> Object exists: {object_exists}")
                     if not subject_exists:
                         future = io_executor.submit(
+                            copy_context().run,
                             ingestion_manager.process_node_vectors,
                             relationship.tail,
                             brain_id,
@@ -1012,6 +1068,7 @@ def process_architect_relationships(self, args: dict):
                         node_embedding_futures.append((future, relationship.tail))
                     if not object_exists:
                         future = io_executor.submit(
+                            copy_context().run,
                             ingestion_manager.process_node_vectors,
                             relationship.tip,
                             brain_id,
@@ -1210,6 +1267,8 @@ def process_architect_relationships(self, args: dict):
 
         return self.request.id
 
+    except Ignore:
+        raise
     except Exception as e:
         current = cache_adapter.get(f"task:{status_task_id}", brain_id=brain_id)
         current_status = None
@@ -1237,6 +1296,8 @@ def process_architect_relationships(self, args: dict):
 
 
 @ingestion_app.task(bind=True)
+@guard_worker(lambda args: args.get("brain_id", "default"))
+@tracked_worker(lambda args: args.get("brain_id", "default"))
 def ingest_structured_data(self, args: dict):
     """
     Ingest event-centric information triples into the knowledge graph enriching subgraphs and registering the information in the memory.
@@ -1253,6 +1314,19 @@ def ingest_structured_data(self, args: dict):
     Exceptions:
         On exception, stores a "failed" task status with error details in the cache and re-raises the exception.
     """
+    staged_root = (getattr(self.request, "headers", None) or {}).get("staged_ingestion_root")
+    if isinstance(staged_root, str) and staged_root:
+        from src.core.saving.ingest_worker import execute_staged_unit
+
+        execute_staged_unit(
+            args.get("brain_id", "default"), staged_root, self.request.id,
+            lambda: _ingest_structured_data(self, args, staged=True),
+        )
+        return self.request.id
+    return _ingest_structured_data(self, args)
+
+
+def _ingest_structured_data(self, args, *, staged=False):
     payload = None
     try:
         payload = IngestionStructuredRequestBody(**args)
@@ -1381,6 +1455,7 @@ def ingest_structured_data(self, args: dict):
                     )
                     anchor = added_nodes[0]
 
+        checkpoint()
         data_adapter.save_structured_data(
             StructuredData(
                 id=self.request.id,
@@ -1501,11 +1576,24 @@ def ingest_structured_data(self, args: dict):
                 "completed",
             )
         )
+        if staged:
+            for step in steps:
+                checkpoint()
+                step.type.run(*step.args, **step.kwargs)
+            return parent_task_id
+
         from celery import chain
 
-        chain(*steps).apply_async()
+        headers = chain_headers()
+        if headers:
+            for step in steps:
+                step.set(headers=headers)
+        checkpoint()
+        chain(*steps).apply_async(link_error=mark_ingestion_chain_failed.s(parent_task_id, payload.brain_id))
         return parent_task_id
 
+    except Ignore:
+        raise
     except Exception as e:
         brain_id = payload.brain_id if payload else args.get("brain_id", "default")
         set_ingestion_task_status(
@@ -1519,6 +1607,8 @@ def ingest_structured_data(self, args: dict):
 
 
 @ingestion_app.task(bind=True)
+@guard_worker(lambda session_id, brain_id="default", *args, **kwargs: brain_id)
+@tracked_worker(lambda session_id, brain_id="default", *args, **kwargs: brain_id)
 def consolidate_graph_async(
     self,
     session_id: str,
@@ -1612,20 +1702,7 @@ FILE_INGEST_MAX_RETRIES = 3
 FILE_INGEST_RETRY_DELAY = 0.1
 
 
-@ingestion_app.task(bind=True)
-def ingest_file(
-    self,
-    content_b64: str,
-    filename: str,
-    brain_id: str,
-    group_tracking: Optional[str] = None,
-):
-    """
-    Ingest a file via Docling: convert to markdown (per page), enqueue one
-    ingest_data task per page.
-    """
-    from celery.exceptions import OperationalError
-
+def _extract_file_pages(content_b64, filename):
     try:
         from docling.document_converter import DocumentConverter
     except ImportError as exc:
@@ -1636,13 +1713,6 @@ def ingest_file(
             "Alternatively set OCR_MODE=docparser in your .env to use the remote OCR pipeline."
         ) from exc
 
-    set_ingestion_task_status(
-        self.request.id,
-        brain_id,
-        "started",
-        stage="source",
-        group_tracking=group_tracking,
-    )
     content = base64.b64decode(content_b64)
     suffix = ""
     if filename:
@@ -1667,6 +1737,48 @@ def ingest_file(
             ]
     finally:
         os.unlink(tmp_path)
+    return page_markdowns
+
+
+@ingestion_app.task(bind=True)
+@guard_worker(lambda content_b64, filename, brain_id, *args, **kwargs: brain_id)
+def ingest_file(
+    self,
+    content_b64: str,
+    filename: str,
+    brain_id: str,
+    group_tracking: Optional[str] = None,
+):
+    """
+    Ingest a file via Docling: convert to markdown (per page), enqueue one
+    ingest_data task per page.
+    """
+    from celery.exceptions import OperationalError
+
+    staged_root = (getattr(self.request, "headers", None) or {}).get("staged_ingestion_root")
+    if isinstance(staged_root, str) and staged_root:
+        from src.core.saving.ingest_worker import execute_staged_unit
+
+        def discover():
+            return [
+                {"payload": build_file_page_ingest_payload(
+                    brain_id, markdown, group_tracking=group_tracking,
+                )}
+                for markdown in _extract_file_pages(content_b64, filename)
+                if markdown.strip()
+            ]
+
+        execute_staged_unit(brain_id, staged_root, self.request.id, discover, discovery=True)
+        return self.request.id
+
+    set_ingestion_task_status(
+        self.request.id,
+        brain_id,
+        "started",
+        stage="source",
+        group_tracking=group_tracking,
+    )
+    page_markdowns = _extract_file_pages(content_b64, filename)
     task_ids = [str(uuid4()) for _ in page_markdowns]
     for page_task_id in task_ids:
         set_ingestion_task_status(
@@ -1737,6 +1849,7 @@ def build_url_page_ingest_payload(
 
 
 @ingestion_app.task(bind=True, acks_late=True, reject_on_worker_lost=True)
+@guard_worker(lambda args: args.get("brain_id", "default"))
 def ingest_url(self, args: dict):
     from celery.exceptions import OperationalError
 
@@ -1752,6 +1865,35 @@ def ingest_url(self, args: dict):
     brain_id = args.get("brain_id", "default")
     group_tracking = args.get("group_tracking")
     skip_enrichment = bool(args.get("skip_enrichment", False))
+    staged_root = (getattr(self.request, "headers", None) or {}).get("staged_ingestion_root")
+    if isinstance(staged_root, str) and staged_root:
+        from src.core.saving.ingest_worker import execute_staged_unit
+
+        def discover():
+            pages = crawler_adapter.crawl_pages(CrawlRequest(
+                url=args["url"],
+                max_pages=int(args.get("max_pages") or 10),
+                allowed_domains=args.get("allowed_domains") or [],
+                idempotency_key=self.request.id,
+            ))
+            if args.get("progressive"):
+                from src.core.saving.ingest_manifest import create_manifest
+
+                create_manifest(brain_id, staged_root, pages, {**args, "staged": True})
+                return []
+            return [
+                {"payload": build_url_page_ingest_payload(
+                    brain_id, page, group_tracking=group_tracking, skip_enrichment=skip_enrichment,
+                )}
+                for page in pages if (page.text or "").strip()
+            ]
+
+        execute_staged_unit(
+            brain_id, staged_root, self.request.id, discover,
+            discovery=True, wait_for_sections=bool(args.get("progressive")),
+        )
+        return self.request.id
+
     try:
         set_ingestion_task_status(
             self.request.id,

@@ -23,6 +23,7 @@ from src.services.api.openapi import install_openapi_contract
 
 from src.services.api.middlewares.auth import BrainPATMiddleware
 from src.services.api.middlewares.brains import BrainMiddleware
+from src.services.api.middlewares.ingest_publication import IngestPublicationMiddleware
 from src.services.api.routes.ingest import ingest_router
 from src.services.api.routes.meta import meta_router
 from src.services.api.routes.model import model_router
@@ -180,6 +181,7 @@ app = FastAPI(
 )
 install_error_handlers(app)
 
+app.add_middleware(IngestPublicationMiddleware)
 app.add_middleware(BrainPATMiddleware)
 app.add_middleware(BrainMiddleware)
 app.add_middleware(
