@@ -112,8 +112,8 @@ def manifest_snapshot(brain_id, import_id, offset=0, limit=50, internal=False):
                 unit = units.get(row["task_id"])
                 if unit and unit["state"] == "complete":
                     row.update(status="completed", stage="completed")
-                elif staged_state == "cancelled":
-                    row.update(status="cancelled", stage="cancelled")
+                elif staged_state in {"cancelled", "failed", "rollback_failed"}:
+                    row.update(status=staged_state, stage=staged_state)
                 elif row["status"] in TERMINAL:
                     row.update(status="started", stage="persisting")
     done = sum(row["status"] == "completed" for row in rows)
@@ -223,6 +223,10 @@ def _dispatch_sections_locked(brain_id, import_id, section_ids, routing=None):
 
 
 def retry_sections(brain_id, import_id, section_ids):
+    manifest = collection(brain_id).find_one({"_id": import_id})
+    if manifest and manifest.get("staged"):
+        # Staged retries are owned by the durable unit claim and use the same task ID.
+        return
     col = sections_collection(brain_id)
     for row in col.find({"import_id": import_id, "_id": {"$in": section_ids}, "status": {"$in": ["failed", "partial_failed"]}}):
         col.update_one({"_id": row["_id"], "task_id": row["task_id"]}, {"$set": {
