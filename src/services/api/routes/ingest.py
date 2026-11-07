@@ -9,6 +9,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 """
 
 import asyncio
+import os
 import base64
 import json
 from uuid import uuid4
@@ -70,6 +71,26 @@ async def ingest_data(
         stage="queued",
         group_tracking=data.group_tracking,
     )
+
+    if os.getenv("STAGED_INGESTION_ENABLED") == "1" and data.skip_enrichment:
+        from src.core.saving import ingest_staging
+        from src.core.saving.ingest_worker import dispatch_staged_source
+
+        message = {"payload": data.model_dump(mode="json")}
+        if context:
+            message["headers"] = {"pipeline_operation": context}
+        ingest_staging.create_run(brain_id, task_id)
+        unit_id = ingest_staging.register_unit(brain_id, task_id, "source", message)
+        if unit_id is not None:
+            ingest_staging.seal_units(brain_id, task_id)
+            try:
+                dispatch_staged_source(brain_id, task_id, unit_id, message)
+            except OperationalError as exc:
+                raise HTTPException(503, "Task queue unavailable") from exc
+        return JSONResponse(
+            status_code=202,
+            content={"message": "Ingestion accepted", "task_id": task_id},
+        )
 
     headers = register(brain_id, task_id)
     if context:

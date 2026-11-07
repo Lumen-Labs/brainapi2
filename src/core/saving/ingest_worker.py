@@ -29,3 +29,15 @@ def execute_staged_unit(brain_id, root_id, unit_id, process):
     finally:
         stop.set()
         heartbeat.join()
+
+
+def dispatch_staged_source(brain_id, root_id, unit_id, message):
+    """Send a registered source unit. Recovery can repeat the same dispatch."""
+    from src.workers.tasks.ingestion import ingest_data
+
+    payload = {**message["payload"], "brain_id": brain_id}
+    ingest_data.apply_async(
+        args=[payload],
+        task_id=unit_id,
+        headers={**message.get("headers", {}), "staged_ingestion_root": root_id},
+    )
