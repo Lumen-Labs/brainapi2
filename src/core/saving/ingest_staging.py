@@ -231,6 +231,13 @@ def advance_publication(brain_id, root_id, cursor):
     return ingest_cancellation._change(brain_id, root_id, transition)
 
 
+def _terminal_units(run):
+    return {
+        unit_id: {"state": unit["state"], "ordinal": unit["ordinal"]}
+        for unit_id, unit in run["units"].items()
+    }
+
+
 def finish_publication(brain_id, root_id):
     """Record completion once every selected unit has been applied."""
     def transition(run):
@@ -238,7 +245,10 @@ def finish_publication(brain_id, root_id):
             return None
         if run["publication_cursor"] != len(_completed_units(run)):
             return None
-        return {"status": "cancelled" if run.get("mode") else "completed"}
+        return {
+            "status": "cancelled" if run.get("mode") else "completed",
+            "units": _terminal_units(run),
+        }
 
     return ingest_cancellation._change(brain_id, root_id, transition)
 
@@ -247,8 +257,10 @@ def finish_discard(brain_id, root_id):
     """Record cancellation after staged output cleanup is durable."""
     return ingest_cancellation._change(
         brain_id, root_id,
-        lambda run: {"status": run.get("discard_result", "cancelled")}
-        if run["status"] == "discarding" else None,
+        lambda run: {
+            "status": run.get("discard_result", "cancelled"),
+            "units": _terminal_units(run),
+        } if run["status"] == "discarding" else None,
     )
 
 

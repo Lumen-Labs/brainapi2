@@ -136,8 +136,12 @@ def test_run_publisher_holds_gate_through_completion(monkeypatch):
         lambda brain, root: events.append(("finish", brain, root)),
     )
 
+    monkeypatch.setattr(
+        publisher, "discard_outputs",
+        lambda brain, root: events.append(("cleanup", brain, root)),
+    )
     publisher.publish_staged_run("brain", "root", gate, Mock(), Mock())
-    assert [event[0] for event in events] == ["enter", "replay", "finish", "exit"]
+    assert [event[0] for event in events] == ["enter", "replay", "cleanup", "finish", "exit"]
 
 
 def test_http_gate_spans_response_and_allows_task_polling(monkeypatch):

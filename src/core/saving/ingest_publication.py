@@ -3,7 +3,7 @@
 from src.constants.data import Observation, StructuredData, TextChunk
 from src.constants.embeddings import Vector
 from src.constants.kg import Node, Predicate
-from src.core.saving.ingest_staged_output import load_output
+from src.core.saving.ingest_staged_output import discard_outputs, load_output
 from src.core.saving.ingest_staging import advance_publication, finish_publication, next_publication_unit
 
 
@@ -117,4 +117,5 @@ def publish_staged_run(brain_id, root_id, acquire_gate, data_client, vector_clie
     with acquire_gate(brain_id, root_id):
         while publish_next_unit(brain_id, root_id, replay):
             pass
+        discard_outputs(brain_id, root_id)
         return finish_publication(brain_id, root_id)

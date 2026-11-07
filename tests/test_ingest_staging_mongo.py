@@ -92,6 +92,9 @@ def test_cancel_staged_run_with_durable_mongo_storage(mode, monkeypatch, tmp_pat
 
         ingest_runtime.recover_brain(brain, adapter.data, None, None)
         assert api.get("/tasks/root").json()["status"] == "cancelled"
+        assert database.ingest_staged_outputs.count_documents({"import_id": "root"}) == 0
+        root = database.ingest_runs.find_one({"_id": "root"})
+        assert all("message" not in unit for unit in root["units"].values())
         assert database.text_chunks.find_one({"_id": "shared"})["text"] == "already present"
         assert bool(database.text_chunks.find_one({"_id": "staged"})) == (mode == "keep_saved")
         with ingest_access_gate.brain_access(brain):
