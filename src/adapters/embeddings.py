@@ -234,6 +234,14 @@ class VectorStoreAdapter:
         """
         Remove vectors from the vector store.
         """
+        from src.core.saving.ingest_write_buffer import capture_operation
+
+        if capture_operation(brain_id, {
+            "adapter": "vector",
+            "method": "remove_vectors",
+            "args": {"ids": list(ids), "store": store},
+        }):
+            return None
         return self.vector_store.remove_vectors(ids, store, brain_id)
 
     def list_vectors(

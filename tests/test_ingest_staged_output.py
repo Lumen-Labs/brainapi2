@@ -166,3 +166,26 @@ def test_http_gate_spans_response_and_allows_task_polling(monkeypatch):
         ("enter", "brain"), ("response", "/retrieve"), ("exit", "brain"),
         ("response", "/tasks/task"),
     ]
+
+
+def test_staged_index_and_vector_removal_do_not_touch_live_stores():
+    from src.adapters.embeddings import VectorStoreAdapter
+    from src.adapters.graph import GraphAdapter
+    from src.core.saving.ingest_publication import replay_graph_operation, replay_vector_operation
+    from src.core.saving.ingest_write_buffer import capture_writes
+
+    graph = GraphAdapter()
+    graph.graph = Mock()
+    vectors = VectorStoreAdapter()
+    vectors.add_client(Mock())
+
+    with capture_writes("brain") as operations:
+        graph.refresh_hub_bridges_for_entities(["node"], "brain")
+        vectors.remove_vectors(["vector"], "data", "brain")
+
+    graph.graph.refresh_hub_bridges_for_entities.assert_not_called()
+    vectors.vector_store.remove_vectors.assert_not_called()
+    replay_graph_operation(graph.graph, "brain", operations[0])
+    replay_vector_operation(vectors.vector_store, "brain", operations[1])
+    graph.graph.refresh_hub_bridges_for_entities.assert_called_once_with("brain", ["node"])
+    vectors.vector_store.remove_vectors.assert_called_once_with(["vector"], "data", "brain")

@@ -443,6 +443,17 @@ class GraphAdapter:
             new_properties = {}
         if properties_to_remove is None:
             properties_to_remove = []
+        if capture_operation(brain_id, {
+            "adapter": "graph",
+            "method": "update_properties",
+            "args": {
+                "uuid": uuid,
+                "updating": updating,
+                "new_properties": new_properties,
+                "properties_to_remove": properties_to_remove,
+            },
+        }):
+            return None
         return self.graph.update_properties(
             uuid, updating, brain_id, new_properties, properties_to_remove
         )
@@ -888,11 +899,19 @@ class GraphAdapter:
         return self.graph.get_event_hub_facts(event_uuids, brain_id)
 
     def rebuild_hub_bridge_index(self, brain_id: str = "default") -> int:
+        if capture_operation(brain_id, {
+            "adapter": "graph", "method": "rebuild_hub_bridge_index", "args": {},
+        }):
+            return 0
         return self.graph.rebuild_hub_bridge_index(brain_id)
 
     def refresh_hub_bridges_for_entities(
         self, entity_uuids: list, brain_id: str = "default"
     ) -> int:
+        if capture_operation(brain_id, {
+            "adapter": "graph", "method": "refresh_hub_bridges_for_entities", "args": {"entity_uuids": list(entity_uuids or [])},
+        }):
+            return 0
         refresh = getattr(self.graph, "refresh_hub_bridges_for_entities", None)
         if refresh is None:
             return self.rebuild_hub_bridge_index(brain_id)
@@ -906,6 +925,10 @@ class GraphAdapter:
         return self.graph.get_hub_bridges(event_uuids, brain_id)
 
     def rebuild_topic_index(self, brain_id: str = "default") -> int:
+        if capture_operation(brain_id, {
+            "adapter": "graph", "method": "rebuild_topic_index", "args": {},
+        }):
+            return 0
         rebuild = getattr(self.graph, "rebuild_topic_index", None)
         if rebuild is None:
             return 0

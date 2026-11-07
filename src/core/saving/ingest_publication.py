@@ -43,9 +43,12 @@ def replay_data_operation(client, brain_id, operation):
 
 
 def replay_vector_operation(client, brain_id, operation):
+    args = operation["args"]
+    if operation["method"] == "remove_vectors":
+        client.remove_vectors(args["ids"], args["store"], brain_id)
+        return
     if operation["method"] != "add_vectors":
         raise ValueError("Unsupported staged vector operation")
-    args = operation["args"]
     vectors = [Vector.model_validate(item) for item in args["vectors"]]
     upsert = getattr(client, "upsert_staged_vectors", client.add_vectors)
     upsert(vectors, args["store"], brain_id)
@@ -66,6 +69,21 @@ def replay_graph_operation(client, brain_id, operation):
             Node.model_validate(args["to_object"]),
             brain_id,
         )
+    elif method == "update_properties":
+        client.update_properties(
+            args["uuid"], args["updating"], brain_id,
+            args["new_properties"], args["properties_to_remove"],
+        )
+    elif method == "refresh_hub_bridges_for_entities":
+        refresh = getattr(client, method, None)
+        if refresh is None:
+            client.rebuild_hub_bridge_index(brain_id)
+        else:
+            refresh(brain_id, args["entity_uuids"])
+    elif method in {"rebuild_hub_bridge_index", "rebuild_topic_index"}:
+        rebuild = getattr(client, method, None)
+        if rebuild is not None:
+            rebuild(brain_id)
     else:
         raise ValueError("Unsupported staged graph operation")
 
