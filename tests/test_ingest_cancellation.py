@@ -68,3 +68,40 @@ def test_completion_wins_and_rollback_is_unavailable(run):
     cancellation.record_terminal("brain", "root", "completed")
     with pytest.raises(cancellation.CancellationConflict):
         cancellation.request_cancellation("brain", "root", "keep_saved")
+
+
+def test_expired_staging_claim_can_be_redispatched(run, monkeypatch):
+    from src.core.saving import ingest_staging as staging
+
+    now = 1000
+    monkeypatch.setattr(staging, "time", lambda: now)
+    staging.create_run("brain", "staged")
+    unit = staging.register_unit("brain", "staged", "page:1", {"task": "page"})
+    assert staging.register_unit("brain", "staged", "page:1", {}) == unit
+    first = staging.claim_unit("brain", "staged", unit)
+    assert staging.claim_unit("brain", "staged", unit) is None
+    assert staging.pending_dispatches("brain", "staged") == []
+
+    now += staging.CLAIM_SECONDS
+    assert staging.pending_dispatches("brain", "staged") == [(unit, {"task": "page"})]
+    second = staging.claim_unit("brain", "staged", unit)
+    assert second and first != second
+    assert not staging.renew_claim("brain", "staged", unit, first)
+    assert not staging.complete_unit("brain", "staged", unit, first, "stale")
+    assert staging.complete_unit("brain", "staged", unit, second, "current")
+
+
+@pytest.mark.parametrize(("mode", "status"), [
+    ("keep_saved", "publishing"), ("rollback", "discarding"),
+])
+def test_staged_cancellation_fences_late_completion(run, mode, status):
+    from src.core.saving import ingest_staging as staging
+
+    staging.create_run("brain", "staged")
+    unit = staging.register_unit("brain", "staged", "page:1", {})
+    claim = staging.claim_unit("brain", "staged", unit)
+    assert staging.close_staging("brain", "staged")["status"] == "staging"
+    assert staging.close_staging("brain", "staged", mode)["status"] == status
+    assert not staging.complete_unit("brain", "staged", unit, claim, "late")
+    assert staging.register_unit("brain", "staged", "page:2", {}) is None
+    assert staging.pending_dispatches("brain", "staged") == []
