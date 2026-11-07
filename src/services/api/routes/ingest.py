@@ -45,6 +45,27 @@ RETRY_DELAY_BASE = 0.1
 ingest_router = APIRouter(prefix="/ingest", tags=["ingest"])
 
 
+def _submit_staged(brain_id, task_id, payload, context, *, kind="source", discovery=False):
+    from src.core.saving import ingest_staging
+    from src.core.saving.ingest_worker import dispatch_staged_source
+
+    message = {"kind": kind, "payload": payload}
+    if context:
+        message["headers"] = {"pipeline_operation": context}
+    ingest_staging.create_run(brain_id, task_id)
+    unit_id = ingest_staging.register_unit(
+        brain_id, task_id, "discovery" if discovery else "source", message,
+    )
+    if unit_id is None:
+        return
+    if not discovery:
+        ingest_staging.seal_units(brain_id, task_id)
+    try:
+        dispatch_staged_source(brain_id, task_id, unit_id)
+    except OperationalError as exc:
+        raise HTTPException(503, "Task queue unavailable") from exc
+
+
 @ingest_router.post(
     path="/", status_code=202, response_model=IngestionAcceptedResponse
 )
@@ -75,20 +96,7 @@ async def ingest_data(
     if os.getenv("STAGED_INGESTION_ENABLED") == "1" and (
         data.skip_enrichment or os.getenv("STAGED_ENRICHMENT_ENABLED") == "1"
     ):
-        from src.core.saving import ingest_staging
-        from src.core.saving.ingest_worker import dispatch_staged_source
-
-        message = {"payload": data.model_dump(mode="json")}
-        if context:
-            message["headers"] = {"pipeline_operation": context}
-        ingest_staging.create_run(brain_id, task_id)
-        unit_id = ingest_staging.register_unit(brain_id, task_id, "source", message)
-        if unit_id is not None:
-            ingest_staging.seal_units(brain_id, task_id)
-            try:
-                dispatch_staged_source(brain_id, task_id, unit_id, message)
-            except OperationalError as exc:
-                raise HTTPException(503, "Task queue unavailable") from exc
+        _submit_staged(brain_id, task_id, data.model_dump(mode="json"), context)
         return JSONResponse(
             status_code=202,
             content={"message": "Ingestion accepted", "task_id": task_id},
@@ -147,6 +155,13 @@ async def ingest_structured_data(
         stage="queued",
         group_tracking=data.group_tracking,
     )
+
+    if os.getenv("STAGED_INGESTION_ENABLED") == "1" and os.getenv("STAGED_ENRICHMENT_ENABLED") == "1":
+        _submit_staged(brain_id, task_id, data.model_dump(mode="json"), context, kind="structured")
+        return JSONResponse(
+            status_code=202,
+            content={"message": "Structured ingestion accepted", "task_id": task_id},
+        )
 
     headers = register(brain_id, task_id)
     if context:
@@ -214,19 +229,7 @@ async def ingest_url(
     )
 
     if os.getenv("STAGED_INGESTION_ENABLED") == "1" and payload.get("skip_enrichment") and not data.progressive:
-        from src.core.saving import ingest_staging
-        from src.core.saving.ingest_worker import dispatch_staged_source
-
-        message = {"kind": "url_discovery", "payload": payload}
-        if context:
-            message["headers"] = {"pipeline_operation": context}
-        ingest_staging.create_run(brain_id, task_id)
-        unit_id = ingest_staging.register_unit(brain_id, task_id, "discovery", message)
-        if unit_id is not None:
-            try:
-                dispatch_staged_source(brain_id, task_id, unit_id, message)
-            except OperationalError as exc:
-                raise HTTPException(503, "Task queue unavailable") from exc
+        _submit_staged(brain_id, task_id, payload, context, kind="url_discovery", discovery=True)
         return JSONResponse(
             status_code=202,
             content={"message": "URL ingestion accepted", "task_id": task_id},

@@ -1314,6 +1314,19 @@ def ingest_structured_data(self, args: dict):
     Exceptions:
         On exception, stores a "failed" task status with error details in the cache and re-raises the exception.
     """
+    staged_root = (getattr(self.request, "headers", None) or {}).get("staged_ingestion_root")
+    if isinstance(staged_root, str) and staged_root:
+        from src.core.saving.ingest_worker import execute_staged_unit
+
+        execute_staged_unit(
+            args.get("brain_id", "default"), staged_root, self.request.id,
+            lambda: _ingest_structured_data(self, args, staged=True),
+        )
+        return self.request.id
+    return _ingest_structured_data(self, args)
+
+
+def _ingest_structured_data(self, args, *, staged=False):
     payload = None
     try:
         payload = IngestionStructuredRequestBody(**args)
@@ -1563,6 +1576,12 @@ def ingest_structured_data(self, args: dict):
                 "completed",
             )
         )
+        if staged:
+            for step in steps:
+                checkpoint()
+                step.type.run(*step.args, **step.kwargs)
+            return parent_task_id
+
         from celery import chain
 
         headers = chain_headers()
