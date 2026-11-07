@@ -30,3 +30,11 @@ def load_output(brain_id, root_id, output_ref):
     if document is None:
         raise LookupError("Staged ingestion output not found")
     return document["operations"]
+
+
+def commit_output(brain_id, root_id, unit_id, attempt, operations):
+    """Make immutable output eligible for publication under the current claim."""
+    from src.core.saving.ingest_staging import complete_unit
+
+    ref = save_output(brain_id, root_id, unit_id, attempt, operations)
+    return complete_unit(brain_id, root_id, unit_id, attempt, ref)

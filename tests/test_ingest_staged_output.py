@@ -29,3 +29,25 @@ def test_staged_output_is_immutable_and_scoped(monkeypatch):
         staged.save_output("brain", "root", "unit", "attempt", [])
     with pytest.raises(LookupError):
         staged.load_output("brain", "other-root", ref)
+
+
+def test_data_adapter_captures_writes_in_attempt_scope():
+    from src.adapters.data import DataAdapter
+    from src.constants.data import TextChunk
+    from src.core.saving.ingest_write_buffer import capture_writes
+
+    adapter = DataAdapter()
+    adapter.add_client(Mock())
+    chunk = TextChunk(text="staged")
+    with capture_writes("brain") as operations:
+        assert adapter.save_text_chunk(chunk, "brain") is chunk
+        assert operations == [{
+            "adapter": "data",
+            "method": "save_text_chunk",
+            "args": {"text_chunk": chunk.model_dump(mode="json")},
+        }]
+        with pytest.raises(ValueError):
+            adapter.save_text_chunk(chunk, "other")
+    adapter.data.save_text_chunk.assert_not_called()
+    adapter.save_text_chunk(chunk, "brain")
+    adapter.data.save_text_chunk.assert_called_once_with(text_chunk=chunk, brain_id="brain")
