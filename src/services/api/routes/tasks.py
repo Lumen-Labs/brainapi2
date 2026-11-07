@@ -88,7 +88,13 @@ class CancelIngestionRequest(BaseModel):
     mode: Literal["keep_saved", "rollback"]
 
 
-@tasks_router.post("/{task_id}/cancel", status_code=202)
+class CancelIngestionResponse(BaseModel):
+    task_id: str
+    mode: Literal["keep_saved", "rollback"]
+    status: Literal["cancelling", "cancelled", "rollback_failed"]
+
+
+@tasks_router.post("/{task_id}/cancel", status_code=202, response_model=CancelIngestionResponse)
 async def cancel_ingestion(
     task_id: str,
     body: CancelIngestionRequest,
