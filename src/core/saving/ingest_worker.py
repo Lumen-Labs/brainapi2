@@ -31,18 +31,18 @@ def execute_staged_unit(brain_id, root_id, unit_id, process, *, discovery=False,
                 result = process()
             if discovery and (operations or (not result and not wait_for_sections)):
                 raise ValueError("Discovery must produce source units without staging mutations")
+            if not ingest_staging.renew_claim(brain_id, root_id, unit_id, attempt):
+                return False
+            if discovery:
+                return ingest_staging.complete_discovery(
+                    brain_id, root_id, unit_id, attempt, result, wait_for_sections=wait_for_sections,
+                )
+            return commit_output(brain_id, root_id, unit_id, attempt, operations)
         except Ignore:
             return False
         except Exception:
             ingest_staging.record_unit_failure(brain_id, root_id, unit_id, attempt)
             raise
-        if not ingest_staging.renew_claim(brain_id, root_id, unit_id, attempt):
-            return False
-        if discovery:
-            return ingest_staging.complete_discovery(
-                brain_id, root_id, unit_id, attempt, result, wait_for_sections=wait_for_sections,
-            )
-        return commit_output(brain_id, root_id, unit_id, attempt, operations)
     finally:
         stop.set()
         heartbeat.join()

@@ -24,10 +24,9 @@ from src.config import config
 from src.constants.embeddings import EMBEDDING_STORES_SIZES, Vector
 
 from ._provisioning import (
-    borrow,
     clear_brain_database,
     ensure_brain_database,
-    get_brain_pool,
+    borrow_brain,
 )
 
 
@@ -130,7 +129,7 @@ class PostgreSQLVectorStoreClient(VectorStoreClient):
     @contextmanager
     def _connection(self, brain_id: str) -> Iterator[psycopg2.extensions.connection]:
         self._ensure_extension(brain_id)
-        with borrow(get_brain_pool(brain_id)) as conn:
+        with borrow_brain(brain_id) as conn:
             register_vector(conn)
             yield conn
 
@@ -141,7 +140,7 @@ class PostgreSQLVectorStoreClient(VectorStoreClient):
             if brain_id in self._brain_extensions_ready:
                 return
             ensure_brain_database(brain_id)
-            with borrow(get_brain_pool(brain_id)) as conn:
+            with borrow_brain(brain_id) as conn:
                 with conn.cursor() as cur:
                     cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
                 conn.commit()

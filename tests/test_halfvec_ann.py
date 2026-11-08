@@ -145,7 +145,7 @@ class HalfvecAnnTests(unittest.TestCase):
         import psycopg2.extras
 
         from src.lib.postgresql._naming import brain_db_name
-        from src.lib.postgresql._provisioning import borrow, get_brain_pool
+        from src.lib.postgresql._provisioning import borrow_brain
 
         brain_id = "searchbench_halfvec_unit"
         sizes = {
@@ -162,7 +162,7 @@ class HalfvecAnnTests(unittest.TestCase):
         ):
             client._initialized_stores.clear()
             client._ensure_store("data", brain_id)
-        with borrow(get_brain_pool(brain_id)) as conn:
+        with borrow_brain(brain_id) as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(
                     """

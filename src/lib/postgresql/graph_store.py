@@ -19,7 +19,7 @@ import psycopg2.extras
 
 from src.config import config
 
-from ._provisioning import borrow, ensure_brain_database, get_brain_pool
+from ._provisioning import borrow_brain, ensure_brain_database
 from .read_query import (
     MAX_READ_QUERY_ROWS,
     READ_QUERY_TIMEOUT_MS,
@@ -241,7 +241,7 @@ class PostgreSQLGraphStore:
             if not needs_base and not needs_search:
                 return
             ensure_brain_database(brain_id)
-            with borrow(get_brain_pool(brain_id)) as conn:
+            with borrow_brain(brain_id) as conn:
                 if needs_base:
                     with conn.cursor() as cur:
                         cur.execute(self._DDL)
@@ -256,7 +256,7 @@ class PostgreSQLGraphStore:
     @contextmanager
     def _connection(self, brain_id: str):
         self._ensure_brain_schema(brain_id)
-        with borrow(get_brain_pool(brain_id)) as conn:
+        with borrow_brain(brain_id) as conn:
             yield conn
 
     def _ensure_brain_row(self, brain_id: str) -> None:
@@ -387,7 +387,7 @@ class PostgreSQLGraphStore:
 
     def _db_graph_counts(self, brain_id: str) -> tuple[int, int]:
         self._ensure_brain_schema(brain_id)
-        with borrow(get_brain_pool(brain_id)) as conn:
+        with borrow_brain(brain_id) as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT COUNT(*) FROM kg_nodes")
                 nodes = int(cur.fetchone()[0])

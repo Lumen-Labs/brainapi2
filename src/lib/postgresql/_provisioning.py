@@ -5,12 +5,8 @@ Project: postgresql
 Process-wide Postgres infrastructure shared by the data / vectors / networkx
 clients:
 
-  * `get_pool(dbname)`               — LRU cache of psycopg2 ThreadedConnectionPools.
-                                       Fork-safe (resets on child process).
-  * `get_system_pool()`              — convenience helper for the registry DB
-                                       (config.postgresql.system_database).
-  * `get_brain_pool(brain_id)`       — convenience helper for the per-brain DB,
-                                       resolved through `_naming.brain_db_name`.
+  * `borrow_system()` and `borrow_brain(brain_id)` lease connections from a
+    fork-safe LRU registry. Pools with checked-out connections cannot be evicted.
   * `ensure_brain_database(brain_id)` — `CREATE DATABASE brain_<id>` if missing,
                                        executed against the maintenance database
                                        (default `postgres`).
@@ -61,6 +57,7 @@ class _PoolRegistry:
     def __init__(self) -> None:
         self._pools: "OrderedDict[str, psycopg2.pool.ThreadedConnectionPool]" = OrderedDict()
         self._lock = threading.RLock()
+        self._borrowed: dict[str, int] = {}
         self._pid: Optional[int] = None
 
     def _reset_if_forked(self) -> None:
@@ -72,6 +69,7 @@ class _PoolRegistry:
                 except Exception as exc:
                     logger.debug("Failed to close pool %s on fork: %s", name, exc)
             self._pools.clear()
+            self._borrowed.clear()
         self._pid = current
 
     def get(
@@ -98,12 +96,36 @@ class _PoolRegistry:
                 dbname=dbname,
             )
             self._pools[dbname] = pool
-            self._evict_if_needed()
+            self._evict_if_needed(keep=dbname)
             return pool
 
-    def _evict_if_needed(self) -> None:
+    @contextmanager
+    def borrow(self, dbname: str):
+        with self._lock:
+            pool = self.get(dbname)
+            conn = pool.getconn()
+            self._borrowed[dbname] = self._borrowed.get(dbname, 0) + 1
+        try:
+            yield conn
+        finally:
+            with self._lock:
+                try:
+                    pool.putconn(conn)
+                finally:
+                    self._borrowed[dbname] -= 1
+                    if not self._borrowed[dbname]:
+                        del self._borrowed[dbname]
+                    self._evict_if_needed()
+
+    def _evict_if_needed(self, keep: str | None = None) -> None:
         while len(self._pools) > _MAX_OPEN_POOLS:
-            evicted_name, evicted_pool = self._pools.popitem(last=False)
+            evicted_name = next(
+                (name for name in self._pools if name != keep and name not in self._borrowed),
+                None,
+            )
+            if evicted_name is None:
+                return
+            evicted_pool = self._pools.pop(evicted_name)
             try:
                 evicted_pool.closeall()
             except Exception as exc:
@@ -125,25 +147,12 @@ class _PoolRegistry:
 _registry = _PoolRegistry()
 
 
-def get_pool(dbname: str, **kwargs) -> psycopg2.pool.ThreadedConnectionPool:
-    return _registry.get(dbname, **kwargs)
+def borrow_system():
+    return _registry.borrow(_system_dbname())
 
 
-def get_system_pool() -> psycopg2.pool.ThreadedConnectionPool:
-    return _registry.get(_system_dbname())
-
-
-def get_brain_pool(brain_id: str) -> psycopg2.pool.ThreadedConnectionPool:
-    return _registry.get(brain_db_name(brain_id))
-
-
-@contextmanager
-def borrow(pool: psycopg2.pool.ThreadedConnectionPool) -> Iterator[psycopg2.extensions.connection]:
-    conn = pool.getconn()
-    try:
-        yield conn
-    finally:
-        pool.putconn(conn)
+def borrow_brain(brain_id: str):
+    return _registry.borrow(brain_db_name(brain_id))
 
 
 _created_dbs: set[str] = set()
@@ -209,7 +218,7 @@ def list_brain_database_names() -> list[str]:
         BRAIN_DB_PREFIX.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     )
     system_db = _system_dbname()
-    with borrow(_registry.get(_maintenance_dbname())) as conn:
+    with _registry.borrow(_maintenance_dbname()) as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT datname FROM pg_database "
@@ -235,14 +244,13 @@ def clear_brain_database(
     data, graph records, vectors, and plugin-owned tables in the public schema.
     """
     dbname = brain_db_name(brain_id)
-    maintenance = _registry.get(_maintenance_dbname())
-    with borrow(maintenance) as conn:
+    with _registry.borrow(_maintenance_dbname()) as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (dbname,))
             if cur.fetchone() is None:
                 return []
 
-    with borrow(get_brain_pool(brain_id)) as conn:
+    with borrow_brain(brain_id) as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT tablename FROM pg_tables "

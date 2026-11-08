@@ -32,11 +32,10 @@ from ._naming import (
     is_internal_brain_db_suffix,
 )
 from ._provisioning import (
-    borrow,
     ensure_brain_database,
     ensure_database_exists,
-    get_brain_pool,
-    get_system_pool,
+    borrow_brain,
+    borrow_system,
     clear_brain_database,
     drop_brain_database,
     list_brain_database_names,
@@ -275,7 +274,7 @@ class PostgreSQLDataClient(DataClient):
     @contextmanager
     def _system_connection(self) -> Iterator[psycopg2.extensions.connection]:
         self._ensure_system_schema()
-        with borrow(get_system_pool()) as conn:
+        with borrow_system() as conn:
             yield conn
 
     @contextmanager
@@ -283,7 +282,7 @@ class PostgreSQLDataClient(DataClient):
         self, brain_id: str
     ) -> Iterator[psycopg2.extensions.connection]:
         self._ensure_brain_schema(brain_id)
-        with borrow(get_brain_pool(brain_id)) as conn:
+        with borrow_brain(brain_id) as conn:
             yield conn
 
     def _ensure_system_schema(self) -> None:
@@ -293,7 +292,7 @@ class PostgreSQLDataClient(DataClient):
             if self._system_initialized:
                 return
             ensure_database_exists(config.postgresql.system_database)
-            with borrow(get_system_pool()) as conn:
+            with borrow_system() as conn:
                 with conn.cursor() as cur:
                     cur.execute(_SYSTEM_DDL)
                 conn.commit()
@@ -326,7 +325,7 @@ class PostgreSQLDataClient(DataClient):
             if not needs_base and not needs_search and not needs_alt:
                 return
             ensure_brain_database(brain_id)
-            with borrow(get_brain_pool(brain_id)) as conn:
+            with borrow_brain(brain_id) as conn:
                 with conn.cursor() as cur:
                     if needs_base:
                         cur.execute(_BRAIN_DDL)
