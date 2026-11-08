@@ -76,6 +76,13 @@ def test_usage_export_ack_and_dispatch_lease(store):
         events.insert_one({'_id':identity, 'operation_id':'op'})
     assert events.update_many({'operation_id':'op','_id':{'$in':['a','b']}}, {'$set':{'exported':True}}).modified_count == 2
     assert [r['_id'] for r in events.find({'exported':{'$ne':True}}).sort('_id',1)] == ['c']
+    events.insert_one({'_id': 'other', 'operation_id': 'other-op'})
+    assert events.update_many(
+        {'operation_id': 'op', '_id': {'$in': ['a', 'other']}},
+        {'$set': {'exported': True}},
+    ).matched_count == 1
+    assert [r['_id'] for r in events.find({'operation_id': 'op', 'exported': {'$ne': True}}).sort('_id', 1)] == ['c']
+    assert events.find_one({'operation_id': 'other-op', 'exported': {'$ne': True}})['_id'] == 'other'
     roots = store('ingest_manifests')
     roots.update_one({'_id':'op'}, {'$setOnInsert':{'total':3}}, upsert=True)
     query = {'_id':'op','$or':[{'dispatch_until':{'$lt':100}}, {'dispatch_until':{'$exists':False}}]}

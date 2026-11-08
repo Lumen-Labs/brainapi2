@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from src.core.saving import ingest_cancellation
 from src.utils.logging import log
 from fastapi import APIRouter, Depends, HTTPException, Request, Query
+from starlette.concurrency import run_in_threadpool
 from src.services.api.dependencies import get_brain_id
 from src.services.kg_agent.main import cache_adapter
 from src.services.api.constants.responses import TaskListResponse, TaskStateResponse, IngestionActivityResponse
@@ -162,17 +163,26 @@ def customer_task(result, brain_id=None):
 @tasks_router.post("/{task_id}/usage", include_in_schema=False)
 async def task_usage(task_id: str, request: Request, brain_id: str = Depends(get_brain_id)):
     from src.core.saving.ingest_manifest import verify_control
-    from src.services.data.main import data_adapter
     body = await request.json()
     if not verify_control(brain_id, task_id, "usage", body.get("token")):
         raise HTTPException(403, "Platform administration required")
-    offset = max(0, int(body.get("offset", 0)))
-    from src.core.saving.pipeline_store import collection
-    events = collection(brain_id, "pipeline_usage_events")
     ack_ids = body.get("ack_ids")
-    if ack_ids is not None:
-        if not isinstance(ack_ids,list) or len(ack_ids)>100 or any(not isinstance(v,str) for v in ack_ids):
-            raise HTTPException(422,"Invalid acknowledgement")
-        events.update_many({"operation_id":task_id,"_id":{"$in":ack_ids}},{"$set":{"exported":True}})
-    rows = list(events.find({"operation_id":task_id,"exported":{"$ne":True}}).sort("_id",1).limit(100))
-    return {"events":[{"id":str(row.pop("_id")), **row} for row in rows], "next_offset":0 if len(rows)==100 else None}
+    if ack_ids is not None and (
+        not isinstance(ack_ids, list) or len(ack_ids) > 100
+        or any(not isinstance(value, str) for value in ack_ids)
+    ):
+        raise HTTPException(422, "Invalid acknowledgement")
+    return await run_in_threadpool(_read_task_usage, brain_id, task_id, ack_ids)
+
+
+def _read_task_usage(brain_id, task_id, ack_ids):
+    from src.core.saving.pipeline_store import collection
+
+    events = collection(brain_id, "pipeline_usage_events")
+    if ack_ids:
+        events.update_many(
+            {"operation_id": task_id, "_id": {"$in": ack_ids}},
+            {"$set": {"exported": True}},
+        )
+    rows = list(events.find({"operation_id": task_id, "exported": {"$ne": True}}).sort("_id", 1).limit(100))
+    return {"events": [{"id": str(row.pop("_id")), **row} for row in rows], "next_offset": 0 if len(rows) == 100 else None}

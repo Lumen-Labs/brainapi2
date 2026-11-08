@@ -20,6 +20,10 @@ CREATE INDEX IF NOT EXISTS pipeline_documents_import
     ON pipeline_documents (namespace, (document->>'import_id'));
 CREATE INDEX IF NOT EXISTS pipeline_documents_operation
     ON pipeline_documents (namespace, (document->>'operation_id'));
+CREATE INDEX IF NOT EXISTS pipeline_usage_unexported_operation
+    ON pipeline_documents ((document->>'operation_id'), id)
+    WHERE namespace = 'pipeline_usage_events'
+      AND (document->'exported') IS DISTINCT FROM 'true'::jsonb;
 CREATE UNIQUE INDEX IF NOT EXISTS pipeline_documents_task
     ON pipeline_documents ((document->>'task_id'))
     WHERE namespace = 'ingest_sections';
@@ -50,6 +54,16 @@ def predicate(query):
             for _, args in clauses:
                 values.extend(args)
             continue
+        if key == "operation_id" and isinstance(value, str):
+            parts.append("(document->>'operation_id') = %s")
+            values.append(value)
+            continue
+        if key == "_id" and isinstance(value, dict) and set(value) == {"$in"}:
+            ids = value["$in"]
+            if all(isinstance(identity, str) for identity in ids):
+                parts.append("id = ANY(%s)")
+                values.append(ids)
+                continue
         if isinstance(value, dict):
             for op, operand in value.items():
                 if op == '$exists':
