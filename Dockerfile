@@ -46,6 +46,11 @@ RUN if [ "$INSTALL_LOCAL_ML" = "true" ]; then \
     && /app/.venv/bin/python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')" \
     && rm -rf /root/.cache /tmp/*
 
+# Install the default query-language pipeline during the build, never on first use.
+RUN printf '%s\n' 'en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl --hash=sha256:1932429db727d4bff3deed6b34cfc05df17794f4a52eeb26cf8928f7c1a0fb85' > /tmp/spacy-models.txt \
+    && pip --python /app/.venv/bin/python install --no-deps --require-hashes -r /tmp/spacy-models.txt \
+    && rm /tmp/spacy-models.txt
+
 COPY src/ ./src/
 COPY scripts/preload_docker_models.py ./scripts/
 

@@ -9,6 +9,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
+import os
 import subprocess
 import sys
 
@@ -33,6 +34,8 @@ class SpacyManager:
         try:
             nlp = spacy.load(model_name)
         except OSError:
+            if os.getenv("SPACY_ALLOW_RUNTIME_DOWNLOAD", "1") != "1":
+                raise
             proc = subprocess.run(
                 [sys.executable, "-m", "spacy", "download", model_name],
                 check=False,

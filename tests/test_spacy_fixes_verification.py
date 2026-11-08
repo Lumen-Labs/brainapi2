@@ -117,6 +117,16 @@ class TestFastAPIRedirectSlashes(unittest.TestCase):
 
 
 class TestSpacyManagerDownloadBehavior(unittest.TestCase):
+    @patch.dict("os.environ", {"SPACY_ALLOW_RUNTIME_DOWNLOAD": "0"})
+    @patch("src.utils.nlp.spacy.subprocess.run")
+    @patch("src.utils.nlp.spacy.spacy.load", side_effect=OSError("missing"))
+    def test_missing_model_does_not_download_when_disabled(self, mock_load, mock_run):
+        from src.utils.nlp.spacy import SpacyManager
+
+        with self.assertRaisesRegex(OSError, "missing"):
+            SpacyManager().get_model("it")
+        mock_run.assert_not_called()
+
     @patch("src.utils.nlp.spacy.subprocess.run")
     @patch("src.utils.nlp.spacy.spacy.load")
     def test_failed_download_raises_oserror_not_sysexit(

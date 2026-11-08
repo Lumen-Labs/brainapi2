@@ -1804,8 +1804,8 @@ async def _build_context(
     request: GetContextRequestBody,
     fact_filter_adapter: Any,
 ) -> GetContextResponse:
-    with profile_stage("nlp.extract_elements"):
-        elements = _entity_extractor.extract_elements(request.text)
+    with profile_stage("nlp.extract_elements", blocking=False):
+        elements = await asyncio.to_thread(_entity_extractor.extract_elements, request.text)
     with profile_stage("nlp.query_variants") as detail:
         variants = _collect_query_variants(request.text, elements)
         detail["variants"] = len(variants)

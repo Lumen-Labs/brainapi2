@@ -367,6 +367,7 @@ class GetContextStageCoverageTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(stages["ppr.adjacency"]["on_loop"])
         self.assertTrue(stages["ppr.iterations"]["on_loop"])
         self.assertTrue(stages["nlp.extract_elements"]["on_loop"])
+        self.assertIsNone(stages["nlp.extract_elements"]["cpu_ms"])
         self.assertFalse(stages["facts.variant"]["on_loop"])
         self.assertEqual(stages["ppr.iterations"]["detail"]["iterations"], 20)
 
