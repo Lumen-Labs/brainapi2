@@ -28,6 +28,7 @@ from src.core.saving.architect_scratchpad import (
 )
 from src.core.saving.ingestion_manager import IngestionManager
 from src.core.saving.ingest_cost import IngestCostLedger, count_source_tokens, track_stage
+from src.core.saving.ingest_progress import ChunkProgress
 from src.services.input.agents import (
     cache_adapter,
     embeddings_adapter,
@@ -269,10 +270,12 @@ def _enrich_kg_impl(
 
     pending = []
     recent_entities = []
+    progress = ChunkProgress(brain_id, len(input))
 
     def ingest_span(start: int, end: int, depth: int = 0) -> None:
         source = input[start:end]
         if not source.strip():
+            progress.complete(end)
             return
         unit_text = source_context(input, start) + source
         stage = "scout"
@@ -290,6 +293,7 @@ def _enrich_kg_impl(
                 )
             entities = list(response.entities)
             if not entities:
+                progress.complete(end)
                 return
 
             stage = "architect"
@@ -342,9 +346,12 @@ def _enrich_kg_impl(
                 raise IngestModelLimitError(
                     f"Ingestion {stage} could not fit source span [{start}, {end})"
                 ) from exc
+            progress.split()
             cut = start + source_cut(source, len(source) // 2)
             ingest_span(start, cut, depth + 1)
             ingest_span(cut, end, depth + 1)
+        else:
+            progress.complete(end)
         finally:
             source_span_tokens.reset(span_token)
 

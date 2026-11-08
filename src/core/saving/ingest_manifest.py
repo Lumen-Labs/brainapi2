@@ -85,6 +85,8 @@ def create_manifest(brain_id, import_id, pages, args):
 
 
 def manifest_snapshot(brain_id, import_id, offset=0, limit=50, internal=False):
+    from src.core.saving.ingest_progress import eta_range, publication_progress, publishing_eta, source_progress
+
     manifest = collection(brain_id).find_one({"_id": import_id})
     if not manifest:
         return None
@@ -102,6 +104,9 @@ def manifest_snapshot(brain_id, import_id, offset=0, limit=50, internal=False):
             if result.modified_count == 1:
                 row.update(status="failed",stage="failed",error="Worker stopped reporting for 24 hours")
     staged_state = None
+    publication = None
+    eta = None
+    stage = "ingesting"
     cancellation = {}
     if manifest.get("staged"):
         from src.core.saving import ingest_cancellation
@@ -109,6 +114,10 @@ def manifest_snapshot(brain_id, import_id, offset=0, limit=50, internal=False):
         run = ingest_cancellation._runs(brain_id).find_one({"_id": import_id})
         if run:
             staged_state = ingest_cancellation.cancellation_status(run)
+            publication = publication_progress(run, {row["task_id"] for row in rows})
+            if run["status"] == "publishing":
+                stage = "publishing"
+                eta = publishing_eta(run, now)
             if run.get("mode"):
                 cancellation["cancellation_mode"] = run["mode"]
             elif staged_state == "staging":
@@ -140,12 +149,20 @@ def manifest_snapshot(brain_id, import_id, offset=0, limit=50, internal=False):
     public_rows = []
     for row in rows[offset:offset + limit]:
         item = {"id": row["_id"], **{key: row.get(key) for key in fields}}
+        if row.get("chunk_progress"):
+            item["chunk_progress"] = row["chunk_progress"]
         if row.get("error"):
             item["error"] = "This section could not be processed"
         if internal:
             item["cost"] = row.get("cost")
         public_rows.append(item)
-    return {"version": VERSION, "task_id": import_id, "status": status, "stage": "ingesting", **cancellation,
+    if status == "started" and stage == "ingesting":
+        eta = eta_range(rows, now)
+    coverage = source_progress(rows)
+    return {"version": VERSION, "task_id": import_id, "status": status, "stage": stage, **cancellation,
+        **({"publication": publication} if publication is not None else {}),
+        **({"eta": eta} if eta is not None else {}),
+        **({"source_progress": coverage} if coverage is not None else {}),
         "pages": page_rows, "sections": public_rows,
         "progress": {"done": done + failed, "total": len(rows), "succeeded": done, "failed": failed},
         "characters_completed": sum(row["chars"] for row in rows if row["status"] == "completed"),
@@ -238,7 +255,7 @@ def retry_sections(brain_id, import_id, section_ids):
     for row in col.find({"import_id": import_id, "_id": {"$in": section_ids}, "status": {"$in": ["failed", "partial_failed"]}}):
         col.update_one({"_id": row["_id"], "task_id": row["task_id"]}, {"$set": {
             "status": "pending", "stage": "queued", "task_id": str(uuid4()),
-            "attempt": row.get("attempt", 1) + 1}, "$unset": {"error": "", "cost": "", "execution_claimed":""}})
+            "attempt": row.get("attempt", 1) + 1}, "$unset": {"error": "", "cost": "", "execution_claimed":"", "chunk_progress":"", "chunk_progress_token":""}})
 
 
 def verify_usage_context(token):

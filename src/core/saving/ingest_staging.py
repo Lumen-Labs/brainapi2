@@ -1,5 +1,6 @@
 """State transitions for imports whose workers write only to staging."""
 
+from datetime import datetime, timezone
 from time import time
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
@@ -202,7 +203,9 @@ def close_staging(brain_id, root_id, mode=None):
             or any(unit["state"] != "complete" for unit in run["units"].values())
         ):
             return None
-        return {"status": "discarding" if mode == "rollback" else "publishing", "mode": mode}
+        if mode == "rollback":
+            return {"status": "discarding", "mode": mode}
+        return {"status": "publishing", "mode": mode, "publication_started_at": datetime.now(timezone.utc).isoformat()}
 
     return ingest_cancellation._change(brain_id, root_id, transition)
 

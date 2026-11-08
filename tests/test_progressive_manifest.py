@@ -154,3 +154,47 @@ def test_shared_dispatch_leaves_second_slot_for_another_import():
         assert _dispatch_sections_locked("brain-a", "import-a", ["a2"]) == []
         assert _dispatch_sections_locked("brain-b", "import-b", ["b1"]) == ["b1"]
     assert [call.kwargs["task_id"] for call in queue.call_args_list] == ["task-a", "task-b"]
+
+
+def test_chunk_eta_uses_completed_coverage_and_withholds_stale_estimates():
+    from datetime import datetime, timedelta, timezone
+    from src.core.saving.ingest_progress import eta_range
+
+    now = datetime.now(timezone.utc)
+    progress = {
+        "characters_processed": 200,
+        "characters_total": 1000,
+        "chunks_completed": 2,
+        "splits": 0,
+        "elapsed_seconds": 20,
+        "updated_at": now.isoformat(),
+    }
+    rows = [
+        {"status": "started", "chars": 1000, "chunk_progress": progress},
+        {"status": "pending", "chars": 100},
+    ]
+    eta = eta_range(rows, now)
+    assert eta["phase"] == "staging"
+    assert eta["min_seconds"] < 90 < eta["max_seconds"]
+    progress["splits"] = 1
+    assert eta_range(rows, now)["max_seconds"] > eta["max_seconds"]
+    assert eta_range(rows, now + timedelta(minutes=4)) is None
+
+
+def test_publication_counts_sections_and_waits_for_visibility():
+    from src.core.saving.ingest_progress import publication_progress
+
+    run = {
+        "status": "publishing",
+        "publication_cursor": 2,
+        "units": {
+            "discovery": {"ordinal": 0, "state": "complete"},
+            "a": {"ordinal": 1, "state": "complete"},
+            "b": {"ordinal": 2, "state": "complete"},
+        },
+    }
+    assert publication_progress(run, {"a", "b"}) == {
+        "staged_sections": 1, "published_sections": 0, "applied_sections": 1, "target_sections": 2,
+    }
+    run.update(status="completed", publication_cursor=3)
+    assert publication_progress(run, {"a", "b"})["published_sections"] == 2
