@@ -2,6 +2,10 @@
 
 from uuid import NAMESPACE_URL, uuid5
 
+from psycopg2 import InterfaceError, OperationalError
+from pymongo.errors import AutoReconnect
+from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential
+
 from src.core.saving.pipeline_store import collection
 
 
@@ -36,8 +40,14 @@ def commit_output(brain_id, root_id, unit_id, attempt, operations):
     """Make immutable output eligible for publication under the current claim."""
     from src.core.saving.ingest_staging import complete_unit
 
-    ref = save_output(brain_id, root_id, unit_id, attempt, operations)
-    return complete_unit(brain_id, root_id, unit_id, attempt, ref)
+    retry_write = Retrying(
+        retry=retry_if_exception_type((OperationalError, InterfaceError, AutoReconnect)),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=0.25),
+        reraise=True,
+    )
+    ref = retry_write(save_output, brain_id, root_id, unit_id, attempt, operations)
+    return retry_write(complete_unit, brain_id, root_id, unit_id, attempt, ref)
 
 
 def discard_outputs(brain_id, root_id):

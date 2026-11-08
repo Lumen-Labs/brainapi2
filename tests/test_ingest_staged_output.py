@@ -108,6 +108,48 @@ def test_worker_commits_only_while_claim_is_current(monkeypatch):
     commit.assert_called_once_with("brain", "root", "unit", "attempt", [])
 
 
+def test_worker_retries_staging_writes_without_reprocessing(monkeypatch):
+    from psycopg2 import OperationalError
+
+    from src.core.saving import ingest_worker
+
+    monkeypatch.setattr(ingest_worker.ingest_staging, "claim_unit", lambda *_: "attempt")
+    monkeypatch.setattr(ingest_worker.ingest_staging, "renew_claim", lambda *_: True)
+    failed = Mock()
+    monkeypatch.setattr(ingest_worker.ingest_staging, "record_unit_failure", failed)
+    save = Mock(side_effect=[OperationalError("connection lost"), "output"])
+    complete = Mock(side_effect=[OperationalError("acknowledgment lost"), True])
+    monkeypatch.setattr(staged, "save_output", save)
+    monkeypatch.setattr(ingest_worker.ingest_staging, "complete_unit", complete)
+    process = Mock()
+
+    assert ingest_worker.execute_staged_unit("brain", "root", "unit", process)
+    process.assert_called_once_with()
+    assert save.call_count == complete.call_count == 2
+    assert save.call_args_list[0] == save.call_args_list[1]
+    assert complete.call_args_list[0] == complete.call_args_list[1]
+    failed.assert_not_called()
+
+
+@pytest.mark.parametrize("transient, calls", [(True, 3), (False, 1)])
+def test_staging_write_retries_are_bounded(monkeypatch, transient, calls):
+    from psycopg2 import OperationalError
+
+    from src.core.saving import ingest_staging
+
+    error = OperationalError("connection lost") if transient else ValueError("invalid output")
+    save = Mock(side_effect=error)
+    complete = Mock()
+    monkeypatch.setattr(staged, "save_output", save)
+    monkeypatch.setattr(ingest_staging, "complete_unit", complete)
+
+    with pytest.raises(type(error), match=str(error)):
+        staged.commit_output("brain", "root", "unit", "attempt", [])
+
+    assert save.call_count == calls
+    complete.assert_not_called()
+
+
 def test_run_publisher_holds_gate_through_completion(monkeypatch):
     from contextlib import contextmanager
     from src.core.saving import ingest_publication as publisher
