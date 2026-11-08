@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import re
@@ -88,6 +89,14 @@ def stable_operation_id(route: APIRoute) -> str:
     return f"{normalized[:55].rstrip('_')}_{digest}"
 
 
+def _preload_english_nlp():
+    from src.utils.nlp.lang_detect import langid_detect
+    from src.utils.nlp.spacy import _spacy_manager
+
+    langid_detect("The language detector is ready.")
+    _spacy_manager.get_model("en")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from src.core.plugins.context import PluginContext
@@ -107,6 +116,11 @@ async def lifespan(app: FastAPI):
                 await handler() if _is_coroutine(handler) else handler()
 
     try:
+        if os.getenv("SPACY_PRELOAD_ENGLISH") == "1":
+            try:
+                await asyncio.to_thread(_preload_english_nlp)
+            except Exception:
+                logger.warning("English NLP preload failed", exc_info=True)
         yield
     finally:
         stop_runtime_monitoring("brainapi-api")
