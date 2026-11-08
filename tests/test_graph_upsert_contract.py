@@ -162,7 +162,7 @@ class NetworkXUpsertContractTests(unittest.TestCase):
         stale = _BrainGraph("brain-a")
         store._brains = {"brain-a": stale}
         store._brains_lock = __import__("threading").RLock()
-        store._db_graph_counts = MagicMock(return_value=(2, 1))
+        store._db_graph_state = MagicMock(return_value=(2, 1, 0))
 
         fresh = _BrainGraph("brain-a")
         fresh.graph.add_node("a", name="Alice", labels=["PERSON"])

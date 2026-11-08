@@ -35,6 +35,8 @@ from ._provisioning import (
     ensure_brain_database,
     ensure_database_exists,
     borrow_brain,
+    commit_brain,
+    current_brain_transaction,
     borrow_system,
     clear_brain_database,
     drop_brain_database,
@@ -295,10 +297,12 @@ class PostgreSQLDataClient(DataClient):
             with borrow_system() as conn:
                 with conn.cursor() as cur:
                     cur.execute(_SYSTEM_DDL)
-                conn.commit()
+                commit_brain(conn)
             self._system_initialized = True
 
     def _ensure_brain_schema(self, brain_id: str) -> None:
+        if current_brain_transaction(brain_id):
+            return
         alt_regconfig = config.search_fts_regconfig_for_brain(brain_id)
         needs_base = brain_id not in self._initialized_brains
         needs_search = (
@@ -336,7 +340,7 @@ class PostgreSQLDataClient(DataClient):
                         cur.execute(_SEARCH_DDL)
                     if needs_alt and alt_regconfig is not None:
                         cur.execute(_search_alt_ddl(alt_regconfig))
-                conn.commit()
+                commit_brain(conn)
             if needs_base:
                 self._initialized_brains.add(brain_id)
             if needs_search:
@@ -367,7 +371,7 @@ class PostgreSQLDataClient(DataClient):
                         json.dumps(document, default=str),
                     ),
                 )
-            conn.commit()
+            commit_brain(conn)
         return text_chunk
 
     def save_observations(
@@ -404,7 +408,7 @@ class PostgreSQLDataClient(DataClient):
                     rows,
                     template="(%s, %s, %s, %s::jsonb, %s, %s::jsonb)",
                 )
-            conn.commit()
+            commit_brain(conn)
         return observations
 
     def search(
@@ -544,7 +548,7 @@ class PostgreSQLDataClient(DataClient):
                         json.dumps(document, default=str),
                     ),
                 )
-            conn.commit()
+            commit_brain(conn)
         return structured_data
 
     def create_brain(self, name_key: str) -> Brain:
@@ -564,7 +568,7 @@ class PostgreSQLDataClient(DataClient):
                         json.dumps(document, default=str),
                     ),
                 )
-            conn.commit()
+            commit_brain(conn)
         self._ensure_brain_schema(name_key)
         return brain
 
@@ -625,7 +629,7 @@ class PostgreSQLDataClient(DataClient):
                     (brain_id,),
                 )
                 deleted = cur.rowcount > 0
-            conn.commit()
+            commit_brain(conn)
         drop_brain_database(brain_id)
         return deleted
 
@@ -657,7 +661,7 @@ class PostgreSQLDataClient(DataClient):
                         json.dumps(document, default=str),
                     ),
                 )
-            conn.commit()
+            commit_brain(conn)
         return kg_changes
 
     def get_structured_data_by_id(
@@ -934,7 +938,7 @@ class PostgreSQLDataClient(DataClient):
                         structured_data.id,
                     ),
                 )
-            conn.commit()
+            commit_brain(conn)
         return structured_data
 
     def get_last_text_chunks(self, brain_id: str, limit: int = 10) -> list[TextChunk]:
@@ -995,7 +999,7 @@ class PostgreSQLDataClient(DataClient):
                 )
                 inserted = cur.fetchone()
                 if not inserted:
-                    conn.commit()
+                    commit_brain(conn)
                     return False
                 cur.execute(
                     """
@@ -1029,7 +1033,7 @@ class PostgreSQLDataClient(DataClient):
                     """,
                     (group_tracking, json.dumps(updated, default=str)),
                 )
-            conn.commit()
+            commit_brain(conn)
         return True
 
 

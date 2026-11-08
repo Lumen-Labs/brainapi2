@@ -19,7 +19,7 @@ import psycopg2.extras
 
 from src.config import config
 
-from ._provisioning import borrow_brain, ensure_brain_database
+from ._provisioning import borrow_brain, commit_brain, current_brain_transaction, ensure_brain_database
 from .read_query import (
     MAX_READ_QUERY_ROWS,
     READ_QUERY_TIMEOUT_MS,
@@ -80,6 +80,7 @@ class _BrainGraph:
     def __init__(self, brain_id: str):
         self.brain_id = brain_id
         self.graph = nx.MultiDiGraph()
+        self.publication_epoch = 0
 
     def node_data(self, uuid: str) -> dict:
         return dict(self.graph.nodes[uuid])
@@ -159,6 +160,10 @@ class PostgreSQLGraphStore:
     """
 
     _DDL = """
+    CREATE TABLE IF NOT EXISTS kg_publication_epoch (
+        singleton BOOLEAN PRIMARY KEY CHECK (singleton),
+        epoch BIGINT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS kg_nodes (
         uuid TEXT PRIMARY KEY,
         data JSONB NOT NULL
@@ -226,6 +231,8 @@ class PostgreSQLGraphStore:
         self._brains_lock = threading.RLock()
 
     def _ensure_brain_schema(self, brain_id: str) -> None:
+        if current_brain_transaction(brain_id):
+            return
         needs_base = brain_id not in self._schema_ready
         needs_search = (
             bool(config.search_enabled) and brain_id not in self._search_ready_brains
@@ -245,12 +252,12 @@ class PostgreSQLGraphStore:
                 if needs_base:
                     with conn.cursor() as cur:
                         cur.execute(self._DDL)
-                    conn.commit()
+                    commit_brain(conn)
                     self._schema_ready.add(brain_id)
                 if needs_search:
                     with conn.cursor() as cur:
                         cur.execute(self._SEARCH_DDL)
-                    conn.commit()
+                    commit_brain(conn)
                     self._search_ready_brains.add(brain_id)
 
     @contextmanager
@@ -385,29 +392,42 @@ class PostgreSQLGraphStore:
         with self._brains_lock:
             self._brains.pop(brain_id, None)
 
-    def _db_graph_counts(self, brain_id: str) -> tuple[int, int]:
-        self._ensure_brain_schema(brain_id)
-        with borrow_brain(brain_id) as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT COUNT(*) FROM kg_nodes")
-                nodes = int(cur.fetchone()[0])
-                cur.execute("SELECT COUNT(*) FROM kg_relationships")
-                rels = int(cur.fetchone()[0])
-        return nodes, rels
+    def _graph_cache(self, brain_id: str):
+        transaction = current_brain_transaction(brain_id)
+        if transaction:
+            return transaction.graphs.setdefault(self, {})
+        return self._brains
+
+    def advance_publication_epoch(self, brain_id: str) -> None:
+        with self._connection(brain_id) as conn, conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO kg_publication_epoch VALUES (TRUE, 1)
+                ON CONFLICT (singleton) DO UPDATE
+                SET epoch = kg_publication_epoch.epoch + 1
+            """)
+
+    def _db_graph_state(self, brain_id: str) -> tuple[int, int, int]:
+        with self._connection(brain_id) as conn, conn.cursor() as cur:
+            cur.execute("""
+                SELECT (SELECT COUNT(*) FROM kg_nodes),
+                       (SELECT COUNT(*) FROM kg_relationships),
+                       COALESCE((SELECT epoch FROM kg_publication_epoch WHERE singleton), 0)
+            """)
+            return tuple(cur.fetchone())
 
     def _load_brain(self, brain_id: str) -> _BrainGraph:
         """Read path: refresh from Postgres when another process wrote data."""
         with self._brains_lock:
-            cached = self._brains.get(brain_id)
+            cached = self._graph_cache(brain_id).get(brain_id)
             cached_counts = (
-                (cached.graph.number_of_nodes(), cached.graph.number_of_edges())
+                (cached.graph.number_of_nodes(), cached.graph.number_of_edges(), cached.publication_epoch)
                 if cached is not None
                 else None
             )
 
         if cached is not None and cached_counts is not None:
             try:
-                if self._db_graph_counts(brain_id) == cached_counts:
+                if self._db_graph_state(brain_id) == cached_counts:
                     return cached
             except Exception:
                 pass
@@ -417,7 +437,7 @@ class PostgreSQLGraphStore:
 
     def _ensure_brain_in_memory_locked(self, brain_id: str) -> _BrainGraph:
         """Write path: reuse the in-process graph; load from DB only if missing."""
-        cached = self._brains.get(brain_id)
+        cached = self._graph_cache(brain_id).get(brain_id)
         if cached is not None:
             return cached
         return self._reload_brain_locked(brain_id)
@@ -427,6 +447,12 @@ class PostgreSQLGraphStore:
         brain = _BrainGraph(brain_id)
         with self._connection(brain_id) as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                if current_brain_transaction(brain_id) is None:
+                    cur.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+                cur.execute("SELECT epoch FROM kg_publication_epoch WHERE singleton")
+                epoch = cur.fetchone()
+                if epoch:
+                    brain.publication_epoch = epoch["epoch"]
                 cur.execute("SELECT uuid, data FROM kg_nodes")
                 for row in cur.fetchall():
                     data = dict(row["data"])
@@ -450,7 +476,7 @@ class PostgreSQLGraphStore:
                     )
         if brain.graph.number_of_edges() == 0:
             self._hydrate_relationships_from_vectors(brain_id, brain)
-        self._brains[brain_id] = brain
+        self._graph_cache(brain_id)[brain_id] = brain
         return brain
 
     def _hydrate_relationships_from_vectors(
@@ -492,6 +518,9 @@ class PostgreSQLGraphStore:
                 key=rel_uuid,
                 **edge_data,
             )
+            transaction = current_brain_transaction(brain_id)
+            if transaction and transaction.read_only:
+                continue
             self._persist_relationship(
                 brain_id,
                 rel_uuid,
@@ -514,7 +543,7 @@ class PostgreSQLGraphStore:
                     """,
                     (uuid, json.dumps(payload, default=str)),
                 )
-            conn.commit()
+            commit_brain(conn)
 
     def _persist_relationship(
         self,
@@ -549,7 +578,7 @@ class PostgreSQLGraphStore:
                         json.dumps(payload, default=str),
                     ),
                 )
-            conn.commit()
+            commit_brain(conn)
 
     def _delete_node(self, brain_id: str, uuid: str) -> None:
         brain = self._load_brain(brain_id)
@@ -565,7 +594,7 @@ class PostgreSQLGraphStore:
                     "DELETE FROM kg_nodes WHERE uuid = %s",
                     (uuid,),
                 )
-            conn.commit()
+            commit_brain(conn)
 
     def _delete_relationship(self, brain_id: str, rel_uuid: str) -> None:
         brain = self._load_brain(brain_id)
@@ -578,7 +607,7 @@ class PostgreSQLGraphStore:
                     "DELETE FROM kg_relationships WHERE uuid = %s",
                     (rel_uuid,),
                 )
-            conn.commit()
+            commit_brain(conn)
 
     def ensure_database(self, database: str) -> None:
         self._ensure_brain_row(database)
@@ -986,7 +1015,7 @@ class PostgreSQLGraphStore:
                         """,
                         (a, b, shared_entity, shared_name or "", float(weight)),
                     )
-            conn.commit()
+            commit_brain(conn)
         return len(bridges)
 
     def delete_hub_bridges_for_entities(
@@ -1003,7 +1032,7 @@ class PostgreSQLGraphStore:
                     (unique,),
                 )
                 deleted = cur.rowcount or 0
-            conn.commit()
+            commit_brain(conn)
         return int(deleted)
 
     def upsert_hub_bridges(
@@ -1031,7 +1060,7 @@ class PostgreSQLGraphStore:
                         """,
                         (a, b, shared_entity, shared_name or "", float(weight)),
                     )
-            conn.commit()
+            commit_brain(conn)
         return len(bridges)
 
     def get_hub_bridges_for_events(
@@ -1104,7 +1133,7 @@ class PostgreSQLGraphStore:
                             float(weight),
                         ),
                     )
-            conn.commit()
+            commit_brain(conn)
         return len(rows)
 
     def list_topic_sessions(

@@ -9,6 +9,8 @@ from types import SimpleNamespace
 
 import psycopg2.extras
 
+from src.lib.postgresql._provisioning import commit_brain
+
 DDL = """
 CREATE TABLE IF NOT EXISTS pipeline_documents (
     namespace TEXT NOT NULL,
@@ -161,14 +163,14 @@ class PostgreSQLCollection:
                     [self.name, *args],
                 )
                 deleted = cur.rowcount
-            conn.commit()
+            commit_brain(conn)
         return SimpleNamespace(deleted_count=deleted)
 
     def insert_one(self, document):
         with self.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute('INSERT INTO pipeline_documents (namespace,id,document) VALUES (%s,%s,%s::jsonb)', [self.name, document['_id'], json.dumps(document)])
-            conn.commit()
+            commit_brain(conn)
         return SimpleNamespace(inserted_id=document['_id'])
 
     def _update(self, query, update, many=False, previous=False, upsert=False):
@@ -182,7 +184,7 @@ class PostgreSQLCollection:
                     document = {**query, **update.get('$setOnInsert', {}), **update.get('$set', {})}
                     cur.execute('INSERT INTO pipeline_documents (namespace,id,document) VALUES (%s,%s,%s::jsonb) ON CONFLICT DO NOTHING RETURNING id', [self.name, query['_id'], json.dumps(document)])
                     if cur.fetchone():
-                        conn.commit()
+                        commit_brain(conn)
                         return SimpleNamespace(modified_count=0, matched_count=0, upserted_id=query['_id'])
                 cur.execute('SELECT id, document FROM pipeline_documents WHERE namespace=%s AND (' + where + ')' + ('' if many else ' LIMIT 1') + ' FOR UPDATE', [self.name, *where_args])
                 rows = cur.fetchall()
@@ -190,7 +192,7 @@ class PostgreSQLCollection:
                 for identity, document in rows:
                     cur.execute('UPDATE pipeline_documents SET document=' + expr + ' WHERE namespace=%s AND id=%s AND document IS DISTINCT FROM ' + expr, [*expr_args, self.name, identity, *expr_args])
                     changed += cur.rowcount
-            conn.commit()
+            commit_brain(conn)
         if previous:
             return rows[0][1] if rows else None
         return SimpleNamespace(modified_count=changed, matched_count=len(rows))

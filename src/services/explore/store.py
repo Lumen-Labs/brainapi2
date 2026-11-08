@@ -11,6 +11,7 @@ from functools import lru_cache
 
 from psycopg2.extras import Json, execute_values
 
+from src.lib.postgresql._provisioning import current_brain_transaction
 from src.lib.postgresql.graph_store import PostgreSQLGraphStore
 
 from .communities import build_communities
@@ -161,15 +162,29 @@ class AtlasStore:
     def __init__(self):
         self.graph = PostgreSQLGraphStore()
 
+    @staticmethod
+    def _prepare_connection(conn):
+        with conn.cursor() as cur:
+            # DDL is idempotent and guarded across API/worker processes.
+            cur.execute("SELECT pg_advisory_xact_lock(19650614)")
+            cur.execute(DDL)
+        conn.commit()
+
+    def prepare(self, brain_id):
+        with self.graph._connection(brain_id) as conn:
+            self._prepare_connection(conn)
+
     @contextmanager
     def transaction(self, brain_id):
+        snapshot = current_brain_transaction(brain_id)
+        if snapshot and snapshot.read_only:
+            with snapshot.connection.cursor() as cur:
+                cur.execute("SET LOCAL statement_timeout = '10000ms'")
+                yield cur
+            return
         with self.graph._connection(brain_id) as conn:
             try:
-                with conn.cursor() as cur:
-                    # DDL is idempotent and guarded across API/worker processes.
-                    cur.execute("SELECT pg_advisory_xact_lock(19650614)")
-                    cur.execute(DDL)
-                conn.commit()
+                self._prepare_connection(conn)
                 with conn.cursor() as cur:
                     cur.execute("SET LOCAL statement_timeout = '10000ms'")
                     yield cur
@@ -180,6 +195,7 @@ class AtlasStore:
 
     def overview(self, brain_id):
         token = None
+        snapshot = current_brain_transaction(brain_id)
         with self.transaction(brain_id) as cur:
             cur.execute("""SELECT s.id, s.created_at, s.payload, st.build_until > now(), st.failed
                 FROM explore_state st LEFT JOIN explore_snapshots s ON s.id=st.active_snapshot WHERE st.singleton""")
@@ -187,6 +203,8 @@ class AtlasStore:
             stale = (
                 created is None or (datetime.now(UTC) - created).total_seconds() > 300
             )
+            if snapshot and snapshot.read_only:
+                return snapshot_id, created, payload, bool(building or not snapshot_id), bool(failed)
             if stale and not building:
                 token = uuid.uuid4().hex
                 cur.execute(

@@ -137,3 +137,145 @@ def test_small_imports_publish_concurrently_under_pool_pressure(monkeypatch, tmp
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         assert list(executor.map(ingest, brains)) == [f"Small source for {brain}" for brain in brains]
+
+
+def test_explore_reads_committed_graph_during_atomic_publication(monkeypatch, tmp_path):
+    if os.getenv("INGEST_TEST_POSTGRES") != "1":
+        pytest.skip("Run with INGEST_TEST_POSTGRES=1 against an isolated PostgreSQL instance")
+
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    from starlette.concurrency import run_in_threadpool
+    from starlette.responses import JSONResponse
+
+    from src.adapters.data import DataAdapter
+    from src.adapters.embeddings import VectorStoreAdapter
+    from src.constants.embeddings import EMBEDDING_STORES_SIZES, Vector
+    from src.config import config
+    from src.constants.data import TextChunk
+    from src.constants.kg import Node
+    from src.core.saving import (
+        ingest_access_gate, ingest_cancellation, ingest_publication, ingest_runtime,
+        ingest_staged_input, ingest_staged_output, ingest_staging, ingest_worker,
+    )
+    from src.core.saving.ingest_write_buffer import capture_operation
+    from src.core.saving.pipeline_store import PostgreSQLCollection
+    from src.lib.postgresql.data import PostgreSQLDataClient
+    from src.lib.postgresql.networkx_client import NetworkXGraphClient
+    from src.lib.postgresql.vectors import PostgreSQLVectorStoreClient, string_to_int64
+    from src.services.api.middlewares.ingest_publication import IngestPublicationMiddleware
+    from src.services.explore.store import atlas_store
+
+    brain = f"atomic{uuid4().hex}"
+    data = DataAdapter()
+    data.add_client(PostgreSQLDataClient())
+    writer = NetworkXGraphClient()
+    reader = NetworkXGraphClient()
+    vectors = VectorStoreAdapter()
+    vectors.add_client(PostgreSQLVectorStoreClient())
+    staged_vector = Vector(id="new-vector", embeddings=[0.1] * EMBEDDING_STORES_SIZES["data"], metadata={})
+
+    def collection(brain_id, name):
+        return PostgreSQLCollection(data.data, brain_id, name)
+
+    monkeypatch.setenv("INGEST_PUBLICATION_LOCK_DIR", str(tmp_path))
+    monkeypatch.setenv("STAGED_INGESTION_ENABLED", "1")
+    monkeypatch.setenv("INGEST_POSTGRES_ATOMIC_PUBLICATION", "1")
+    monkeypatch.setattr(config, "data_db", "postgresql")
+    monkeypatch.setattr(config, "vector_db", "postgresql")
+    monkeypatch.setattr(config, "graph_db", "networkx")
+    monkeypatch.setattr(ingest_cancellation, "_runs", lambda key: collection(key, "ingest_runs"))
+    monkeypatch.setattr(ingest_access_gate, "_gates", lambda key: collection(key, "ingest_access_gates"))
+    monkeypatch.setattr(ingest_staged_input, "collection", collection)
+    monkeypatch.setattr(ingest_staged_output, "collection", collection)
+
+    writer.add_nodes([Node(uuid="entity", name="Original", labels=["PERSON"])], brain)
+    assert reader._store.get_brain(brain).node_data("entity")["name"] == "Original"
+    data.save_text_chunk(TextChunk(id="original", text="Committed"), brain)
+    ingest_staging.create_batch_run(brain, "root", [{"payload": {}}, {"payload": {}}])
+    [(first, _), (second, _)] = ingest_staging.pending_dispatches(brain, "root")
+
+    assert ingest_access_gate.reserve_publication(brain, "legacy")
+    with ingest_access_gate.publication_gate(brain, "legacy", atomic=True) as atomic:
+        assert atomic is False
+        with pytest.raises(ingest_access_gate.BrainPublicationBusy):
+            with ingest_access_gate.brain_access(brain):
+                pytest.fail("Legacy publication must keep its read lock")
+
+    def stage_graph():
+        capture_operation(brain, {
+            "adapter": "graph",
+            "method": "add_nodes",
+            "args": {
+                "nodes": [Node(uuid="entity", name="Updated", labels=["PERSON"]).model_dump(mode="json")],
+                "identification_params": None,
+                "metadata": None,
+            },
+        })
+        data.save_text_chunk(TextChunk(id="new", text="New data"), brain)
+        vectors.add_vectors([staged_vector], "data", brain)
+
+    assert ingest_worker.execute_staged_unit(brain, "root", first, stage_graph)
+    assert ingest_worker.execute_staged_unit(
+        brain, "root", second, lambda: data.save_text_chunk(TextChunk(id="final", text="Final"), brain)
+    )
+
+    async def app(scope, receive, send):
+        if scope["path"].endswith("overview"):
+            result = {"atlas": (await run_in_threadpool(atlas_store().overview, brain))[0]}
+        else:
+            chunks = data.get_text_chunks_by_ids(["original", "new", "final"], False, brain)[0]
+            result = {
+                "name": reader._store.get_brain(brain).node_data("entity")["name"],
+                "chunks": sorted(chunk.id for chunk in chunks),
+                "vectors": len(vectors.get_by_ids([string_to_int64(staged_vector.id)], "data", brain)),
+            }
+        await JSONResponse(result)(scope, receive, send)
+
+    async def request(method="GET", path="/retrieve/entities"):
+        messages = []
+
+        async def send(message):
+            messages.append(message)
+
+        await IngestPublicationMiddleware(app)(
+            {"type": "http", "method": method, "path": path, "state": {"brain_id": brain}},
+            None, send,
+        )
+        import json
+        return messages[0]["status"], json.loads(messages[1]["body"])
+
+    replay = ingest_publication.publish_next_unit
+    applied = Event()
+    resume = Event()
+
+    def fail_after_first(*args):
+        result = replay(*args)
+        if result:
+            applied.set()
+            assert resume.wait(15)
+            raise RuntimeError("injected after writing first unit")
+        return result
+
+    monkeypatch.setattr(ingest_publication, "publish_next_unit", fail_after_first)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        running = pool.submit(ingest_runtime.recover_brain, brain, data.data, vectors.vector_store, writer)
+        try:
+            assert applied.wait(15)
+            assert asyncio.run(request()) == (200, {"name": "Original", "chunks": ["original"], "vectors": 0})
+            assert asyncio.run(request(path="/retrieve/explore/v1/overview")) == (200, {"atlas": None})
+            assert asyncio.run(request("POST"))[0] == 503
+        finally:
+            resume.set()
+        running.result(timeout=15)
+
+    run = ingest_cancellation._runs(brain).find_one({"_id": "root"})
+    assert run["status"] == "publishing" and run["publication_cursor"] == 0
+    assert asyncio.run(request()) == (200, {"name": "Original", "chunks": ["original"], "vectors": 0})
+
+    monkeypatch.setattr(ingest_publication, "publish_next_unit", replay)
+    ingest_runtime.recover_brain(brain, data.data, vectors.vector_store, writer)
+    assert asyncio.run(request()) == (200, {"name": "Updated", "chunks": ["final", "new", "original"], "vectors": 1})
+    assert ingest_cancellation._runs(brain).find_one({"_id": "root"})["status"] == "completed"

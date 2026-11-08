@@ -45,7 +45,7 @@ def brain_access(brain_id):
         yield
 
 
-def reserve_publication(brain_id, root_id):
+def reserve_publication(brain_id, root_id, *, atomic=False):
     """Close admission before attempting to acquire exclusive brain access."""
     _gates(brain_id).update_one(
         {"_id": _GATE_ID},
@@ -54,7 +54,7 @@ def reserve_publication(brain_id, root_id):
     )
     gate = _update_gate(
         brain_id,
-        lambda row: {"publication": root_id} if row["publication"] is None else None,
+        lambda row: {"publication": root_id, "atomic": atomic} if row["publication"] is None else None,
     )
     return gate["publication"] == root_id
 
@@ -63,16 +63,19 @@ def release_publication(brain_id, root_id):
     """Reopen admission after the exclusive publisher durably completes."""
     _update_gate(
         brain_id,
-        lambda gate: {"publication": None} if gate["publication"] == root_id else None,
+        lambda gate: {"publication": None, "atomic": False} if gate["publication"] == root_id else None,
     )
 
 
 @contextmanager
-def publication_gate(brain_id, root_id):
-    if not reserve_publication(brain_id, root_id):
+def publication_gate(brain_id, root_id, *, atomic=False):
+    if not reserve_publication(brain_id, root_id, atomic=atomic):
         raise BrainPublicationBusy
     with _brain_lock(brain_id, fcntl.LOCK_EX):
-        yield
+        gate = _gates(brain_id).find_one({"_id": _GATE_ID})
+        if not gate or gate.get("publication") != root_id or (gate.get("atomic") and not atomic):
+            raise BrainPublicationBusy
+        yield bool(gate.get("atomic"))
         release_publication(brain_id, root_id)
 
 

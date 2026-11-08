@@ -27,6 +27,8 @@ from ._provisioning import (
     clear_brain_database,
     ensure_brain_database,
     borrow_brain,
+    commit_brain,
+    current_brain_transaction,
 )
 
 
@@ -134,6 +136,8 @@ class PostgreSQLVectorStoreClient(VectorStoreClient):
             yield conn
 
     def _ensure_extension(self, brain_id: str) -> None:
+        if current_brain_transaction(brain_id):
+            return
         if brain_id in self._brain_extensions_ready:
             return
         with self._lock:
@@ -143,13 +147,15 @@ class PostgreSQLVectorStoreClient(VectorStoreClient):
             with borrow_brain(brain_id) as conn:
                 with conn.cursor() as cur:
                     cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
-                conn.commit()
+                commit_brain(conn)
             self._brain_extensions_ready.add(brain_id)
 
     def clear_brain_data(self, brain_id: str) -> None:
         clear_brain_database(brain_id, table_prefixes=("vectors_",))
 
     def _ensure_store(self, store: str, brain_id: str) -> None:
+        if current_brain_transaction(brain_id):
+            return
         if store not in EMBEDDING_STORES_SIZES:
             raise ValueError(f"Store {store} not available")
         key = f"{brain_id}:{store}"
@@ -195,7 +201,7 @@ class PostgreSQLVectorStoreClient(VectorStoreClient):
                                 f"{exc}"
                             ) from exc
                         raise
-                conn.commit()
+                commit_brain(conn)
             self._initialized_stores.add(key)
 
     def add_vectors(
@@ -238,7 +244,7 @@ class PostgreSQLVectorStoreClient(VectorStoreClient):
                     rows,
                     template="(%s, %s, %s, %s::jsonb)",
                 )
-            conn.commit()
+            commit_brain(conn)
         return ids
 
     def search_vectors(
@@ -410,7 +416,7 @@ class PostgreSQLVectorStoreClient(VectorStoreClient):
                         """,
                         (int_ids,),
                     )
-                conn.commit()
+                commit_brain(conn)
         except Exception as exc:
             print(f"[PostgreSQLVectorStore] Failed to remove vectors from {store}: {exc}")
 

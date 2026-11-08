@@ -1,5 +1,7 @@
 """Replay a staged unit after the caller has acquired the brain publication gate."""
 
+from contextlib import nullcontext
+
 from src.constants.data import Observation, StructuredData, TextChunk
 from src.constants.embeddings import Vector
 from src.constants.kg import Node, Predicate
@@ -114,8 +116,17 @@ def publish_staged_run(brain_id, root_id, acquire_gate, data_client, vector_clie
         else:
             raise ValueError(f"Unsupported staged operation {operation_id}")
 
-    with acquire_gate(brain_id, root_id):
-        while publish_next_unit(brain_id, root_id, replay):
-            pass
-        discard_outputs(brain_id, root_id)
-        return finish_publication(brain_id, root_id)
+    from src.lib.postgresql._provisioning import atomic_brain_write
+
+    with acquire_gate(brain_id, root_id) as atomic:
+        transaction = atomic_brain_write(brain_id) if atomic else nullcontext()
+        with transaction:
+            while publish_next_unit(brain_id, root_id, replay):
+                pass
+            discard_outputs(brain_id, root_id)
+            result = finish_publication(brain_id, root_id)
+            if atomic:
+                if result is None or result["status"] not in {"completed", "cancelled"}:
+                    raise RuntimeError("Atomic publication did not finish")
+                graph_client._store.advance_publication_epoch(brain_id)
+        return result

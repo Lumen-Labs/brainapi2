@@ -23,6 +23,8 @@ import os
 import threading
 from collections import OrderedDict
 from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from typing import Iterator, Optional
 
 import psycopg2
@@ -151,8 +153,66 @@ def borrow_system():
     return _registry.borrow(_system_dbname())
 
 
+@dataclass
+class BrainTransaction:
+    brain_id: str
+    connection: psycopg2.extensions.connection
+    read_only: bool = False
+    graphs: dict = field(default_factory=dict)
+
+
+_transaction = ContextVar("postgresql_brain_transaction", default=None)
+
+
+def current_brain_transaction(brain_id: str):
+    transaction = _transaction.get()
+    return transaction if transaction and transaction.brain_id == brain_id else None
+
+
+@contextmanager
+def bind_brain_transaction(transaction):
+    token = _transaction.set(transaction)
+    try:
+        yield
+    finally:
+        _transaction.reset(token)
+
+
+@contextmanager
 def borrow_brain(brain_id: str):
-    return _registry.borrow(brain_db_name(brain_id))
+    transaction = current_brain_transaction(brain_id)
+    if transaction:
+        yield transaction.connection
+    else:
+        with _registry.borrow(brain_db_name(brain_id)) as connection:
+            yield connection
+
+
+def commit_brain(connection):
+    transaction = _transaction.get()
+    if transaction is None or transaction.connection is not connection:
+        connection.commit()
+
+
+@contextmanager
+def atomic_brain_write(brain_id: str):
+    with _registry.borrow(brain_db_name(brain_id)) as connection:
+        try:
+            with bind_brain_transaction(BrainTransaction(brain_id, connection)):
+                yield
+            connection.commit()
+        except BaseException:
+            if not connection.closed:
+                connection.rollback()
+            raise
+
+
+@contextmanager
+def open_brain_read_snapshot(brain_id: str):
+    with _registry.borrow(brain_db_name(brain_id)) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        yield BrainTransaction(brain_id, connection, read_only=True)
 
 
 _created_dbs: set[str] = set()
