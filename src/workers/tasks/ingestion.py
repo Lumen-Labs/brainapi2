@@ -1668,7 +1668,6 @@ def consolidate_graph_async(
     try:
         with langsmith.tracing_context(
             project_name=project_name,
-            enabled=True,
             tags=["consolidate_graph", "janitor", "kg_agent"],
             metadata=tracing_metadata,
         ):

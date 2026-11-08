@@ -51,6 +51,20 @@ class WorkerTracingTests(unittest.TestCase):
 
 
 class AgentLoopTracingTests(unittest.TestCase):
+    def test_agent_inherits_langsmith_tracing_setting(self):
+        import langsmith
+        from langsmith.utils import tracing_is_enabled
+
+        from src.core.agents.core import agent_base
+
+        def invoke(*_args):
+            return tracing_is_enabled()
+
+        with patch.object(agent_base, "run_invoke_loop", side_effect=invoke):
+            for enabled in (False, True):
+                with self.subTest(enabled=enabled), langsmith.tracing_context(enabled=enabled):
+                    self.assertIs(agent_base.AgentBase.invoke(object(), {"messages": []}), enabled)
+
     def test_agent_loop_records_model_exception(self):
         from src.core.agents.core import invoke_loop
 

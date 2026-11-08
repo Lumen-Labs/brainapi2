@@ -111,7 +111,6 @@ class AgentBase:
 
         with langsmith.tracing_context(
             project_name=project_name,
-            enabled=True,
             tags=tags,
             metadata=metadata,
         ):

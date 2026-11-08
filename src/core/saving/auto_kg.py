@@ -165,7 +165,6 @@ def enrich_kg_from_input(
     project_name = os.getenv("LANGSMITH_PROJECT", "brainapi")
     with langsmith.tracing_context(
         project_name=project_name,
-        enabled=True,
         tags=["enrich_kg", "scout", "architect"],
         metadata={
             "ingestion_session_id": ingestion_session_id,
