@@ -1,15 +1,53 @@
 """State transitions for imports whose workers write only to staging."""
 
+import os
 from datetime import datetime, timezone
 from time import time
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
-from src.core.saving import ingest_cancellation
+from src.core.saving import ingest_access_gate, ingest_cancellation
 
 CLAIM_SECONDS = 120
 DISPATCH_RETRY_SECONDS = 30
 MAX_UNIT_FAILURES = 3
 MAX_ROLLBACK_FAILURES = 5
+SHARED_ACTIVE_IMPORT_LIMIT = 2
+_ACTIVE_IMPORT_STATUSES = ["staging", "publishing", "discarding"]
+
+
+def shared_admission_enabled():
+    return os.getenv("BRAINAPI_DEPLOYMENT_TIER") == "shared"
+
+
+def admit_run(brain_id, root_id):
+    """Reserve one durable slot for a shared import until it settles."""
+    if not shared_admission_enabled():
+        return True
+
+    runs = ingest_cancellation._runs(brain_id)
+    run = runs.find_one({"_id": root_id})
+    if not run or run["status"] != "staging":
+        return False
+    if run.get("admitted"):
+        return True
+
+    with ingest_access_gate.ingestion_admission_lock(brain_id):
+        run = runs.find_one({"_id": root_id})
+        if not run or run["status"] != "staging":
+            return False
+        if run.get("admitted"):
+            return True
+        if runs.count_documents({
+            "admitted": True,
+            "status": {"$in": _ACTIVE_IMPORT_STATUSES},
+        }) >= SHARED_ACTIVE_IMPORT_LIMIT:
+            return False
+
+        run = ingest_cancellation._change(
+            brain_id, root_id,
+            lambda row: {"admitted": True} if row["status"] == "staging" else None,
+        )
+        return bool(run and run["status"] == "staging" and run.get("admitted"))
 
 
 def create_run(brain_id, root_id, *, callback_deadline=None, upload_deadline=None, message=None, discovery=False):

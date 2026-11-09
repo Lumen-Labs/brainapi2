@@ -45,7 +45,7 @@ nginx server file; do not expose port 80 beyond a trusted proxy without HTTPS.
 | postgres | — (not in heavy compose) | 768m / 0.35 CPU |
 | neo4j / milvus / mongo / etcd / minio | present | omitted |
 | api / worker / mcp | 2–4g / 1–2 CPU | 768m / 0.5 CPU each |
-| celery `--concurrency` | 2 | 1 |
+| celery `--concurrency` | 2 | 1 (`BRAINAPI_LIGHT_WORKER_CONCURRENCY`) |
 | `CELERY_WORKER_CONCURRENCY` | 4 | 1 |
 
 ## Notes
@@ -62,6 +62,8 @@ nginx server file; do not expose port 80 beyond a trusted proxy without HTTPS.
 Set `STAGED_INGESTION_ENABLED=1` in the profile environment to stage eligible imports. Text and URL requests that skip enrichment can use staging with this flag alone. Set `STAGED_ENRICHMENT_ENABLED=1` as well to stage enriched imports, structured inputs, and files. Both flags default to off.
 
 Use the same configuration on the API and ingestion worker. The supplied profiles mount the same named volume at `/app/ingest-publication-locks` and set `INGEST_PUBLICATION_LOCK_DIR` to that path. Custom deployments need one shared, writable filesystem with compatible file locks for all participating API and worker processes. Startup checks the directory when staging is enabled.
+
+For shared deployments, set `BRAINAPI_DEPLOYMENT_TIER=shared` on the API and worker and enable both staging flags. Use `BRAINAPI_LIGHT_WORKER_CONCURRENCY=3` in the Compose interpolation environment to allow work on another brain while one brain uses both of its slots. Shared deployments admit up to two active staged imports per brain and execute up to two staged units per brain. Further imports remain queued and are dispatched by recovery as slots free up. Publication remains exclusive per brain. Drain the old worker before switching both API and worker to the admission-aware release.
 
 Workers stage data, graph, and vector changes privately. The publication lock drains existing brain operations and protects readers from seeing only part of an import. New operations can receive HTTP 503 with `Retry-After` during publication. Preserve the shared lock configuration and backend state across restarts so the worker can resume an interrupted publication.
 

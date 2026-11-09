@@ -4,12 +4,23 @@ from threading import Event, Thread
 
 from celery.exceptions import Ignore
 
-from src.core.saving import ingest_staging
+from src.core.saving import ingest_access_gate, ingest_staging
 from src.core.saving.ingest_staged_output import commit_output
 from src.core.saving.ingest_write_buffer import capture_writes
 
 
 def execute_staged_unit(brain_id, root_id, unit_id, process, *, discovery=False, wait_for_sections=False):
+    if not ingest_staging.admit_run(brain_id, root_id):
+        return False
+    if ingest_staging.shared_admission_enabled():
+        with ingest_access_gate.ingestion_worker_slot(brain_id, ingest_staging.SHARED_ACTIVE_IMPORT_LIMIT) as acquired:
+            if not acquired:
+                return False
+            return _execute_unit(brain_id, root_id, unit_id, process, discovery, wait_for_sections)
+    return _execute_unit(brain_id, root_id, unit_id, process, discovery, wait_for_sections)
+
+
+def _execute_unit(brain_id, root_id, unit_id, process, discovery, wait_for_sections):
     attempt = ingest_staging.claim_unit(brain_id, root_id, unit_id)
     if attempt is None:
         return False
@@ -52,6 +63,8 @@ def dispatch_staged_source(brain_id, root_id, unit_id, _message=None):
     """Send a registered source unit. Recovery can repeat the same dispatch."""
     from src.workers.tasks.ingestion import ingest_data, ingest_file, ingest_structured_data, ingest_url
 
+    if not ingest_staging.admit_run(brain_id, root_id):
+        return
     message = ingest_staging.reserve_dispatch(brain_id, root_id, unit_id)
     if message is None:
         return

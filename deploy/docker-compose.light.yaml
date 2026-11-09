@@ -107,7 +107,7 @@ services:
 
   brainapi-worker:
     <<: *brainapi-common
-    command: [-m, celery, -A, src.workers.app, worker, --loglevel=info, --pool=threads, --without-gossip, --without-mingle, --concurrency=1, --max-tasks-per-child=50]
+    command: [-m, celery, -A, src.workers.app, worker, --loglevel=info, --pool=threads, --without-gossip, --without-mingle, "--concurrency=${BRAINAPI_LIGHT_WORKER_CONCURRENCY:-1}", --max-tasks-per-child=50]
     depends_on:
       redis: {condition: service_healthy}
       postgres: {condition: service_healthy}

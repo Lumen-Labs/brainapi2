@@ -279,3 +279,67 @@ def test_explore_reads_committed_graph_during_atomic_publication(monkeypatch, tm
     ingest_runtime.recover_brain(brain, data.data, vectors.vector_store, writer)
     assert asyncio.run(request()) == (200, {"name": "Updated", "chunks": ["final", "new", "original"], "vectors": 1})
     assert ingest_cancellation._runs(brain).find_one({"_id": "root"})["status"] == "completed"
+
+
+def test_shared_admission_limits_each_brain_and_recovers_queued_imports(monkeypatch, tmp_path):
+    if os.getenv("INGEST_TEST_POSTGRES") != "1":
+        pytest.skip("Run with INGEST_TEST_POSTGRES=1 against an isolated PostgreSQL instance")
+
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from unittest.mock import Mock
+
+    from src.core.saving import ingest_access_gate, ingest_cancellation, ingest_staging, ingest_worker
+    from src.core.saving.pipeline_store import PostgreSQLCollection
+    from src.lib.postgresql.data import PostgreSQLDataClient
+    from src.workers.tasks.ingestion import ingest_data
+
+    client = PostgreSQLDataClient()
+    brain = f"admission{uuid4().hex}"
+    other = f"admission{uuid4().hex}"
+    monkeypatch.setenv("BRAINAPI_DEPLOYMENT_TIER", "shared")
+    monkeypatch.setenv("INGEST_PUBLICATION_LOCK_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        ingest_cancellation, "_runs", lambda key: PostgreSQLCollection(client, key, "ingest_runs"),
+    )
+    sends = Mock()
+    monkeypatch.setattr(ingest_data, "apply_async", sends)
+    roots = {f"root-{n}": ingest_staging.create_run(brain, f"root-{n}", message={"payload": {}}) for n in range(3)}
+    barrier = Barrier(3)
+
+    def dispatch(root):
+        barrier.wait()
+        ingest_worker.dispatch_staged_source(brain, root, roots[root])
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        list(pool.map(dispatch, roots))
+    sent = {call.kwargs["headers"]["staged_ingestion_root"] for call in sends.call_args_list}
+    assert len(sent) == sends.call_count == 2
+    queued = (roots.keys() - sent).pop()
+    assert ingest_staging.pending_dispatches(brain, queued)
+    process = Mock()
+    assert not ingest_worker.execute_staged_unit(brain, queued, roots[queued], process)
+    process.assert_not_called()
+
+    other_unit = ingest_staging.create_run(other, "other", message={"payload": {}})
+    ingest_worker.dispatch_staged_source(other, "other", other_unit)
+    assert sends.call_count == 3
+
+    settled = sent.pop()
+    ingest_cancellation.request_cancellation(brain, settled, "rollback")
+    ingest_worker.dispatch_staged_source(brain, queued, roots[queued])
+    assert sends.call_count == 3
+    ingest_staging.finish_discard(brain, settled)
+    ingest_worker.dispatch_staged_source(brain, queued, roots[queued])
+    assert sends.call_count == 4
+    assert sends.call_args.kwargs["task_id"] == roots[queued]
+
+    with ingest_access_gate.ingestion_worker_slot(brain, 2) as first:
+        with ingest_access_gate.ingestion_worker_slot(brain, 2) as second:
+            assert first and second
+            assert not ingest_worker.execute_staged_unit(brain, queued, roots[queued], process)
+            process.assert_not_called()
+            with ingest_access_gate.ingestion_worker_slot(other, 2) as independent:
+                assert independent
+    with ingest_access_gate.ingestion_worker_slot(brain, 2) as available:
+        assert available

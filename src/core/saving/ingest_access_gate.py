@@ -3,7 +3,7 @@
 import fcntl
 import hashlib
 import os
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 from src.core.saving.ingest_cancellation import _change
@@ -25,15 +25,35 @@ class BrainPublicationBusy(Exception):
 
 
 @contextmanager
-def _brain_lock(brain_id, mode):
+def _brain_lock(brain_id, mode, *, purpose="", blocking=False):
     directory = Path(os.environ["INGEST_PUBLICATION_LOCK_DIR"])
     lock_name = hashlib.sha256(brain_id.encode()).hexdigest()
-    with (directory / lock_name).open("a") as lock:
+    with (directory / f"{lock_name}{purpose}").open("a") as lock:
         try:
-            fcntl.flock(lock, mode | fcntl.LOCK_NB)
+            fcntl.flock(lock, mode if blocking else mode | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise BrainPublicationBusy from exc
         yield
+
+
+
+def ingestion_admission_lock(brain_id):
+    """Serialize short admission updates independently of graph publication."""
+    return _brain_lock(brain_id, fcntl.LOCK_EX, purpose=".ingest-admission", blocking=True)
+
+
+@contextmanager
+def ingestion_worker_slot(brain_id, limit):
+    """Hold a slot for a running unit, releasing it on exit or process death."""
+    with ExitStack() as locks:
+        for slot in range(limit):
+            try:
+                locks.enter_context(_brain_lock(brain_id, fcntl.LOCK_EX, purpose=f".ingest-worker-{slot}"))
+            except BrainPublicationBusy:
+                continue
+            yield True
+            return
+        yield False
 
 
 @contextmanager
