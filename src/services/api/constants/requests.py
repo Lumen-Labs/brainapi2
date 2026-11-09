@@ -47,7 +47,7 @@ class IngestionUrlRequestBody(BaseModel):
     max_pages: int = Field(
         default=10,
         ge=1,
-        le=100,
+        le=999,
         description="Maximum pages to crawl. Each cleaned page becomes one ingest job.",
     )
     allowed_domains: List[str] = Field(

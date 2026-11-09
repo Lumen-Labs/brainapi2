@@ -79,7 +79,7 @@ class IngestionUrlRequestTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             IngestionUrlRequestBody(url="https://example.com", max_pages=0)
         with self.assertRaises(ValidationError):
-            IngestionUrlRequestBody(url="https://example.com", max_pages=101)
+            IngestionUrlRequestBody(url="https://example.com", max_pages=1000)
         with self.assertRaises(ValidationError):
             IngestionUrlRequestBody(
                 url="https://example.com",
@@ -122,7 +122,7 @@ class IngestUrlRouteTests(unittest.TestCase):
                 "/ingest/url",
                 json={
                     "url": "https://example.com/docs",
-                    "max_pages": 3,
+                    "max_pages": 999,
                     "allowed_path_prefixes": ["/docs"],
                 },
             )
@@ -131,7 +131,7 @@ class IngestUrlRouteTests(unittest.TestCase):
         self.assertTrue(response.json()["task_id"])
         self.assertEqual(captured["args"][0]["brain_id"], "brain-a")
         self.assertEqual(captured["args"][0]["url"], "https://example.com/docs")
-        self.assertEqual(captured["args"][0]["max_pages"], 3)
+        self.assertEqual(captured["args"][0]["max_pages"], 999)
         self.assertEqual(captured["args"][0]["allowed_path_prefixes"], ["/docs"])
 
     def test_missing_crawler_key_is_503_without_enqueue(self):
