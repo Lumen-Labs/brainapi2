@@ -289,7 +289,9 @@ def test_shared_admission_limits_each_brain_and_recovers_queued_imports(monkeypa
     from threading import Barrier
     from unittest.mock import Mock
 
-    from src.core.saving import ingest_access_gate, ingest_cancellation, ingest_staging, ingest_worker
+    from src.core.saving import (
+        ingest_access_gate, ingest_cancellation, ingest_staged_output, ingest_staging, ingest_worker,
+    )
     from src.core.saving.pipeline_store import PostgreSQLCollection
     from src.lib.postgresql.data import PostgreSQLDataClient
     from src.workers.tasks.ingestion import ingest_data
@@ -302,10 +304,13 @@ def test_shared_admission_limits_each_brain_and_recovers_queued_imports(monkeypa
     monkeypatch.setattr(
         ingest_cancellation, "_runs", lambda key: PostgreSQLCollection(client, key, "ingest_runs"),
     )
+    monkeypatch.setattr(
+        ingest_staged_output, "collection", lambda key, name: PostgreSQLCollection(client, key, name),
+    )
     sends = Mock()
     monkeypatch.setattr(ingest_data, "apply_async", sends)
     roots = {f"root-{n}": ingest_staging.create_run(brain, f"root-{n}", message={"payload": {}}) for n in range(3)}
-    barrier = Barrier(3)
+    barrier = Barrier(3, timeout=10)
 
     def dispatch(root):
         barrier.wait()
@@ -343,3 +348,13 @@ def test_shared_admission_limits_each_brain_and_recovers_queued_imports(monkeypa
                 assert independent
     with ingest_access_gate.ingestion_worker_slot(brain, 2) as available:
         assert available
+
+    work = [(brain, root, roots[root]) for root in [*sent, queued]]
+    work.append((other, "other", other_unit))
+    processing = Barrier(3, timeout=10)
+
+    def execute(unit):
+        return ingest_worker.execute_staged_unit(*unit, processing.wait)
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        assert all(pool.map(execute, work))
