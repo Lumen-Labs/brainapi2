@@ -26,6 +26,7 @@ class CrawlRequest(BaseModel):
     url: str
     max_pages: int = 10
     allowed_domains: list[str] = Field(default_factory=list)
+    allowed_path_prefixes: list[str] = Field(default_factory=list)
     idempotency_key: str
     on_progress: Optional[Callable[[dict], None]] = Field(default=None, exclude=True)
 

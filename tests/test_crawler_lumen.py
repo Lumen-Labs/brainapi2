@@ -121,6 +121,7 @@ def test_create_poll_and_cleaned_pages():
             assert body["cleanup"] is True
             assert body["follow_doors"] is False
             assert body["max_pages"] == 10
+            assert body["allowed_path_prefixes"] == ["/docs", "/guides"]
             assert request.headers["idempotency-key"] == "task-1"
             return _json(
                 request,
@@ -182,7 +183,12 @@ def test_create_poll_and_cleaned_pages():
         sleep=clock.sleep,
         monotonic=clock.monotonic,
     )
-    pages = client.crawl_pages(_request())
+    pages = client.crawl_pages(
+        _request().model_copy(update={
+            "url": "https://example.com/docs",
+            "allowed_path_prefixes": ["/docs", "/guides"],
+        })
+    )
     assert len(pages) == 2
     assert pages[1].skip_reason
     assert pages[1].text == ""

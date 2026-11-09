@@ -8,10 +8,18 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
-from typing import Any, Dict, List, Literal, Optional, Tuple, Union
-from urllib.parse import urlparse
+from typing import Annotated, Any, Dict, List, Literal, Optional, Tuple, Union
+from urllib.parse import urlparse, urlsplit
 
-from pydantic import BaseModel, Field, field_serializer, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    StringConstraints,
+    ValidationInfo,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from src.constants.data import Observation, PartialNode, PartialPredicate, TextChunk
 from src.constants.kg import (
@@ -46,6 +54,13 @@ class IngestionUrlRequestBody(BaseModel):
         default_factory=list,
         description="Extra eTLD+1 hosts to include, max 20.",
     )
+    allowed_path_prefixes: list[
+        Annotated[str, StringConstraints(strip_whitespace=True, max_length=2048)]
+    ] = Field(
+        default_factory=list,
+        max_length=20,
+        description="Case-sensitive pathname prefixes. The seed must match a prefix when provided.",
+    )
     group_tracking: Optional[str] = Field(
         default=None,
         description="Optional ingest-cost rollup key for this request (1-128 chars, [A-Za-z0-9._:-]).",
@@ -71,6 +86,21 @@ class IngestionUrlRequestBody(BaseModel):
         if len(value) > 20:
             raise ValueError("allowed_domains accepts at most 20 hosts")
         return [item.strip() for item in value if item and str(item).strip()]
+
+    @field_validator("allowed_path_prefixes")
+    @classmethod
+    def validate_allowed_path_prefixes(
+        cls, value: list[str], info: ValidationInfo
+    ) -> list[str]:
+        for prefix in value:
+            if not prefix.startswith("/") or any(char in prefix for char in "?#\\"):
+                raise ValueError("Use path prefixes like /docs without a host, query, or fragment")
+        if value and (url := info.data.get("url")):
+            path = urlsplit(url).path or "/"
+            prefixes = [prefix.rstrip("/") for prefix in value]
+            if not any(path == prefix or path.startswith(prefix + "/") for prefix in prefixes):
+                raise ValueError("The seed URL must match one allowed path prefix")
+        return value
 
     @field_validator("group_tracking", mode="before")
     @classmethod

@@ -1880,6 +1880,7 @@ def ingest_url(self, args: dict):
                 url=args["url"],
                 max_pages=int(args.get("max_pages") or 10),
                 allowed_domains=args.get("allowed_domains") or [],
+                allowed_path_prefixes=args.get("allowed_path_prefixes") or [],
                 idempotency_key=self.request.id,
             ))
             if args.get("progressive"):
@@ -1913,6 +1914,7 @@ def ingest_url(self, args: dict):
                 url=args["url"],
                 max_pages=int(args.get("max_pages") or 10),
                 allowed_domains=args.get("allowed_domains") or [],
+                allowed_path_prefixes=args.get("allowed_path_prefixes") or [],
                 idempotency_key=self.request.id,
                 on_progress=(lambda event: set_ingestion_task_status(self.request.id, brain_id, "started", stage=event["stage"])) if args.get("progressive") else None,
             )

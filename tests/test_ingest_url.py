@@ -57,7 +57,21 @@ class IngestionUrlRequestTests(unittest.TestCase):
         body = IngestionUrlRequestBody(url="https://example.com/docs")
         self.assertEqual(body.max_pages, 10)
         self.assertEqual(body.allowed_domains, [])
+        self.assertEqual(body.allowed_path_prefixes, [])
         self.assertFalse(body.skip_enrichment)
+
+    def test_path_prefixes_match_case_sensitive_segments(self):
+        body = IngestionUrlRequestBody(
+            url="https://example.com/docs/install?lang=en#intro",
+            allowed_path_prefixes=[" /docs/ ", "/guides"],
+        )
+        self.assertEqual(body.allowed_path_prefixes, ["/docs/", "/guides"])
+        for prefix in ("/doc", "/Docs", "/docs?lang=en", "https://example.com/docs"):
+            with self.subTest(prefix=prefix), self.assertRaises(ValidationError):
+                IngestionUrlRequestBody(
+                    url="https://example.com/docs/install",
+                    allowed_path_prefixes=[prefix],
+                )
 
     def test_rejects_http_and_invalid_bounds(self):
         with self.assertRaises(ValidationError):
@@ -106,14 +120,19 @@ class IngestUrlRouteTests(unittest.TestCase):
             config.crawler_is_configured = True
             response = client.post(
                 "/ingest/url",
-                json={"url": "https://example.com", "max_pages": 3},
+                json={
+                    "url": "https://example.com/docs",
+                    "max_pages": 3,
+                    "allowed_path_prefixes": ["/docs"],
+                },
             )
         self.assertEqual(response.status_code, 202)
         self.assertEqual(response.json()["message"], "URL ingestion accepted")
         self.assertTrue(response.json()["task_id"])
         self.assertEqual(captured["args"][0]["brain_id"], "brain-a")
-        self.assertEqual(captured["args"][0]["url"], "https://example.com")
+        self.assertEqual(captured["args"][0]["url"], "https://example.com/docs")
         self.assertEqual(captured["args"][0]["max_pages"], 3)
+        self.assertEqual(captured["args"][0]["allowed_path_prefixes"], ["/docs"])
 
     def test_missing_crawler_key_is_503_without_enqueue(self):
         apply_async = MagicMock()
@@ -181,6 +200,7 @@ class IngestUrlTaskTests(unittest.TestCase):
                 {
                     "url": "https://example.com",
                     "max_pages": 10,
+                    "allowed_path_prefixes": ["/"],
                     "brain_id": "brain-a",
                     "group_tracking": "chapter-3",
                     "skip_enrichment": True,
@@ -198,6 +218,7 @@ class IngestUrlTaskTests(unittest.TestCase):
         self.assertEqual(statuses[-1][:2], ("url-parent", "completed"))
         crawl_request = crawler.crawl_pages.call_args.args[0]
         self.assertEqual(crawl_request.idempotency_key, "url-parent")
+        self.assertEqual(crawl_request.allowed_path_prefixes, ["/"])
 
     def test_empty_crawl_completes_with_zero_pages(self):
         from src.workers.tasks import ingestion as ingestion_mod

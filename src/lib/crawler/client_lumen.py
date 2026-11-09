@@ -66,16 +66,19 @@ class LumenCrawlerClient(CrawlerClient):
             return self._list_cleaned_pages(client, crawl_id)
 
     def _create_crawl(self, client: httpx.Client, request: CrawlRequest) -> str:
+        body = {
+            "url": request.url,
+            "max_pages": request.max_pages,
+            "allowed_domains": request.allowed_domains,
+            "follow_doors": False,
+            "cleanup": True,
+        }
+        if request.allowed_path_prefixes:
+            body["allowed_path_prefixes"] = request.allowed_path_prefixes
         response = client.post(
             self._url("/v1/crawls"),
             headers=self._headers(request.idempotency_key),
-            json={
-                "url": request.url,
-                "max_pages": request.max_pages,
-                "allowed_domains": request.allowed_domains,
-                "follow_doors": False,
-                "cleanup": True,
-            },
+            json=body,
         )
         self._raise_for_status(response)
         body = response.json()
