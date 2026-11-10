@@ -1071,12 +1071,18 @@ class NetworkXGraphClient(GraphClient):
         predicate_uuid: Optional[str] = None,
         flow_key: Optional[str] = None,
     ):
+        incident: dict[str, list[Tuple[str, str, dict, str]]] = {}
+        by_flow: dict[str, dict[str, list[Tuple[str, str, dict, str]]]] = {}
+
+        def edges_for(uuid: str) -> list[Tuple[str, str, dict, str]]:
+            if uuid not in incident:
+                incident[uuid] = self._incident_edges(brain, uuid)
+            return incident[uuid]
+
         for n_uuid in node_uuids:
             if n_uuid not in brain.graph:
                 continue
-            for m_uuid, r1_key, r1_data, r1_direction in self._incident_edges(
-                brain, n_uuid
-            ):
+            for m_uuid, r1_key, r1_data, r1_direction in edges_for(n_uuid):
                 if (
                     predicate_uuid is not None
                     and (r1_data.get("uuid") or r1_key) != predicate_uuid
@@ -1087,12 +1093,23 @@ class NetworkXGraphClient(GraphClient):
                 )
                 if not required_flow_key:
                     continue
-                for b_uuid, r2_key, r2_data, r2_direction in self._incident_edges(
-                    brain, m_uuid
-                ):
+                if m_uuid not in by_flow:
+                    grouped: dict[str, list[Tuple[str, str, dict, str]]] = {}
+                    for edge in edges_for(m_uuid):
+                        edge_flow = edge[2].get("flow_key")
+                        if isinstance(edge_flow, str) and edge_flow:
+                            grouped.setdefault(edge_flow, []).append(edge)
+                    by_flow[m_uuid] = grouped
+                matching_edges = (
+                    by_flow[m_uuid].get(required_flow_key, ())
+                    if isinstance(required_flow_key, str)
+                    else (
+                        edge for edge in edges_for(m_uuid)
+                        if edge[2].get("flow_key") == required_flow_key
+                    )
+                )
+                for b_uuid, r2_key, r2_data, r2_direction in matching_edges:
                     if r2_key == r1_key:
-                        continue
-                    if r2_data.get("flow_key") != required_flow_key:
                         continue
                     yield (
                         n_uuid,

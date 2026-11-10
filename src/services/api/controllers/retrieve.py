@@ -1940,9 +1940,9 @@ async def _build_context(
             lambda: _retrieve_passages(text, request.brain_id, limit=limit),
         )
 
-    def _collect_passages() -> None:
+    async def _collect_passages() -> None:
         nonlocal passage_hits
-        with profile_stage("passages.collect") as detail:
+        with profile_stage("passages.collect", blocking=False) as detail:
             queries = [request.text] + [
                 v
                 for v in variants
@@ -1956,11 +1956,7 @@ async def _build_context(
             fused_lists: list[list[str]] = []
             id_to_text: dict[str, str] = {}
             id_to_score: dict[str, float] = {}
-            for query in queries:
-                hits = _read_passages(
-                    query,
-                    limit=max(max_passages, _PASSAGE_K),
-                )
+            def _add_passage_hits(hits: list[tuple[str, float, str]]) -> None:
                 ordered_ids: list[str] = []
                 for chunk_id, score, body in hits:
                     ordered_ids.append(chunk_id)
@@ -1970,6 +1966,16 @@ async def _build_context(
                         id_to_score[chunk_id] = score
                 if ordered_ids:
                     fused_lists.append(ordered_ids)
+
+            limit = max(max_passages, _PASSAGE_K)
+            # Gather retains query order for reciprocal-rank fusion and its tie breaks.
+            for start in range(0, len(queries), 3):
+                results = await asyncio.gather(*(
+                    asyncio.to_thread(_read_passages, query, limit=limit)
+                    for query in queries[start : start + 3]
+                ))
+                for hits in results:
+                    _add_passage_hits(hits)
             if not fused_lists:
                 passage_hits = []
                 return
@@ -2022,7 +2028,7 @@ async def _build_context(
             for variant in variants
         ]
         other_futures = [
-            asyncio.to_thread(_collect_passages),
+            _collect_passages(),
             _get_historical_context(),
         ]
         all_results = await asyncio.gather(*fact_futures, *other_futures)
