@@ -61,7 +61,6 @@ _SEED_K = 25
 _PASSAGE_K = 24
 _PPR_DAMPING = 0.85
 _PPR_ITERS = 20
-_CONTEXT_FACT_CONCURRENCY = 4
 _SESSION_RE = re.compile(r"session_(\d+)", re.IGNORECASE)
 _BATCH_TURN_RE = re.compile(r"\bb(\d+)_t(\d+)\b", re.IGNORECASE)
 _HISTORY_MODE_RE = re.compile(
@@ -1857,50 +1856,6 @@ async def get_context(
     return response
 
 
-def _evidence_terms(text: str) -> set[str]:
-    return set(re.findall(r"[a-z0-9]{3,}", text.lower())) - {
-        "and", "are", "can", "does", "for", "from", "how", "into", "the",
-        "their", "this", "what", "when", "which", "why", "with",
-    }
-
-
-def _can_try_primary_context_query(question: str) -> bool:
-    # Leave the expansion plan intact for enumeration, chronology, and other
-    # targeted questions. Only broad explanations qualify for an early stop.
-    return (
-        bool(re.match(r"^how (?:does|do)\b", question.strip(), re.I))
-        and not _is_enumeration_question(question)
-        and not _wants_historical_facts(question)
-        and not _is_ordering_question(question)
-    )
-
-
-def _primary_context_is_sufficient(
-    question: str,
-    facts: list[dict[str, Any]],
-    passages: list[tuple[str, float, str]],
-    *,
-    max_facts: int,
-    max_passages: int,
-) -> bool:
-    # Require enough distinct facts for the full requested budget, plus multiple
-    # passages that collectively cover all substantive question terms.
-    if max_facts <= 0 or len({fact["key"] for fact in facts}) < max_facts:
-        return False
-    terms = _evidence_terms(question)
-    if not terms:
-        return False
-    covered: set[str] = set()
-    relevant: set[str] = set()
-    for chunk_id, _, body in passages[:max_passages]:
-        body_terms = _evidence_terms(body)
-        hits = {term for term in terms if term in body_terms or f"{term}s" in body_terms}
-        if len(hits) >= min(2, len(terms)):
-            relevant.add(chunk_id)
-            covered.update(hits)
-    return len(relevant) >= min(4, max_passages) and terms <= covered
-
-
 async def _build_context(
     request: GetContextRequestBody,
     fact_filter_adapter: Any,
@@ -2059,56 +2014,19 @@ async def _build_context(
             ]
             return historical_context
 
-    fact_workers = asyncio.Semaphore(_CONTEXT_FACT_CONCURRENCY)
-
-    async def _collect_variant(variant: str):
-        async with fact_workers:
-            return await asyncio.to_thread(_collect_facts_for_variant, variant)
-
     with profile_stage(
         "retrieval.fanout", blocking=False, variants=len(variants)
-    ) as detail:
-        # Start the full passage channel and historical reads in both paths.
-        pending = []
-
-        def _start(coro):
-            task = asyncio.create_task(coro)
-            pending.append(task)
-            return task
-
-        try:
-            passages_task = _start(asyncio.to_thread(_collect_passages))
-            _start(_get_historical_context())
-            if variants and _can_try_primary_context_query(request.text):
-                primary = await _start(_collect_variant(variants[0]))
-                variant_outputs = [primary]
-                remaining = variants[1:]
-                max_facts = max(0, request.max_facts)
-                has_fact_budget = (
-                    max_facts > 0 and len({fact["key"] for fact in primary[1]}) >= max_facts
-                )
-                if remaining and has_fact_budget:
-                    await passages_task
-                    if _primary_context_is_sufficient(
-                        request.text,
-                        primary[1],
-                        passage_hits,
-                        max_facts=max_facts,
-                        max_passages=max_passages,
-                    ):
-                        remaining = []
-            else:
-                variant_outputs = []
-                remaining = variants
-            pending_variants = [_start(_collect_variant(v)) for v in remaining]
-            await asyncio.gather(*pending)
-            variant_outputs.extend(task.result() for task in pending_variants)
-        finally:
-            for task in pending:
-                if not task.done():
-                    task.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
-        detail["fact_variants"] = len(variant_outputs)
+    ):
+        fact_futures = [
+            asyncio.to_thread(_collect_facts_for_variant, variant)
+            for variant in variants
+        ]
+        other_futures = [
+            asyncio.to_thread(_collect_passages),
+            _get_historical_context(),
+        ]
+        all_results = await asyncio.gather(*fact_futures, *other_futures)
+        variant_outputs = all_results[: len(variants)]
 
     seed_hits = []
     variant_lists: list[list[dict[str, Any]]] = []
