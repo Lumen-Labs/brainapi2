@@ -98,3 +98,27 @@ and 81.170 s. The first documentation request after each restart took
 16.134 s, 12.418 s, and 15.936 s respectively. All three used ten query
 variants and returned the same ordered passages as the initial canary run.
 The tests used the existing database and caches throughout.
+
+## Full-expansion fanout canary
+
+Commit `1ae49eb` indexed graph edges by flow within each traversal and
+ran passage searches in batches of up to three, preserving fusion order.
+An opt-in EU Central canary used the production datastore. The paired
+comparison used `14b6e4c` as the baseline in the same window.
+
+| Brain | Baseline requests | Canary requests | Baseline p95 | Canary p95 |
+| --- | ---: | ---: | ---: | ---: |
+| BrainAPI Developer Documentation | 10 | 20 | 17.196 s | 16.873 s |
+| EP Signal Knowledge Base | 3 | 3 | 15.489 s | 13.695 s |
+| BrainAPI Business Strategy | 3 | 3 | 5.296 s | 5.145 s |
+
+All 42 requests succeeded. All 16 pairs matched ordered passages, facts,
+and fact source IDs. Every run searched the full set of query variants.
+Worker checks observed ingestion in all 20 documentation sample windows.
+The slowest documentation canary request took 19.593 s. The same-window
+baseline also met the target. The graph neighbor stage fell from 3.036 s
+to 2.533 s at the documentation median, while passage collection rose
+from 1.345 s to 6.877 s. Total documentation fanout fell from 9.964 s to
+9.581 s. Results are retrieval-only and represent one production load
+window. Shared chat kept Quick. A separate generation smoke test returned
+text from AWS Bedrock `us.anthropic.claude-haiku-5-5`.
