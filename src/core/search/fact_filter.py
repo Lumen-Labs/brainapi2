@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+import numpy as np
 from pydantic import BaseModel, Field
 
 
@@ -128,22 +129,34 @@ def personalized_pagerank(
     if sum(personalization.values()) <= 0:
         uniform = 1.0 / len(node_list)
         personalization = {node: uniform for node in node_list}
-    scores = dict(personalization)
+    node_index = {node: index for index, node in enumerate(node_list)}
+    sources, targets, weights, dangling = [], [], [], []
+    for source, node in enumerate(node_list):
+        neighbors = weighted.get(node) or []
+        total = sum(weight for _, weight in neighbors)
+        if total <= 0:
+            dangling.append(source)
+            continue
+        for target, weight in neighbors:
+            sources.append(source)
+            targets.append(node_index[target])
+            weights.append(weight / total)
+    source_indices = np.asarray(sources, dtype=np.intp)
+    target_indices = np.asarray(targets, dtype=np.intp)
+    dangling_indices = np.asarray(dangling, dtype=np.intp)
+    transition_weights = np.asarray(weights, dtype=np.float64)
+    scores = np.fromiter(personalization.values(), dtype=np.float64)
+    teleport = (1.0 - damping) * scores
     for _ in range(max(1, iterations)):
-        next_scores = {
-            node: (1.0 - damping) * personalization[node] for node in node_list
-        }
-        for node in node_list:
-            neighbors = weighted.get(node) or []
-            total_weight = sum(weight for _dst, weight in neighbors)
-            if total_weight <= 0:
-                for target in node_list:
-                    next_scores[target] += damping * scores[node] / len(node_list)
-                continue
-            mass = damping * scores[node]
-            for neighbor, weight in neighbors:
-                next_scores[neighbor] = next_scores.get(neighbor, 0.0) + (
-                    mass * (weight / total_weight)
-                )
+        next_scores = teleport.copy()
+        # Keep edge accumulation order so equal scores retain the old tie breaks.
+        np.add.at(
+            next_scores,
+            target_indices,
+            (damping * scores[source_indices]) * transition_weights,
+        )
+        dangling_mass = sum(scores[dangling_indices])
+        if dangling_mass > 0:
+            next_scores += damping * dangling_mass / len(node_list)
         scores = next_scores
-    return scores
+    return dict(zip(node_list, scores.tolist()))

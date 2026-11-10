@@ -343,7 +343,55 @@ class GetContextStageCoverageTests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(variants["wall_ms"], fanout["wall_ms"] + 1.0)
         self.assertLessEqual(fanout["wall_ms"], response.stage_timings["total_ms"])
 
-    async def test_ppr_stages_are_attributed_to_the_event_loop(self):
+    async def test_balanced_expands_variants_only_if_primary_evidence_is_weak(self):
+        from src.services.api.controllers import retrieve as retrieve_mod
+
+        question = "How does BrainAPI store memory?"
+        complete = "BrainAPI stores memory in source passages and indexed facts."
+        partial = "The weather was cold during the weekend."
+        for passage, expected_calls in [(complete, 1), (partial, 2)]:
+            with self.subTest(passage=passage), _stubbed_adapters(
+                retrieve_mod,
+                _facts(3),
+                extra=[
+                    patch.object(
+                        retrieve_mod, "_collect_query_variants",
+                        return_value=[question, "memory"],
+                    ),
+                    patch.object(
+                        retrieve_mod, "_retrieve_passages",
+                        return_value=[("p1", 0.1, passage)],
+                    ),
+                ],
+            ):
+                response = await retrieve_mod.get_context(
+                    GetContextRequestBody(
+                        text=question,
+                        brain_id="brain-a",
+                        max_passages=1,
+                        max_facts=2,
+                        use_ppr=True,
+                        profile_stages=True,
+                    )
+                )
+                stages = _stages_by_name(response.stage_timings)
+                self.assertEqual(stages["facts.variant"]["calls"], expected_calls)
+                self.assertEqual(stages["retrieval.fanout"]["detail"]["fact_variants"], expected_calls)
+                self.assertIn(passage, response.source_passages)
+
+    async def test_reuses_exact_reads_only_within_a_request(self):
+        from src.services.api.controllers import retrieve as retrieve_mod
+
+        with _stubbed_adapters(retrieve_mod, _facts(3)) as graph:
+            for _ in range(2):
+                await retrieve_mod.get_context(
+                    GetContextRequestBody(text="Alice", brain_id="brain-a", use_ppr=True)
+                )
+            # The primary fact search and PPR read the same neighborhood. A
+            # subsequent request must still read from the graph again.
+            self.assertEqual(graph.get_event_centric_neighbors.call_count, 2)
+
+    async def test_ppr_stages_are_attributed_to_worker_threads(self):
         from src.services.api.controllers import retrieve as retrieve_mod
 
         with _stubbed_adapters(
@@ -364,9 +412,9 @@ class GetContextStageCoverageTests(unittest.IsolatedAsyncioTestCase):
             )
 
         stages = _stages_by_name(response.stage_timings)
-        self.assertTrue(stages["ppr.adjacency"]["on_loop"])
-        self.assertTrue(stages["ppr.iterations"]["on_loop"])
-        self.assertTrue(stages["nlp.extract_elements"]["on_loop"])
+        self.assertFalse(stages["ppr.adjacency"]["on_loop"])
+        self.assertFalse(stages["ppr.iterations"]["on_loop"])
+        self.assertFalse(stages["nlp.extract_elements"]["on_loop"])
         self.assertFalse(stages["facts.variant"]["on_loop"])
         self.assertEqual(stages["ppr.iterations"]["detail"]["iterations"], 20)
 

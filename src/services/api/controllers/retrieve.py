@@ -12,8 +12,11 @@ import asyncio
 import json
 import re
 from collections import defaultdict
+from concurrent.futures import Future
+from contextvars import ContextVar
 from datetime import datetime
-from typing import Any, Optional
+from threading import Lock
+from typing import Any, Callable, Optional, TypeVar
 
 from fastapi import HTTPException
 from starlette.responses import JSONResponse
@@ -58,6 +61,7 @@ _SEED_K = 25
 _PASSAGE_K = 24
 _PPR_DAMPING = 0.85
 _PPR_ITERS = 20
+_CONTEXT_FACT_CONCURRENCY = 4
 _SESSION_RE = re.compile(r"session_(\d+)", re.IGNORECASE)
 _BATCH_TURN_RE = re.compile(r"\bb(\d+)_t(\d+)\b", re.IGNORECASE)
 _HISTORY_MODE_RE = re.compile(
@@ -1451,6 +1455,57 @@ def _seed_personalization(seeds: list[tuple[str, float, str]]) -> dict[str, floa
     return weights
 
 
+_ReadResult = TypeVar("_ReadResult")
+
+
+class _ContextReads:
+    """Share identical reads across the threads processing a single request."""
+
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self._reads: dict[tuple, Future[Any]] = {}
+
+    def get(self, key: tuple, read: Callable[[], _ReadResult]) -> _ReadResult:
+        with self._lock:
+            pending = self._reads.get(key)
+            if pending is None:
+                pending = self._reads[key] = Future()
+                owns_read = True
+            else:
+                owns_read = False
+        if owns_read:
+            try:
+                pending.set_result(read())
+            except BaseException as error:
+                with self._lock:
+                    del self._reads[key]
+                pending.set_exception(error)
+                raise
+        return pending.result()
+
+
+_context_reads: ContextVar[_ContextReads | None] = ContextVar(
+    "context_reads", default=None
+)
+
+
+def _context_read(key: tuple, read: Callable[[], _ReadResult]) -> _ReadResult:
+    reads = _context_reads.get()
+    return read() if reads is None else reads.get(key, read)
+
+
+def _context_embedding(text: str) -> Vector:
+    return _context_read(("embedding", text), lambda: embeddings_adapter.embed_text(text))
+
+
+def _context_neighbors(seed_uuids: list[str], brain_id: str):
+    # Keep the adapter's input order. Its path order is part of the evidence.
+    return _context_read(
+        ("neighbors", brain_id, tuple(seed_uuids)),
+        lambda: graph_adapter.get_event_centric_neighbors(seed_uuids, brain_id=brain_id),
+    )
+
+
 def _build_adjacency_from_seeds(
     seed_uuids: list[str],
     brain_id: str,
@@ -1463,9 +1518,7 @@ def _build_adjacency_from_seeds(
     if not seed_uuids:
         return {}
     try:
-        neighbors = graph_adapter.get_event_centric_neighbors(
-            seed_uuids, brain_id=brain_id
-        )
+        neighbors = _context_neighbors(seed_uuids, brain_id)
     except Exception:
         return {}
     for n, r, m, r2, b in neighbors:
@@ -1581,7 +1634,7 @@ def _stabilize_seed_hits(
 def _seed_nodes_for_text(text: str, brain_id: str) -> list[tuple[str, float, str]]:
     """Return (node_uuid, distance, entity_name) seeds from nodes + relationships."""
     with profile_stage("embed.query"):
-        text_embeddings = embeddings_adapter.embed_text(text)
+        text_embeddings = _context_embedding(text)
     embeddings = text_embeddings.embeddings
     seeds: list[tuple[str, float, str]] = []
 
@@ -1717,7 +1770,7 @@ def _retrieve_passages(
         id_to_distance: dict[str, float] = {}
         if use_dense:
             with profile_stage("embed.query"):
-                text_embeddings = embeddings_adapter.embed_text(text)
+                text_embeddings = _context_embedding(text)
             with profile_stage("vector.search_data", k=max(limit, _PASSAGE_K)):
                 vector_ids, id_to_distance = collect_dense_passages(
                     vector_search,
@@ -1794,18 +1847,69 @@ async def get_context(
     with profile_request(
         "retrieve.context", enabled=request.profile_stages
     ) as profiler:
-        response = await _build_context(request, fact_filter_adapter)
+        token = _context_reads.set(_ContextReads())
+        try:
+            response = await _build_context(request, fact_filter_adapter)
+        finally:
+            _context_reads.reset(token)
     if profiler is not None:
         response.stage_timings = profiler.last_report
     return response
+
+
+def _evidence_terms(text: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9]{3,}", text.lower())) - {
+        "and", "are", "can", "does", "for", "from", "how", "into", "the",
+        "their", "this", "what", "when", "which", "why", "with",
+    }
+
+
+def _can_try_primary_context_query(question: str) -> bool:
+    # Leave the expansion plan intact for enumeration, chronology, and other
+    # targeted questions. Only broad explanations qualify for an early stop.
+    return (
+        bool(re.match(r"^how (?:does|do)\b", question.strip(), re.I))
+        and not _is_enumeration_question(question)
+        and not _wants_historical_facts(question)
+        and not _is_ordering_question(question)
+    )
+
+
+def _primary_context_is_sufficient(
+    question: str,
+    facts: list[dict[str, Any]],
+    passages: list[tuple[str, float, str]],
+    *,
+    max_facts: int,
+    max_passages: int,
+) -> bool:
+    # Require enough distinct facts for the full requested budget, plus multiple
+    # passages that collectively cover all substantive question terms.
+    if max_facts <= 0 or len({fact["key"] for fact in facts}) < max_facts:
+        return False
+    terms = _evidence_terms(question)
+    if not terms:
+        return False
+    covered: set[str] = set()
+    relevant: set[str] = set()
+    for chunk_id, _, body in passages[:max_passages]:
+        body_terms = _evidence_terms(body)
+        hits = {term for term in terms if term in body_terms or f"{term}s" in body_terms}
+        if len(hits) >= min(2, len(terms)):
+            relevant.add(chunk_id)
+            covered.update(hits)
+    return len(relevant) >= min(4, max_passages) and terms <= covered
 
 
 async def _build_context(
     request: GetContextRequestBody,
     fact_filter_adapter: Any,
 ) -> GetContextResponse:
-    with profile_stage("nlp.extract_elements"):
-        elements = _entity_extractor.extract_elements(request.text)
+    def _extract_elements():
+        with profile_stage("nlp.extract_elements"):
+            return _entity_extractor.extract_elements(request.text)
+
+    elements = await asyncio.to_thread(_extract_elements)
     with profile_stage("nlp.query_variants") as detail:
         variants = _collect_query_variants(request.text, elements)
         detail["variants"] = len(variants)
@@ -1839,9 +1943,7 @@ async def _build_context(
             with profile_stage(
                 "graph.event_neighbors", seed_uuids=len(seed_uuids)
             ) as neighbors_detail:
-                neighbors = graph_adapter.get_event_centric_neighbors(
-                    seed_uuids, brain_id=request.brain_id
-                )
+                neighbors = _context_neighbors(seed_uuids, request.brain_id)
                 neighbors_detail["rows"] = len(neighbors)
             local: list[dict[str, Any]] = []
             with profile_stage("facts.assemble"):
@@ -1877,6 +1979,12 @@ async def _build_context(
                     )
             return list(seeds), local
 
+    def _read_passages(text: str, *, limit: int) -> list[tuple[str, float, str]]:
+        return _context_read(
+            ("passages", request.brain_id, text, limit),
+            lambda: _retrieve_passages(text, request.brain_id, limit=limit),
+        )
+
     def _collect_passages() -> None:
         nonlocal passage_hits
         with profile_stage("passages.collect") as detail:
@@ -1894,9 +2002,8 @@ async def _build_context(
             id_to_text: dict[str, str] = {}
             id_to_score: dict[str, float] = {}
             for query in queries:
-                hits = _retrieve_passages(
+                hits = _read_passages(
                     query,
-                    request.brain_id,
                     limit=max(max_passages, _PASSAGE_K),
                 )
                 ordered_ids: list[str] = []
@@ -1923,9 +2030,8 @@ async def _build_context(
         nonlocal historical_context
         with profile_stage("historical.context", blocking=False):
             passages = await asyncio.to_thread(
-                _retrieve_passages,
+                _read_passages,
                 request.text,
-                request.brain_id,
                 limit=max(request.historical_limit, _PASSAGE_K),
             )
             if passages:
@@ -1953,19 +2059,56 @@ async def _build_context(
             ]
             return historical_context
 
+    fact_workers = asyncio.Semaphore(_CONTEXT_FACT_CONCURRENCY)
+
+    async def _collect_variant(variant: str):
+        async with fact_workers:
+            return await asyncio.to_thread(_collect_facts_for_variant, variant)
+
     with profile_stage(
         "retrieval.fanout", blocking=False, variants=len(variants)
-    ):
-        fact_futures = [
-            asyncio.to_thread(_collect_facts_for_variant, variant)
-            for variant in variants
-        ]
-        other_futures = [
-            asyncio.to_thread(_collect_passages),
-            _get_historical_context(),
-        ]
-        all_results = await asyncio.gather(*fact_futures, *other_futures)
-        variant_outputs = all_results[: len(variants)]
+    ) as detail:
+        # Start the full passage channel and historical reads in both paths.
+        pending = []
+
+        def _start(coro):
+            task = asyncio.create_task(coro)
+            pending.append(task)
+            return task
+
+        try:
+            passages_task = _start(asyncio.to_thread(_collect_passages))
+            _start(_get_historical_context())
+            if variants and _can_try_primary_context_query(request.text):
+                primary = await _start(_collect_variant(variants[0]))
+                variant_outputs = [primary]
+                remaining = variants[1:]
+                max_facts = max(0, request.max_facts)
+                has_fact_budget = (
+                    max_facts > 0 and len({fact["key"] for fact in primary[1]}) >= max_facts
+                )
+                if remaining and has_fact_budget:
+                    await passages_task
+                    if _primary_context_is_sufficient(
+                        request.text,
+                        primary[1],
+                        passage_hits,
+                        max_facts=max_facts,
+                        max_passages=max_passages,
+                    ):
+                        remaining = []
+            else:
+                variant_outputs = []
+                remaining = variants
+            pending_variants = [_start(_collect_variant(v)) for v in remaining]
+            await asyncio.gather(*pending)
+            variant_outputs.extend(task.result() for task in pending_variants)
+        finally:
+            for task in pending:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+        detail["fact_variants"] = len(variant_outputs)
 
     seed_hits = []
     variant_lists: list[list[dict[str, Any]]] = []
@@ -1996,23 +2139,26 @@ async def _build_context(
     if request.use_ppr and seed_hits and ranked:
         with profile_stage("ppr"):
             personalization = _seed_personalization(seed_hits)
-            with profile_stage(
-                "ppr.adjacency", seeds=len(personalization)
-            ) as adjacency_detail:
-                adjacency = _build_adjacency_from_seeds(
-                    sorted(personalization.keys()),
-                    request.brain_id,
-                    query=request.text,
-                    include_history=include_history,
-                )
-                adjacency_detail["nodes"] = len(adjacency)
-            with profile_stage("ppr.iterations", iterations=_PPR_ITERS):
-                ppr_scores = personalized_pagerank(
-                    adjacency,
-                    personalization,
-                    damping=_PPR_DAMPING,
-                    iterations=_PPR_ITERS,
-                )
+            def _rank_graph():
+                with profile_stage(
+                    "ppr.adjacency", seeds=len(personalization)
+                ) as adjacency_detail:
+                    adjacency = _build_adjacency_from_seeds(
+                        sorted(personalization),
+                        request.brain_id,
+                        query=request.text,
+                        include_history=include_history,
+                    )
+                    adjacency_detail["nodes"] = len(adjacency)
+                with profile_stage("ppr.iterations", iterations=_PPR_ITERS):
+                    return personalized_pagerank(
+                        adjacency,
+                        personalization,
+                        damping=_PPR_DAMPING,
+                        iterations=_PPR_ITERS,
+                    )
+
+            ppr_scores = await asyncio.to_thread(_rank_graph)
             if ppr_scores:
                 with profile_stage("ppr.reorder", scored=len(ppr_scores)):
                     for candidate in ranked:
