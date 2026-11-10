@@ -67,3 +67,34 @@ All three staging p95s were under 20 s. The first documentation request still
 exceeded 20 s on both builds (31.790 s baseline and 27.503 s candidate). The
 benchmark measured retrieval over HTTP in isolation from live ingestion and
 answer generation. Production shared chat remains on Quick.
+
+## EU Central production canary
+
+Commit `14b6e4c` retains request-local read reuse and vectorized PageRank.
+It searches every query variant. The private canary used the live API image
+with those two Python files replaced and shared its production datastore.
+Only explicitly directed benchmark requests reached the canary. Shared chat
+continued to use Quick.
+
+The comparison alternated request order over 16 Balanced pairs. Production
+ingestion was active during the window. One documentation pair had two
+active worker jobs immediately before and after it. Most per-pair worker
+checks timed out, so the full table describes the production test window.
+
+| Brain | Pairs | Live API p50 | Canary p50 | Live API slowest | Canary slowest |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| BrainAPI Developer Documentation | 10 | 25.231 s | 22.179 s | 31.690 s | 29.791 s |
+| EP Signal Knowledge Base | 3 | 29.443 s | 19.903 s | 39.072 s | 26.593 s |
+| BrainAPI Business Strategy | 3 | 8.887 s | 6.335 s | 9.844 s | 8.401 s |
+
+The nearest-rank p95 equals the slowest response at these sample sizes.
+All 32 requests succeeded, and all pairs returned identical ordered passages,
+facts, and fact source IDs. Median documentation PageRank fell from 5.298 s
+to 0.600 s. Searching all variants still took a median 20.730 s on the
+canary, and six of ten documentation responses took at least 20 s.
+
+Three canary process restarts reached HTTP readiness in 77.748 s, 72.759 s,
+and 81.170 s. The first documentation request after each restart took
+16.134 s, 12.418 s, and 15.936 s respectively. All three used ten query
+variants and returned the same ordered passages as the initial canary run.
+The tests used the existing database and caches throughout.
