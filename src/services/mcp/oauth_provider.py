@@ -161,7 +161,7 @@ class BrainapiMcpOAuthProvider(
             self._is_chatgpt_callback(str(uri)) for uri in client_info.redirect_uris
         )):
             raise RegistrationError("invalid_redirect_uri", "Expected a ChatGPT OAuth callback")
-        self._set_model(self._client_key(cid), client_info, 90 * 86400 if self._chatgpt_only else None)
+        self._set_model(self._client_key(cid), client_info)
 
     @staticmethod
     def _is_chatgpt_callback(uri: str) -> bool:
