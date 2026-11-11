@@ -29,6 +29,11 @@ class FakeRedis:
     def get(self, key):
         return self.values.get(key)
 
+    def getdel(self, key):
+        value = self.get(key)
+        self.delete(key)
+        return value
+
     def delete(self, *keys):
         removed = 0
         for key in keys:
@@ -138,7 +143,11 @@ class BrainapiMcpOAuthProviderRedisTests(unittest.TestCase):
         url = asyncio.run(provider.authorize(client, params))
         query = parse_qs(urlparse(url).query)
 
-        self.assertEqual(query["redirect_uri_provided_explicitly"], ["0"])
+        request_id = query["request_id"][0]
+        self.assertEqual(set(query), {"request_id"})
+        self.assertEqual(provider.consent_request(request_id)["redirect_uri_provided_explicitly"], "0")
+        self.assertEqual(provider.consent_request(request_id, consume=True)["state"], "state")
+        self.assertIsNone(provider.consent_request(request_id, consume=True))
 
     def test_valid_pat_can_be_used_as_bearer_token(self):
         provider = make_provider(FakeRedis(), pat_verifier=lambda pat: pat == "brain-pat")

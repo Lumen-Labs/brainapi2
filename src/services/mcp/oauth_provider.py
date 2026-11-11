@@ -1,8 +1,12 @@
+import base64
+import hmac
 import json
+import re
 import secrets
 import time
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
+from cryptography.fernet import Fernet, InvalidToken
 from pydantic import AnyUrl
 
 from mcp.server.auth.provider import (
@@ -12,6 +16,7 @@ from mcp.server.auth.provider import (
     AuthorizeError,
     OAuthAuthorizationServerProvider,
     RefreshToken,
+    RegistrationError,
     TokenError,
     construct_redirect_uri,
 )
@@ -31,6 +36,8 @@ class BrainapiMcpOAuthProvider(
         auth_code_ttl_seconds: int,
         redis_client=None,
         pat_verifier=None,
+        chatgpt_only: bool = False,
+        credential_secret: str | None = None,
     ):
         self._issuer_url = issuer_url.rstrip("/")
         self._resource_server_url = resource_server_url.rstrip("/")
@@ -48,6 +55,28 @@ class BrainapiMcpOAuthProvider(
 
             redis_client = _redis_client.client
         self._redis = redis_client
+        self._chatgpt_only = chatgpt_only
+        self._credential_cipher = None
+        if credential_secret:
+            purpose = f"brainapi-mcp-oauth-pat:{self._issuer_url}".encode()
+            key = hmac.digest(credential_secret.encode(), purpose, "sha256")
+            self._credential_cipher = Fernet(base64.urlsafe_b64encode(key))
+        if chatgpt_only and self._credential_cipher is None:
+            raise ValueError("Hosted MCP OAuth needs a credential encryption secret")
+
+    def _store_pat(self, key: str, pat: str, ttl: int | None) -> None:
+        value = self._credential_cipher.encrypt(pat.encode()).decode() if self._credential_cipher else pat
+        self._set_text(key, value, ttl)
+
+    def _decode_pat(self, value: bytes | str | None) -> str | None:
+        if not value:
+            return None
+        if self._credential_cipher:
+            try:
+                return self._credential_cipher.decrypt(value).decode()
+            except InvalidToken:
+                return None
+        return value.decode() if isinstance(value, bytes) else value
 
     def _key(self, *parts: str) -> str:
         return "mcp:oauth:" + ":".join(parts)
@@ -128,9 +157,36 @@ class BrainapiMcpOAuthProvider(
         cid = client_info.client_id
         if not cid:
             raise ValueError("client_id required")
-        self._set_model(self._client_key(cid), client_info)
+        if self._chatgpt_only and (not client_info.redirect_uris or not all(
+            self._is_chatgpt_callback(str(uri)) for uri in client_info.redirect_uris
+        )):
+            raise RegistrationError("invalid_redirect_uri", "Expected a ChatGPT OAuth callback")
+        self._set_model(self._client_key(cid), client_info, 90 * 86400 if self._chatgpt_only else None)
+
+    @staticmethod
+    def _is_chatgpt_callback(uri: str) -> bool:
+        parsed = urlsplit(uri)
+        return (
+            parsed.scheme == "https"
+            and parsed.netloc == "chatgpt.com"
+            and not parsed.query
+            and not parsed.fragment
+            and (
+                parsed.path == "/connector_platform_oauth_redirect"
+                or re.fullmatch(r"/connector/oauth/[A-Za-z0-9_-]+", parsed.path) is not None
+            )
+        )
+
+    def consent_request(self, request_id: str, *, consume: bool = False) -> dict | None:
+        if not re.fullmatch(r"[A-Za-z0-9_-]{43}", request_id):
+            return None
+        key = self._key("consent", request_id)
+        value = self._redis.getdel(key) if consume else self._get_text(key)
+        return json.loads(value) if value else None
 
     async def authorize(self, client: OAuthClientInformationFull, params: AuthorizationParams) -> str:
+        if self._chatgpt_only and not self._is_chatgpt_callback(str(params.redirect_uri)):
+            raise AuthorizeError(error="invalid_request", error_description="Expected a ChatGPT OAuth callback")
         if params.resource and params.resource.rstrip("/") != self._resource_server_url:
             raise AuthorizeError(
                 error="invalid_request",
@@ -157,7 +213,9 @@ class BrainapiMcpOAuthProvider(
             q["resource"] = params.resource
         if params.state:
             q["state"] = params.state
-        return f"{consent_base}?{urlencode(q)}"
+        request_id = secrets.token_urlsafe(32)
+        self._set_model(self._key("consent", request_id), q, self._auth_code_ttl)
+        return f"{consent_base}?{urlencode({'request_id': request_id})}"
 
     async def load_authorization_code(
         self, client: OAuthClientInformationFull, authorization_code: str
@@ -168,8 +226,7 @@ class BrainapiMcpOAuthProvider(
         self, client: OAuthClientInformationFull, authorization_code: AuthorizationCode
     ) -> OAuthToken:
         self._redis.delete(self._auth_code_key(authorization_code.code))
-        brainpat = self._get_text(self._code_pat_key(authorization_code.code))
-        self._redis.delete(self._code_pat_key(authorization_code.code))
+        brainpat = self._decode_pat(self._redis.getdel(self._code_pat_key(authorization_code.code)))
         if not brainpat:
             raise TokenError(error="invalid_grant", error_description="missing credentials")
 
@@ -188,7 +245,7 @@ class BrainapiMcpOAuthProvider(
         )
         access_ttl = max(1, exp_access - now)
         self._set_model(self._access_key(access), at, access_ttl)
-        self._set_text(self._access_pat_key(access), brainpat, access_ttl)
+        self._store_pat(self._access_pat_key(access), brainpat, access_ttl)
         self._remember_client_access_token(client.client_id or "", access, access_ttl)
         rt = RefreshToken(
             token=refresh,
@@ -198,7 +255,7 @@ class BrainapiMcpOAuthProvider(
         )
         refresh_ttl = max(1, exp_refresh - now) if exp_refresh else None
         self._set_model(self._refresh_key(refresh), rt, refresh_ttl)
-        self._set_text(self._refresh_pat_key(refresh), brainpat, refresh_ttl)
+        self._store_pat(self._refresh_pat_key(refresh), brainpat, refresh_ttl)
         return OAuthToken(
             access_token=access,
             token_type="Bearer",
@@ -219,11 +276,8 @@ class BrainapiMcpOAuthProvider(
         refresh_token: RefreshToken,
         scopes: list[str],
     ) -> OAuthToken:
-        brainpat = self._get_text(self._refresh_pat_key(refresh_token.token))
-        self._redis.delete(
-            self._refresh_key(refresh_token.token),
-            self._refresh_pat_key(refresh_token.token),
-        )
+        brainpat = self._decode_pat(self._redis.getdel(self._refresh_pat_key(refresh_token.token)))
+        self._redis.delete(self._refresh_key(refresh_token.token))
         if not brainpat:
             raise TokenError(error="invalid_grant", error_description="refresh token not found")
 
@@ -247,7 +301,7 @@ class BrainapiMcpOAuthProvider(
         )
         access_ttl = max(1, exp_access - now)
         self._set_model(self._access_key(access), at, access_ttl)
-        self._set_text(self._access_pat_key(access), brainpat, access_ttl)
+        self._store_pat(self._access_pat_key(access), brainpat, access_ttl)
         self._remember_client_access_token(client_id, access, access_ttl)
         rt = RefreshToken(
             token=new_refresh,
@@ -257,7 +311,7 @@ class BrainapiMcpOAuthProvider(
         )
         refresh_ttl = max(1, exp_refresh - now) if exp_refresh else None
         self._set_model(self._refresh_key(new_refresh), rt, refresh_ttl)
-        self._set_text(self._refresh_pat_key(new_refresh), brainpat, refresh_ttl)
+        self._store_pat(self._refresh_pat_key(new_refresh), brainpat, refresh_ttl)
         return OAuthToken(
             access_token=access,
             token_type="Bearer",
@@ -281,6 +335,8 @@ class BrainapiMcpOAuthProvider(
         if at.expires_at and at.expires_at < int(time.time()):
             self._delete_access_token(token, at.client_id)
             return None
+        if at.resource != self._resource_server_url:
+            return None
         return at
 
     async def revoke_token(self, token: AccessToken | RefreshToken) -> None:
@@ -293,7 +349,7 @@ class BrainapiMcpOAuthProvider(
             )
 
     def get_pat_for_access_token(self, token: str) -> str | None:
-        return self._get_text(self._access_pat_key(token))
+        return self._decode_pat(self._get_text(self._access_pat_key(token)))
 
     def issue_auth_code(
         self,
@@ -319,7 +375,7 @@ class BrainapiMcpOAuthProvider(
             resource=resource,
         )
         self._set_model(self._auth_code_key(code), ac, self._auth_code_ttl)
-        self._set_text(self._code_pat_key(code), brainpat, self._auth_code_ttl)
+        self._store_pat(self._code_pat_key(code), brainpat, self._auth_code_ttl)
         return code
 
     def redirect_after_consent(
