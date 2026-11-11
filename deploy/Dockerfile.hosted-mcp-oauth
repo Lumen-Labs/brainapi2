@@ -1,0 +1,4 @@
+# Temporary hosted MCP image until the OAuth changes ship in the regular release.
+# Build from the repository root with docker build -f deploy/Dockerfile.hosted-mcp-oauth .
+FROM ghcr.io/lumen-labs/brainapi:v2.20.1-dev.6@sha256:6a4ee0f091bf6a90aeb6f642d4b814bc7ecdc3132621f1020825bbdcaac14103
+COPY src/services/mcp/main.py src/services/mcp/oauth_provider.py /app/src/services/mcp/
