@@ -34,7 +34,7 @@ def verify_protocol():
     resource = issuer + "/mcp"
     pat = "local-test-brain-pat"
     system_pat = "local-test-system-pat"
-    os.environ.update(MCP_OAUTH_ISSUER_URL=issuer, MCP_OAUTH_CHATGPT_ONLY="true", BRAINPAT_TOKEN=system_pat)
+    os.environ.update(MCP_HOSTED_OAUTH_ISSUER_URL=issuer, MCP_OAUTH_ISSUER_URL="", MCP_OAUTH_CHATGPT_ONLY="", BRAINPAT_TOKEN=system_pat)
 
     def stub(name, **values):
         module = ModuleType(name)
@@ -46,7 +46,7 @@ def verify_protocol():
     stub("src.lib.redis.client", _redis_client=SimpleNamespace(client=redis))
     stub("src.utils.vector_search", VectorSearchFacade=lambda _: None)
 
-    from src.services.mcp.main import mcp
+    from src.services.mcp.main import mcp, oauth_provider
 
     with TestClient(mcp.streamable_http_app(), base_url=issuer) as client:
         assert client.get("/.well-known/oauth-protected-resource/mcp").json()["resource"] == resource
@@ -58,6 +58,7 @@ def verify_protocol():
         registered = client.post("/register", json=registration)
         assert registered.status_code == 201, registered.text
         creds = registered.json()
+        assert oauth_provider._client_key(creds["client_id"]) not in redis.expirations
         verifier = secrets.token_urlsafe(40)
         challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
         response = client.get("/authorize", params={"client_id": creds["client_id"], "response_type": "code", "redirect_uri": callback, "code_challenge": challenge, "code_challenge_method": "S256", "resource": resource, "state": "test-state"}, follow_redirects=False)
