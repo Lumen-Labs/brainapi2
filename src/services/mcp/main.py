@@ -35,7 +35,8 @@ from src.utils.vector_search import VectorSearchFacade
 auth_token_var: ContextVar[str | None] = ContextVar("auth_token", default=None)
 vector_search = VectorSearchFacade(vector_store_adapter)
 
-_oauth_issuer = os.getenv("MCP_OAUTH_ISSUER_URL", "").strip()
+_hosted_oauth_issuer = os.getenv("MCP_HOSTED_OAUTH_ISSUER_URL", "").strip()
+_oauth_issuer = _hosted_oauth_issuer or os.getenv("MCP_OAUTH_ISSUER_URL", "").strip()
 _oauth_resource = os.getenv("MCP_RESOURCE_SERVER_URL", "").strip()
 if _oauth_issuer and not _oauth_resource:
     _oauth_resource = _oauth_issuer.rstrip("/") + "/mcp"
@@ -60,7 +61,7 @@ if _oauth_issuer:
         access_token_ttl_seconds=_access_ttl,
         refresh_token_ttl_seconds=_refresh_ttl,
         auth_code_ttl_seconds=_code_ttl,
-        chatgpt_only=os.getenv("MCP_OAUTH_CHATGPT_ONLY") == "true",
+        chatgpt_only=bool(_hosted_oauth_issuer) or os.getenv("MCP_OAUTH_CHATGPT_ONLY") == "true",
         credential_secret=os.getenv("BRAINPAT_TOKEN"),
     )
     _doc_url = os.getenv("MCP_OAUTH_SERVICE_DOCUMENTATION_URL", "").strip()
