@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""Exercise ingest-with-enrichment and retrieve against a mocked Anthropic stub."""
+"""Exercise ingest-with-enrichment and retrieve against a mocked LLM stub."""
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
 import urllib.error
 import urllib.request
 from typing import Any
+
+DEFAULT_EXPECTED_MODEL = "ci-test-model"
 
 
 def _request(
@@ -59,11 +62,15 @@ def _wait_task(base: str, token: str, brain_id: str, task_id: str) -> dict[str, 
     raise TimeoutError(f"ingestion task {task_id} did not finish")
 
 
-def run_ingest_and_retrieve(api_url: str, token: str, stub_url: str) -> dict[str, Any]:
-    brain_id = f"haikue2e{int(time.time())}"
-    reset_status, _ = _request(
-        stub_url, "POST", "/v1/reset", token=token, body={}
-    )
+def run_ingest_and_retrieve(
+    api_url: str,
+    token: str,
+    stub_url: str,
+    expected_model: str = DEFAULT_EXPECTED_MODEL,
+) -> dict[str, Any]:
+    expected = (expected_model or DEFAULT_EXPECTED_MODEL).strip()
+    brain_id = f"llme2e{int(time.time())}"
+    reset_status, _ = _request(stub_url, "POST", "/v1/reset", token=token, body={})
     if reset_status >= 400:
         _request(stub_url, "POST", "/reset", token=token, body={})
 
@@ -122,23 +129,22 @@ def run_ingest_and_retrieve(api_url: str, token: str, stub_url: str) -> dict[str
     llm_models = []
     if isinstance(calls, dict):
         llm_models = list(calls.get("llm_models") or [])
-    def _is_haiku(model: str) -> bool:
-        leaf = (model or "").strip().lower().split(".")[-1].split(":")[0]
-        return leaf == "claude-haiku-5-5" or leaf.startswith("claude-haiku-5-5-")
-
-    unexpected = sorted({model for model in llm_models if not _is_haiku(model)})
+    unexpected = sorted(
+        {model for model in llm_models if (model or "").strip() != expected}
+    )
     if unexpected:
         raise RuntimeError(
-            f"non-Haiku chat models were used: {unexpected}; all calls={calls}"
+            f"chat models other than {expected!r} were used: {unexpected}; all calls={calls}"
         )
     if not llm_models:
         raise RuntimeError(
-            "enrichment produced no chat-model calls on the Haiku stub"
+            "enrichment produced no chat-model calls on the mocked LLM stub"
         )
     return {
         "brain_id": brain_id,
         "task_id": task_id,
         "retrieve_status": retrieve_status,
+        "expected_model": expected,
         "llm_models": llm_models,
         "calls": calls,
     }
@@ -149,9 +155,15 @@ def main() -> None:
     parser.add_argument("--api-url", default="http://127.0.0.1:8000")
     parser.add_argument("--stub-url", default="http://127.0.0.1:8080")
     parser.add_argument("--token", default="")
+    parser.add_argument("--expected-model", default=DEFAULT_EXPECTED_MODEL)
     args = parser.parse_args()
-    token = args.token or __import__("os").environ.get("BRAINPAT_TOKEN", "")
-    result = run_ingest_and_retrieve(args.api_url, token, args.stub_url)
+    token = args.token or os.environ.get("BRAINPAT_TOKEN", "")
+    result = run_ingest_and_retrieve(
+        args.api_url,
+        token,
+        args.stub_url,
+        expected_model=args.expected_model,
+    )
     print(json.dumps(result, indent=2))
 
 

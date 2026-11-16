@@ -30,7 +30,7 @@ This package does **not** import anything from `src/`. It only talks to a runnin
 - BrainAPI running locally (`make start-all` or `brainapi start`)
 - `BRAIN_CREATION_ALLOWED="true"` in the server env (needed so brains like `locomoconv26` are auto-created)
 - A PAT token (`BRAINPAT_TOKEN`)
-- An Anthropic API key for answering and judging (or any OpenAI-compatible provider)
+- A DeepSeek API key for answering and judging (or any OpenAI-compatible provider)
 
 Brain IDs must be alphanumeric. This harness maps `conv-26` → `locomoconv26`.
 
@@ -167,20 +167,18 @@ vs the 95% gate.
 
 ### Models
 
-Product chat LLMs default to **Amazon Bedrock Claude Haiku 5.5**. Benchmark
-answer/judge still use an OpenAI-compatible HTTP client (optional direct
-Anthropic) with the same model id:
+Defaults use **DeepSeek** for the answerer (override in `.env`):
 
-- Base URL: `https://api.anthropic.com/v1` (`BENCH_LLM_BASE_URL`)
-- Answerer: `claude-haiku-5-5` (`BENCH_ANSWER_MODEL`)
-- API key: `ANTHROPIC_API_KEY` (or `DEEPSEEK_API_KEY` / `OPENAI_API_KEY` for other providers)
+- Base URL: `https://api.deepseek.com` (`BENCH_LLM_BASE_URL`)
+- Answerer: `deepseek-v4-flash` (`BENCH_ANSWER_MODEL`)
+- API key: `DEEPSEEK_API_KEY` (or `OPENAI_API_KEY` for other providers)
 
-The judge is configured independently. Owner default is the same Haiku model; a
-different family can still be set explicitly. `evaluate` prints a warning and
-records `judge_shares_answer_family` in the manifest when the families match.
+The judge is configured independently and should be a **different model family** from
+the answerer, otherwise judge accuracy carries self-preference bias. `evaluate` prints a
+warning and records `judge_shares_answer_family` in the manifest when the families match.
 
 - `BENCH_JUDGE_MODEL`, `BENCH_JUDGE_BASE_URL`, `BENCH_JUDGE_API_KEY` for any OpenAI-compatible provider
-- `BENCH_JUDGE_AZURE_ENDPOINT` / `BENCH_JUDGE_AZURE_KEY` / `BENCH_JUDGE_AZURE_API_VERSION` for Azure OpenAI (opt-in; no longer auto-selected from repo-root `AZURE_LARGE_LLM_*` just because those variables are exported)
+- `BENCH_JUDGE_AZURE_ENDPOINT` / `BENCH_JUDGE_AZURE_KEY` / `BENCH_JUDGE_AZURE_API_VERSION` for Azure OpenAI; the repo-root `AZURE_LARGE_LLM_*` variables are picked up automatically when they are exported and no judge model is set explicitly
 - With no judge configuration at all, the judge falls back to the answerer's provider and model, and the run is marked as sharing a family
 
 Other OpenAI-compatible providers work the same way — set the base URL, model ids, and the key.

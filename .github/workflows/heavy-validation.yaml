@@ -181,9 +181,9 @@ jobs:
           deploy/brainapi-backup restore --profile heavy --project-name brainapi-heavy-ci --env-file deploy/env.heavy.example --compose-file deploy/docker-compose.ci.yaml --archive "${{ steps.backup.outputs.archive }}"
           curl --fail --retry 20 --retry-delay 5 http://localhost/health
           python scripts/production_smoke.py verify-restore --profile heavy --system-token "$BRAINPAT_TOKEN" --artifact-dir "$RELEASE_ARTIFACT_DIR"
-      - name: Haiku LLM ingest and retrieve e2e
+      - name: LLM routing ingest and retrieve e2e
         run: |
-          python scripts/haiku_llm_e2e.py --api-url http://localhost --stub-url http://127.0.0.1:18080 --token "$BRAINPAT_TOKEN" | tee "$RELEASE_ARTIFACT_DIR/haiku-llm-e2e.json"
+          python scripts/llm_routing_e2e.py --api-url http://localhost --stub-url http://127.0.0.1:18080 --token "$BRAINPAT_TOKEN" --expected-model ci-test-model | tee "$RELEASE_ARTIFACT_DIR/llm-routing-e2e.json"
       - name: Logs on failure
         if: failure()
         run: docker compose --project-name brainapi-heavy-ci -f deploy/docker-compose.heavy.yaml -f deploy/docker-compose.ci.yaml logs --no-color

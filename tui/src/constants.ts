@@ -26,9 +26,8 @@ export const AZURE_DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large";
 export const OPENAI_DEFAULT_SMALL_MODEL = "gpt-4o-mini";
 export const OPENAI_DEFAULT_LARGE_MODEL = "gpt-4o";
 export const OPENAI_DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large";
-export const DEFAULT_LLM_MODEL = "claude-haiku-5-5";
-export const ANTHROPIC_DEFAULT_SMALL_MODEL = DEFAULT_LLM_MODEL;
-export const ANTHROPIC_DEFAULT_LARGE_MODEL = DEFAULT_LLM_MODEL;
+export const ANTHROPIC_DEFAULT_SMALL_MODEL = "claude-3-5-haiku-latest";
+export const ANTHROPIC_DEFAULT_LARGE_MODEL = "claude-sonnet-4-20250514";
 export const DEEPSEEK_DEFAULT_SMALL_MODEL = "deepseek-v4-flash";
 export const DEEPSEEK_DEFAULT_LARGE_MODEL = "deepseek-v4-pro";
 
@@ -80,8 +79,8 @@ export const OPENAI_EMBEDDING_SMALL_DIMENSIONS = {
 } as const;
 
 export const BEDROCK_DEFAULT_REGION = "us-east-1";
-export const BEDROCK_DEFAULT_SMALL_MODEL = "us.anthropic.claude-haiku-5-5";
-export const BEDROCK_DEFAULT_LARGE_MODEL = "us.anthropic.claude-haiku-5-5";
+export const BEDROCK_DEFAULT_SMALL_MODEL = "us.anthropic.claude-3-5-haiku-20241022-v1:0";
+export const BEDROCK_DEFAULT_LARGE_MODEL = "us.anthropic.claude-3-7-sonnet-20250219-v1:0";
 export const BEDROCK_DEFAULT_EMBEDDING_MODEL = "amazon.titan-embed-text-v2:0";
 
 export const EMBEDDINGS_DEFAULTS = {
@@ -186,12 +185,9 @@ export const ENV_KEYS = {
 
   gcpProjectId: "GCP_PROJECT_ID",
   gcpCredentialsPath: "GCP_CREDENTIALS_PATH",
-  llmProvider: "LLM_PROVIDER",
-  llmModel: "LLM_MODEL",
   llmSmallProvider: "LLM_SMALL_PROVIDER",
   llmLargeProvider: "LLM_LARGE_PROVIDER",
   embeddingsProvider: "EMBEDDINGS_PROVIDER",
-  anthropicBaseUrl: "ANTHROPIC_BASE_URL",
   gcpExtraSmallLlmModel: "GCP_EXTRA_SMALL_LLM_MODEL",
   gcpSmallLlmModel: "GCP_SMALL_LLM_MODEL",
   gcpLargeLlmModel: "GCP_LARGE_LLM_MODEL",

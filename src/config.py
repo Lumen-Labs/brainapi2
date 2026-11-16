@@ -18,7 +18,6 @@ from pathlib import Path
 
 from src.lib.llm.policy import (
     configured_llm_model,
-    default_provider_for_mode,
     resolve_role_model,
     resolve_role_provider,
 )
@@ -141,9 +140,9 @@ class AzureConfig:
     Configuration class for the Azure configuration.
     """
 
-    def __init__(self):
-        self.small_llm_model = os.getenv("AZURE_SMALL_LLM_MODEL", "gpt-4o-mini")
-        self.large_llm_model = os.getenv("AZURE_LARGE_LLM_MODEL")
+    def __init__(self, llm_model: str | None = None):
+        self.small_llm_model = resolve_role_model("small", "azure", llm_model)
+        self.large_llm_model = resolve_role_model("large", "azure", llm_model)
         self.llm_api_version = os.getenv("AZURE_LLM_API_VERSION") or os.getenv(
             "AZURE_LARGE_LLM_API_VERSION"
         )
@@ -173,11 +172,11 @@ class AzureConfig:
 
 
 class OpenAIConfig:
-    def __init__(self):
+    def __init__(self, llm_model: str | None = None):
         self.api_key = os.getenv("OPENAI_API_KEY")
         self.base_url = _normalize_openai_base_url(os.getenv("OPENAI_BASE_URL"))
-        self.small_llm_model = os.getenv("OPENAI_SMALL_LLM_MODEL", "gpt-4o-mini")
-        self.large_llm_model = os.getenv("OPENAI_LARGE_LLM_MODEL", "gpt-4o")
+        self.small_llm_model = resolve_role_model("small", "openai", llm_model)
+        self.large_llm_model = resolve_role_model("large", "openai", llm_model)
         self.embedding_model = os.getenv(
             "OPENAI_EMBEDDING_MODEL", "text-embedding-3-large"
         )
@@ -199,11 +198,10 @@ class OpenAIConfig:
 
 class AnthropicConfig:
     def __init__(self, llm_model: str | None = None):
-        model = llm_model or configured_llm_model()
         self.api_key = os.getenv("ANTHROPIC_API_KEY")
         self.base_url = (os.getenv("ANTHROPIC_BASE_URL") or "").strip() or None
-        self.small_llm_model = resolve_role_model("small", "anthropic", model)
-        self.large_llm_model = resolve_role_model("large", "anthropic", model)
+        self.small_llm_model = resolve_role_model("small", "anthropic", llm_model)
+        self.large_llm_model = resolve_role_model("large", "anthropic", llm_model)
 
     def openai_compatible_base_url(self) -> str:
         raw = (self.base_url or "https://api.anthropic.com").strip().rstrip("/")
@@ -229,15 +227,11 @@ class AnthropicConfig:
 
 
 class DeepSeekConfig:
-    def __init__(self):
+    def __init__(self, llm_model: str | None = None):
         self.api_key = os.getenv("DEEPSEEK_API_KEY")
         self.base_url = "https://api.deepseek.com"
-        self.small_llm_model = os.getenv(
-            "DEEPSEEK_SMALL_LLM_MODEL", "deepseek-v4-flash"
-        )
-        self.large_llm_model = os.getenv(
-            "DEEPSEEK_LARGE_LLM_MODEL", "deepseek-v4-pro"
-        )
+        self.small_llm_model = resolve_role_model("small", "deepseek", llm_model)
+        self.large_llm_model = resolve_role_model("large", "deepseek", llm_model)
 
     def validate_llm(self, require_large: bool):
         if not self.api_key:
@@ -253,7 +247,7 @@ class GCPConfig:
     Configuration class for the GCP configuration.
     """
 
-    def __init__(self):
+    def __init__(self, llm_model: str | None = None):
         credentials_path = os.getenv("GCP_CREDENTIALS_PATH")
         if not credentials_path:
             credentials_path = str(
@@ -270,8 +264,8 @@ class GCPConfig:
         self.location = (
             os.getenv("GCP_VERTEX_REGION") or os.getenv("GCP_LOCATION") or "global"
         )
-        self.small_llm_model = os.getenv("GCP_SMALL_LLM_MODEL")
-        self.large_llm_model = os.getenv("GCP_LARGE_LLM_MODEL")
+        self.small_llm_model = resolve_role_model("small", "gcp_vertex", llm_model)
+        self.large_llm_model = resolve_role_model("large", "gcp_vertex", llm_model)
         self.embedding_model = os.getenv("GCP_EMBEDDING_MODEL", "text-embedding-005")
 
     def validate_llm(self, require_large: bool):
@@ -298,10 +292,8 @@ class GCPConfig:
 
 class BedrockConfig:
     def __init__(self, llm_model: str | None = None):
-        model = llm_model or configured_llm_model()
-        self.region = (
-            _optional_env("BEDROCK_REGION", "AWS_REGION", "AWS_DEFAULT_REGION")
-            or "us-east-1"
+        self.region = _optional_env(
+            "BEDROCK_REGION", "AWS_REGION", "AWS_DEFAULT_REGION"
         )
         self.access_key_id = _optional_env(
             "BEDROCK_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID"
@@ -317,8 +309,12 @@ class BedrockConfig:
             self.secret_access_key = None
             self.session_token = None
         self.endpoint_url = _optional_env("BEDROCK_ENDPOINT_URL", "AWS_ENDPOINT_URL")
-        self.small_llm_model = resolve_role_model("small", "amazon_bedrock", model)
-        self.large_llm_model = resolve_role_model("large", "amazon_bedrock", model)
+        self.small_llm_model = resolve_role_model(
+            "small", "amazon_bedrock", llm_model
+        )
+        self.large_llm_model = resolve_role_model(
+            "large", "amazon_bedrock", llm_model
+        )
         self.embedding_model = os.getenv("BEDROCK_EMBEDDING_MODEL")
 
     def session_kwargs(self) -> dict:
@@ -547,8 +543,8 @@ class OllamaConfig:
     def __init__(self):
         self.host = os.getenv("OLLAMA_HOST")
         self.port = os.getenv("OLLAMA_PORT")
-        self.llm_small_model = os.getenv("OLLAMA_LLM_SMALL_MODEL")
-        self.llm_large_model = os.getenv("OLLAMA_LLM_LARGE_MODEL")
+        self.llm_small_model = resolve_role_model("small", "ollama")
+        self.llm_large_model = resolve_role_model("large", "ollama")
         if [self.host, self.port, self.llm_small_model, self.llm_large_model].count(
             None
         ) > 0:
@@ -607,7 +603,7 @@ class Config:
         )
 
         self.llm_model = configured_llm_model()
-        self.llm_provider = default_provider_for_mode(self.models_mode)
+        self.llm_provider = (os.getenv("LLM_PROVIDER") or "").strip() or None
         self.llm_small_provider = resolve_role_provider("small", self.models_mode)
         self.llm_large_provider = resolve_role_provider("large", self.models_mode)
         self.embeddings_provider = os.getenv(
@@ -657,14 +653,20 @@ class Config:
             or self.embeddings_provider == "ollama"
         )
 
-        self.azure = AzureConfig() if use_azure_llm or use_azure_embeddings else None
+        self.azure = (
+            AzureConfig(self.llm_model)
+            if use_azure_llm or use_azure_embeddings
+            else None
+        )
         if self.azure is not None:
             if use_azure_llm:
                 self.azure.validate_llm()
             if use_azure_embeddings:
                 self.azure.validate_embeddings()
 
-        self.gcp = GCPConfig() if use_gcp_llm or use_gcp_embeddings else None
+        self.gcp = (
+            GCPConfig(self.llm_model) if use_gcp_llm or use_gcp_embeddings else None
+        )
         if self.gcp is not None:
             if use_gcp_llm:
                 self.gcp.validate_llm(require_large=use_gcp_large)
@@ -682,7 +684,11 @@ class Config:
             if use_bedrock_embeddings:
                 self.bedrock.validate_embeddings()
 
-        self.openai = OpenAIConfig() if use_openai_llm or use_openai_embeddings else None
+        self.openai = (
+            OpenAIConfig(self.llm_model)
+            if use_openai_llm or use_openai_embeddings
+            else None
+        )
         if self.openai is not None:
             if use_openai_llm:
                 self.openai.validate_llm(require_large=use_openai_large)
@@ -695,7 +701,9 @@ class Config:
         if self.anthropic is not None:
             self.anthropic.validate_llm(require_large=use_anthropic_large)
 
-        self.deepseek = DeepSeekConfig() if use_deepseek_llm else None
+        self.deepseek = (
+            DeepSeekConfig(self.llm_model) if use_deepseek_llm else None
+        )
         if self.deepseek is not None:
             self.deepseek.validate_llm(require_large=use_deepseek_large)
 

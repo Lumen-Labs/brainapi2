@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic OpenAI/Bedrock/Anthropic stub for isolated CI and Haiku routing tests."""
+"""Deterministic OpenAI/Bedrock/Anthropic stub for isolated CI LLM routing tests."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from urllib.parse import unquote, urlparse
 _CALLS: list[dict] = []
 _LOCK = threading.Lock()
 
-HAIKU_JSON = json.dumps(
+STUB_JSON = json.dumps(
     {
         "entities": [
             {
@@ -127,7 +127,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path.endswith("/converse") or path.endswith("/invoke"):
             parts = [item for item in path.split("/") if item]
-            model = request.get("modelId") or request.get("model") or "us.anthropic.claude-haiku-5-5"
+            model = request.get("modelId") or request.get("model") or "ci-test-model"
             if "model" in parts:
                 index = parts.index("model")
                 if index + 1 < len(parts):
@@ -139,7 +139,7 @@ class Handler(BaseHTTPRequestHandler):
                     "output": {
                         "message": {
                             "role": "assistant",
-                            "content": [{"text": HAIKU_JSON}],
+                            "content": [{"text": STUB_JSON}],
                         }
                     },
                     "stopReason": "end_turn",
@@ -152,7 +152,7 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
         if path.endswith("/messages"):
-            model = request.get("model", "claude-haiku-5-5")
+            model = request.get("model", "ci-test-model")
             _record("messages", model, path)
             self._json(
                 200,
@@ -161,14 +161,14 @@ class Handler(BaseHTTPRequestHandler):
                     "type": "message",
                     "role": "assistant",
                     "model": model,
-                    "content": [{"type": "text", "text": HAIKU_JSON}],
+                    "content": [{"type": "text", "text": STUB_JSON}],
                     "stop_reason": "end_turn",
                     "usage": {"input_tokens": 1, "output_tokens": 1},
                 },
             )
             return
         if path.endswith("/chat/completions"):
-            model = request.get("model", "claude-haiku-5-5")
+            model = request.get("model", "ci-test-model")
             _record("chat.completions", model, path)
             self._json(
                 200,
@@ -179,7 +179,7 @@ class Handler(BaseHTTPRequestHandler):
                     "choices": [
                         {
                             "index": 0,
-                            "message": {"role": "assistant", "content": HAIKU_JSON},
+                            "message": {"role": "assistant", "content": STUB_JSON},
                             "finish_reason": "stop",
                         }
                     ],

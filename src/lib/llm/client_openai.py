@@ -96,5 +96,9 @@ class OpenAILLMClientLarge(_OpenAILLMBase):
         super().__init__(config.openai.large_llm_model)
 
 
-_llm_small_client_openai = OpenAILLMClientSmall()
-_llm_large_client_openai = OpenAILLMClientLarge()
+if getattr(config, "openai", None) is not None:
+    _llm_small_client_openai = OpenAILLMClientSmall()
+    _llm_large_client_openai = OpenAILLMClientLarge()
+else:
+    _llm_small_client_openai = None
+    _llm_large_client_openai = None

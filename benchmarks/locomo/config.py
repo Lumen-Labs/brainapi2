@@ -13,9 +13,9 @@ DEFAULT_DATASET_URL = (
     "https://raw.githubusercontent.com/snap-research/locomo/main/data/locomo10.json"
 )
 DEFAULT_DATASET_PATH = DATA_DIR / "locomo10.json"
-DEFAULT_LLM_BASE_URL = "https://api.anthropic.com/v1"
-DEFAULT_ANSWER_MODEL = "claude-haiku-5-5"
-DEFAULT_SOTA_ANSWER_MODEL = "claude-haiku-5-5"
+DEFAULT_LLM_BASE_URL = "https://api.deepseek.com"
+DEFAULT_ANSWER_MODEL = "deepseek-v4-flash"
+DEFAULT_SOTA_ANSWER_MODEL = "deepseek-v4-flash"
 DEFAULT_AZURE_JUDGE_MODEL = "gpt-4o"
 DEFAULT_AZURE_API_VERSION = "2024-12-01-preview"
 DEFAULT_BENCH_PROFILE = "product"
@@ -94,8 +94,7 @@ class Settings:
         defaults = profile_defaults(profile)
 
         api_key = (
-            os.getenv("ANTHROPIC_API_KEY")
-            or os.getenv("DEEPSEEK_API_KEY")
+            os.getenv("DEEPSEEK_API_KEY")
             or os.getenv("OPENAI_API_KEY")
             or ""
         )
@@ -104,6 +103,7 @@ class Settings:
 
         azure_endpoint = (
             os.getenv("BENCH_JUDGE_AZURE_ENDPOINT")
+            or os.getenv("AZURE_LARGE_LLM_ENDPOINT")
             or ""
         ).rstrip("/")
         azure_key = (
@@ -115,8 +115,8 @@ class Settings:
 
         answer_azure_endpoint: str | None = None
         if profile == "sota":
-            # Owner default: Claude Haiku 5.5 for all product and benchmark LLM
-            # calls. Override via BENCH_SOTA_* envs if a SOTA track needs another model.
+            # Maintainer: deepseek-v4-flash is the preferred SOTA answerer (stronger
+            # than gpt-4o on this stack). Only override via BENCH_SOTA_* envs.
             sota_answer = os.getenv("BENCH_SOTA_ANSWER_MODEL", "").strip()
             if sota_answer:
                 answer_model = sota_answer
@@ -201,14 +201,14 @@ class Settings:
     def require_llm(self) -> None:
         if not self.openai_api_key:
             raise SystemExit(
-                "ANTHROPIC_API_KEY (or DEEPSEEK_API_KEY / OPENAI_API_KEY) is required "
-                "for answer/judge LLM calls. Copy .env.example to .env and set it."
+                "DEEPSEEK_API_KEY (or OPENAI_API_KEY) is required for answer/judge "
+                "LLM calls. Copy .env.example to .env and set it."
             )
 
     def require_judge_llm(self) -> None:
         if not self.judge_api_key:
             raise SystemExit(
                 "No judge API key. Set BENCH_JUDGE_API_KEY (with BENCH_JUDGE_BASE_URL "
-                "and BENCH_JUDGE_MODEL), or ANTHROPIC_API_KEY / DEEPSEEK_API_KEY / "
-                "OPENAI_API_KEY to reuse the answerer's provider."
+                "and BENCH_JUDGE_MODEL), or DEEPSEEK_API_KEY / OPENAI_API_KEY to reuse "
+                "the answerer's provider."
             )
