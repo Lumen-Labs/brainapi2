@@ -40,41 +40,52 @@ for key, value in ENV_DEFAULTS.items():
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from src.core.saving.history_intent import prefers_history
 from src.services.api.controllers import retrieve as retrieve_mod
 from src.utils.dates import parse_date_string
 
 
 class HistoryModeTests(unittest.TestCase):
-    def test_ordering_query_wants_history(self):
-        self.assertTrue(
+    def test_words_alone_do_not_select_history(self):
+        self.assertFalse(
             retrieve_mod._wants_historical_facts(
                 "Can you list the order in which I brought up aspects?"
             )
         )
-
-    def test_first_sprint_wants_history(self):
-        self.assertTrue(
-            retrieve_mod._wants_historical_facts("When does my first sprint end?")
-        )
-
-    def test_have_i_contradiction_probe_wants_history(self):
-        self.assertTrue(
-            retrieve_mod._wants_historical_facts(
-                "Have I integrated Flask-Login for session management?"
-            )
-        )
-
-    def test_knowledge_update_stays_current_only(self):
         self.assertFalse(
+            retrieve_mod._wants_historical_facts("com'era prima il codice")
+        )
+
+    def test_explicit_flag_overrides_similarity(self):
+        history = [[1.0, 0.0]]
+        current = [[0.0, 1.0]]
+        self.assertTrue(
             retrieve_mod._wants_historical_facts(
-                "What is the average response time of the dashboard API?"
+                "what is the current value",
+                explicit=True,
+                query_vector=[0.0, 1.0],
+                history_vectors=history,
+                current_vectors=current,
             )
         )
         self.assertFalse(
             retrieve_mod._wants_historical_facts(
-                "How many commits have been merged into the main branch?"
+                "what did this say before",
+                explicit=False,
+                query_vector=[1.0, 0.0],
+                history_vectors=history,
+                current_vectors=current,
             )
         )
+
+    def test_closer_history_example_selects_prior_revisions(self):
+        self.assertTrue(
+            prefers_history([1.0, 0.0], [[1.0, 0.0]], [[0.0, 1.0]])
+        )
+        self.assertFalse(
+            prefers_history([0.0, 1.0], [[1.0, 0.0]], [[0.0, 1.0]])
+        )
+        self.assertFalse(prefers_history(None, [[1.0, 0.0]], [[0.0, 1.0]]))
 
     def test_fact_predicates_include_superseded_in_history_mode(self):
         current = SimpleNamespace(properties={}, deprecated=False)
