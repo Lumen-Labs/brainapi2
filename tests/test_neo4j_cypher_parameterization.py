@@ -335,6 +335,23 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
         with self.assertRaises(InvalidCypherIdentifier):
             client.ensure_database("brain-a; MATCH (n) DETACH DELETE n")
 
+    def test_list_validity_relationships_parameterizes_subject_uuids(self):
+        client = _client()
+        payload = "'; MATCH (n) DETACH DELETE n //"
+        client.list_validity_relationships(
+            "braina",
+            skip=2,
+            limit=5,
+            subject_uuids=[payload],
+        )
+        query, params, _db = client.driver.calls[0]
+        self.assertIn("n['uuid'] IN $subject_uuids", query)
+        self.assertIn("SKIP $skip LIMIT $limit", query)
+        self.assertEqual(params["subject_uuids"], [payload])
+        self.assertEqual(params["skip"], 2)
+        self.assertEqual(params["limit"], 5)
+        self.assertNotIn(payload, query)
+
     def test_execute_operation_rejects_injected_database_name(self):
         client = _client()
         with self.assertRaises(InvalidCypherIdentifier):

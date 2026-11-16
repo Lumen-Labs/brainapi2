@@ -11,6 +11,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 from datetime import datetime
 from typing import Any, List, Literal, Optional, Tuple
 from src.adapters.interfaces.data import DataClient, SearchResult
+from src.constants.conflicts import FactConflict
 from src.constants.data import Brain, KGChanges, Observation, StructuredData, TextChunk
 from src.core.saving.ingest_write_buffer import capture_data_write, capture_operation
 
@@ -351,4 +352,53 @@ class DataAdapter:
     ) -> Optional[dict[str, Any]]:
         return self.data.get_ingest_group(
             brain_id=brain_id, group_tracking=group_tracking
+        )
+
+    def save_conflict(
+        self, conflict: FactConflict, brain_id: str = "default"
+    ) -> FactConflict:
+        return self.data.save_conflict(conflict=conflict, brain_id=brain_id)
+
+    def get_conflict_by_id(
+        self, id: str, brain_id: str = "default"
+    ) -> Optional[FactConflict]:
+        return self.data.get_conflict_by_id(id=id, brain_id=brain_id)
+
+    def get_conflict_by_pair_key(
+        self, pair_key: str, brain_id: str = "default"
+    ) -> Optional[FactConflict]:
+        return self.data.get_conflict_by_pair_key(pair_key=pair_key, brain_id=brain_id)
+
+    def get_conflicts_list(
+        self,
+        brain_id: str = "default",
+        limit: int = 10,
+        skip: int = 0,
+        status: str | None = None,
+        source: str | None = None,
+        subject: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> Tuple[list[FactConflict], int]:
+        return self.data.get_conflicts_list(
+            brain_id=brain_id,
+            limit=limit,
+            skip=skip,
+            status=status,
+            source=source,
+            subject=subject,
+            since=since,
+            until=until,
+        )
+
+    def update_conflict(
+        self, conflict: FactConflict, brain_id: str = "default"
+    ) -> FactConflict:
+        return self.data.update_conflict(conflict=conflict, brain_id=brain_id)
+
+    def get_open_conflicts_for_facts(
+        self, fact_ids: list[str], brain_id: str = "default"
+    ) -> list[FactConflict]:
+        return self.data.get_open_conflicts_for_facts(
+            fact_ids=fact_ids, brain_id=brain_id
         )

@@ -713,6 +713,13 @@ class Config:
             "AGENTIC_ARCHITECTURE", "custom"
         )
         self.search_enabled = os.getenv("SEARCH_ENABLED", "false") == "true"
+        self.conflict_detect_on_ingest = (
+            os.getenv("CONFLICT_DETECT_ON_INGEST", "false") == "true"
+        )
+        self.conflict_detect_llm = os.getenv("CONFLICT_DETECT_LLM", "false") == "true"
+        self.conflict_detect_llm_max_pairs = int(
+            os.getenv("CONFLICT_DETECT_LLM_MAX_PAIRS", "20")
+        )
         self.search_use_dense = os.getenv("SEARCH_USE_DENSE", "true") == "true"
         self.search_use_bm25 = os.getenv("SEARCH_USE_BM25", "true") == "true"
         community_raw = os.getenv("SEARCH_COMMUNITY_LABELS", "TYPE,CLASS,TOPIC")

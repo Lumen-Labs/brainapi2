@@ -1113,16 +1113,21 @@ class Neo4jClient(GraphClient):
         limit: int = 100,
         since: str | None = None,
         until: str | None = None,
+        subject_uuids: list[str] | None = None,
     ) -> tuple[list[tuple[Node, Predicate, Node]], int]:
         params: dict[str, Any] = {
             "skip": require_limit(skip, name="skip"),
             "limit": require_limit(limit),
         }
-        where_str = ""
+        filters: list[str] = []
         if since and until:
             params["since"] = since
             params["until"] = until
-            where_str = "WHERE " + relationship_changed_in_window_clause("r") + "\n"
+            filters.append(relationship_changed_in_window_clause("r"))
+        if subject_uuids:
+            params["subject_uuids"] = list(subject_uuids)
+            filters.append("n['uuid'] IN $subject_uuids")
+        where_str = ("WHERE " + " AND ".join(filters) + "\n") if filters else ""
         cypher_query = (
             "MATCH (n)-[r]->(m)\n"
             + where_str

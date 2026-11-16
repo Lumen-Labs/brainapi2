@@ -1686,6 +1686,51 @@ def _session_ids_for_chunks(
     return found
 
 
+def _fact_ids_from_context_triple(triple: Any) -> list[str]:
+    ids: list[str] = []
+    if not triple or len(triple) < 5:
+        return ids
+    for predicate in (triple[1], triple[3]):
+        props = getattr(predicate, "properties", None) or {}
+        uid = getattr(predicate, "uuid", None) or props.get("uuid")
+        if uid:
+            ids.append(str(uid))
+    return ids
+
+
+def _annotate_open_conflicts(
+    adapter: Any,
+    brain_id: str,
+    triples: list[GetContextTriple],
+    text_lines: list[str],
+) -> tuple[list[GetContextTriple], list[str]]:
+    from src.core.saving.conflicts import annotation_payload, open_conflicts_by_fact_ids
+
+    fact_ids: list[str] = []
+    for item in triples:
+        fact_ids.extend(_fact_ids_from_context_triple(item.triple))
+    mapping = open_conflicts_by_fact_ids(adapter, brain_id, fact_ids)
+    annotated_lines: list[str] = []
+    for index, item in enumerate(triples):
+        payloads: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for fact_id in _fact_ids_from_context_triple(item.triple):
+            for conflict in mapping.get(fact_id) or []:
+                if conflict.id in seen:
+                    continue
+                seen.add(conflict.id)
+                payloads.append(annotation_payload(conflict, fact_id))
+        if payloads:
+            item.open_conflicts = payloads
+            line = text_lines[index] if index < len(text_lines) else ""
+            if line and not line.startswith("[open conflict]"):
+                line = f"[open conflict] {line}"
+            annotated_lines.append(line)
+        else:
+            annotated_lines.append(text_lines[index] if index < len(text_lines) else "")
+    return triples, annotated_lines
+
+
 def _build_fact_channel(
     curated: list[dict[str, Any]],
     chunk_sessions: dict[str, list[str]],
@@ -2366,6 +2411,10 @@ async def _build_context(
     response_paths = _paths_for_curated(bridge_paths, curated)
 
     with profile_stage("context.render", passages=len(source_passages)):
+        if getattr(request, "annotate_conflicts", False):
+            triples, text_lines = _annotate_open_conflicts(
+                data_adapter, request.brain_id, triples, text_lines
+            )
         topic_block = [
             f"[topic] {t.get('label')}"
             for t in response_topics
