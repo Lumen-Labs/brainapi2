@@ -66,7 +66,7 @@ def _find_interpolated_cypher(path: Path) -> list[str]:
                 isinstance(func, ast.Attribute)
                 and func.attr == "format"
                 and _CYPHER_HINT.search(_constant_text(func.value))
-                and node.args
+                and (node.args or node.keywords)
             ):
                 hits.append(
                     f"{relative}:{node.lineno}: str.format interpolates Cypher"
@@ -114,6 +114,24 @@ def _is_quoted_value_concat(node: ast.BinOp) -> bool:
 
 
 class CypherInterpolationGuardTests(unittest.TestCase):
+    def test_keyword_only_format_is_detected(self):
+        tree = ast.parse(
+            'query = "MATCH (n) WHERE n.name = \'{name}\' RETURN n".format(name=user_input)\n'
+        )
+        hits = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if (
+                isinstance(func, ast.Attribute)
+                and func.attr == "format"
+                and _CYPHER_HINT.search(_constant_text(func.value))
+                and (node.args or node.keywords)
+            ):
+                hits.append("str.format interpolates Cypher")
+        self.assertEqual(hits, ["str.format interpolates Cypher"])
+
     def test_no_interpolated_cypher_outside_helper(self):
         os.environ.setdefault("BRAINPAT_TOKEN", "test-token")
         violations = []

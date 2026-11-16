@@ -15,16 +15,14 @@ from src.core.saving.validity import (
     VALID_TO,
     format_instant,
     parse_instant,
-    stamp_valid_from,
 )
 
 _PAGE = 100
-_MAX = 10000
 
 
 def _iter_chunks(adapter: Any, brain_id: str) -> Iterator[Any]:
     skip = 0
-    while skip < _MAX:
+    while True:
         chunks, total = adapter.get_text_chunks(
             brain_id=brain_id, limit=_PAGE, skip=skip, order="asc"
         )
@@ -34,6 +32,8 @@ def _iter_chunks(adapter: Any, brain_id: str) -> Iterator[Any]:
             yield chunk
         skip += len(chunks)
         if total is not None and skip >= int(total):
+            break
+        if len(chunks) < _PAGE:
             break
 
 
@@ -55,19 +55,16 @@ def _relationship_triples(graph: Any, brain_id: str, skip: int, limit: int):
 
 def _chunk_patch(chunk: Any) -> dict[str, Any] | None:
     meta = dict(getattr(chunk, "metadata", None) or {})
-    before = dict(meta)
+    patch: dict[str, Any] = {}
     if not meta.get(VALID_FROM):
-        meta = stamp_valid_from(
-            meta,
-            format_instant(parse_instant(getattr(chunk, "inserted_at", None))),
-        )
+        start = parse_instant(getattr(chunk, "inserted_at", None))
+        if start is not None:
+            patch[VALID_FROM] = format_instant(start)
     if meta.get("superseded_at") and not meta.get(VALID_TO):
         parsed = parse_instant(meta.get("superseded_at"))
         if parsed is not None:
-            meta[VALID_TO] = format_instant(parsed)
-    if meta == before:
-        return None
-    return meta
+            patch[VALID_TO] = format_instant(parsed)
+    return patch or None
 
 
 def _relationship_patch(predicate: Any) -> tuple[str | None, dict[str, Any]]:
@@ -79,12 +76,9 @@ def _relationship_patch(predicate: Any) -> tuple[str | None, dict[str, Any]]:
                 props[key] = nested[key]
     patch: dict[str, Any] = {}
     if not props.get(VALID_FROM):
-        stamped = stamp_valid_from(
-            props,
-            props.get("valid_at") or props.get("source_timestamp"),
-        )
-        if stamped.get(VALID_FROM):
-            patch[VALID_FROM] = stamped[VALID_FROM]
+        start = parse_instant(props.get("valid_at") or props.get("source_timestamp"))
+        if start is not None:
+            patch[VALID_FROM] = format_instant(start)
     if props.get("invalid_at") and not props.get(VALID_TO):
         parsed = parse_instant(props.get("invalid_at"))
         if parsed is not None:
@@ -93,17 +87,29 @@ def _relationship_patch(predicate: Any) -> tuple[str | None, dict[str, Any]]:
     return uuid, patch
 
 
+def _persist_chunk_patch(adapter: Any, chunk: Any, brain_id: str, patch: dict[str, Any]) -> None:
+    meta = dict(getattr(chunk, "metadata", None) or {})
+    for key, value in patch.items():
+        if not meta.get(key):
+            meta[key] = value
+    chunk.metadata = meta
+    fill = getattr(adapter, "fill_text_chunk_validity", None)
+    if callable(fill):
+        fill(str(getattr(chunk, "id", "") or ""), brain_id, patch)
+        return
+    adapter.save_text_chunk(chunk, brain_id)
+
+
 def backfill_chunk_validity(
     adapter: Any, brain_id: str, *, dry_run: bool = False
 ) -> int:
     updated = 0
     for chunk in _iter_chunks(adapter, brain_id):
-        meta = _chunk_patch(chunk)
-        if meta is None:
+        patch = _chunk_patch(chunk)
+        if not patch:
             continue
         if not dry_run:
-            chunk.metadata = meta
-            adapter.save_text_chunk(chunk, brain_id)
+            _persist_chunk_patch(adapter, chunk, brain_id, patch)
         updated += 1
     return updated
 
@@ -113,7 +119,7 @@ def backfill_relationship_validity(
 ) -> int:
     updated = 0
     skip = 0
-    while skip < _MAX:
+    while True:
         triples, total = _relationship_triples(graph, brain_id, skip, _PAGE)
         if not triples:
             break
@@ -130,6 +136,8 @@ def backfill_relationship_validity(
             updated += 1
         skip += len(triples)
         if total is not None and skip >= int(total):
+            break
+        if len(triples) < _PAGE:
             break
     return updated
 

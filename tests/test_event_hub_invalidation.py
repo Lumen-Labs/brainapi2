@@ -301,6 +301,70 @@ class EventHubInvalidationTests(unittest.TestCase):
         self.assertFalse(retrieve_mod._is_currently_valid(graph.predicate("rel-1")))
         self.assertTrue(retrieve_mod._is_currently_valid(graph.predicate("rel-2")))
 
+    def test_reobserving_closed_single_valued_edge_gets_a_new_interval_id(self):
+        from src.core.saving.identity import stable_relationship_id
+        from src.workers.tasks import ingestion as ingestion_mod
+
+        graph = _FakeGraphAdapter()
+        graph.add_node("alice", "Alice", "PERSON")
+        graph.add_node("paris", "Paris", "CITY")
+        closed_id = stable_relationship_id("alice", "LIVES_IN", "paris")
+        graph.add_edge(
+            closed_id,
+            "alice",
+            "LIVES_IN",
+            "paris",
+            properties={
+                "valid_from": "2020-01-01T00:00:00Z",
+                "valid_to": "2023-01-01T00:00:00Z",
+            },
+        )
+        relationship = _relationship(
+            closed_id,
+            _entity("alice", "Alice", "PERSON"),
+            "LIVES_IN",
+            _entity("paris", "Paris", "CITY"),
+            valid_at="2024-01-01T00:00:00Z",
+        )
+        relationship.properties["valid_from"] = "2024-01-01T00:00:00Z"
+        with patch.object(ingestion_mod, "graph_adapter", graph):
+            ingestion_mod._assign_relationship_interval(
+                relationship, brain_id="brain-a"
+            )
+        self.assertNotEqual(relationship.uuid, closed_id)
+        self.assertEqual(graph.predicate(closed_id).properties["valid_from"], "2020-01-01T00:00:00Z")
+        self.assertEqual(graph.predicate(closed_id).properties["valid_to"], "2023-01-01T00:00:00Z")
+
+    def test_open_same_endpoint_edge_keeps_original_valid_from(self):
+        from src.core.saving.identity import stable_relationship_id
+        from src.workers.tasks import ingestion as ingestion_mod
+
+        graph = _FakeGraphAdapter()
+        graph.add_node("alice", "Alice", "PERSON")
+        graph.add_node("paris", "Paris", "CITY")
+        open_id = stable_relationship_id("alice", "LIVES_IN", "paris")
+        graph.add_edge(
+            open_id,
+            "alice",
+            "LIVES_IN",
+            "paris",
+            properties={"valid_from": "2020-01-01T00:00:00Z"},
+        )
+        relationship = _relationship(
+            open_id,
+            _entity("alice", "Alice", "PERSON"),
+            "LIVES_IN",
+            _entity("paris", "Paris", "CITY"),
+            valid_at="2024-06-01T00:00:00Z",
+        )
+        relationship.properties["valid_from"] = "2024-06-01T00:00:00Z"
+        with patch.object(ingestion_mod, "graph_adapter", graph):
+            ingestion_mod._assign_relationship_interval(
+                relationship, brain_id="brain-a"
+            )
+        self.assertEqual(relationship.uuid, open_id)
+        self.assertEqual(relationship.properties["valid_from"], "2020-01-01T00:00:00Z")
+
 
 if __name__ == "__main__":
     unittest.main()

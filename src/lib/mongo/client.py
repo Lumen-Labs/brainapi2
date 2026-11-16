@@ -72,6 +72,20 @@ class MongoClient(DataClient):
             {"$set": patch},
         )
 
+    def fill_text_chunk_validity(
+        self, chunk_id: str, brain_id: str, patch: dict[str, Any]
+    ) -> None:
+        if not chunk_id or not patch:
+            return
+        set_expr: dict[str, Any] = {}
+        for key, value in patch.items():
+            set_expr[f"metadata.{key}"] = {"$ifNull": [f"$metadata.{key}", value]}
+            set_expr[f"document.metadata.{key}"] = {
+                "$ifNull": [f"$document.metadata.{key}", value]
+            }
+        collection = self.get_collection("text_chunks", database=brain_id)
+        collection.update_one({"id": chunk_id}, [{"$set": set_expr}])
+
     def save_observations(
         self, observations: List[Observation], brain_id: str
     ) -> List[Observation]:
@@ -450,12 +464,26 @@ class MongoClient(DataClient):
                 {"type": {"$regex": query_text, "$options": "i"}},
             ]
         if since is not None or until is not None:
-            window: dict[str, Any] = {}
+            from src.core.saving.validity import format_instant
+
+            string_bounds: dict[str, Any] = {}
+            dt_bounds: dict[str, Any] = {}
             if since is not None:
-                window["$gte"] = since
+                string_bounds["$gte"] = format_instant(since)
+                dt_bounds["$gte"] = since
             if until is not None:
-                window["$lt"] = until
-            query["timestamp"] = window
+                string_bounds["$lt"] = format_instant(until)
+                dt_bounds["$lt"] = until
+            window = {
+                "$or": [
+                    {"timestamp": string_bounds},
+                    {"timestamp": dt_bounds},
+                ]
+            }
+            if query:
+                query = {"$and": [query, window]}
+            else:
+                query = window
 
         results = collection.find(query).skip(skip).limit(limit).sort("timestamp", -1)
         changelogs = []

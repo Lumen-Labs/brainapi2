@@ -69,6 +69,15 @@ class DataAdapter:
             valid_to=valid_to,
         )
 
+    def fill_text_chunk_validity(
+        self, chunk_id: str, brain_id: str = "default", patch: dict | None = None
+    ) -> None:
+        if not chunk_id or not patch:
+            return
+        self.data.fill_text_chunk_validity(
+            chunk_id=chunk_id, brain_id=brain_id, patch=patch
+        )
+
     def save_observations(
         self, observations: List[Observation], brain_id: str = "default"
     ) -> List[Observation]:

@@ -226,6 +226,8 @@ async def _search(request: SearchRequestBody) -> SearchResponse:
 
     k = request.k
     k_ret = retrieve_k_for_mode(request.mode, k)
+    if as_of is not None:
+        k_ret = min(200, max(k_ret, k * 8))
     rerank_max = rerank_max_k_for_mode(request.mode)
     brain_id = request.brain_id
     fusion = request.fusion or config.search_fusion
@@ -445,6 +447,7 @@ async def _search(request: SearchRequestBody) -> SearchResponse:
                 for item_id in ranked_ids
                 if item_id in graph_by_id or item_id in allowed
             ]
+            ranked_ids = ranked_ids[: retrieve_k_for_mode(request.mode, k)]
     node_id_by_hit: dict[str, str | None] = {}
     for item_id in ranked_ids:
         graph_hit = graph_by_id.get(item_id)

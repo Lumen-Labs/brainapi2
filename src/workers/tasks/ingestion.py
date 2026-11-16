@@ -556,6 +556,65 @@ def _is_event_entity(entity) -> bool:
     )
 
 
+def _assign_relationship_interval(
+    relationship: ArchitectAgentRelationship,
+    *,
+    brain_id: str,
+) -> None:
+    """Keep a closed interval intact when the same fact is observed again.
+
+    Open same-endpoint edges reuse their identifier and original ``valid_from``.
+    Closed same-endpoint edges get a new identifier keyed by the new start so
+    MERGE cannot overwrite the historical interval.
+    """
+    from src.core.saving.identity import stable_relationship_id, stable_uuid
+    from src.core.saving.validity import VALID_FROM, is_valid_at
+
+    base = relationship.uuid or stable_relationship_id(
+        relationship.tail.uuid,
+        relationship.name,
+        relationship.tip.uuid,
+        relationship.flow_key,
+    )
+    try:
+        neighbors = graph_adapter.get_neighbors(
+            [relationship.tail.uuid], brain_id=brain_id
+        )
+    except Exception:
+        relationship.uuid = base
+        return
+    open_match = None
+    closed_match = None
+    for predicate, neighbor in (neighbors or {}).get(relationship.tail.uuid) or []:
+        if not predicate or not neighbor:
+            continue
+        if neighbor.uuid != relationship.tip.uuid:
+            continue
+        if (predicate.name or "").strip().upper() != (relationship.name or "").strip().upper():
+            continue
+        props = getattr(predicate, "properties", None) or {}
+        if is_valid_at(props, None, deprecated=bool(getattr(predicate, "deprecated", False))):
+            open_match = predicate
+            break
+        closed_match = predicate
+    if open_match is not None:
+        relationship.uuid = open_match.uuid or base
+        existing = getattr(open_match, "properties", None) or {}
+        if existing.get(VALID_FROM):
+            relationship.properties = {
+                **(relationship.properties or {}),
+                VALID_FROM: existing[VALID_FROM],
+            }
+        return
+    if closed_match is not None:
+        start = (relationship.properties or {}).get(VALID_FROM) or (
+            relationship.properties or {}
+        ).get("source_timestamp")
+        relationship.uuid = stable_uuid("rel-interval", base, str(start or ""))
+        return
+    relationship.uuid = base
+
+
 def _invalidate_superseded_relationships(
     relationship: ArchitectAgentRelationship,
     *,
@@ -751,12 +810,15 @@ def _ingest_data(self, args, *, staged=False):
         from src.core.saving.validity import format_instant, parse_instant, stamp_valid_from, utc_now
 
         superseded_ids: list[str] = []
+        revision_at = payload.source_timestamp or format_instant(utc_now())
+        if not payload.source_timestamp:
+            payload.source_timestamp = revision_at
         revision = prepare_source_revision(
             data_adapter,
             brain_id=payload.brain_id,
             source_text=source_text,
             meta_keys=payload.meta_keys,
-            source_timestamp=payload.source_timestamp,
+            source_timestamp=revision_at,
             out_superseded=superseded_ids,
         )
         if revision == "unchanged":
@@ -771,18 +833,17 @@ def _ingest_data(self, args, *, staged=False):
 
         if payload.meta_keys is None:
             payload.meta_keys = {}
-        payload.meta_keys = stamp_valid_from(payload.meta_keys, payload.source_timestamp)
+        payload.meta_keys = stamp_valid_from(payload.meta_keys, revision_at)
 
         checkpoint()
         text_chunk = _save_source(payload, source_text)
         if superseded_ids:
-            closed_at = payload.source_timestamp or format_instant(utc_now())
             data_adapter.mark_text_chunks_superseded(
                 superseded_ids,
-                closed_at,
+                revision_at,
                 payload.brain_id,
                 superseded_by=str(text_chunk.id),
-                valid_to=format_instant(parse_instant(closed_at) or utc_now()),
+                valid_to=format_instant(parse_instant(revision_at) or utc_now()),
             )
 
         if config.pipeline_mode == "lightweight":
@@ -1183,6 +1244,7 @@ def process_architect_relationships(self, args: dict):
 
                     graph_adapter.add_nodes(graph_nodes, brain_id=brain_id)
                     print(f"> Added {len(graph_nodes)} nodes")
+                    _assign_relationship_interval(relationship, brain_id=brain_id)
                     graph_adapter.add_relationship(
                         Node(
                             uuid=relationship.tail.uuid,

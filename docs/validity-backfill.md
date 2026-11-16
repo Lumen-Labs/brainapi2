@@ -15,8 +15,11 @@ It does **not**:
 
 - overwrite an existing `valid_from`, `valid_to`, or `superseded_by`
 - close a live copy that has no `superseded_at` / `invalid_at`
+- invent a `valid_from` when `inserted_at` / `valid_at` / `source_timestamp` cannot be parsed
 - invent an end stamp from `deprecated` alone
 - call an LLM
+
+Chunk writes merge only the missing validity keys (existing database values win), so a concurrent supersession is not rolled back. Mongo updates the existing `id` instead of inserting a duplicate. Both stores page until an empty page or the reported total; there is no silent 10,000-row ceiling.
 
 A second run on the same brain writes nothing.
 

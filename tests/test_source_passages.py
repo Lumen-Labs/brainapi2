@@ -285,8 +285,9 @@ class CurrentFactTests(unittest.TestCase):
 
 
 class _Record:
-    def __init__(self, data: dict):
+    def __init__(self, data: dict, inserted_at=None):
         self.data = data
+        self.inserted_at = inserted_at
 
 
 class StructuredRecordTests(unittest.TestCase):
@@ -332,6 +333,34 @@ class StructuredRecordTests(unittest.TestCase):
         )
         self.assertIn("4410-OTTER", history)
 
+    def test_as_of_drops_records_inserted_after_the_snapshot(self):
+        chunk = TextChunk(
+            id="c1",
+            text="keep me",
+            metadata={"valid_from": "2024-01-01T00:00:00Z"},
+        )
+        records = [
+            _Record(
+                {"text": "future note"},
+                inserted_at=datetime.datetime(2025, 6, 1, tzinfo=datetime.timezone.utc),
+            ),
+            _Record(
+                {"text": "past note"},
+                inserted_at=datetime.datetime(2024, 1, 2, tzinfo=datetime.timezone.utc),
+            ),
+        ]
+        lines = current_record_texts(
+            _Store([chunk]),
+            "brain",
+            records,
+            [chunk],
+            include_history=False,
+            as_of=datetime.datetime(2024, 6, 1, tzinfo=datetime.timezone.utc),
+        )
+        joined = "\n".join(lines)
+        self.assertIn("past note", joined)
+        self.assertNotIn("future note", joined)
+
 
 class AsOfPassageTests(unittest.TestCase):
     def test_as_of_returns_the_copy_valid_at_that_instant(self):
@@ -366,6 +395,73 @@ class AsOfPassageTests(unittest.TestCase):
         self.assertEqual([item[2] for item in at_v1], [v1.text])
         self.assertEqual([item[2] for item in at_v2], [v2.text])
         self.assertFalse(any(item[2].startswith("[superseded]") for item in at_v1))
+
+    def test_as_of_omits_hits_when_lookup_fails(self):
+        class Broken(_Store):
+            def get_text_chunks_by_ids(self, ids, with_observations, brain_id):
+                raise RuntimeError("lookup down")
+
+        v2 = TextChunk(
+            id="v2",
+            text="seven years",
+            metadata={"valid_from": "2025-01-01T00:00:00Z"},
+        )
+        store = Broken([v2])
+        hits = [("v2", 0.2, v2.text)]
+        as_of = datetime.datetime(2024, 6, 1, tzinfo=datetime.timezone.utc)
+        self.assertEqual(
+            screen_passage_hits(store, "brain", hits, include_history=False, as_of=as_of),
+            [],
+        )
+        self.assertEqual(
+            screen_passage_hits(store, "brain", hits, include_history=False),
+            hits,
+        )
+
+    def test_as_of_facts_batch_lookups_and_drop_unverified(self):
+        class Capped(_Store):
+            def get_text_chunks_by_ids(self, ids, with_observations, brain_id):
+                self.calls = getattr(self, "calls", [])
+                self.calls.append(list(ids))
+                return super().get_text_chunks_by_ids(ids[:80], with_observations, brain_id)
+
+        future = TextChunk(
+            id="future",
+            text="too new",
+            metadata={"valid_from": "2025-01-01T00:00:00Z"},
+        )
+        store = Capped([future])
+        facts = [{"id": f"f{i}", "chunk_ids": [f"missing-{i}"]} for i in range(80)]
+        facts.append({"id": "f-future", "chunk_ids": ["future"]})
+        as_of = datetime.datetime(2024, 6, 1, tzinfo=datetime.timezone.utc)
+        kept = current_fact_candidates(
+            store, "brain", facts, include_history=False, as_of=as_of
+        )
+        self.assertEqual(len(store.calls), 2)
+        self.assertEqual(kept, [])
+
+
+class SourceRevisionStampTests(unittest.TestCase):
+    def test_new_revision_reuses_one_timestamp(self):
+        previous = TextChunk(
+            id="c1",
+            text="hello",
+            metadata={"source_key": "src-1", "source_content_hash": "old"},
+        )
+        store = _Store([previous])
+        meta = {"source_key": "src-1"}
+        self.assertEqual(
+            prepare_source_revision(
+                store,
+                brain_id="brain",
+                source_text="hello again",
+                meta_keys=meta,
+                source_timestamp=None,
+            ),
+            "insert",
+        )
+        self.assertEqual(store.marked[0][1], meta["valid_from"])
+        self.assertEqual(store.marked[0][3], meta["valid_from"])
 
 
 if __name__ == "__main__":

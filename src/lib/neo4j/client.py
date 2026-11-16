@@ -337,11 +337,13 @@ class Neo4jClient(GraphClient):
                 "name": node.name,
             }
 
+            identification_keys: set[str] = set()
             if identification_params:
                 for key, value in identification_params.items():
                     normalized_key = self._clean_property_key(key)
                     if normalized_key not in {"uuid", "name"}:
                         all_properties[normalized_key] = value
+                        identification_keys.add(normalized_key)
 
             attributes = [
                 "description",
@@ -362,13 +364,15 @@ class Neo4jClient(GraphClient):
             description_value = None
             list_props: dict[str, Any] = {}
             for key, value in all_properties.items():
-                cleaned_key = self._clean_property_key(key)
+                cleaned_key = (
+                    key if key in identification_keys else self._clean_property_key(key)
+                )
                 if key == "description":
                     description_value = value
                 elif key in {"source_chunk_ids", "aliases"}:
                     list_props[static_property_key(key)] = value
                 else:
-                    regular_props[cleaned_key] = value
+                    regular_props[cleaned_key] = self._neo4j_property_value(value)
 
             params: dict[str, Any] = {"uuid": node.uuid, "props": regular_props}
             assignments = ["n += $props"]
@@ -770,7 +774,12 @@ class Neo4jClient(GraphClient):
             query_params[key_name] = self._clean_property_key(key)
             query_params[value_name] = value
 
-        labels_str = optional_node_labels(entity_types) if entity_types else ""
+        labels_str = ""
+        if entity_types:
+            query_params["entity_labels"] = self._clean_labels(entity_types)
+            where_clauses.append(
+                "any(lbl IN labels(n) WHERE lbl IN $entity_labels)"
+            )
         where_str = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
 
         cypher_query = (
@@ -1419,7 +1428,7 @@ class Neo4jClient(GraphClient):
             key_name = "set_key_" + str(idx)
             value_name = "set_val_" + str(idx)
             params[key_name] = self._clean_property_key(property_name)
-            params[value_name] = value
+            params[value_name] = self._neo4j_property_value(value)
             set_parts.append("t[$" + key_name + "] = $" + value_name)
 
         remove_parts = []
@@ -2141,7 +2150,7 @@ class Neo4jClient(GraphClient):
             cypher = (
                 "MATCH " + tail_match + "\n"
                 "MATCH " + head_match + "\n"
-                "MATCH (n)" + rel_part + "-(m)\n"
+                "MATCH (n)-" + rel_part + "-(m)\n"
                 "WITH n, r, m, " + with_fields.strip() + "\n"
                 "DELETE r\n"
                 "RETURN " + return_list

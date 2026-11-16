@@ -402,7 +402,12 @@ async def retrieve_data(
     """
     Retrieve data from the knowledge graph and data store.
     """
-    from src.core.saving.validity import InvalidAsOf, chunk_is_valid_at, optional_instant
+    from src.core.saving.validity import (
+        InvalidAsOf,
+        chunk_is_valid_at,
+        is_valid_at,
+        optional_instant,
+    )
 
     try:
         as_of_dt = optional_instant(as_of)
@@ -466,6 +471,11 @@ async def retrieve_data(
         ]
         v_text_chunks = [
             chunk for chunk in v_text_chunks if chunk_is_valid_at(chunk, as_of_dt)
+        ]
+        nodes = [
+            hit
+            for hit in nodes
+            if _retrieve_hit_valid_at(hit, as_of_dt, is_valid_at)
         ]
 
     return RetrieveRequestResponse(
@@ -1284,6 +1294,52 @@ def _merge_variant_candidate_lists(
         ordered = sorted(local, key=_distance_rank_key)
         merged.extend(ordered)
     return merged
+
+
+def _relationship_fields(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        nested = value.get("properties")
+        if isinstance(nested, dict):
+            return nested
+        return value
+    props = getattr(value, "properties", None)
+    if isinstance(props, dict):
+        return props
+    getter = getattr(value, "get", None)
+    if callable(getter):
+        fields: dict[str, Any] = {}
+        for key in (
+            "valid_from",
+            "valid_to",
+            "valid_at",
+            "invalid_at",
+            "superseded_at",
+            "deprecated",
+        ):
+            item = getter(key)
+            if item is not None:
+                fields[key] = item
+        return fields
+    return {}
+
+
+def _retrieve_hit_valid_at(hit: Any, as_of, is_valid_at) -> bool:
+    if not isinstance(hit, dict):
+        return True
+    rels = hit.get("relationships")
+    if rels is None:
+        predicate = hit.get("predicate")
+        if predicate is None:
+            return True
+        return is_valid_at(_relationship_fields(predicate), as_of)
+    items = rels if isinstance(rels, (list, tuple)) else [rels]
+    return all(
+        is_valid_at(_relationship_fields(rel), as_of)
+        for rel in items
+        if rel is not None
+    )
 
 
 def _is_currently_valid(

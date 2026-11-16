@@ -287,7 +287,9 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
         params_model = IdentificationParams(name="O'Brien")
         client.get_by_identification_params(params_model, "braina", entity_types=["PERSON"])
         query, params, _db = client.driver.calls[0]
-        self.assertIn("MATCH (n:`PERSON`)", query)
+        self.assertIn("MATCH (n)", query)
+        self.assertIn("any(lbl IN labels(n) WHERE lbl IN $entity_labels)", query)
+        self.assertEqual(params["entity_labels"], ["PERSON"])
         self.assertIn("n[$key_0] = $param_0", query)
         self.assertEqual(params["param_0"], "O'Brien")
         self.assertNotIn("O'Brien", query)
@@ -320,6 +322,8 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
             ],
             "braina",
         )
+        endpoint_query = client.driver.calls[-1][0]
+        self.assertIn("MATCH (n)-[r:", endpoint_query)
         for query, params, _db in client.driver.calls:
             self.assertNotIn(payload, query)
             self.assertTrue(params)

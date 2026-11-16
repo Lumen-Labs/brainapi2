@@ -260,10 +260,17 @@ class ValidityBackfillTests(unittest.TestCase):
             description="ten years",
             properties={"valid_from": "2026-01-01T00:00:00Z", "source_chunk_ids": ["reg-v3"]},
         )
+        unknown_start = Predicate(
+            uuid="rel-unknown",
+            name="REQUIRES",
+            description="closed without start",
+            properties={"invalid_at": "15/01/2025"},
+        )
         triples = [
             (Node(uuid="org", name="Issuer", labels=["ORG"]), old_rel, Node(uuid="c", name="Clause", labels=["CLAUSE"])),
             (Node(uuid="alice", name="Alice", labels=["PERSON"]), live_rel, Node(uuid="bob", name="Bob", labels=["PERSON"])),
             (Node(uuid="org", name="Issuer", labels=["ORG"]), already, Node(uuid="c", name="Clause", labels=["CLAUSE"])),
+            (Node(uuid="org", name="Issuer", labels=["ORG"]), unknown_start, Node(uuid="c", name="Clause", labels=["CLAUSE"])),
         ]
 
         class Graph:
@@ -281,7 +288,7 @@ class ValidityBackfillTests(unittest.TestCase):
         graph = Graph()
         first = backfill_brain_validity(store, graph, "brain")
         self.assertEqual(first["chunks"], 3)
-        self.assertEqual(first["relationships"], 2)
+        self.assertEqual(first["relationships"], 3)
         self.assertEqual(v1.metadata["valid_from"], "2024-01-01T08:00:00Z")
         self.assertEqual(v1.metadata["valid_to"], "2025-01-15T00:00:00Z")
         self.assertEqual(v1.metadata["superseded_at"], "15/01/2025")
@@ -298,6 +305,8 @@ class ValidityBackfillTests(unittest.TestCase):
             "valid_from": "2026-01-01T00:00:00Z",
             "source_chunk_ids": ["reg-v3"],
         })
+        self.assertEqual(unknown_start.properties["valid_to"], "2025-01-15T00:00:00Z")
+        self.assertNotIn("valid_from", unknown_start.properties)
         self.assertEqual({row[0] for row in saved}, {"reg-v1", "reg-v2", "unrelated"})
         self.assertEqual(saved[0][2], "Article 12. five years.")
         dry = backfill_brain_validity(store, graph, "brain", dry_run=True)
@@ -412,6 +421,107 @@ class ValidityChangesTests(unittest.TestCase):
         self.assertIn(("added", "chunk", "v2"), kinds)
         self.assertIn(("added", "relationship", "rel-1"), kinds)
         self.assertEqual(payload["count"], 3)
+
+    def test_changelog_rows_format_model_timestamps(self):
+        class Adapter:
+            def get_text_chunks(self, brain_id, limit=10, skip=0, order="desc"):
+                return [], 0
+
+            def get_changelogs_list(self, *args, **kwargs):
+                return [
+                    SimpleNamespace(
+                        id="chg-1",
+                        type="relationship_created",
+                        timestamp=datetime(2025, 1, 15, 12, 0, tzinfo=timezone.utc),
+                    )
+                ]
+
+        payload = collect_validity_changes(
+            Adapter(),
+            None,
+            "brain",
+            since=_utc("2025-01-01T00:00:00Z"),
+            until=_utc("2025-02-01T00:00:00Z"),
+            limit=10,
+            skip=0,
+        )
+        self.assertEqual(payload["changes"][0]["timestamp"], "2025-01-15T12:00:00Z")
+
+    def test_merged_changelog_page_is_not_capped_at_200(self):
+        rows = [
+            SimpleNamespace(
+                id=f"chg-{index}",
+                type="relationship_created",
+                timestamp=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            )
+            for index in range(250)
+        ]
+
+        class Adapter:
+            def get_text_chunks(self, brain_id, limit=10, skip=0, order="desc"):
+                return [], 0
+
+            def get_changelogs_list(
+                self, brain_id, limit=10, skip=0, types=None, query_text=None, since=None, until=None
+            ):
+                return rows[skip : skip + limit]
+
+        payload = collect_validity_changes(
+            Adapter(),
+            None,
+            "brain",
+            since=_utc("2024-12-01T00:00:00Z"),
+            until=_utc("2025-02-01T00:00:00Z"),
+            limit=10,
+            skip=200,
+        )
+        self.assertEqual(payload["total"], 250)
+        self.assertEqual(payload["count"], 10)
+        self.assertEqual(payload["changes"][0]["id"], "chg-200")
+
+    def test_backfill_pages_past_ten_thousand(self):
+        seen = []
+        dummy = TextChunk(id="x", text="t", metadata={"valid_from": "2024-01-01T00:00:00Z"})
+
+        class Store:
+            def get_text_chunks(self, brain_id, limit=10, skip=0, order="asc"):
+                seen.append(skip)
+                total = 10050
+                if skip >= total:
+                    return [], total
+                return [dummy] * min(limit, total - skip), total
+
+            def save_text_chunk(self, item, brain_id):
+                raise AssertionError("already stamped")
+
+        self.assertEqual(backfill_chunk_validity(Store(), "brain"), 0)
+        self.assertIn(10000, seen)
+
+    def test_chunk_fill_keeps_concurrent_end_stamp(self):
+        meta = {"superseded_at": "2025-01-01T00:00:00Z", "valid_to": "concurrent"}
+
+        class Store:
+            def get_text_chunks(self, brain_id, limit=10, skip=0, order="asc"):
+                chunk = TextChunk(
+                    id="c1",
+                    text="t",
+                    metadata=dict(meta),
+                    inserted_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                )
+                return [chunk], 1
+
+            def fill_text_chunk_validity(self, chunk_id, brain_id, patch):
+                for key, value in patch.items():
+                    if not meta.get(key):
+                        meta[key] = value
+
+            def save_text_chunk(self, item, brain_id):
+                raise AssertionError("use fill_text_chunk_validity")
+
+        self.assertEqual(backfill_chunk_validity(Store(), "brain"), 1)
+        self.assertEqual(meta["valid_from"], "2024-01-01T00:00:00Z")
+        self.assertEqual(meta["valid_to"], "concurrent")
+        self.assertEqual(backfill_chunk_validity(Store(), "brain"), 0)
 
 
 class StagedValidityWriteTests(unittest.TestCase):
@@ -570,7 +680,16 @@ class AsOfRetrieveTests(unittest.IsolatedAsyncioTestCase):
         )
         mock_data.get_text_chunks_by_ids.return_value = ([], [])
         mock_graph = MagicMock()
-        mock_graph.get_nodes_by_uuid.return_value = []
+        mock_graph.get_nodes_by_uuid.return_value = [
+            {
+                "node": Node(uuid="org", name="Org", labels=["ORG"]),
+                "relationships": {
+                    "valid_from": "2025-01-01T00:00:00Z",
+                    "name": "REQUIRES",
+                },
+                "related_nodes": Node(uuid="clause", name="SevenYears", labels=["CLAUSE"]),
+            }
+        ]
         with (
             patch.object(retrieve_mod, "embeddings_adapter", mock_embeddings),
             patch.object(retrieve_mod, "vector_search", mock_vs),
@@ -587,6 +706,9 @@ class AsOfRetrieveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({chunk.id for chunk in current.data}, {"v1", "v2"})
         self.assertEqual({chunk.id for chunk in as_of.data}, {"v1"})
         self.assertEqual({chunk.id for chunk in later.data}, {"v2"})
+        self.assertEqual(len(current.relationships), 1)
+        self.assertEqual(as_of.relationships, [])
+        self.assertEqual(len(later.relationships), 1)
 
 
 class ChangelogWindowControllerTests(unittest.IsolatedAsyncioTestCase):
