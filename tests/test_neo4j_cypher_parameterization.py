@@ -97,6 +97,16 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
         self.assertNotIn("'alice-1'", query)
         self.assertNotIn("'Alice'", query)
 
+    def test_add_nodes_serializes_metadata_maps_for_storage(self):
+        client = _client()
+        node = _person()
+        node.metadata = {"source": "api"}
+        client.add_nodes([node], "braina", metadata={"origin": "ingest"})
+        _query, params, _db = client.driver.calls[0]
+        self.assertIsInstance(params["props"]["metadata"], str)
+        self.assertIn("source", params["props"]["metadata"])
+        self.assertIn("origin", params["props"]["metadata"])
+
     def test_add_nodes_injection_payload_stays_in_params(self):
         client = _client()
         for payload in INJECTION_VALUES:
@@ -132,6 +142,8 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
         self.assertEqual(params["subject_uuid"], "a")
         self.assertEqual(params["object_uuid"], "b")
         self.assertEqual(params["predicate_uuid"], "rel-1")
+        self.assertIsInstance(params["extra_props"]["properties"], str)
+        self.assertIn("v1", params["extra_props"]["properties"])
 
     def test_deprecate_relationship_does_not_interpolate_names(self):
         client = _client()
@@ -319,6 +331,10 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
                 )
             ],
             "braina",
+        )
+        self.assertIn(
+            "MATCH (n)-[r:`KNOWS`]-(m)",
+            client.driver.calls[-1][0],
         )
         for query, params, _db in client.driver.calls:
             self.assertNotIn(payload, query)

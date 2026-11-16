@@ -9,10 +9,11 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 """
 
 from datetime import datetime, timezone
+import json
 import os
 import time
 from typing import Any, Dict, List, Literal, Optional, Tuple, TypedDict
-from neo4j import GraphDatabase
+from neo4j import GraphDatabase, Query, READ_ACCESS, WRITE_ACCESS
 from neo4j.exceptions import ClientError
 from src.adapters.interfaces.embeddings import VectorStoreClient
 from src.adapters.interfaces.graph import GraphClient, PredicateWithFlowKey
@@ -28,6 +29,8 @@ from src.constants.kg import (
     Triple,
 )
 from src.lib.cypher_safety import (
+    MAX_RAW_QUERY_ROWS,
+    RAW_QUERY_TIMEOUT_SECONDS,
     clean_label,
     clean_property_key,
     create_database_query,
@@ -38,9 +41,20 @@ from src.lib.cypher_safety import (
     require_limit,
     require_path_depth,
     static_property_key,
+    validate_raw_cypher,
 )
 from src.utils.logging import log
 from src.utils.serialization.data import always_dict
+
+
+class _RawQueryResult:
+    def __init__(self, records: list[Any], keys: list[str], truncated: bool):
+        self.records = records
+        self._keys = keys
+        self.truncated = truncated
+
+    def keys(self) -> list[str]:
+        return self._keys
 
 
 class Neo4jClient(GraphClient):
@@ -61,10 +75,34 @@ class Neo4jClient(GraphClient):
 
     def execute_operation(self, operation: str, brain_id: str) -> Any:
         """
-        Execute a Neo4j operation with database override.
+        Execute caller-supplied Cypher against the caller's brain database.
+
+        Default is a READ access-mode session with a timeout and result cap so
+        writes, DELETE, and admin procedures fail. GRAPH_RAW_WRITE_ENABLED=true
+        switches the session to WRITE while still confining the query to this
+        brain and rejecting USE / database admin / CALL dbms.*.
         """
         db = require_database_name(brain_id)
-        return self.driver.execute_query(operation, database_=db)
+        query_text = validate_raw_cypher(operation)
+        write_enabled = bool(getattr(config, "graph_raw_write_enabled", False))
+        access_mode = WRITE_ACCESS if write_enabled else READ_ACCESS
+        records: list[Any] = []
+        keys: list[str] = []
+        truncated = False
+        with self.driver.session(
+            database=db,
+            default_access_mode=access_mode,
+        ) as session:
+            result = session.run(
+                Query(query_text, timeout=RAW_QUERY_TIMEOUT_SECONDS)
+            )
+            keys = list(result.keys())
+            for index, record in enumerate(result):
+                if index >= MAX_RAW_QUERY_ROWS:
+                    truncated = True
+                    break
+                records.append(record)
+        return _RawQueryResult(records=records, keys=keys, truncated=truncated)
 
     def ensure_database(self, database: str) -> None:
         """
@@ -193,7 +231,12 @@ class Neo4jClient(GraphClient):
         Get the description of the graph database.
         It is used to let the agent know which syntax to use.
         """
-        return "The graph database is Neo4j. Cyphter is the language used to operate with it."
+        return (
+            "The graph database is Neo4j. Cypher is the language used to operate with it. "
+            "Raw queries are read-only against the caller's brain database, with a timeout "
+            "and result-size cap. Writes, DELETE, USE, CALL dbms.*, and database admin "
+            "are rejected. Use structured graph tools to mutate the graph."
+        )
 
     def _clean_labels(self, labels: list[str]) -> list[str]:
         """
@@ -227,6 +270,27 @@ class Neo4jClient(GraphClient):
         raise RuntimeError(
             "Cypher values must be passed as query parameters; do not interpolate them"
         )
+
+    def _bind_property_value(self, value: Any) -> Any:
+        """Coerce a value to a Neo4j-storable property (no nested maps)."""
+        if value is None or isinstance(value, (bool, int, float, str)):
+            return value
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, (list, tuple)):
+            items = list(value)
+            if all(
+                item is None or isinstance(item, (bool, int, float, str))
+                for item in items
+            ):
+                return items
+            return json.dumps(items, default=str)
+        if isinstance(value, dict):
+            return json.dumps(value, default=str)
+        try:
+            return json.dumps(value, default=str)
+        except TypeError:
+            return str(value)
 
     def add_nodes(
         self,
@@ -290,9 +354,11 @@ class Neo4jClient(GraphClient):
                 if key == "description":
                     description_value = value
                 elif key in {"source_chunk_ids", "aliases"}:
-                    list_props[static_property_key(key)] = value
+                    list_props[static_property_key(key)] = self._bind_property_value(
+                        value
+                    )
                 else:
-                    regular_props[cleaned_key] = value
+                    regular_props[cleaned_key] = self._bind_property_value(value)
 
             params: dict[str, Any] = {"uuid": node.uuid, "props": regular_props}
             assignments = ["n += $props"]
@@ -323,7 +389,9 @@ class Neo4jClient(GraphClient):
                 "RETURN n"
             )
             try:
-                result = self._run_query(cypher_query, brain_id, params, retry=True)
+                result = self._run_query(
+                    cypher_query, brain_id, params, retry=True, ensure=False
+                )
                 results.append(result)
             except Exception as e:
                 print(f"Error adding node: {e} - {cypher_query}")
@@ -381,7 +449,9 @@ class Neo4jClient(GraphClient):
             for attr in attributes:
                 value = getattr(obj, attr, None)
                 if value:
-                    extra_props[static_property_key(attr)] = value
+                    extra_props[static_property_key(attr)] = self._bind_property_value(
+                        value
+                    )
 
         rel_type = self._quoted_rel_type(predicate.name)
         params = {
@@ -1264,7 +1334,7 @@ class Neo4jClient(GraphClient):
             key_name = "set_key_" + str(idx)
             value_name = "set_val_" + str(idx)
             params[key_name] = self._clean_property_key(property_name)
-            params[value_name] = value
+            params[value_name] = self._bind_property_value(value)
             set_parts.append("t[$" + key_name + "] = $" + value_name)
 
         remove_parts = []
@@ -1428,7 +1498,7 @@ class Neo4jClient(GraphClient):
             key_name = "prop_key_" + str(idx)
             value_name = "prop_val_" + str(idx)
             params[key_name] = self._clean_property_key(property_key)
-            params[value_name] = new_value
+            params[value_name] = self._bind_property_value(new_value)
             operations.append("n[$" + key_name + "] = $" + value_name)
 
         set_clause = ("SET " + ", ".join(operations)) if operations else ""
@@ -1986,7 +2056,7 @@ class Neo4jClient(GraphClient):
             cypher = (
                 "MATCH " + tail_match + "\n"
                 "MATCH " + head_match + "\n"
-                "MATCH (n)" + rel_part + "-(m)\n"
+                "MATCH (n)-" + rel_part + "-(m)\n"
                 "WITH n, r, m, " + with_fields.strip() + "\n"
                 "DELETE r\n"
                 "RETURN " + return_list

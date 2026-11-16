@@ -713,6 +713,9 @@ class Config:
             "AGENTIC_ARCHITECTURE", "custom"
         )
         self.search_enabled = os.getenv("SEARCH_ENABLED", "false") == "true"
+        self.graph_raw_write_enabled = (
+            os.getenv("GRAPH_RAW_WRITE_ENABLED", "false") == "true"
+        )
         self.search_use_dense = os.getenv("SEARCH_USE_DENSE", "true") == "true"
         self.search_use_bm25 = os.getenv("SEARCH_USE_BM25", "true") == "true"
         community_raw = os.getenv("SEARCH_COMMUNITY_LABELS", "TYPE,CLASS,TOPIC")
