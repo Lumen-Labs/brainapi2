@@ -19,11 +19,32 @@ _REL_PAGE = 100
 _MAX_SCAN = 5000
 
 
-def _dump(row: Any) -> Any:
-    dump = getattr(row, "model_dump", None)
+def _jsonish(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    iso = getattr(value, "iso_format", None)
+    if callable(iso):
+        try:
+            return iso()
+        except Exception:
+            pass
+    if isinstance(value, datetime):
+        return format_instant(value)
+    if isinstance(value, dict):
+        return {str(key): _jsonish(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonish(item) for item in value]
+    dump = getattr(value, "model_dump", None)
     if callable(dump):
-        return dump(mode="json")
-    return row
+        try:
+            return dump(mode="json")
+        except Exception:
+            return _jsonish(dump(mode="python"))
+    return str(value)
+
+
+def _dump(row: Any) -> Any:
+    return _jsonish(row)
 
 
 def _chunk_change(chunk: Any, kind: str) -> dict[str, Any]:

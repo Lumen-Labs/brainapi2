@@ -9,6 +9,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 """
 
 from datetime import datetime, timezone
+import json
 import os
 import time
 from typing import Any, Dict, List, Literal, Optional, Tuple, TypedDict
@@ -229,6 +230,80 @@ class Neo4jClient(GraphClient):
             "Cypher values must be passed as query parameters; do not interpolate them"
         )
 
+    def _python_properties(self, value: Any) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            return {}
+        return {str(key): self._python_property_value(item) for key, item in value.items()}
+
+    def _python_property_value(self, value: Any) -> Any:
+        iso = getattr(value, "iso_format", None)
+        if callable(iso):
+            try:
+                return iso()
+            except Exception:
+                pass
+        to_native = getattr(value, "to_native", None)
+        if callable(to_native):
+            try:
+                native = to_native()
+                if isinstance(native, datetime):
+                    from src.core.saving.validity import format_instant
+
+                    return format_instant(native)
+                return native
+            except Exception:
+                pass
+        if isinstance(value, dict):
+            return {str(key): self._python_property_value(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [self._python_property_value(item) for item in value]
+        return value
+
+    def _neo4j_property_value(self, value: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, datetime):
+            from src.core.saving.validity import format_instant
+
+            return format_instant(value)
+        if isinstance(value, (list, tuple)):
+            items = [self._neo4j_property_value(item) for item in value]
+            if all(
+                item is None or isinstance(item, (str, int, float, bool))
+                for item in items
+            ):
+                return items
+            return json.dumps(items, default=str)
+        if isinstance(value, dict):
+            return json.dumps(value, default=str)
+        return str(value)
+
+    def _relationship_property_primitives(
+        self, properties: Optional[dict]
+    ) -> dict[str, Any]:
+        from src.core.saving.validity import validity_props_from_mapping
+
+        props = dict(properties or {})
+        extra: dict[str, Any] = {}
+        extra.update(validity_props_from_mapping(props))
+        for key in (
+            "valid_at",
+            "invalid_at",
+            "source_timestamp",
+            "source_chunk_ids",
+            "v_id",
+            "deprecated",
+        ):
+            if props.get(key) not in (None, "", []) and key not in extra:
+                extra[key] = self._neo4j_property_value(props[key])
+        for key, value in props.items():
+            if key in extra or value in (None, "", {}, []):
+                continue
+            extra[self._clean_property_key(key)] = self._neo4j_property_value(value)
+        return extra
+
     def add_nodes(
         self,
         nodes: list[Node],
@@ -380,12 +455,14 @@ class Neo4jClient(GraphClient):
         extra_props: dict[str, Any] = {}
         for obj in objects:
             for attr in attributes:
+                if attr == "properties":
+                    continue
                 value = getattr(obj, attr, None)
-                if value:
-                    extra_props[static_property_key(attr)] = value
-        from src.core.saving.validity import validity_props_from_mapping
-
-        extra_props.update(validity_props_from_mapping(predicate.properties))
+                if value not in (None, "", {}, []):
+                    extra_props[static_property_key(attr)] = self._neo4j_property_value(
+                        value
+                    )
+        extra_props.update(self._relationship_property_primitives(predicate.properties))
 
         rel_type = self._quoted_rel_type(predicate.name)
         params = {
@@ -1144,7 +1221,7 @@ class Neo4jClient(GraphClient):
             total = count_result.records[0].get("total") or 0
         triples: list[tuple[Node, Predicate, Node]] = []
         for record in result.records:
-            rel_props = dict(record.get("rel_properties") or {})
+            rel_props = self._python_properties(record.get("rel_properties"))
             triples.append(
                 (
                     Node(
@@ -1152,7 +1229,7 @@ class Neo4jClient(GraphClient):
                         name=str(record.get("n_name") or ""),
                         labels=list(record.get("n_labels") or []),
                         description=record.get("n_description") or "",
-                        properties=dict(record.get("n_properties") or {}),
+                        properties=self._python_properties(record.get("n_properties")),
                     ),
                     Predicate(
                         uuid=str(record.get("rel_uuid") or rel_props.get("uuid") or ""),
@@ -1166,7 +1243,7 @@ class Neo4jClient(GraphClient):
                         name=str(record.get("m_name") or ""),
                         labels=list(record.get("m_labels") or []),
                         description=record.get("m_description") or "",
-                        properties=dict(record.get("m_properties") or {}),
+                        properties=self._python_properties(record.get("m_properties")),
                     ),
                 )
             )
