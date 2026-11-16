@@ -1,13 +1,20 @@
 # CI-only provider override. This file is never part of a production deployment.
 x-ci-model-environment: &ci-model-environment
   BRAINPAT_TOKEN: ${BRAINPAT_TOKEN:?BRAINPAT_TOKEN is required}
-  LLM_PROVIDER: anthropic
+  LLM_PROVIDER: amazon_bedrock
   LLM_MODEL: claude-haiku-5-5
-  LLM_SMALL_PROVIDER: anthropic
-  LLM_LARGE_PROVIDER: anthropic
+  LLM_SMALL_PROVIDER: amazon_bedrock
+  LLM_LARGE_PROVIDER: amazon_bedrock
   LLM_REQUIRE_HAIKU: "true"
-  ANTHROPIC_API_KEY: ci-isolated-token
-  ANTHROPIC_BASE_URL: http://embedding-stub:8080
+  BEDROCK_REGION: us-east-1
+  BEDROCK_INFERENCE_PROFILE: us
+  BEDROCK_SMALL_LLM_MODEL: us.anthropic.claude-haiku-5-5
+  BEDROCK_LARGE_LLM_MODEL: us.anthropic.claude-haiku-5-5
+  BEDROCK_ENDPOINT_URL: http://embedding-stub:8080
+  AWS_ACCESS_KEY_ID: ci-isolated-token
+  AWS_SECRET_ACCESS_KEY: ci-isolated-token
+  AWS_DEFAULT_REGION: us-east-1
+  AWS_EC2_METADATA_DISABLED: "true"
   EMBEDDINGS_PROVIDER: openai
   OPENAI_API_KEY: ci-isolated-token
   OPENAI_BASE_URL: http://embedding-stub:8080/v1

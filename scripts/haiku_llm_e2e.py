@@ -122,14 +122,18 @@ def run_ingest_and_retrieve(api_url: str, token: str, stub_url: str) -> dict[str
     llm_models = []
     if isinstance(calls, dict):
         llm_models = list(calls.get("llm_models") or [])
-    unexpected = sorted({model for model in llm_models if model != "claude-haiku-5-5"})
+    def _is_haiku(model: str) -> bool:
+        leaf = (model or "").strip().lower().split(".")[-1].split(":")[0]
+        return leaf == "claude-haiku-5-5" or leaf.startswith("claude-haiku-5-5-")
+
+    unexpected = sorted({model for model in llm_models if not _is_haiku(model)})
     if unexpected:
         raise RuntimeError(
             f"non-Haiku chat models were used: {unexpected}; all calls={calls}"
         )
     if not llm_models:
         raise RuntimeError(
-            "enrichment produced no chat-model calls on the Anthropic stub"
+            "enrichment produced no chat-model calls on the Haiku stub"
         )
     return {
         "brain_id": brain_id,

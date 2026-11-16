@@ -23,6 +23,14 @@ from src.lib.llm.policy import (
     resolve_role_provider,
 )
 
+
+def _optional_env(*keys: str) -> str | None:
+    for key in keys:
+        value = os.getenv(key)
+        if value is not None and value.strip():
+            return value.strip()
+    return None
+
 _project_root = Path(__file__).resolve().parent.parent
 _env_name = os.getenv("ENV")
 _env_path = _project_root / f".env{'.' + _env_name if _env_name else ''}"
@@ -289,18 +297,51 @@ class GCPConfig:
 
 
 class BedrockConfig:
-    def __init__(self):
-        self.region = os.getenv("BEDROCK_REGION")
-        self.access_key_id = os.getenv("BEDROCK_ACCESS_KEY_ID")
-        self.secret_access_key = os.getenv("BEDROCK_SECRET_ACCESS_KEY")
-        self.session_token = os.getenv("BEDROCK_SESSION_TOKEN")
-        self.small_llm_model = os.getenv("BEDROCK_SMALL_LLM_MODEL")
-        self.large_llm_model = os.getenv("BEDROCK_LARGE_LLM_MODEL")
+    def __init__(self, llm_model: str | None = None):
+        model = llm_model or configured_llm_model()
+        self.region = (
+            _optional_env("BEDROCK_REGION", "AWS_REGION", "AWS_DEFAULT_REGION")
+            or "us-east-1"
+        )
+        self.access_key_id = _optional_env(
+            "BEDROCK_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID"
+        )
+        self.secret_access_key = _optional_env(
+            "BEDROCK_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY"
+        )
+        self.session_token = _optional_env(
+            "BEDROCK_SESSION_TOKEN", "AWS_SESSION_TOKEN"
+        )
+        if not self.access_key_id or not self.secret_access_key:
+            self.access_key_id = None
+            self.secret_access_key = None
+            self.session_token = None
+        self.endpoint_url = _optional_env("BEDROCK_ENDPOINT_URL", "AWS_ENDPOINT_URL")
+        self.small_llm_model = resolve_role_model("small", "amazon_bedrock", model)
+        self.large_llm_model = resolve_role_model("large", "amazon_bedrock", model)
         self.embedding_model = os.getenv("BEDROCK_EMBEDDING_MODEL")
 
+    def session_kwargs(self) -> dict:
+        kwargs: dict = {"region_name": self.region}
+        if self.access_key_id and self.secret_access_key:
+            kwargs["aws_access_key_id"] = self.access_key_id
+            kwargs["aws_secret_access_key"] = self.secret_access_key
+            if self.session_token:
+                kwargs["aws_session_token"] = self.session_token
+        return kwargs
+
+    def runtime_client_kwargs(self) -> dict:
+        kwargs: dict = {}
+        if self.endpoint_url:
+            kwargs["endpoint_url"] = self.endpoint_url
+        return kwargs
+
     def _validate_auth(self):
-        if [self.region, self.access_key_id, self.secret_access_key].count(None) > 0:
-            raise ValueError("Bedrock authentication is not complete")
+        if not self.region:
+            raise ValueError(
+                "Bedrock region is not set (BEDROCK_REGION, AWS_REGION, or "
+                "AWS_DEFAULT_REGION)"
+            )
 
     def validate_llm(self, require_large: bool):
         self._validate_auth()
@@ -630,7 +671,11 @@ class Config:
             if use_gcp_embeddings:
                 self.gcp.validate_embeddings()
 
-        self.bedrock = BedrockConfig() if use_bedrock_llm or use_bedrock_embeddings else None
+        self.bedrock = (
+            BedrockConfig(self.llm_model)
+            if use_bedrock_llm or use_bedrock_embeddings
+            else None
+        )
         if self.bedrock is not None:
             if use_bedrock_llm:
                 self.bedrock.validate_llm(require_large=use_bedrock_large)

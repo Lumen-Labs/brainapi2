@@ -205,7 +205,7 @@ function applyRemoteModelValues(
   values[ENV_KEYS.llmProvider] =
     choices.models.llmSmallProvider === choices.models.llmLargeProvider
       ? choices.models.llmSmallProvider
-      : "anthropic";
+      : "amazon_bedrock";
   values[ENV_KEYS.llmModel] = DEFAULT_LLM_MODEL;
   values[ENV_KEYS.llmSmallProvider] = choices.models.llmSmallProvider;
   values[ENV_KEYS.llmLargeProvider] = choices.models.llmLargeProvider;

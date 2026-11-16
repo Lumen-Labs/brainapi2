@@ -6,8 +6,11 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from src.lib.llm.policy import (
+    DEFAULT_BEDROCK_HAIKU_MODEL,
     DEFAULT_LLM_MODEL,
+    DEFAULT_REMOTE_PROVIDER,
     HAIKU_MODEL_ID,
+    bedrock_model_id,
     configured_llm_model,
     default_provider_for_mode,
     is_haiku_5_5,
@@ -50,34 +53,63 @@ class HaikuPolicyTests(unittest.TestCase):
             os.environ.pop("LLM_MODEL", None)
             self.assertEqual(configured_llm_model(), "claude-haiku-5-5")
             self.assertEqual(DEFAULT_LLM_MODEL, HAIKU_MODEL_ID)
+            self.assertEqual(DEFAULT_REMOTE_PROVIDER, "amazon_bedrock")
+            self.assertEqual(
+                DEFAULT_BEDROCK_HAIKU_MODEL, "us.anthropic.claude-haiku-5-5"
+            )
 
-    def test_is_haiku_accepts_id_and_dated_suffix(self):
+    def test_is_haiku_accepts_api_and_bedrock_ids(self):
         self.assertTrue(is_haiku_5_5("claude-haiku-5-5"))
         self.assertTrue(is_haiku_5_5("claude-haiku-5-5-20251015"))
+        self.assertTrue(is_haiku_5_5("anthropic.claude-haiku-5-5"))
+        self.assertTrue(is_haiku_5_5("us.anthropic.claude-haiku-5-5"))
+        self.assertTrue(is_haiku_5_5("global.anthropic.claude-haiku-5-5"))
+        self.assertTrue(is_haiku_5_5("eu.anthropic.claude-haiku-5-5"))
         self.assertFalse(is_haiku_5_5("claude-3-5-haiku-latest"))
-        self.assertFalse(is_haiku_5_5("claude-sonnet-4-20250514"))
+        self.assertFalse(is_haiku_5_5("us.anthropic.claude-3-5-haiku-20241022-v1:0"))
+        self.assertFalse(is_haiku_5_5("us.anthropic.claude-3-7-sonnet-20250219-v1:0"))
         self.assertFalse(is_haiku_5_5("gpt-4o-mini"))
 
-    def test_remote_defaults_are_anthropic_haiku(self):
+    def test_bedrock_model_id_maps_haiku(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("BEDROCK_INFERENCE_PROFILE", None)
+            self.assertEqual(
+                bedrock_model_id("claude-haiku-5-5"),
+                "us.anthropic.claude-haiku-5-5",
+            )
+            self.assertEqual(
+                bedrock_model_id("us.anthropic.claude-haiku-5-5"),
+                "us.anthropic.claude-haiku-5-5",
+            )
+        with patch.dict(
+            os.environ, {"BEDROCK_INFERENCE_PROFILE": "global"}, clear=False
+        ):
+            self.assertEqual(
+                bedrock_model_id("claude-haiku-5-5"),
+                "global.anthropic.claude-haiku-5-5",
+            )
+
+    def test_remote_defaults_are_bedrock_haiku(self):
         env = {"LLM_MODEL": "claude-haiku-5-5"}
         with patch.dict(os.environ, env, clear=False):
             for key in (
                 "LLM_PROVIDER",
                 "LLM_SMALL_PROVIDER",
                 "LLM_LARGE_PROVIDER",
-                "ANTHROPIC_SMALL_LLM_MODEL",
-                "ANTHROPIC_LARGE_LLM_MODEL",
+                "BEDROCK_SMALL_LLM_MODEL",
+                "BEDROCK_LARGE_LLM_MODEL",
+                "BEDROCK_INFERENCE_PROFILE",
             ):
                 os.environ.pop(key, None)
-            self.assertEqual(default_provider_for_mode("remote"), "anthropic")
-            self.assertEqual(resolve_role_provider("small", "remote"), "anthropic")
-            self.assertEqual(resolve_role_provider("large", "remote"), "anthropic")
+            self.assertEqual(default_provider_for_mode("remote"), "amazon_bedrock")
+            self.assertEqual(resolve_role_provider("small", "remote"), "amazon_bedrock")
+            self.assertEqual(resolve_role_provider("large", "remote"), "amazon_bedrock")
             rows = resolve_llm_roles("remote")
             self.assertEqual(
                 rows,
                 [
-                    ("small", "anthropic", "claude-haiku-5-5"),
-                    ("large", "anthropic", "claude-haiku-5-5"),
+                    ("small", "amazon_bedrock", "us.anthropic.claude-haiku-5-5"),
+                    ("large", "amazon_bedrock", "us.anthropic.claude-haiku-5-5"),
                 ],
             )
 
@@ -92,19 +124,24 @@ class HaikuPolicyTests(unittest.TestCase):
     def test_existing_per_role_overrides(self):
         env = {
             "LLM_MODEL": "claude-haiku-5-5",
-            "LLM_SMALL_PROVIDER": "anthropic",
-            "LLM_LARGE_PROVIDER": "openai",
-            "ANTHROPIC_SMALL_LLM_MODEL": "claude-haiku-5-5",
-            "OPENAI_LARGE_LLM_MODEL": "gpt-4o",
+            "LLM_SMALL_PROVIDER": "amazon_bedrock",
+            "LLM_LARGE_PROVIDER": "anthropic",
+            "BEDROCK_SMALL_LLM_MODEL": "us.anthropic.claude-haiku-5-5",
+            "ANTHROPIC_LARGE_LLM_MODEL": "claude-haiku-5-5",
         }
         with patch.dict(os.environ, env, clear=False):
             self.assertEqual(
-                resolve_role_model("small", "anthropic"), "claude-haiku-5-5"
+                resolve_role_model("small", "amazon_bedrock"),
+                "us.anthropic.claude-haiku-5-5",
             )
-            self.assertEqual(resolve_role_model("large", "openai"), "gpt-4o")
+            self.assertEqual(
+                resolve_role_model("large", "anthropic"), "claude-haiku-5-5"
+            )
             rows = resolve_llm_roles("remote")
-            self.assertEqual(rows[0], ("small", "anthropic", "claude-haiku-5-5"))
-            self.assertEqual(rows[1], ("large", "openai", "gpt-4o"))
+            self.assertEqual(
+                rows[0], ("small", "amazon_bedrock", "us.anthropic.claude-haiku-5-5")
+            )
+            self.assertEqual(rows[1], ("large", "anthropic", "claude-haiku-5-5"))
 
     def test_anthropic_role_models_default_to_llm_model(self):
         with patch.dict(os.environ, {"LLM_MODEL": "claude-haiku-5-5"}, clear=False):
@@ -131,12 +168,12 @@ class HaikuPolicyTests(unittest.TestCase):
 
 
 class HaikuConfigResolutionTests(unittest.TestCase):
-    def test_remote_config_routes_both_roles_to_haiku(self):
+    def test_remote_config_routes_both_roles_to_bedrock_haiku(self):
         env = {
             **_CONFIG_ENV,
             "MODELS_MODE": "remote",
             "LLM_MODEL": "claude-haiku-5-5",
-            "ANTHROPIC_API_KEY": "test-anthropic-key",
+            "BEDROCK_REGION": "us-east-1",
             "EMBEDDINGS_PROVIDER": "openai",
             "OPENAI_API_KEY": "test-openai-key",
             "OPENAI_EMBEDDING_MODEL": "text-embedding-3-large",
@@ -146,40 +183,49 @@ class HaikuConfigResolutionTests(unittest.TestCase):
                 "LLM_PROVIDER",
                 "LLM_SMALL_PROVIDER",
                 "LLM_LARGE_PROVIDER",
-                "ANTHROPIC_SMALL_LLM_MODEL",
-                "ANTHROPIC_LARGE_LLM_MODEL",
+                "BEDROCK_SMALL_LLM_MODEL",
+                "BEDROCK_LARGE_LLM_MODEL",
+                "BEDROCK_ACCESS_KEY_ID",
+                "BEDROCK_SECRET_ACCESS_KEY",
+                "AWS_ACCESS_KEY_ID",
+                "AWS_SECRET_ACCESS_KEY",
+                "BEDROCK_INFERENCE_PROFILE",
             ):
                 os.environ.pop(key, None)
             from src.config import Config
 
             cfg = Config()
             self.assertEqual(cfg.llm_model, "claude-haiku-5-5")
-            self.assertEqual(cfg.llm_provider, "anthropic")
-            self.assertEqual(cfg.llm_small_provider, "anthropic")
-            self.assertEqual(cfg.llm_large_provider, "anthropic")
-            self.assertEqual(cfg.anthropic.small_llm_model, "claude-haiku-5-5")
-            self.assertEqual(cfg.anthropic.large_llm_model, "claude-haiku-5-5")
+            self.assertEqual(cfg.llm_provider, "amazon_bedrock")
+            self.assertEqual(cfg.llm_small_provider, "amazon_bedrock")
+            self.assertEqual(cfg.llm_large_provider, "amazon_bedrock")
+            self.assertEqual(
+                cfg.bedrock.small_llm_model, "us.anthropic.claude-haiku-5-5"
+            )
+            self.assertEqual(
+                cfg.bedrock.large_llm_model, "us.anthropic.claude-haiku-5-5"
+            )
+            self.assertIsNone(cfg.bedrock.access_key_id)
+            self.assertIsNone(cfg.anthropic)
 
     def test_benchmark_defaults_are_haiku(self):
         from benchmarks.locomo.config import (
             DEFAULT_ANSWER_MODEL,
-            DEFAULT_LLM_BASE_URL,
             DEFAULT_SOTA_ANSWER_MODEL,
         )
 
         self.assertEqual(DEFAULT_ANSWER_MODEL, "claude-haiku-5-5")
         self.assertEqual(DEFAULT_SOTA_ANSWER_MODEL, "claude-haiku-5-5")
-        self.assertEqual(DEFAULT_LLM_BASE_URL, "https://api.anthropic.com/v1")
 
-    def test_configured_model_reads_anthropic_roles(self):
+    def test_configured_model_reads_bedrock_roles(self):
         from src.core.saving import pipeline_runtime
 
         fake = SimpleNamespace(
-            llm_small_provider="anthropic",
-            llm_large_provider="anthropic",
-            anthropic=SimpleNamespace(
-                small_llm_model="claude-haiku-5-5",
-                large_llm_model="claude-haiku-5-5",
+            llm_small_provider="amazon_bedrock",
+            llm_large_provider="amazon_bedrock",
+            bedrock=SimpleNamespace(
+                small_llm_model="us.anthropic.claude-haiku-5-5",
+                large_llm_model="us.anthropic.claude-haiku-5-5",
             ),
             ollama=None,
         )
@@ -187,11 +233,11 @@ class HaikuConfigResolutionTests(unittest.TestCase):
             with patch("src.config.config", fake):
                 self.assertEqual(
                     pipeline_runtime.configured_model("small"),
-                    ("anthropic", "claude-haiku-5-5"),
+                    ("amazon_bedrock", "us.anthropic.claude-haiku-5-5"),
                 )
                 self.assertEqual(
                     pipeline_runtime.configured_model("large"),
-                    ("anthropic", "claude-haiku-5-5"),
+                    ("amazon_bedrock", "us.anthropic.claude-haiku-5-5"),
                 )
 
 

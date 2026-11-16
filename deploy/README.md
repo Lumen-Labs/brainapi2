@@ -9,7 +9,7 @@ Choose **heavy** or **light** when bringing up a new deployment.
 | Graph | Neo4j | NetworkX on Postgres |
 | Data | MongoDB | PostgreSQL |
 | Vectors | Milvus | PostgreSQL + pgvector |
-| LLMs | See staging notes (product default is Anthropic `claude-haiku-5-5`) | See staging notes (product default is Anthropic `claude-haiku-5-5`) |
+| LLMs | See staging notes (product default is Bedrock `us.anthropic.claude-haiku-5-5`) | See staging notes (product default is Bedrock `us.anthropic.claude-haiku-5-5`) |
 | Embeddings | Azure | OpenAI (`text-embedding-3-large`) |
 | Container limits | Full (current production) | Smaller footprint (`mem_limit` / `cpus`) |
 | Suggested VM | ~8–16 GB RAM / 4+ vCPU | ~2 GB RAM / 1 vCPU |
@@ -50,28 +50,43 @@ nginx server file; do not expose port 80 beyond a trusted proxy without HTTPS.
 
 ## Notes
 
-- Product LLM default is Anthropic Claude Haiku 5.5 (`LLM_MODEL=claude-haiku-5-5`)
-  for every chat role (Scout, Architect, Janitor, KG agent, observations,
-  consolidator, plugins). Embeddings and rerankers are unchanged. Staging
-  compose env files are **not** rewritten here; operators should add the
-  following to the private `/etc/brainapi/{light,heavy}.env` (and keep
-  existing embedding provider settings):
+- Product LLM default is Claude Haiku 5.5 on **Amazon Bedrock** for every chat
+  role (Scout, Architect, Janitor, KG agent, observations, consolidator,
+  plugins). Embeddings and rerankers are unchanged. Staging compose env files
+  are **not** rewritten here; operators should add or replace the following in
+  the private `/etc/brainapi/{light,heavy}.env` (keep existing embedding
+  provider settings). IAM instance/task role is enough; do not commit keys.
 
   ```
-  LLM_PROVIDER=anthropic
+  LLM_PROVIDER=amazon_bedrock
   LLM_MODEL=claude-haiku-5-5
-  LLM_SMALL_PROVIDER=anthropic
-  LLM_LARGE_PROVIDER=anthropic
-  ANTHROPIC_API_KEY=sk-ant-...
+  LLM_SMALL_PROVIDER=amazon_bedrock
+  LLM_LARGE_PROVIDER=amazon_bedrock
+  BEDROCK_REGION=us-east-1
+  BEDROCK_INFERENCE_PROFILE=us
+  BEDROCK_SMALL_LLM_MODEL=us.anthropic.claude-haiku-5-5
+  BEDROCK_LARGE_LLM_MODEL=us.anthropic.claude-haiku-5-5
   # optional: fail startup if any role is not Haiku 5.5
   # LLM_REQUIRE_HAIKU=true
-  # optional mock / proxy
-  # ANTHROPIC_BASE_URL=https://api.anthropic.com
+  # credentials: omit these when using IAM; otherwise standard AWS env
+  # AWS_REGION=us-east-1
+  # AWS_ACCESS_KEY_ID=
+  # AWS_SECRET_ACCESS_KEY=
+  # AWS_SESSION_TOKEN=
+  # BEDROCK_ACCESS_KEY_ID=
+  # BEDROCK_SECRET_ACCESS_KEY=
+  # BEDROCK_SESSION_TOKEN=
+  # optional direct Anthropic instead of Bedrock:
+  # LLM_PROVIDER=anthropic
+  # LLM_SMALL_PROVIDER=anthropic
+  # LLM_LARGE_PROVIDER=anthropic
+  # ANTHROPIC_API_KEY=sk-ant-...
   ```
 
-  Per-role overrides `ANTHROPIC_SMALL_LLM_MODEL` / `ANTHROPIC_LARGE_LLM_MODEL`
-  still work and default to `LLM_MODEL`. Vertex/Azure/DeepSeek remain available
-  when `LLM_*_PROVIDER` is set explicitly.
+  The `BEDROCK_*_LLM_MODEL` lines are required on hosts that still have the
+  older `claude-3-5-haiku` / `claude-3-7-sonnet` values in the profile
+  template, because those env keys override `LLM_MODEL`. Direct Anthropic
+  remains optional via `LLM_*_PROVIDER=anthropic`.
 
 - `BRAINAPI_IMAGE`, `BRAINAPI_ENV_FILE`, Redis credentials, and profile backend
   credentials are required and fail during Compose interpolation when absent.
@@ -115,9 +130,9 @@ plus an individual custom-format dump for every `brain_*` PostgreSQL database.
 
 ## Production validation
 
-The CI-only Compose override supplies a deterministic embedding stub plus an
-Anthropic Messages / OpenAI-compatible chat stub (`claude-haiku-5-5`); it is
-not a production deployment file. It lets both profiles exercise the complete
+The CI-only Compose override supplies a deterministic embedding stub plus a
+Bedrock Converse stub (`us.anthropic.claude-haiku-5-5`); it is not a
+production deployment file. It lets both profiles exercise the complete
 storage and gateway path without external model credentials:
 
 ```bash
@@ -130,7 +145,7 @@ python scripts/haiku_llm_e2e.py --api-url http://localhost \
 ```
 
 The CI stub publishes `127.0.0.1:18080` so tests can assert every chat call
-used `claude-haiku-5-5` (ingest with enrichment plus retrieve).
+used Claude Haiku 5.5 on Bedrock (ingest with enrichment plus retrieve).
 
 After backup, clean-volume restore, and restart, run the same tool with
 `verify-restore`. CI retains the profile smoke, latency, restore, backup

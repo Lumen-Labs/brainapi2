@@ -17,6 +17,7 @@ from unittest.mock import patch
 import pytest
 
 from scripts.openai_ci_stub import Handler, recorded_calls, reset_calls
+from src.lib.llm.policy import is_haiku_5_5
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -62,6 +63,54 @@ def anthropic_stub():
         yield f"http://127.0.0.1:{port}"
     finally:
         _stop_stub(server)
+
+
+def test_bedrock_client_ingest_and_retrieve_use_only_haiku(anthropic_stub):
+    class FakeBedrock:
+        region = "us-east-1"
+        access_key_id = "ci-isolated-token"
+        secret_access_key = "ci-isolated-token"
+        session_token = None
+        endpoint_url = anthropic_stub
+        small_llm_model = "us.anthropic.claude-haiku-5-5"
+        large_llm_model = "us.anthropic.claude-haiku-5-5"
+
+        def session_kwargs(self):
+            return {
+                "region_name": self.region,
+                "aws_access_key_id": self.access_key_id,
+                "aws_secret_access_key": self.secret_access_key,
+            }
+
+        def runtime_client_kwargs(self):
+            return {"endpoint_url": self.endpoint_url}
+
+    fake_config = SimpleNamespace(bedrock=FakeBedrock())
+    from src.lib.llm.client_bedrock import _BedrockLLMBase
+
+    with patch("src.lib.llm.client_bedrock.config", fake_config):
+        small = _BedrockLLMBase("us.anthropic.claude-haiku-5-5")
+        large = _BedrockLLMBase("us.anthropic.claude-haiku-5-5")
+        scout_text = small.generate_text(
+            "Extract entities as JSON. Ada Lovelace wrote notes."
+        )
+        architect_json = large.generate_json(
+            "Return relationship JSON for: Ada Lovelace wrote notes."
+        )
+        retrieve_text = small.generate_text(
+            "Filter facts for: Who wrote notes? Candidates: 0: Ada wrote notes."
+        )
+
+    assert "Ada" in scout_text or "entities" in scout_text
+    assert isinstance(architect_json, dict)
+    assert retrieve_text
+
+    calls = _json(f"{anthropic_stub}/llm-calls")
+    llm_models = calls["llm_models"]
+    assert llm_models, "enrichment and retrieve must call the chat model"
+    assert all(is_haiku_5_5(model) for model in llm_models)
+    kinds = {item["kind"] for item in calls["calls"] if item["kind"] != "embeddings"}
+    assert kinds == {"converse"}
 
 
 def test_anthropic_client_ingest_and_retrieve_use_only_haiku(anthropic_stub):
@@ -149,24 +198,29 @@ def test_dockerized_anthropic_stub_records_only_haiku():
 
         _json(f"http://127.0.0.1:{port}/v1/reset", {}, method="POST")
         _json(
-            f"http://127.0.0.1:{port}/v1/messages",
+            f"http://127.0.0.1:{port}/model/us.anthropic.claude-haiku-5-5/converse",
             {
-                "model": "claude-haiku-5-5",
-                "max_tokens": 32,
-                "messages": [{"role": "user", "content": "ingest enrichment"}],
+                "messages": [
+                    {"role": "user", "content": [{"text": "ingest enrichment"}]}
+                ]
             },
             method="POST",
         )
         _json(
-            f"http://127.0.0.1:{port}/v1/chat/completions",
+            f"http://127.0.0.1:{port}/model/us.anthropic.claude-haiku-5-5/converse",
             {
-                "model": "claude-haiku-5-5",
-                "messages": [{"role": "user", "content": "retrieve facts"}],
+                "messages": [
+                    {"role": "user", "content": [{"text": "retrieve facts"}]}
+                ]
             },
             method="POST",
         )
         payload = _json(f"http://127.0.0.1:{port}/llm-calls")
-        assert payload["llm_models"] == ["claude-haiku-5-5", "claude-haiku-5-5"]
+        assert payload["llm_models"] == [
+            "us.anthropic.claude-haiku-5-5",
+            "us.anthropic.claude-haiku-5-5",
+        ]
+        assert all(is_haiku_5_5(model) for model in payload["llm_models"])
     finally:
         subprocess.run(["docker", "rm", "-f", name], capture_output=True)
         _ = run
@@ -185,4 +239,4 @@ def test_docker_stack_ingest_and_retrieve_use_only_haiku():
         os.environ["HAIKU_STUB_URL"],
     )
     assert result["llm_models"]
-    assert set(result["llm_models"]) == {"claude-haiku-5-5"}
+    assert all(is_haiku_5_5(model) for model in result["llm_models"])

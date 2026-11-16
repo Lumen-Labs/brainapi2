@@ -8,13 +8,10 @@ from src.config import config
 
 class BedrockEmbeddingsClient(EmbeddingsClient):
     def __init__(self):
-        session = boto3.Session(
-            aws_access_key_id=config.bedrock.access_key_id,
-            aws_secret_access_key=config.bedrock.secret_access_key,
-            aws_session_token=config.bedrock.session_token,
-            region_name=config.bedrock.region,
+        session = boto3.Session(**config.bedrock.session_kwargs())
+        self.client = session.client(
+            "bedrock-runtime", **config.bedrock.runtime_client_kwargs()
         )
-        self.client = session.client("bedrock-runtime")
         self.model = config.bedrock.embedding_model
 
     def _embed_one(self, text: str) -> list[float]:

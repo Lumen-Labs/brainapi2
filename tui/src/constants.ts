@@ -80,8 +80,8 @@ export const OPENAI_EMBEDDING_SMALL_DIMENSIONS = {
 } as const;
 
 export const BEDROCK_DEFAULT_REGION = "us-east-1";
-export const BEDROCK_DEFAULT_SMALL_MODEL = "us.anthropic.claude-3-5-haiku-20241022-v1:0";
-export const BEDROCK_DEFAULT_LARGE_MODEL = "us.anthropic.claude-3-7-sonnet-20250219-v1:0";
+export const BEDROCK_DEFAULT_SMALL_MODEL = "us.anthropic.claude-haiku-5-5";
+export const BEDROCK_DEFAULT_LARGE_MODEL = "us.anthropic.claude-haiku-5-5";
 export const BEDROCK_DEFAULT_EMBEDDING_MODEL = "amazon.titan-embed-text-v2:0";
 
 export const EMBEDDINGS_DEFAULTS = {

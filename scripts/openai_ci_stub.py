@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic OpenAI/Anthropic stub for isolated CI and Haiku routing tests."""
+"""Deterministic OpenAI/Bedrock/Anthropic stub for isolated CI and Haiku routing tests."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import hashlib
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 _CALLS: list[dict] = []
 _LOCK = threading.Lock()
@@ -81,7 +81,7 @@ class Handler(BaseHTTPRequestHandler):
                     "llm_models": [
                         item["model"]
                         for item in calls
-                        if item["kind"] in {"messages", "chat.completions"}
+                        if item["kind"] in {"messages", "chat.completions", "converse"}
                     ],
                 },
             )
@@ -91,7 +91,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         path = _path(self)
         length = int(self.headers.get("Content-Length", "0"))
-        request = json.loads(self.rfile.read(length) or b"{}")
+        raw_body = self.rfile.read(length) if length else b"{}"
+        try:
+            request = json.loads(raw_body or b"{}")
+        except json.JSONDecodeError:
+            request = {}
         if path in {"/reset", "/v1/reset"}:
             reset_calls()
             self._json(200, {"status": "ok"})
@@ -118,6 +122,32 @@ class Handler(BaseHTTPRequestHandler):
                     "model": model,
                     "data": data,
                     "usage": {"prompt_tokens": 0, "total_tokens": 0},
+                },
+            )
+            return
+        if path.endswith("/converse") or path.endswith("/invoke"):
+            parts = [item for item in path.split("/") if item]
+            model = request.get("modelId") or request.get("model") or "us.anthropic.claude-haiku-5-5"
+            if "model" in parts:
+                index = parts.index("model")
+                if index + 1 < len(parts):
+                    model = unquote(parts[index + 1])
+            _record("converse", model, path)
+            self._json(
+                200,
+                {
+                    "output": {
+                        "message": {
+                            "role": "assistant",
+                            "content": [{"text": HAIKU_JSON}],
+                        }
+                    },
+                    "stopReason": "end_turn",
+                    "usage": {
+                        "inputTokens": 1,
+                        "outputTokens": 1,
+                        "totalTokens": 2,
+                    },
                 },
             )
             return

@@ -167,7 +167,9 @@ vs the 95% gate.
 
 ### Models
 
-Defaults use **Anthropic Claude Haiku 5.5** for the answerer (override in `.env`):
+Product chat LLMs default to **Amazon Bedrock Claude Haiku 5.5**. Benchmark
+answer/judge still use an OpenAI-compatible HTTP client (optional direct
+Anthropic) with the same model id:
 
 - Base URL: `https://api.anthropic.com/v1` (`BENCH_LLM_BASE_URL`)
 - Answerer: `claude-haiku-5-5` (`BENCH_ANSWER_MODEL`)

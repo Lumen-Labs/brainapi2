@@ -713,10 +713,10 @@ export async function askModels(options?: {
 
   const llmSmallProvider =
     flags?.llmSmallProvider ??
-    (await askLlmProvider("Small LLM provider", "anthropic"));
+    (await askLlmProvider("Small LLM provider", "amazon_bedrock"));
   const llmLargeProvider =
     flags?.llmLargeProvider ??
-    (await askLlmProvider("Large LLM provider", "anthropic"));
+    (await askLlmProvider("Large LLM provider", "amazon_bedrock"));
   const embeddingsProvider =
     flags?.embeddingsProvider ??
     (await askEmbeddingsProvider("Embeddings provider", "azure"));

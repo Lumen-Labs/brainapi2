@@ -9,8 +9,10 @@ from typing import Iterable
 logger = logging.getLogger("brainapi.llm")
 
 DEFAULT_LLM_MODEL = "claude-haiku-5-5"
-DEFAULT_REMOTE_PROVIDER = "anthropic"
+DEFAULT_REMOTE_PROVIDER = "amazon_bedrock"
 HAIKU_MODEL_ID = "claude-haiku-5-5"
+DEFAULT_BEDROCK_INFERENCE_PROFILE = "us"
+DEFAULT_BEDROCK_HAIKU_MODEL = "us.anthropic.claude-haiku-5-5"
 LLM_ROLES = ("small", "large")
 
 _PROVIDER_ROLE_ENV = {
@@ -64,11 +66,32 @@ def llm_require_haiku(flag: str | None = None) -> bool:
     return raw.lower() in {"1", "true", "yes", "on"}
 
 
+def _model_leaf(model: str) -> str:
+    return model.strip().lower().split(".")[-1].split(":")[0]
+
+
 def is_haiku_5_5(model: str | None) -> bool:
-    name = (model or "").strip().lower()
-    if name == HAIKU_MODEL_ID:
+    leaf = _model_leaf(model or "")
+    if leaf == HAIKU_MODEL_ID:
         return True
-    return name.startswith(f"{HAIKU_MODEL_ID}-")
+    return leaf.startswith(f"{HAIKU_MODEL_ID}-")
+
+
+def bedrock_inference_profile() -> str:
+    raw = (os.getenv("BEDROCK_INFERENCE_PROFILE") or DEFAULT_BEDROCK_INFERENCE_PROFILE).strip()
+    return raw or DEFAULT_BEDROCK_INFERENCE_PROFILE
+
+
+def bedrock_model_id(llm_model: str | None = None) -> str:
+    name = (llm_model or configured_llm_model()).strip() or DEFAULT_LLM_MODEL
+    if "anthropic.claude-" in name:
+        return name
+    profile = bedrock_inference_profile()
+    leaf = name
+    if name == HAIKU_MODEL_ID or name.startswith(f"{HAIKU_MODEL_ID}-") or name.startswith("claude-"):
+        leaf = name
+        return f"{profile}.anthropic.{leaf}" if profile else f"anthropic.{leaf}"
+    return name
 
 
 def default_provider_for_mode(models_mode: str) -> str:
@@ -93,6 +116,8 @@ def resolve_role_model(
         override = (os.getenv(env_key) or "").strip()
         if override:
             return override
+    if provider == "amazon_bedrock":
+        return bedrock_model_id(llm_model)
     if provider in {"anthropic", "anthropic_vertex", "gcp_vertex"}:
         return llm_model
     fallback = (_PROVIDER_ROLE_DEFAULTS.get(provider) or {}).get(role)
