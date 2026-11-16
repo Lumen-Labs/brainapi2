@@ -74,6 +74,13 @@ def replay_graph_operation(client, brain_id, operation):
             args["uuid"], args["updating"], brain_id,
             args["new_properties"], args["properties_to_remove"],
         )
+    elif method == "set_fact_verification":
+        client.set_fact_verification(
+            args["fact_id"],
+            brain_id,
+            kind=args["kind"],
+            properties=args["properties"],
+        )
     elif method == "refresh_hub_bridges_for_entities":
         refresh = getattr(client, method, None)
         if refresh is None:

@@ -13,6 +13,12 @@ from abc import ABC, abstractmethod
 from typing import Dict, List, Literal, Optional, Tuple
 from src.adapters.interfaces.graph import GraphClient, PredicateWithFlowKey
 from src.core.saving.ingest_write_buffer import capture_operation, staged_nodes, writes_are_staged
+from src.core.verification.facts import (
+    entity_is_rejected,
+    fact_tuple_is_rejected,
+    filter_relationship_results,
+    include_rejected_enabled,
+)
 from src.constants.embeddings import Vector
 from src.constants.kg import (
     IdentificationParams,
@@ -294,13 +300,23 @@ class GraphAdapter:
         """
         Get the neighbors of a node.
         """
-        return self.graph.get_neighbors(
+        neighbors = self.graph.get_neighbors(
             nodes,
             brain_id=brain_id,
             same_type_only=same_type_only,
             limit=limit,
             of_types=of_types,
         )
+        if include_rejected_enabled():
+            return neighbors
+        filtered: Dict[str, List[Tuple[Predicate, Node]]] = {}
+        for key, items in (neighbors or {}).items():
+            filtered[key] = [
+                (predicate, node)
+                for predicate, node in items
+                if not entity_is_rejected(predicate) and not entity_is_rejected(node)
+            ]
+        return filtered
 
     def get_event_centric_neighbors(
         self,
@@ -310,7 +326,14 @@ class GraphAdapter:
         """
         Get the event-centric neighbors of a node.
         """
-        return self.graph.get_event_centric_neighbors(nodes, brain_id)
+        triples = self.graph.get_event_centric_neighbors(nodes, brain_id)
+        if include_rejected_enabled():
+            return triples
+        return [
+            triple
+            for triple in triples
+            if not fact_tuple_is_rejected(*triple[:5])
+        ]
 
     def get_node_with_rel_by_uuid(
         self, rel_ids_with_node_ids: list[tuple[str, str]], brain_id: str = "default"
@@ -358,7 +381,7 @@ class GraphAdapter:
         Search the relationships of the graph.
         """
         relationship_uuids = []
-        return self.graph.search_relationships(
+        result = self.graph.search_relationships(
             brain_id,
             limit,
             skip,
@@ -369,6 +392,10 @@ class GraphAdapter:
             query_text,
             query_search_target,
         )
+        if include_rejected_enabled():
+            return result
+        kept = filter_relationship_results(result.results)
+        return SearchRelationshipsResult(results=kept, total=len(kept))
 
     def search_entities(
         self,
@@ -382,9 +409,13 @@ class GraphAdapter:
         Search the entities of the graph.
         """
         node_uuids = []
-        return self.graph.search_entities(
+        result = self.graph.search_entities(
             brain_id, limit, skip, node_labels, node_uuids, query_text
         )
+        if include_rejected_enabled():
+            return result
+        kept = [node for node in result.results if not entity_is_rejected(node)]
+        return SearchEntitiesResult(results=kept, total=len(kept))
 
     def search_nodes_bm25(
         self,
@@ -844,6 +875,7 @@ class GraphAdapter:
             node_labels=node_labels,
             direction=direction,
             limit=limit,
+            include_rejected=include_rejected_enabled(),
         )
         return {
             "start": start_node.model_dump(mode="json"),
@@ -909,7 +941,72 @@ class GraphAdapter:
         event_uuids: list[str],
         brain_id: str = "default",
     ) -> list:
-        return self.graph.get_event_hub_facts(event_uuids, brain_id)
+        triples = self.graph.get_event_hub_facts(event_uuids, brain_id)
+        if include_rejected_enabled():
+            return triples
+        return [
+            triple
+            for triple in triples
+            if not fact_tuple_is_rejected(*triple[:5])
+        ]
+
+    def get_fact_record(self, fact_id: str, brain_id: str = "default") -> dict | None:
+        return self.graph.get_fact_record(fact_id, brain_id)
+
+    def set_fact_verification(
+        self,
+        fact_id: str,
+        brain_id: str = "default",
+        *,
+        kind: Literal["relationship", "node"],
+        properties: dict,
+    ) -> dict | None:
+        if capture_operation(
+            brain_id,
+            {
+                "adapter": "graph",
+                "method": "set_fact_verification",
+                "args": {
+                    "fact_id": fact_id,
+                    "kind": kind,
+                    "properties": properties,
+                },
+            },
+        ):
+            return {
+                "kind": kind,
+                "uuid": fact_id,
+                "name": "",
+                "description": "",
+                "properties": dict(properties or {}),
+                "subject_uuid": None,
+                "subject_name": None,
+                "subject_labels": [],
+                "object_uuid": None,
+                "object_name": None,
+                "object_labels": [],
+                "labels": [],
+            }
+        return self.graph.set_fact_verification(
+            fact_id, brain_id, kind=kind, properties=properties
+        )
+
+    def list_facts_by_verification(
+        self,
+        brain_id: str = "default",
+        *,
+        state: str | None = None,
+        include_rejected: bool = False,
+        limit: int = 50,
+        skip: int = 0,
+    ) -> tuple[list[dict], int]:
+        return self.graph.list_facts_by_verification(
+            brain_id,
+            state=state,
+            include_rejected=include_rejected,
+            limit=limit,
+            skip=skip,
+        )
 
     def rebuild_hub_bridge_index(self, brain_id: str = "default") -> int:
         if capture_operation(brain_id, {

@@ -396,6 +396,43 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
         with self.assertRaises(InvalidCypherIdentifier):
             client.execute_operation("RETURN 1", "neo4j`; MATCH (n) DETACH DELETE n")
 
+    def test_fact_verification_reads_and_writes_use_params(self):
+        payload = "'; MATCH (n) DETACH DELETE n //"
+        client = _client(records=[_Record({"uuid": payload, "kind": "relationship"})])
+        client.get_fact_record(payload, "braina")
+        client.set_fact_verification(
+            payload,
+            "braina",
+            kind="relationship",
+            properties={
+                "verification_state": "verified",
+                "verified_by": payload,
+                "verified_at": "2026-11-16T00:00:00+00:00",
+                "verification_source": payload,
+                "verification_note": payload,
+                "verification_history": [payload],
+            },
+        )
+        client.list_facts_by_verification(
+            "braina",
+            state="verified",
+            include_rejected=False,
+            limit=10,
+            skip=0,
+        )
+        self.assertTrue(client.driver.calls)
+        for query, params, _db in client.driver.calls:
+            self.assertNotIn(payload, query)
+            self.assertTrue(params)
+        first_query, first_params, _db = client.driver.calls[0]
+        self.assertIn("$uuid", first_query)
+        self.assertEqual(first_params["uuid"], payload)
+        write_query = client.driver.calls[1][0]
+        write_params = client.driver.calls[1][1]
+        self.assertIn("$verified_by", write_query)
+        self.assertEqual(write_params["verified_by"], payload)
+        self.assertEqual(write_params["verification_history"], [payload])
+
 
 if __name__ == "__main__":
     unittest.main()

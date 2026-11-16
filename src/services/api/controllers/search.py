@@ -50,6 +50,7 @@ from src.services.api.constants.requests import (
 from src.services.data.main import data_adapter
 from src.services.kg_agent.main import embeddings_adapter, graph_adapter, vector_store_adapter
 from src.utils.vector_search import VectorSearchFacade
+from src.core.verification.facts import verification_scope
 
 vector_search = VectorSearchFacade(vector_store_adapter)
 
@@ -201,10 +202,11 @@ def _collect_graph_hits(
 
 async def search(request: SearchRequestBody) -> SearchResponse:
     _require_search_enabled()
-    with profile_request(
-        "retrieve.search", enabled=request.profile_stages
-    ) as profiler:
-        response = await _search(request)
+    with verification_scope(include_rejected=bool(request.include_rejected)):
+        with profile_request(
+            "retrieve.search", enabled=request.profile_stages
+        ) as profiler:
+            response = await _search(request)
     if profiler is not None:
         response.stage_timings = profiler.last_report
     return response

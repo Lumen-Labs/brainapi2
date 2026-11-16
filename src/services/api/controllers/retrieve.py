@@ -49,6 +49,13 @@ from src.utils.dates import parse_date_string, to_naive_utc
 from src.utils.similarity.vectors import cosine_similarity
 from src.utils.nlp.ner import _entity_extractor
 from src.config import config
+from src.core.verification.facts import (
+    combined_verification,
+    fact_pair_allowed,
+    fact_tuple_is_verified,
+    verification_scope,
+)
+from src.services.api.constants.requests import FactVerificationInfo
 
 vector_search = VectorSearchFacade(vector_store_adapter)
 
@@ -409,7 +416,11 @@ def _expand_cross_event_bridges(
 
 
 async def retrieve_data(
-    text: str, limit: int, preferred_entities: str, brain_id: str = "default"
+    text: str,
+    limit: int,
+    preferred_entities: str,
+    brain_id: str = "default",
+    include_rejected: bool = False,
 ) -> RetrieveRequestResponse:
     """
     Retrieve data from the knowledge graph and data store.
@@ -463,9 +474,10 @@ async def retrieve_data(
         )
         return ts_text_chunks, ts_observations, v_text_chunks, v_observations, nodes
 
-    ts_text_chunks, ts_observations, v_text_chunks, v_observations, nodes = (
-        await asyncio.to_thread(_get_data)
-    )
+    with verification_scope(include_rejected=include_rejected):
+        ts_text_chunks, ts_observations, v_text_chunks, v_observations, nodes = (
+            await asyncio.to_thread(_get_data)
+        )
 
     return RetrieveRequestResponse(
         data=[*ts_text_chunks, *v_text_chunks],
@@ -480,6 +492,7 @@ async def retrieve_neighbors(
     identification_params: Optional[IdentificationParams] = None,
     limit: int = 10,
     brain_id: str = "default",
+    include_rejected: bool = False,
 ) -> RetrieveNeighborsRequestResponse:
     """
     Retrieve neighboring nodes related to a specified main node.
@@ -629,7 +642,8 @@ async def retrieve_neighbors(
             neighbors=unique_neighbors[:limit],
         )
 
-    return await _get_neighbors()
+    with verification_scope(include_rejected=include_rejected):
+        return await _get_neighbors()
 
 
 async def retrieve_neighbors_ai_mode(
@@ -675,6 +689,7 @@ async def get_relationships(
     query_text: Optional[str] = None,
     query_search_target: Optional[str] = "all",
     brain_id: str = "default",
+    include_rejected: bool = False,
 ):
     """
     Retrieve relationships from the knowledge graph with optional filtering and pagination.
@@ -695,17 +710,18 @@ async def get_relationships(
             - relationships: List of serialized relationship objects.
             - total: Total number of matching relationships.
     """
-    relationships = await asyncio.to_thread(
-        search_relationships,
-        limit,
-        skip,
-        relationship_types,
-        from_node_labels,
-        to_node_labels,
-        query_text,
-        query_search_target,
-        brain_id,
-    )
+    with verification_scope(include_rejected=include_rejected):
+        relationships = await asyncio.to_thread(
+            search_relationships,
+            limit,
+            skip,
+            relationship_types,
+            from_node_labels,
+            to_node_labels,
+            query_text,
+            query_search_target,
+            brain_id,
+        )
 
     return JSONResponse(
         content={
@@ -722,6 +738,7 @@ async def get_entities(
     node_labels: Optional[list[str]] = None,
     query_text: Optional[str] = None,
     brain_id: str = "default",
+    include_rejected: bool = False,
 ):
     """
     Retrieve entities from the knowledge graph with optional label and text filters.
@@ -739,9 +756,10 @@ async def get_entities(
             - entities (list): Serialized entity objects.
             - total (int): Total number of matching entities.
     """
-    entities = await asyncio.to_thread(
-        search_entities, limit, skip, node_labels, query_text, brain_id
-    )
+    with verification_scope(include_rejected=include_rejected):
+        entities = await asyncio.to_thread(
+            search_entities, limit, skip, node_labels, query_text, brain_id
+        )
 
     return JSONResponse(
         content={
@@ -892,12 +910,19 @@ def _relevance_score(
     completeness = _hub_completeness_score(candidate) / 3.8
     recency = _fact_recency_score(candidate, now=now)
     topic_boost = 0.08 if candidate.get("topic_preferred") else 0.0
+    triple = candidate.get("triple") or ()
+    verified_boost = 0.0
+    if fact_tuple_is_verified(*triple[:5] if len(triple) >= 5 else triple):
+        from src.core.verification.facts import verified_rank_boost
+
+        verified_boost = verified_rank_boost()
     return (
         0.45 * distance_term
         + 0.25 * ppr_term
         + 0.20 * completeness
         + 0.10 * recency
         + topic_boost
+        + verified_boost
     )
 
 
@@ -1309,6 +1334,8 @@ def _fact_predicates_allowed(
     *,
     include_history: bool,
 ) -> bool:
+    if not fact_pair_allowed(r, r2):
+        return False
     if include_history:
         return True
     return _is_currently_valid(r) and _is_currently_valid(r2)
@@ -1685,12 +1712,14 @@ def _build_fact_channel(
         if session_ids:
             line = f"{line} ({', '.join(session_ids)})"
         text_lines.append(line)
+        verification = combined_verification(r, r2, m)
         triples.append(
             GetContextTriple(
                 identified_entity=candidate["identified_entity"],
                 triple=(n, r, m, r2, b),
                 source_chunk_ids=chunk_ids or None,
                 source_session_ids=session_ids or None,
+                verification=FactVerificationInfo(**verification.model_dump()),
             )
         )
         for sid in session_ids:
@@ -1790,10 +1819,11 @@ async def get_context(
     and publishes it as a latency trace event; it is off unless the caller asks
     for it or `TRACE_STAGE_PROFILER_ENABLED` is set.
     """
-    with profile_request(
-        "retrieve.context", enabled=request.profile_stages
-    ) as profiler:
-        response = await _build_context(request, fact_filter_adapter)
+    with verification_scope(include_rejected=bool(request.include_rejected)):
+        with profile_request(
+            "retrieve.context", enabled=request.profile_stages
+        ) as profiler:
+            response = await _build_context(request, fact_filter_adapter)
     if profiler is not None:
         response.stage_timings = profiler.last_report
     return response
