@@ -53,7 +53,14 @@ from src.core.saving.validity import (
     predicate_is_valid_at,
     stamp_valid_from,
 )
-from src.core.saving.validity_backfill import backfill_chunk_validity
+from src.core.saving.validity_backfill import (
+    backfill_brain_validity,
+    backfill_chunk_validity,
+)
+from src.core.saving.validity_cardinality import (
+    should_close_outgoing_edge,
+    single_valued_relationship_types,
+)
 from src.core.saving.validity_changes import collect_validity_changes
 from src.services.api.constants.requests import GetContextRequestBody
 from src.utils.nlp.ner import ExtractElementsResponse
@@ -183,6 +190,160 @@ class ValidityBackfillTests(unittest.TestCase):
         self.assertEqual(chunk.metadata["valid_to"], "2025-01-01T00:00:00Z")
         self.assertEqual(backfill_chunk_validity(store, "brain"), 0)
         self.assertEqual(len(saved), 1)
+
+    def test_mixed_legacy_copy_fixture_is_idempotent_and_leaves_live_copies(self):
+        v1 = TextChunk(
+            id="reg-v1",
+            text="Article 12. five years.",
+            metadata={
+                "source_key": "reg-article-12",
+                "superseded_at": "15/01/2025",
+            },
+            inserted_at=datetime(2024, 1, 1, 8, 0, 0),
+        )
+        v2 = TextChunk(
+            id="reg-v2",
+            text="Article 12. seven years.",
+            metadata={
+                "source_key": "reg-article-12",
+                "superseded_at": "2026-01-01",
+            },
+            inserted_at=datetime(2025, 1, 15, tzinfo=timezone.utc),
+        )
+        v3 = TextChunk(
+            id="reg-v3",
+            text="Article 12. ten years.",
+            metadata={
+                "source_key": "reg-article-12",
+                "valid_from": "2026-01-01T00:00:00Z",
+            },
+            inserted_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+        live = TextChunk(
+            id="unrelated",
+            text="keep me live",
+            metadata={"note": "no source_key"},
+            inserted_at=datetime(2024, 6, 1, tzinfo=timezone.utc),
+        )
+        chunks = [v1, v2, v3, live]
+        saved = []
+
+        class Store:
+            def get_text_chunks(self, brain_id, limit=10, skip=0, order="asc"):
+                if skip:
+                    return [], len(chunks)
+                return chunks, len(chunks)
+
+            def save_text_chunk(self, item, brain_id):
+                saved.append((item.id, dict(item.metadata), item.text))
+
+        old_rel = Predicate(
+            uuid="rel-old",
+            name="REQUIRES",
+            description="five years",
+            properties={
+                "valid_at": "01/01/2024",
+                "invalid_at": "15/01/2025",
+                "source_chunk_ids": ["reg-v1"],
+            },
+            deprecated=True,
+        )
+        live_rel = Predicate(
+            uuid="rel-live",
+            name="WORKS_WITH",
+            description="colleague",
+            properties={"valid_at": "2024-06-01T12:00:00", "source_chunk_ids": ["unrelated"]},
+        )
+        already = Predicate(
+            uuid="rel-done",
+            name="REQUIRES",
+            description="ten years",
+            properties={"valid_from": "2026-01-01T00:00:00Z", "source_chunk_ids": ["reg-v3"]},
+        )
+        triples = [
+            (Node(uuid="org", name="Issuer", labels=["ORG"]), old_rel, Node(uuid="c", name="Clause", labels=["CLAUSE"])),
+            (Node(uuid="alice", name="Alice", labels=["PERSON"]), live_rel, Node(uuid="bob", name="Bob", labels=["PERSON"])),
+            (Node(uuid="org", name="Issuer", labels=["ORG"]), already, Node(uuid="c", name="Clause", labels=["CLAUSE"])),
+        ]
+
+        class Graph:
+            def list_validity_relationships(self, brain_id, skip=0, limit=100, since=None, until=None):
+                if skip:
+                    return [], len(triples)
+                return triples, len(triples)
+
+            def update_properties(self, uuid, kind, brain_id, new_properties, properties_to_remove=None):
+                for _, pred, _ in triples:
+                    if pred.uuid == uuid:
+                        pred.properties = {**(pred.properties or {}), **(new_properties or {})}
+
+        store = Store()
+        graph = Graph()
+        first = backfill_brain_validity(store, graph, "brain")
+        self.assertEqual(first["chunks"], 3)
+        self.assertEqual(first["relationships"], 2)
+        self.assertEqual(v1.metadata["valid_from"], "2024-01-01T08:00:00Z")
+        self.assertEqual(v1.metadata["valid_to"], "2025-01-15T00:00:00Z")
+        self.assertEqual(v1.metadata["superseded_at"], "15/01/2025")
+        self.assertEqual(v2.metadata["valid_to"], "2026-01-01T00:00:00Z")
+        self.assertEqual(v3.metadata["valid_from"], "2026-01-01T00:00:00Z")
+        self.assertNotIn("valid_to", v3.metadata)
+        self.assertEqual(live.metadata, {"note": "no source_key", "valid_from": "2024-06-01T00:00:00Z"})
+        self.assertEqual(old_rel.properties["valid_from"], "2024-01-01T00:00:00Z")
+        self.assertEqual(old_rel.properties["valid_to"], "2025-01-15T00:00:00Z")
+        self.assertEqual(old_rel.properties["invalid_at"], "15/01/2025")
+        self.assertEqual(live_rel.properties["valid_from"], "2024-06-01T12:00:00Z")
+        self.assertNotIn("valid_to", live_rel.properties)
+        self.assertEqual(already.properties, {
+            "valid_from": "2026-01-01T00:00:00Z",
+            "source_chunk_ids": ["reg-v3"],
+        })
+        self.assertEqual({row[0] for row in saved}, {"reg-v1", "reg-v2", "unrelated"})
+        self.assertEqual(saved[0][2], "Article 12. five years.")
+        dry = backfill_brain_validity(store, graph, "brain", dry_run=True)
+        self.assertEqual(dry, {"chunks": 0, "relationships": 0})
+        second = backfill_brain_validity(store, graph, "brain")
+        self.assertEqual(second, {"chunks": 0, "relationships": 0})
+        self.assertEqual(len(saved), 3)
+
+
+class ValidityCardinalityTests(unittest.TestCase):
+    def test_multi_valued_types_are_not_closed_unless_source_revision(self):
+        self.assertFalse(
+            should_close_outgoing_edge(
+                relationship_name="WORKS_WITH",
+                existing_properties={"source_chunk_ids": ["c1"]},
+            )
+        )
+        self.assertFalse(
+            should_close_outgoing_edge(
+                relationship_name="APPLIES_TO",
+                existing_properties={},
+            )
+        )
+        self.assertTrue(
+            should_close_outgoing_edge(
+                relationship_name="LIVES_IN",
+                existing_properties={},
+            )
+        )
+        self.assertTrue(
+            should_close_outgoing_edge(
+                relationship_name="WORKS_WITH",
+                existing_properties={"source_chunk_ids": ["old"]},
+                superseded_chunk_ids=["old"],
+            )
+        )
+
+    def test_allowlist_env_extends_single_valued_types(self):
+        self.assertNotIn("APPLIES_TO", single_valued_relationship_types())
+        with patch.dict(os.environ, {"VALIDITY_SINGLE_VALUED_REL_TYPES": "APPLIES_TO"}):
+            self.assertTrue(
+                should_close_outgoing_edge(
+                    relationship_name="APPLIES_TO",
+                    existing_properties={},
+                )
+            )
 
 
 class ValidityChangesTests(unittest.TestCase):
