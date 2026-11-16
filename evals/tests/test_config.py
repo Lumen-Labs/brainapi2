@@ -10,6 +10,7 @@ from evals.config import (
     Settings,
     canonicalize_llm_model,
 )
+from evals.llm import is_anthropic_api_host
 
 
 _LLM_ENV = (
@@ -100,6 +101,14 @@ class ConfigTests(unittest.TestCase):
             settings = Settings.load()
         self.assertEqual(settings.llm_api_key, "")
         self.assertEqual(settings.embedding_api_key, "sk-openai")
+
+    def test_anthropic_host_is_exact_or_subdomain(self) -> None:
+        self.assertTrue(is_anthropic_api_host("api.anthropic.com"))
+        self.assertTrue(is_anthropic_api_host("anthropic.com"))
+        self.assertTrue(is_anthropic_api_host("API.Anthropic.COM."))
+        self.assertFalse(is_anthropic_api_host("notanthropic.com"))
+        self.assertFalse(is_anthropic_api_host("anthropic.com.evil.example"))
+        self.assertFalse(is_anthropic_api_host(""))
 
     def test_brainapi_confirmed_must_be_haiku(self) -> None:
         with isolated_env(EVAL_BRAINAPI_LLM_CONFIRMED="gpt-4o"):
