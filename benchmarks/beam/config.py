@@ -12,9 +12,9 @@ RUNS_DIR = BENCHMARKS_ROOT / "runs"
 DEFAULT_BEAM_DATA_DIR = DATA_DIR / "beam"
 DEFAULT_HF_DATASET = "Mohammadta/BEAM"
 DEFAULT_HF_DATASET_10M = "Mohammadta/BEAM-10M"
-DEFAULT_LLM_BASE_URL = "https://api.anthropic.com/v1"
-DEFAULT_ANSWER_MODEL = "claude-haiku-5-5"
-DEFAULT_AZURE_JUDGE_MODEL = "claude-haiku-5-5"
+DEFAULT_LLM_BASE_URL = "https://api.deepseek.com"
+DEFAULT_ANSWER_MODEL = "deepseek-v4-flash"
+DEFAULT_AZURE_JUDGE_MODEL = "gpt-4o"
 DEFAULT_AZURE_API_VERSION = "2024-12-01-preview"
 
 CHAT_SIZES = ("100K", "500K", "1M", "10M")
@@ -106,8 +106,7 @@ class Settings:
         defaults = profile_defaults(profile)
 
         api_key = (
-            os.getenv("ANTHROPIC_API_KEY")
-            or os.getenv("DEEPSEEK_API_KEY")
+            os.getenv("DEEPSEEK_API_KEY")
             or os.getenv("OPENAI_API_KEY")
             or ""
         )
@@ -124,10 +123,16 @@ class Settings:
             or os.getenv("AZURE_LARGE_LLM_SUBSCRIPTION_KEY")
             or ""
         )
-        judge_model = os.getenv("BENCH_JUDGE_MODEL", "") or answer_model
+        azure_available = bool(azure_endpoint and azure_key)
+
+        judge_model = os.getenv("BENCH_JUDGE_MODEL", "")
         judge_base_url = os.getenv("BENCH_JUDGE_BASE_URL", "")
         judge_api_key = os.getenv("BENCH_JUDGE_API_KEY", "")
-        use_azure_judge = False
+        use_azure_judge = azure_available and not judge_model and not judge_base_url
+        if use_azure_judge:
+            judge_model = os.getenv(
+                "AZURE_LARGE_LLM_MODEL", DEFAULT_AZURE_JUDGE_MODEL
+            )
 
         return cls(
             brainapi_url=os.getenv("BRAINAPI_URL", "http://localhost:8000").rstrip("/"),
@@ -184,14 +189,14 @@ class Settings:
     def require_llm(self) -> None:
         if not self.openai_api_key:
             raise SystemExit(
-                "ANTHROPIC_API_KEY is required for answer/judge LLM calls "
-                f"({DEFAULT_ANSWER_MODEL}). Copy .env.example to .env and set it."
+                "DEEPSEEK_API_KEY (or OPENAI_API_KEY) is required for answer/judge "
+                "LLM calls. Copy .env.example to .env and set it."
             )
 
     def require_judge_llm(self) -> None:
         if not self.judge_api_key:
             raise SystemExit(
-                "No judge API key. Set ANTHROPIC_API_KEY for "
-                f"{DEFAULT_ANSWER_MODEL}, or BENCH_JUDGE_API_KEY with "
-                "BENCH_JUDGE_BASE_URL and BENCH_JUDGE_MODEL."
+                "No judge API key. Set BENCH_JUDGE_API_KEY (with BENCH_JUDGE_BASE_URL "
+                "and BENCH_JUDGE_MODEL), or DEEPSEEK_API_KEY / OPENAI_API_KEY to reuse "
+                "the answerer's provider."
             )
