@@ -21,10 +21,10 @@ VARIANT_FILES = {
 }
 
 DEFAULT_VARIANT = "s"
-DEFAULT_LLM_BASE_URL = "https://api.deepseek.com"
-DEFAULT_ANSWER_MODEL = "deepseek-v4-flash"
-DEFAULT_SOTA_ANSWER_MODEL = "deepseek-v4-flash"
-DEFAULT_AZURE_JUDGE_MODEL = "gpt-4o"
+DEFAULT_LLM_BASE_URL = "https://api.anthropic.com/v1"
+DEFAULT_ANSWER_MODEL = "claude-haiku-5-5"
+DEFAULT_SOTA_ANSWER_MODEL = "claude-haiku-5-5"
+DEFAULT_AZURE_JUDGE_MODEL = "claude-haiku-5-5"
 DEFAULT_AZURE_API_VERSION = "2024-12-01-preview"
 DEFAULT_BENCH_PROFILE = "product"
 
@@ -134,7 +134,8 @@ class Settings:
         defaults = profile_defaults(profile)
 
         api_key = (
-            os.getenv("DEEPSEEK_API_KEY")
+            os.getenv("ANTHROPIC_API_KEY")
+            or os.getenv("DEEPSEEK_API_KEY")
             or os.getenv("OPENAI_API_KEY")
             or ""
         )
@@ -151,8 +152,6 @@ class Settings:
             or os.getenv("AZURE_LARGE_LLM_SUBSCRIPTION_KEY")
             or ""
         )
-        azure_available = bool(azure_endpoint and azure_key)
-
         answer_azure_endpoint: str | None = None
         if profile == "sota":
             sota_answer = os.getenv("BENCH_SOTA_ANSWER_MODEL", "").strip()
@@ -166,22 +165,16 @@ class Settings:
                     "BENCH_ANSWER_MODEL", DEFAULT_SOTA_ANSWER_MODEL
                 )
 
-        judge_model = os.getenv("BENCH_JUDGE_MODEL", "")
+        judge_model = os.getenv("BENCH_JUDGE_MODEL", "") or answer_model
         judge_base_url = os.getenv("BENCH_JUDGE_BASE_URL", "")
         judge_api_key = os.getenv("BENCH_JUDGE_API_KEY", "")
-        use_azure_judge = azure_available and not judge_model and not judge_base_url
-        if use_azure_judge:
-            judge_model = os.getenv(
-                "AZURE_LARGE_LLM_MODEL", DEFAULT_AZURE_JUDGE_MODEL
-            )
+        use_azure_judge = False
         if profile == "sota":
             sota_judge = os.getenv("BENCH_SOTA_JUDGE_MODEL", "").strip()
             if sota_judge:
                 judge_model = sota_judge
-                use_azure_judge = False
             elif not os.getenv("BENCH_JUDGE_MODEL"):
                 judge_model = answer_model
-                use_azure_judge = False
                 judge_base_url = llm_base_url or ""
                 judge_api_key = api_key
 
@@ -248,14 +241,14 @@ class Settings:
     def require_llm(self) -> None:
         if not self.openai_api_key:
             raise SystemExit(
-                "DEEPSEEK_API_KEY (or OPENAI_API_KEY) is required for answer/judge "
-                "LLM calls. Copy .env.example to .env and set it."
+                "ANTHROPIC_API_KEY is required for answer/judge LLM calls "
+                f"({DEFAULT_ANSWER_MODEL}). Copy .env.example to .env and set it."
             )
 
     def require_judge_llm(self) -> None:
         if not self.judge_api_key:
             raise SystemExit(
-                "No judge API key. Set BENCH_JUDGE_API_KEY (with BENCH_JUDGE_BASE_URL "
-                "and BENCH_JUDGE_MODEL), or DEEPSEEK_API_KEY / OPENAI_API_KEY to reuse "
-                "the answerer's provider."
+                "No judge API key. Set ANTHROPIC_API_KEY for "
+                f"{DEFAULT_ANSWER_MODEL}, or BENCH_JUDGE_API_KEY with "
+                "BENCH_JUDGE_BASE_URL and BENCH_JUDGE_MODEL."
             )

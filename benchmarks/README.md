@@ -167,19 +167,18 @@ vs the 95% gate.
 
 ### Models
 
-Defaults use **DeepSeek** for the answerer (override in `.env`):
+The only allowed LLM is **Claude Haiku 5.5** (`claude-haiku-5-5`) for answer generation,
+judging, and BrainAPI LLM steps. Embedding models are not LLMs and are unaffected.
 
-- Base URL: `https://api.deepseek.com` (`BENCH_LLM_BASE_URL`)
-- Answerer: `deepseek-v4-flash` (`BENCH_ANSWER_MODEL`)
-- API key: `DEEPSEEK_API_KEY` (or `OPENAI_API_KEY` for other providers)
+- Base URL: `https://api.anthropic.com/v1` (`BENCH_LLM_BASE_URL`)
+- Answerer/judge: `claude-haiku-5-5` (`BENCH_ANSWER_MODEL`, `BENCH_JUDGE_MODEL`)
+- API key: `ANTHROPIC_API_KEY`
 
-The judge is configured independently and should be a **different model family** from
-the answerer, otherwise judge accuracy carries self-preference bias. `evaluate` prints a
-warning and records `judge_shares_answer_family` in the manifest when the families match.
+`evaluate` still records `judge_shares_answer_family` in the manifest. With these defaults
+answerer and judge share the Haiku 5.5 family.
 
-- `BENCH_JUDGE_MODEL`, `BENCH_JUDGE_BASE_URL`, `BENCH_JUDGE_API_KEY` for any OpenAI-compatible provider
-- `BENCH_JUDGE_AZURE_ENDPOINT` / `BENCH_JUDGE_AZURE_KEY` / `BENCH_JUDGE_AZURE_API_VERSION` for Azure OpenAI; the repo-root `AZURE_LARGE_LLM_*` variables are picked up automatically when they are exported and no judge model is set explicitly
-- With no judge configuration at all, the judge falls back to the answerer's provider and model, and the run is marked as sharing a family
+- `BENCH_JUDGE_MODEL`, `BENCH_JUDGE_BASE_URL`, `BENCH_JUDGE_API_KEY` if you point at an OpenAI-compatible Claude gateway
+- With no judge configuration at all, the judge falls back to the answerer's provider and model
 
 Other OpenAI-compatible providers work the same way — set the base URL, model ids, and the key.
 

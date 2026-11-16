@@ -186,10 +186,10 @@ class AnthropicConfig:
     def __init__(self):
         self.api_key = os.getenv("ANTHROPIC_API_KEY")
         self.small_llm_model = os.getenv(
-            "ANTHROPIC_SMALL_LLM_MODEL", "claude-3-5-haiku-latest"
+            "ANTHROPIC_SMALL_LLM_MODEL", "claude-haiku-5-5"
         )
         self.large_llm_model = os.getenv(
-            "ANTHROPIC_LARGE_LLM_MODEL", "claude-sonnet-4-20250514"
+            "ANTHROPIC_LARGE_LLM_MODEL", "claude-haiku-5-5"
         )
 
     def validate_llm(self, require_large: bool):
@@ -243,8 +243,8 @@ class GCPConfig:
         self.location = (
             os.getenv("GCP_VERTEX_REGION") or os.getenv("GCP_LOCATION") or "global"
         )
-        self.small_llm_model = os.getenv("GCP_SMALL_LLM_MODEL")
-        self.large_llm_model = os.getenv("GCP_LARGE_LLM_MODEL")
+        self.small_llm_model = os.getenv("GCP_SMALL_LLM_MODEL", "claude-haiku-5-5")
+        self.large_llm_model = os.getenv("GCP_LARGE_LLM_MODEL", "claude-haiku-5-5")
         self.embedding_model = os.getenv("GCP_EMBEDDING_MODEL", "text-embedding-005")
 
     def validate_llm(self, require_large: bool):
@@ -275,8 +275,12 @@ class BedrockConfig:
         self.access_key_id = os.getenv("BEDROCK_ACCESS_KEY_ID")
         self.secret_access_key = os.getenv("BEDROCK_SECRET_ACCESS_KEY")
         self.session_token = os.getenv("BEDROCK_SESSION_TOKEN")
-        self.small_llm_model = os.getenv("BEDROCK_SMALL_LLM_MODEL")
-        self.large_llm_model = os.getenv("BEDROCK_LARGE_LLM_MODEL")
+        self.small_llm_model = os.getenv(
+            "BEDROCK_SMALL_LLM_MODEL", "anthropic.claude-haiku-5-5"
+        )
+        self.large_llm_model = os.getenv(
+            "BEDROCK_LARGE_LLM_MODEL", "anthropic.claude-haiku-5-5"
+        )
         self.embedding_model = os.getenv("BEDROCK_EMBEDDING_MODEL")
 
     def _validate_auth(self):
@@ -543,7 +547,7 @@ class Config:
             raise ValueError(f"Invalid MODELS_MODE: {self.models_mode}")
 
         default_small_provider = "ollama" if self.models_mode == "local" else "gcp_vertex"
-        default_large_provider = "ollama" if self.models_mode == "local" else "azure"
+        default_large_provider = "ollama" if self.models_mode == "local" else "gcp_vertex"
         default_embeddings_provider = (
             "ollama" if self.models_mode == "local" else "azure"
         )
