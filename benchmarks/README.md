@@ -167,8 +167,9 @@ vs the 95% gate.
 
 ### Models
 
-The only allowed LLM is **Claude Haiku 5.5** (`claude-haiku-5-5`) for answer generation,
-judging, and BrainAPI LLM steps. Embedding models are not LLMs and are unaffected.
+Harness answer generation and judging default to **Claude Haiku 5.5**
+(`claude-haiku-5-5`). Embedding models are not LLMs and are unaffected.
+BrainAPI product LLM provider/model defaults are not changed here.
 
 - Base URL: `https://api.anthropic.com/v1` (`BENCH_LLM_BASE_URL`)
 - Answerer/judge: `claude-haiku-5-5` (`BENCH_ANSWER_MODEL`, `BENCH_JUDGE_MODEL`)

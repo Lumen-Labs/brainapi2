@@ -89,7 +89,7 @@ Typical flow: `download` → `ingest` → `evaluate` → `report` via `./beam.sh
 
 | Track | Profile | Intent |
 | --- | --- | --- |
-| **SOTA** | `BENCH_PROFILE=sota` | Beat HyperMem-class LoCoMo (≥93% on full-10). The only allowed LLM is **claude-haiku-5-5** for answerer, judge, and BrainAPI LLM steps. Embeddings are unaffected. SC + gap-fill live in the harness, not product latency path. |
+| **SOTA** | `BENCH_PROFILE=sota` | Beat HyperMem-class LoCoMo (≥93% on full-10). Harness answerer/judge default to **claude-haiku-5-5**. Embeddings are unaffected. SC + gap-fill live in the harness, not product latency path. |
 | **Product** | `BENCH_PROFILE=product` (default) | ADR-006 sub-second `/retrieve/context` path — greedy, no online LLM loops. |
 
 Protocol and competitor bar: `docs/research/08-sota-locomo-protocol.md`. Historical checkpoint narrative: `runs/CHECKPOINT_NOTES.md`.
