@@ -197,6 +197,12 @@ class BrainAPIAdapter:
             waited = None
             if task_id:
                 waited = client.wait_for_task(str(task_id), self.brain_id)
+                status = (waited.data or {}).get("status")
+                if status != "completed":
+                    raise RuntimeError(
+                        f"Ingestion task {task_id} for doc {doc.get('id')} "
+                        f"ended with status={status}"
+                    )
             records.append(
                 {
                     "doc_id": doc.get("id"),
@@ -212,6 +218,7 @@ class BrainAPIAdapter:
             "ingest_ms": elapsed,
             "records": records,
             "skip_enrichment": self.skip_enrichment,
+            "llm_model": self.settings.llm_model,
             "brain_id": self.brain_id,
             "http_calls": len(docs) * 2,
         }

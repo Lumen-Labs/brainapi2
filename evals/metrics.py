@@ -27,10 +27,11 @@ def exact_match(prediction: str, gold: str, aliases: Sequence[str] | None = None
 
 
 def must_include(prediction: str, phrases: Sequence[str]) -> bool:
-    pred = normalize_text(prediction)
+    pred = f" {normalize_text(prediction)} "
     if not phrases:
         return False
-    return all(normalize_text(phrase) in pred for phrase in phrases if phrase)
+    needles = [normalize_text(phrase) for phrase in phrases]
+    return all(f" {needle} " in pred for needle in needles if needle)
 
 
 def token_f1(prediction: str, gold: str) -> float:

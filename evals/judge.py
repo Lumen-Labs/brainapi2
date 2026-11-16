@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from evals.config import Settings
+from evals.llm import chat_client, chat_model
 from evals.prompts import CONFLICT_JUDGE_SYSTEM, build_judge_messages
 
 
@@ -22,33 +23,29 @@ class JudgeResult:
     total_tokens: int
 
 
-def _client(settings: Settings):
-    from openai import AzureOpenAI, OpenAI
-
-    settings.require_judge_llm()
-    if settings.judge_azure_endpoint:
-        return AzureOpenAI(
-            api_key=settings.judge_api_key,
-            azure_endpoint=settings.judge_azure_endpoint,
-            api_version=settings.judge_azure_api_version,
-        )
-    kwargs: dict[str, Any] = {"api_key": settings.judge_api_key}
-    if settings.judge_base_url:
-        kwargs["base_url"] = settings.judge_base_url
-    return OpenAI(**kwargs)
+def _bool_from_object(data: Any, key: str) -> tuple[bool, str] | None:
+    if not isinstance(data, dict):
+        return None
+    value = data.get(key)
+    if not isinstance(value, bool):
+        return None
+    return value, str(data.get("reason") or "")
 
 
 def _parse_bool_payload(raw: str, key: str) -> tuple[bool, str]:
     text = raw.strip()
     try:
-        data = json.loads(text)
-        return bool(data.get(key)), str(data.get("reason", ""))
+        parsed = _bool_from_object(json.loads(text), key)
+        if parsed is not None:
+            return parsed
+        return False, f"judge output missing boolean {key!r}"
     except json.JSONDecodeError:
         match = re.search(r"\{.*\}", text, re.DOTALL)
         if match:
             try:
-                data = json.loads(match.group(0))
-                return bool(data.get(key)), str(data.get("reason", ""))
+                parsed = _bool_from_object(json.loads(match.group(0)), key)
+                if parsed is not None:
+                    return parsed
             except json.JSONDecodeError:
                 pass
     lowered = text.lower()
@@ -65,11 +62,12 @@ def judge_answer(
     gold: str,
     prediction: str,
 ) -> JudgeResult:
-    client = _client(settings)
+    client = chat_client(settings)
+    model = chat_model(settings)
     messages = build_judge_messages(question, gold, prediction)
     started = time.perf_counter()
     response = client.chat.completions.create(
-        model=settings.judge_model,
+        model=model,
         messages=messages,
         temperature=0,
         response_format={"type": "json_object"},
@@ -82,7 +80,7 @@ def judge_answer(
         correct=correct,
         reason=reason,
         raw=raw,
-        model=getattr(response, "model", None) or settings.judge_model,
+        model=getattr(response, "model", None) or model,
         latency_ms=latency_ms,
         prompt_tokens=int(getattr(usage, "prompt_tokens", 0) or 0) if usage else 0,
         completion_tokens=int(getattr(usage, "completion_tokens", 0) or 0) if usage else 0,
@@ -95,7 +93,8 @@ def judge_conflict_pair(
     left: str,
     right: str,
 ) -> JudgeResult:
-    client = _client(settings)
+    client = chat_client(settings)
+    model = chat_model(settings)
     messages = [
         {"role": "system", "content": CONFLICT_JUDGE_SYSTEM},
         {
@@ -105,7 +104,7 @@ def judge_conflict_pair(
     ]
     started = time.perf_counter()
     response = client.chat.completions.create(
-        model=settings.judge_model,
+        model=model,
         messages=messages,
         temperature=0,
         response_format={"type": "json_object"},
@@ -118,7 +117,7 @@ def judge_conflict_pair(
         correct=correct,
         reason=reason,
         raw=raw,
-        model=getattr(response, "model", None) or settings.judge_model,
+        model=getattr(response, "model", None) or model,
         latency_ms=latency_ms,
         prompt_tokens=int(getattr(usage, "prompt_tokens", 0) or 0) if usage else 0,
         completion_tokens=int(getattr(usage, "completion_tokens", 0) or 0) if usage else 0,

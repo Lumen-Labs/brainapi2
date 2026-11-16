@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from evals.config import Settings
+from evals.llm import chat_client, chat_model
 from evals.prompts import build_answer_messages, format_passages
 
 
@@ -17,21 +18,6 @@ class AnswerResult:
     total_tokens: int
     model: str
     calls: int
-
-
-def _openai_client(settings: Settings):
-    from openai import AzureOpenAI, OpenAI
-
-    if settings.judge_azure_endpoint and not settings.llm_base_url:
-        return AzureOpenAI(
-            api_key=settings.judge_api_key,
-            azure_endpoint=settings.judge_azure_endpoint,
-            api_version=settings.judge_azure_api_version,
-        )
-    kwargs: dict[str, Any] = {"api_key": settings.openai_api_key}
-    if settings.llm_base_url:
-        kwargs["base_url"] = settings.llm_base_url
-    return OpenAI(**kwargs)
 
 
 def pack_context(passages: list[dict[str, Any]], settings: Settings) -> str:
@@ -48,13 +34,13 @@ def llm_answer(
     question: str,
     passages: list[dict[str, Any]],
 ) -> AnswerResult:
-    settings.require_llm()
-    client = _openai_client(settings)
+    client = chat_client(settings)
+    model = chat_model(settings)
     context = pack_context(passages, settings)
     messages = build_answer_messages(question, context)
     started = time.perf_counter()
     response = client.chat.completions.create(
-        model=settings.answer_model,
+        model=model,
         messages=messages,
         temperature=float(settings.prompt_budget["temperature"]),
         max_tokens=int(settings.prompt_budget["max_answer_tokens"]),
@@ -68,7 +54,7 @@ def llm_answer(
         prompt_tokens=int(getattr(usage, "prompt_tokens", 0) or 0) if usage else 0,
         completion_tokens=int(getattr(usage, "completion_tokens", 0) or 0) if usage else 0,
         total_tokens=int(getattr(usage, "total_tokens", 0) or 0) if usage else 0,
-        model=getattr(response, "model", None) or settings.answer_model,
+        model=getattr(response, "model", None) or model,
         calls=1,
     )
 

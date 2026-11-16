@@ -93,6 +93,13 @@ class BrainAPIClient:
                     status_code=response.status_code,
                 )
             except (httpx.TransportError, httpx.TimeoutException) as exc:
+                if method == "POST" and not isinstance(
+                    exc, (httpx.ConnectError, httpx.ConnectTimeout)
+                ):
+                    raise RuntimeError(
+                        f"{method} {path} failed after the request may have been sent; "
+                        f"not retried: {exc}"
+                    ) from exc
                 last_error = exc
                 time.sleep(min(2**attempt * 0.5, 30))
         raise RuntimeError(f"Request failed after retries: {method} {path}: {last_error}")

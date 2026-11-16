@@ -45,7 +45,7 @@ Naive RAG (no date filter, no rerank, no fusion) is **not** the baseline.
 | temperature | 0 |
 | system prompt | `evals/prompts.py` `ANSWER_SYSTEM` (hashed into the report) |
 
-`--answerer extractive` (CI / local smoke) uses span/must-include extraction from retrieved chunks — no LLM. `--answerer llm` uses the configured model for **both** systems.
+`--answerer extractive` (CI / local smoke) uses span/must-include extraction from retrieved chunks — no LLM. `--answerer llm` and `--judge` use **Claude Haiku 5.5 only** (`claude-haiku-5-5`) for both systems and the judge. The harness fails at load if a different chat model or DeepSeek/OpenAI/Azure chat endpoint is configured. Embeddings and the cross-encoder reranker are not LLMs.
 
 Scoring: exact match where the gold is short; otherwise `must_include` phrases. Optional LLM judge (`--judge`) with a fixed rubric. Cohen's kappa vs the hand-labeled sample in `datasets/judge_agreement.jsonl` is always reported against exact-match, and against the LLM judge when `--judge` is on.
 
@@ -62,7 +62,7 @@ cp .env.example .env
 ./evals.sh smoke
 ```
 
-`./evals.sh smoke` runs the tiny `smoke` split of every use case with **hashed embeddings + lexical rerank** (no model download, no secrets). If `BRAINPAT_TOKEN` (or `EVAL_API_KEY`) is unset, the BrainAPI arm is skipped and the report stays `local/small-scale`. If the docker stack is up, the same command will ingest into `evaluc*` brains (skip-enrichment) and query `/retrieve/context`.
+`./evals.sh smoke` runs the tiny `smoke` split of every use case with **hashed embeddings + lexical rerank** (no model download, no secrets). If `BRAINPAT_TOKEN` (or `EVAL_API_KEY`) is unset, the BrainAPI arm is skipped and the report stays `local/small-scale`. If the docker stack is up, the same command will ingest into `evaluc*` brains with **skip-enrichment** (no BrainAPI LLM) and query `/retrieve/context`. Full ingest enrichment is `--enrich` only, and the target stack's chat LLM must be Haiku 5.5.
 
 Test splits are ≥150 scored items for versioned rules, policy conflicts, and expert know-how. Gold production is documented in each dataset `GOLD.md`. Regenerate from public sources with `PYTHONPATH=. python3 -m evals.datasets.build_public_corpora`.
 
@@ -94,11 +94,9 @@ Do **not** hardcode or commit secrets. Staging keys are expected to already exis
 | --- | --- | --- |
 | `BRAINAPI_URL` / `EVAL_BRAINAPI_URL` | for BrainAPI arm | Default `http://localhost:8000` (docker stack). Point at staging for real runs. |
 | `BRAINPAT_TOKEN` / `EVAL_API_KEY` | for BrainAPI arm | PAT. Server also needs `BRAIN_CREATION_ALLOWED=true` so `evaluc*` brains can be created. |
-| `DEEPSEEK_API_KEY` or `OPENAI_API_KEY` | for `--answerer llm` / `--judge` | Shared answerer + judge. |
-| `EVAL_LLM_BASE_URL` | optional | Default `https://api.deepseek.com`. |
-| `EVAL_ANSWER_MODEL` | optional | Default `deepseek-v4-flash`. |
-| `EVAL_JUDGE_MODEL` / `EVAL_JUDGE_API_KEY` / `EVAL_JUDGE_BASE_URL` | optional | Prefer a **different family** from the answerer. |
-| `EVAL_JUDGE_AZURE_ENDPOINT` / `EVAL_JUDGE_AZURE_KEY` | optional | Azure judge; falls back to `AZURE_LARGE_LLM_*`. |
+| `ANTHROPIC_API_KEY` / `EVAL_LLM_API_KEY` | for `--answerer llm` / `--judge` | Shared Haiku 5.5 client. Not `DEEPSEEK_API_KEY` / `OPENAI_API_KEY`. |
+| `EVAL_LLM_MODEL` | optional | Default `claude-haiku-5-5`. Any other chat model is rejected. |
+| `EVAL_LLM_BASE_URL` | optional | Default `https://api.anthropic.com/v1`. DeepSeek/OpenAI/Azure chat hosts are rejected. |
 | `EVAL_EMBEDDING_PROVIDER` | optional | Default `sentence-transformers`. `openai`/`azure` with a key, or `hash` for CI smoke. |
 | `EVAL_EMBEDDING_API_KEY` / `EVAL_EMBEDDING_BASE_URL` / `EVAL_EMBEDDING_MODEL` | optional | OpenAI embeddings, or override the MiniLM model name. |
 | `EVAL_RERANKER` / `EVAL_CROSS_ENCODER_MODEL` | optional | Default `cross-encoder` (`cross-encoder/ms-marco-MiniLM-L-6-v2`). `lexical` is smoke-only. |
@@ -113,7 +111,7 @@ The harness **never** writes locomo/beam/searchbench/demorecsys brains.
 
 Each run directory (`evals/runs/<run_id>/`):
 
-- `report.json` — machine-readable results (schema_version, scale, env redacted, per-system metrics, tuning trials, capabilities).
+- `report.json` — machine-readable results (schema_version, `llm_model`, scale, env redacted, per-system metrics, tuning trials, capabilities). `llm_model` is always `claude-haiku-5-5`.
 - `report.md` — human report with the no-claim policy, Wilson intervals, p50/p95, ingest time, tokens/calls.
 - `answers.jsonl` — per-question predictions.
 - `<use_case>.jsonl` — same, split by use case.

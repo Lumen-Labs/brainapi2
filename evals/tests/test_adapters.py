@@ -85,3 +85,23 @@ class AdapterTests(unittest.TestCase):
         self.assertTrue(caps["pluggable"])
         self.assertTrue(caps["temporal_conflicts_sidecar"])
         self.assertFalse(caps["conflict_pairs"])
+
+    def test_ingest_rejects_failed_task(self) -> None:
+        settings = _settings()
+        settings.brainpat_token = "test-token"
+        adapter = BrainAPIAdapter(settings, brain_id="evalucversionedrules")
+        client = MagicMock()
+        client.ingest_text.return_value = MagicMock(
+            data={"task_id": "task-1"},
+            latency_ms=1.0,
+        )
+        client.wait_for_task.return_value = MagicMock(
+            data={"status": "failed"},
+            latency_ms=2.0,
+        )
+        adapter.client = client
+        adapter._probed = True
+        with self.assertRaises(RuntimeError) as ctx:
+            adapter.ingest([{"id": "doc-1", "text": "hello"}])
+        self.assertIn("failed", str(ctx.exception))
+        self.assertEqual(client.wait_for_task.call_count, 1)

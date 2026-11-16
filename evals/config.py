@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
@@ -13,8 +14,8 @@ REPO_ROOT = EVALS_ROOT.parent
 DATASETS_DIR = EVALS_ROOT / "datasets"
 RUNS_DIR = EVALS_ROOT / "runs"
 DEFAULT_SCALE = "local/small-scale"
-DEFAULT_ANSWER_MODEL = "deepseek-v4-flash"
-DEFAULT_LLM_BASE_URL = "https://api.deepseek.com"
+DEFAULT_LLM_MODEL = "claude-haiku-5-5"
+DEFAULT_LLM_BASE_URL = "https://api.anthropic.com/v1"
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large"
 DEFAULT_ST_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 DEFAULT_CROSS_ENCODER = "cross-encoder/ms-marco-MiniLM-L-6-v2"
@@ -46,6 +47,25 @@ FORBIDDEN_BRAIN_PREFIXES = (
     "searchbench",
 )
 TERMINAL_TASK_STATUSES = frozenset({"completed", "failed", "partial_failed"})
+LLM_MODEL_ENV_KEYS = (
+    "EVAL_LLM_MODEL",
+    "EVAL_ANSWER_MODEL",
+    "EVAL_JUDGE_MODEL",
+    "BENCH_ANSWER_MODEL",
+    "BENCH_JUDGE_MODEL",
+)
+ALLOWED_LLM_ALIASES = {
+    "claude-haiku-5-5": DEFAULT_LLM_MODEL,
+    "claude-haiku-5.5": DEFAULT_LLM_MODEL,
+    "anthropic.claude-haiku-5-5": DEFAULT_LLM_MODEL,
+    "anthropic/claude-haiku-5-5": DEFAULT_LLM_MODEL,
+}
+FORBIDDEN_LLM_HOST_MARKERS = (
+    "api.deepseek.com",
+    "api.openai.com",
+    "openai.azure.com",
+    "cognitiveservices.azure.com",
+)
 
 
 def _first_env(*names: str, default: str = "") -> str:
@@ -54,6 +74,56 @@ def _first_env(*names: str, default: str = "") -> str:
         if value is not None and str(value).strip() != "":
             return str(value).strip()
     return default
+
+
+def _llm_model_error(source: str, value: str) -> SystemExit:
+    return SystemExit(
+        f"{source}={value!r} is not allowed. The eval harness may only use Claude "
+        f"Haiku 5.5 (model id {DEFAULT_LLM_MODEL!r}) for the shared answerer, the "
+        "LLM judge, and any LLM BrainAPI calls. Embeddings and the cross-encoder "
+        "reranker are not LLMs and may stay as configured."
+    )
+
+
+def canonicalize_llm_model(value: str, *, source: str = "EVAL_LLM_MODEL") -> str:
+    raw = (value or "").strip()
+    if not raw:
+        return DEFAULT_LLM_MODEL
+    key = raw.lower().replace("_", "-")
+    mapped = ALLOWED_LLM_ALIASES.get(key)
+    if mapped:
+        return mapped
+    raise _llm_model_error(source, raw)
+
+
+def resolve_llm_model() -> str:
+    seen: list[str] = []
+    for name in LLM_MODEL_ENV_KEYS:
+        raw = os.getenv(name)
+        if raw is None or str(raw).strip() == "":
+            continue
+        seen.append(canonicalize_llm_model(raw, source=name))
+    unique = set(seen)
+    if unique and unique != {DEFAULT_LLM_MODEL}:
+        raise SystemExit(
+            "Conflicting LLM model settings. The eval harness uses a single model "
+            f"id, {DEFAULT_LLM_MODEL!r}."
+        )
+    return DEFAULT_LLM_MODEL
+
+
+def assert_llm_endpoint(url: str | None, *, source: str) -> None:
+    if not url:
+        return
+    host = (urlparse(url).hostname or url).lower()
+    lowered = url.lower()
+    for marker in FORBIDDEN_LLM_HOST_MARKERS:
+        if marker in host or marker in lowered:
+            raise SystemExit(
+                f"{source}={url!r} is a DeepSeek/OpenAI/Azure chat endpoint. "
+                f"Eval LLM traffic must use Claude Haiku 5.5 ({DEFAULT_LLM_MODEL}) "
+                f"via Anthropic or an Anthropic-compatible gateway."
+            )
 
 
 def validate_brain_id(brain_id: str) -> str:
@@ -78,14 +148,9 @@ def validate_brain_id(brain_id: str) -> str:
 class Settings:
     brainapi_url: str
     brainpat_token: str
-    openai_api_key: str
+    llm_api_key: str
     llm_base_url: str | None
-    answer_model: str
-    judge_model: str
-    judge_api_key: str
-    judge_base_url: str | None
-    judge_azure_endpoint: str | None
-    judge_azure_api_version: str
+    llm_model: str
     embedding_provider: str
     embedding_api_key: str
     embedding_base_url: str | None
@@ -101,6 +166,22 @@ class Settings:
     brain_prefix: str
     prompt_budget: dict[str, int | float] = field(default_factory=lambda: dict(PROMPT_BUDGET))
     schema_version: str = SCHEMA_VERSION
+
+    @property
+    def answer_model(self) -> str:
+        return self.llm_model
+
+    @property
+    def judge_model(self) -> str:
+        return self.llm_model
+
+    @property
+    def openai_api_key(self) -> str:
+        return self.llm_api_key
+
+    @property
+    def judge_api_key(self) -> str:
+        return self.llm_api_key
 
     @classmethod
     def load(cls, env_file: Path | None = None) -> "Settings":
@@ -122,20 +203,28 @@ class Settings:
         if not loaded:
             load_dotenv(override=False)
 
-        api_key = _first_env("DEEPSEEK_API_KEY", "OPENAI_API_KEY", "EVAL_LLM_API_KEY")
-        azure_endpoint = _first_env(
-            "EVAL_JUDGE_AZURE_ENDPOINT", "AZURE_LARGE_LLM_ENDPOINT"
-        ).rstrip("/")
-        azure_key = _first_env(
-            "EVAL_JUDGE_AZURE_KEY", "AZURE_LARGE_LLM_SUBSCRIPTION_KEY"
+        azure_judge = _first_env(
+            "EVAL_JUDGE_AZURE_ENDPOINT", "EVAL_JUDGE_AZURE_KEY"
         )
-        judge_model = _first_env("EVAL_JUDGE_MODEL", "BENCH_JUDGE_MODEL")
+        if azure_judge:
+            raise SystemExit(
+                "EVAL_JUDGE_AZURE_* is set. Azure OpenAI judges are not allowed; "
+                f"the eval harness uses only Claude Haiku 5.5 ({DEFAULT_LLM_MODEL})."
+            )
+
+        llm_model = resolve_llm_model()
+        llm_base_url = _first_env(
+            "EVAL_LLM_BASE_URL", default=DEFAULT_LLM_BASE_URL
+        ) or None
+        assert_llm_endpoint(llm_base_url, source="EVAL_LLM_BASE_URL")
         judge_base = _first_env("EVAL_JUDGE_BASE_URL", "BENCH_JUDGE_BASE_URL")
-        judge_key = _first_env("EVAL_JUDGE_API_KEY", "BENCH_JUDGE_API_KEY")
-        use_azure = bool(azure_endpoint and azure_key and not judge_model and not judge_base)
-        if use_azure:
-            judge_model = _first_env("AZURE_LARGE_LLM_MODEL", default="gpt-4o")
-            judge_key = azure_key
+        if judge_base:
+            assert_llm_endpoint(judge_base, source="EVAL_JUDGE_BASE_URL")
+            if llm_base_url and judge_base.rstrip("/") != llm_base_url.rstrip("/"):
+                raise SystemExit(
+                    "EVAL_JUDGE_BASE_URL must match EVAL_LLM_BASE_URL. The harness "
+                    f"uses one Claude Haiku 5.5 client ({DEFAULT_LLM_MODEL})."
+                )
 
         embedding_key = _first_env(
             "EVAL_EMBEDDING_API_KEY",
@@ -149,27 +238,9 @@ class Settings:
             brainpat_token=_first_env(
                 "EVAL_API_KEY", "BRAINPAT_TOKEN", "EVAL_BRAINPAT_TOKEN"
             ),
-            openai_api_key=api_key,
-            llm_base_url=_first_env(
-                "EVAL_LLM_BASE_URL", "BENCH_LLM_BASE_URL", default=DEFAULT_LLM_BASE_URL
-            )
-            or None,
-            answer_model=_first_env(
-                "EVAL_ANSWER_MODEL", "BENCH_ANSWER_MODEL", default=DEFAULT_ANSWER_MODEL
-            ),
-            judge_model=judge_model or _first_env(
-                "EVAL_ANSWER_MODEL", default=DEFAULT_ANSWER_MODEL
-            ),
-            judge_api_key=judge_key or api_key,
-            judge_base_url=None if use_azure else (judge_base or _first_env(
-                "EVAL_LLM_BASE_URL", "BENCH_LLM_BASE_URL", default=DEFAULT_LLM_BASE_URL
-            ) or None),
-            judge_azure_endpoint=azure_endpoint if use_azure else None,
-            judge_azure_api_version=_first_env(
-                "EVAL_JUDGE_AZURE_API_VERSION",
-                "AZURE_LARGE_LLM_API_VERSION",
-                default="2024-12-01-preview",
-            ),
+            llm_api_key=_first_env("EVAL_LLM_API_KEY", "ANTHROPIC_API_KEY"),
+            llm_base_url=llm_base_url,
+            llm_model=llm_model,
             embedding_provider=_first_env(
                 "EVAL_EMBEDDING_PROVIDER", default="sentence-transformers"
             ).lower(),
@@ -215,18 +286,16 @@ class Settings:
             )
 
     def require_llm(self) -> None:
-        if not self.openai_api_key:
+        canonicalize_llm_model(self.llm_model, source="llm_model")
+        if not self.llm_api_key:
             raise SystemExit(
-                "DEEPSEEK_API_KEY or OPENAI_API_KEY is required for LLM answering. "
-                "Local smoke can run with --answerer extractive (no LLM)."
+                "ANTHROPIC_API_KEY or EVAL_LLM_API_KEY is required for LLM answering "
+                f"and judging ({DEFAULT_LLM_MODEL}). Local smoke can run with "
+                "--answerer extractive (no LLM)."
             )
 
     def require_judge_llm(self) -> None:
-        if not self.judge_api_key:
-            raise SystemExit(
-                "No judge API key. Set EVAL_JUDGE_API_KEY or DEEPSEEK_API_KEY / "
-                "OPENAI_API_KEY. Exact-match scoring does not need a judge."
-            )
+        self.require_llm()
 
     def brain_id_for(self, use_case: str) -> str:
         slug = use_case.replace("_", "")
@@ -243,14 +312,16 @@ class Settings:
         return {
             "brainapi_url": self.brainapi_url,
             "brainpat_token": mask(self.brainpat_token),
-            "answer_model": self.answer_model,
-            "judge_model": self.judge_model,
+            "llm_model": self.llm_model,
+            "answer_model": self.llm_model,
+            "judge_model": self.llm_model,
+            "llm_base_url": self.llm_base_url or "",
             "embedding_provider": self.embedding_provider,
             "embedding_model": self.embedding_model,
             "reranker": self.reranker,
             "scale": self.scale,
             "as_of_field": self.as_of_field or "",
             "conflict_path": self.conflict_path or "",
-            "llm_key_present": "yes" if self.openai_api_key else "no",
+            "llm_key_present": "yes" if self.llm_api_key else "no",
             "embedding_key_present": "yes" if self.embedding_api_key else "no",
         }

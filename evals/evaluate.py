@@ -11,7 +11,7 @@ from evals.adapters.hybrid import HybridAdapter
 from evals.baseline.dense import make_embedder
 from evals.baseline.rerank import CrossEncoderReranker
 from evals.baseline.tune import SMOKE_GRID, TUNE_GRID, tune_hybrid
-from evals.config import Settings
+from evals.config import DEFAULT_LLM_MODEL, Settings
 from evals.datasets.loader import docs_for_run, load_judge_labels, load_use_case, pairs_for_run
 from evals.judge import judge_answer
 from evals.metrics import (
@@ -124,10 +124,51 @@ def _score_one(
     return scored
 
 
+def _error_record(use_case: str, system: str, question: dict[str, Any], exc: Exception) -> dict[str, Any]:
+    return {
+        "use_case": use_case,
+        "system": system,
+        "question_id": question.get("id"),
+        "split": question.get("split"),
+        "task": question.get("task"),
+        "question": question.get("question"),
+        "gold": question.get("gold"),
+        "error": str(exc),
+        "correct": False,
+    }
+
+
+def _query_records(
+    adapter: SystemAdapter,
+    questions: list[dict[str, Any]],
+    *,
+    use_case: str,
+    gold_pairs: list[tuple[str, str]],
+    settings: Settings,
+    use_judge: bool,
+) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for question in questions:
+        try:
+            result = adapter.query(question)
+            score = _score_one(
+                question,
+                result,
+                gold_pairs=gold_pairs if question.get("task") == "conflict_audit" else None,
+                settings=settings,
+                use_judge=use_judge,
+            )
+            rec = _record(use_case, adapter.name, question, result, score)
+        except Exception as exc:
+            rec = _error_record(use_case, adapter.name, question, exc)
+        records.append(rec)
+    return records
+
+
 def _aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
+    n = len(records)
     scored = [row for row in records if row.get("error") is None]
-    n = len(scored)
-    successes = sum(1 for row in scored if row.get("correct"))
+    successes = sum(1 for row in records if row.get("correct") and row.get("error") is None)
     lo, hi = wilson_ci(successes, n)
     return {
         "n": n,
@@ -291,19 +332,15 @@ def evaluate_use_case(
             tune=tune,
             smoke=smoke_run,
         )
-        records = []
-        for question in questions:
-            result = hybrid.query(question)
-            score = _score_one(
-                question,
-                result,
-                gold_pairs=gold_pairs if question.get("task") == "conflict_audit" else None,
-                settings=settings,
-                use_judge=use_judge,
-            )
-            rec = _record(name, hybrid.name, question, result, score)
-            records.append(rec)
-            all_records.append(rec)
+        records = _query_records(
+            hybrid,
+            questions,
+            use_case=name,
+            gold_pairs=gold_pairs,
+            settings=settings,
+            use_judge=use_judge,
+        )
+        all_records.extend(records)
         headline = _aggregate(records)
         if gold_pairs:
             headline["conflict_pairs"] = _conflict_headline(records, gold_pairs)
@@ -322,28 +359,15 @@ def evaluate_use_case(
             skip_enrichment=skip_enrichment,
         )
         ingest = adapter.ingest(docs)
-        records = []
-        for question in questions:
-            try:
-                result = adapter.query(question)
-                score = _score_one(
-                    question,
-                    result,
-                    gold_pairs=gold_pairs if question.get("task") == "conflict_audit" else None,
-                    settings=settings,
-                    use_judge=use_judge,
-                )
-                rec = _record(name, adapter.name, question, result, score)
-            except Exception as exc:
-                rec = {
-                    "use_case": name,
-                    "system": adapter.name,
-                    "question_id": question.get("id"),
-                    "error": str(exc),
-                    "correct": False,
-                }
-            records.append(rec)
-            all_records.append(rec)
+        records = _query_records(
+            adapter,
+            questions,
+            use_case=name,
+            gold_pairs=gold_pairs,
+            settings=settings,
+            use_judge=use_judge,
+        )
+        all_records.extend(records)
         headline = _aggregate(records)
         if gold_pairs:
             headline["conflict_pairs"] = _conflict_headline(records, gold_pairs)
@@ -369,15 +393,57 @@ def evaluate_use_case(
     }
 
 
-def compare_systems(system_runs: dict[str, Any]) -> dict[str, Any]:
-    names = list(system_runs)
+REQUIRED_BRAINAPI_CAPS = {
+    "versioned_rules": ("as_of",),
+    "policy_conflicts": ("conflict_pairs",),
+}
+
+
+def _system_question_ids(records: list[dict[str, Any]], system: str) -> set[Any]:
+    return {row.get("question_id") for row in records if row.get("system") == system}
+
+
+def compare_systems(
+    system_runs: dict[str, Any],
+    *,
+    use_case: str | None = None,
+    records: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     if "hybrid_baseline" not in system_runs or "brainapi" not in system_runs:
         return {
             "verdict": "incomplete",
             "reason": "Both systems must complete the same items before a win is claimed.",
         }
+    caps = (system_runs.get("brainapi") or {}).get("capabilities") or {}
+    for cap in REQUIRED_BRAINAPI_CAPS.get(use_case or "", ()):
+        if not caps.get(cap):
+            return {
+                "verdict": "capability_pending",
+                "reason": (
+                    f"BrainAPI {cap} is not available on this run; "
+                    "not scored as a loss."
+                ),
+                "missing_capability": cap,
+            }
+    if records is not None:
+        hybrid_ids = _system_question_ids(records, "hybrid_baseline")
+        brain_ids = _system_question_ids(records, "brainapi")
+        if hybrid_ids != brain_ids:
+            return {
+                "verdict": "incomplete",
+                "reason": "Systems did not score the same question ids.",
+                "hybrid_n": len(hybrid_ids),
+                "brainapi_n": len(brain_ids),
+            }
     h = system_runs["hybrid_baseline"]["metrics"]
     b = system_runs["brainapi"]["metrics"]
+    if h.get("n") != b.get("n"):
+        return {
+            "verdict": "incomplete",
+            "reason": "Systems did not score the same number of items.",
+            "hybrid_n": h.get("n"),
+            "brainapi_n": b.get("n"),
+        }
     if h.get("accuracy") is None or b.get("accuracy") is None:
         return {"verdict": "undecided", "reason": "accuracy unavailable"}
     h_lo, h_hi = h.get("wilson_lo"), h.get("wilson_hi")
@@ -434,14 +500,18 @@ def evaluate(
             skip_enrichment=skip_enrichment,
             include_brainapi=include_brainapi,
         )
-        comparison = compare_systems(result["systems"])
+        comparison = compare_systems(
+            result["systems"],
+            use_case=name,
+            records=result["records"],
+        )
         result["comparison"] = comparison
         rows.append({k: v for k, v in result.items() if k != "records"})
         all_records.extend(result["records"])
         write_jsonl(run_dir / f"{name}.jsonl", result["records"])
 
     agreement = judge_agreement(settings, settings.datasets_dir)
-    if use_judge and settings.judge_api_key:
+    if use_judge and settings.llm_api_key:
         human = []
         judged = []
         for item in load_judge_labels(settings.datasets_dir):
@@ -463,6 +533,9 @@ def evaluate(
         "split": split,
         "smoke": smoke,
         "answerer": answerer,
+        "llm_model": settings.llm_model or DEFAULT_LLM_MODEL,
+        "answer_model": settings.llm_model or DEFAULT_LLM_MODEL,
+        "judge_model": settings.llm_model or DEFAULT_LLM_MODEL,
         "prompt_budget": dict(settings.prompt_budget),
         "answer_prompt_sha256": prompt_sha256(ANSWER_SYSTEM),
         "env": settings.redacted_env(),
@@ -474,6 +547,7 @@ def evaluate(
         "use_cases": rows,
         "judge_agreement": agreement,
         "brainapi_attempted": include_brainapi,
+        "brainapi_skip_enrichment": skip_enrichment,
         "systems_requested": systems,
         "baseline_tier": "smoke_hash" if smoke else "strong",
     }

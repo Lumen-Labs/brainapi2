@@ -34,6 +34,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- Split: `{report.get('split')}`",
         f"- Baseline tier: `{report.get('baseline_tier') or ('smoke_hash' if report.get('smoke') else 'strong')}`",
         f"- Answerer: `{report.get('answerer')}`",
+        f"- LLM: `{report.get('llm_model') or (report.get('env') or {}).get('llm_model') or 'claude-haiku-5-5'}` (shared answerer, judge, and any BrainAPI LLM calls)",
         (
             "- Extractive scoring is a **retrieval ceiling** (gold facts in the packed window), "
             "not LLM answer quality. Use `--answerer llm` for the shared generative answerer."

@@ -22,6 +22,16 @@ class MetricsTests(unittest.TestCase):
     def test_must_include(self) -> None:
         self.assertTrue(must_include("changed from 10 days to 5 days", ["10", "5"]))
         self.assertFalse(must_include("changed to 5 days", ["10", "5"]))
+        self.assertTrue(must_include("payment is Net 30 days", ["30"]))
+        self.assertFalse(must_include("payment is Net 300 days", ["30"]))
+        self.assertFalse(must_include("Not found in retrieved context", ["no"]))
+        self.assertTrue(must_include("No matching clause", ["no"]))
+        self.assertTrue(
+            must_include(
+                "requires sev2-mitigation approval",
+                ["sev2-mitigation"],
+            )
+        )
 
     def test_token_f1(self) -> None:
         self.assertGreater(token_f1("drain shard-b", "isolate/drain the failing shard"), 0.2)
