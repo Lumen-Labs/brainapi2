@@ -141,6 +141,7 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
         self.assertEqual(extra.get("v_id"), "v1")
         self.assertEqual(extra.get("valid_from"), "2026-01-01T00:00:00Z")
         self.assertEqual(extra.get("source"), "structured_deterministic")
+        self.assertIsInstance(extra.get("last_updated"), str)
 
     def test_deprecate_relationship_does_not_interpolate_names(self):
         client = _client()
@@ -217,6 +218,27 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
             self.assertNotIn(payload, query)
             flattened = str(params)
             self.assertIn(payload, flattened)
+
+    def test_search_entities_json_serializes_datetime_properties(self):
+        from datetime import datetime, timezone
+
+        stamp = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        client = _client(
+            records=[
+                {
+                    "uuid": "n1",
+                    "name": "Alice",
+                    "labels": ["PERSON"],
+                    "description": "",
+                    "properties": {"last_updated": stamp, "name": "Alice"},
+                }
+            ]
+        )
+        result = client.search_entities("braina", limit=1)
+        entity = result.results[0]
+        self.assertIsInstance(entity.properties["last_updated"], str)
+        dumped = entity.model_dump(mode="json")
+        self.assertIsInstance(dumped["properties"]["last_updated"], str)
 
     def test_search_entities_and_relationships_parameterize_query_text(self):
         client = _client()

@@ -44,12 +44,28 @@ from src.utils.logging import log
 from src.utils.serialization.data import always_dict
 
 
+def _jsonable_neo4j_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _jsonable_neo4j_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable_neo4j_value(item) for item in value]
+    iso = getattr(value, "isoformat", None)
+    if callable(iso) and not isinstance(value, str):
+        try:
+            text = iso()
+        except TypeError:
+            return value
+        if isinstance(text, str):
+            return text.replace("+00:00", "Z") if text.endswith("+00:00") else text
+    return value
+
+
 def _flatten_neo4j_props(mapping: dict[str, Any]) -> dict[str, Any]:
     flattened: dict[str, Any] = {}
     for key, value in mapping.items():
         if value in (None, "") or isinstance(value, dict):
             continue
-        flattened[clean_property_key(key)] = value
+        flattened[clean_property_key(key)] = _jsonable_neo4j_value(value)
     return flattened
 
 
@@ -302,7 +318,7 @@ class Neo4jClient(GraphClient):
                 elif key in {"source_chunk_ids", "aliases"}:
                     list_props[static_property_key(key)] = value
                 else:
-                    regular_props[cleaned_key] = value
+                    regular_props[cleaned_key] = _jsonable_neo4j_value(value)
 
             params: dict[str, Any] = {"uuid": node.uuid, "props": regular_props}
             assignments = ["n += $props"]
@@ -397,7 +413,7 @@ class Neo4jClient(GraphClient):
                     continue
                 if isinstance(value, dict):
                     continue
-                extra_props[static_property_key(attr)] = value
+                extra_props[static_property_key(attr)] = _jsonable_neo4j_value(value)
         from src.core.saving.validity import validity_props_from_mapping
 
         extra_props.update(validity_props_from_mapping(predicate.properties))
@@ -1258,7 +1274,7 @@ class Neo4jClient(GraphClient):
             )
             uuid = record.get("uuid") or properties_record.get("uuid") or name
             labels = record.get("labels") or properties_record.get("labels") or []
-            properties = dict(properties_record)
+            properties = _jsonable_neo4j_value(dict(properties_record))
             nodes.append(
                 Node(
                     uuid=str(uuid),
