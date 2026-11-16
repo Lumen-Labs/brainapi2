@@ -100,12 +100,18 @@ async def retrieve(
         "",
         description="The entities to prioritize in the relationships, separated by commas.",
     ),
+    as_of: Optional[str] = Query(
+        None,
+        description="ISO-8601 datetime. When set, return the knowledge state valid at that instant.",
+    ),
     brain_id: str = Depends(get_brain_id),
 ):
     """
     Retrieve data from the knowledge graph and data store.
     """
-    return await retrieve_data_controller(text, limit, preferred_entities, brain_id)
+    return await retrieve_data_controller(
+        text, limit, preferred_entities, brain_id, as_of
+    )
 
 
 @retrieve_router.get(
@@ -451,6 +457,14 @@ async def get_changelogs_list(
     skip: int = 0,
     types: Optional[str] = None,
     query_text: Optional[str] = None,
+    since: Optional[str] = Query(
+        None,
+        description="ISO-8601 datetime. Inclusive start of the change window.",
+    ),
+    until: Optional[str] = Query(
+        None,
+        description="ISO-8601 datetime. Exclusive end of the change window.",
+    ),
     brain_id: str = Depends(get_brain_id),
 ):
     """
@@ -459,6 +473,8 @@ async def get_changelogs_list(
     Parameters:
         types (Optional[str]): Optional comma-separated changelog types to filter by; each type will be applied as a filter.
         query_text (Optional[str]): Optional text used to filter changelogs by content or metadata.
+        since (Optional[str]): Inclusive start of a change window. Combined with until, returns added, superseded, and invalidated facts.
+        until (Optional[str]): Exclusive end of a change window.
 
     Returns:
         list: Changelog records matching the provided filters, constrained by `limit` and `skip`.
@@ -466,7 +482,7 @@ async def get_changelogs_list(
     if types:
         types = types.split(",")
     return await get_changelogs_list_controller(
-        limit, skip, types, query_text, brain_id
+        limit, skip, types, query_text, brain_id, since, until
     )
 
 

@@ -36,13 +36,15 @@ MCP_TOOL_SPECS: list[dict[str, object]] = [
     },
     {
         "name": "list_changelogs",
-        "description": "Lists graph changelog entries, newest first. Filter with query_text or changelog types.",
+        "description": "Lists graph changelog entries, newest first. Filter with query_text, changelog types, or a since/until window of added, superseded, and invalidated facts.",
         "parameters": {
             "brain_id": "str",
             "query_text": "str (optional)",
             "types": "list[str] (optional): relationship_created, relationship_deprecated, node_properties_updated, relationship_properties_updated",
             "limit": "int 1-50, default 10",
             "skip": "int, default 0",
+            "since": "str ISO-8601 (optional, inclusive)",
+            "until": "str ISO-8601 (optional, exclusive)",
         },
     },
     {
@@ -77,7 +79,7 @@ MCP_TOOL_SPECS: list[dict[str, object]] = [
 HISTORY_NAVIGATION_GUIDE = (
     "traverse_graph returns hops plus invalidated hops whose relationship properties "
     "include invalid_at or deprecated. "
-    "list_changelogs and get_changelog read prior graph changes. "
+    "list_changelogs and get_changelog read prior graph changes; pass since and until for the knowledge-state diff. "
     "list_source_versions reads the current copy and previous copies of a source."
 )
 

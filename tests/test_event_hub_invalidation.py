@@ -173,7 +173,12 @@ class EventHubInvalidationTests(unittest.TestCase):
                 (
                     "rel-1",
                     "relationship",
-                    {"invalid_at": "02/02/2024", "deprecated": True},
+                    {
+                        "invalid_at": "02/02/2024",
+                        "deprecated": True,
+                        "valid_to": "2024-02-02T00:00:00Z",
+                        "superseded_by": "rel-2",
+                    },
                 )
             ],
         )
