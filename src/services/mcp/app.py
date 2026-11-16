@@ -24,7 +24,9 @@ logger = logging.getLogger("brainapi.plugins")
 def _load_mcp_plugins():
     from src.core.plugins.context import PluginContext
     from src.core.plugins.loader import PluginLoader
+    from src.lib.llm.policy import log_and_enforce_llm_roles
 
+    log_and_enforce_llm_roles()
     ctx = PluginContext.from_mcp(mcp)
     loader = PluginLoader(plugins_dir=PLUGINS_DIR, context=ctx)
     results = loader.load_all()

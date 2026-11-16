@@ -21,9 +21,9 @@ VARIANT_FILES = {
 }
 
 DEFAULT_VARIANT = "s"
-DEFAULT_LLM_BASE_URL = "https://api.deepseek.com"
-DEFAULT_ANSWER_MODEL = "deepseek-v4-flash"
-DEFAULT_SOTA_ANSWER_MODEL = "deepseek-v4-flash"
+DEFAULT_LLM_BASE_URL = "https://api.anthropic.com/v1"
+DEFAULT_ANSWER_MODEL = "claude-haiku-5-5"
+DEFAULT_SOTA_ANSWER_MODEL = "claude-haiku-5-5"
 DEFAULT_AZURE_JUDGE_MODEL = "gpt-4o"
 DEFAULT_AZURE_API_VERSION = "2024-12-01-preview"
 DEFAULT_BENCH_PROFILE = "product"
@@ -134,7 +134,8 @@ class Settings:
         defaults = profile_defaults(profile)
 
         api_key = (
-            os.getenv("DEEPSEEK_API_KEY")
+            os.getenv("ANTHROPIC_API_KEY")
+            or os.getenv("DEEPSEEK_API_KEY")
             or os.getenv("OPENAI_API_KEY")
             or ""
         )
@@ -143,7 +144,6 @@ class Settings:
 
         azure_endpoint = (
             os.getenv("BENCH_JUDGE_AZURE_ENDPOINT")
-            or os.getenv("AZURE_LARGE_LLM_ENDPOINT")
             or ""
         ).rstrip("/")
         azure_key = (
@@ -248,14 +248,14 @@ class Settings:
     def require_llm(self) -> None:
         if not self.openai_api_key:
             raise SystemExit(
-                "DEEPSEEK_API_KEY (or OPENAI_API_KEY) is required for answer/judge "
-                "LLM calls. Copy .env.example to .env and set it."
+                "ANTHROPIC_API_KEY (or DEEPSEEK_API_KEY / OPENAI_API_KEY) is required "
+                "for answer/judge LLM calls. Copy .env.example to .env and set it."
             )
 
     def require_judge_llm(self) -> None:
         if not self.judge_api_key:
             raise SystemExit(
                 "No judge API key. Set BENCH_JUDGE_API_KEY (with BENCH_JUDGE_BASE_URL "
-                "and BENCH_JUDGE_MODEL), or DEEPSEEK_API_KEY / OPENAI_API_KEY to reuse "
-                "the answerer's provider."
+                "and BENCH_JUDGE_MODEL), or ANTHROPIC_API_KEY / DEEPSEEK_API_KEY / "
+                "OPENAI_API_KEY to reuse the answerer's provider."
             )

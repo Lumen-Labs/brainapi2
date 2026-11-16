@@ -25,6 +25,11 @@ def route_client(provider, model, region):
             raise ValueError("Routing region must match the VM's configured region")
         from src.lib.llm.client_bedrock import _BedrockLLMBase
         return _BedrockLLMBase(model)
+    if provider == "anthropic":
+        if not config.anthropic:
+            raise ValueError("Anthropic credentials are not configured on this VM")
+        from src.lib.llm.client_anthropic import _AnthropicLLMBase
+        return _AnthropicLLMBase(model)
     if provider == "anthropic_vertex":
         if not config.gcp:
             raise ValueError("Vertex credentials are not configured on this VM")
@@ -53,7 +58,8 @@ def configured_model(role="small"):
     from src.config import config
     provider = config.llm_large_provider if role == "large" else config.llm_small_provider
     if provider == "ollama":
-        return provider, getattr(config, f"llm_{role}_model", None) or "unknown"
+        settings = getattr(config, "ollama", None)
+        return provider, getattr(settings, f"llm_{role}_model", None) or "unknown"
     source = {"amazon_bedrock":"bedrock","anthropic_vertex":"gcp","gcp_vertex":"gcp","openai":"openai","azure":"azure","anthropic":"anthropic","deepseek":"deepseek"}.get(provider)
     settings = getattr(config, source, None) if source else None
     return provider, getattr(settings, f"{role}_llm_model", None) or "unknown"
@@ -101,7 +107,27 @@ def instrument_model(model):
     fallback_provider, fallback_model = model_identity()
     actual_model = getattr(model,"model_id",None) or getattr(model,"model_name",None) or getattr(model,"model",None) or fallback_model
     module = type(model).__module__.lower()
-    actual_provider = "amazon_bedrock" if "bedrock" in module else "anthropic_vertex" if "vertex" in module and "anthropic" in type(model).__name__.lower() else "gcp_vertex" if "vertex" in module else "azure" if "azure" in module else "openai" if "openai" in module else fallback_provider
+    name = type(model).__name__.lower()
+    base = str(
+        getattr(model, "openai_api_base", None)
+        or getattr(model, "base_url", None)
+        or ""
+    ).lower()
+    model_id = str(actual_model).lower()
+    if "bedrock" in module:
+        actual_provider = "amazon_bedrock"
+    elif "vertex" in module and "anthropic" in name:
+        actual_provider = "anthropic_vertex"
+    elif "anthropic" in module or "anthropic" in name or "anthropic" in base or model_id.startswith("claude"):
+        actual_provider = "anthropic"
+    elif "vertex" in module:
+        actual_provider = "gcp_vertex"
+    elif "azure" in module:
+        actual_provider = "azure"
+    elif "openai" in module:
+        actual_provider = "openai"
+    else:
+        actual_provider = fallback_provider
     identity = (actual_provider, actual_model)
     class UsageCallback(BaseCallbackHandler):
         def on_llm_end(self, response, **kwargs):

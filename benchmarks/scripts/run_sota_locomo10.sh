@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Full LoCoMo10 SOTA leaderboard run (requires live BrainAPI + DeepSeek keys).
+# Full LoCoMo10 SOTA leaderboard run (requires live BrainAPI + Anthropic keys).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -7,9 +7,9 @@ cd "$ROOT"
 export BENCH_PROFILE="${BENCH_PROFILE:-sota}"
 export BENCH_SC_SAMPLES="${BENCH_SC_SAMPLES:-5}"
 export BENCH_GAP_FILL="${BENCH_GAP_FILL:-1}"
-# Preferred answerer/judge: deepseek-v4-flash (maintainer: stronger than gpt-4o here).
-export BENCH_SOTA_ANSWER_MODEL="${BENCH_SOTA_ANSWER_MODEL:-deepseek-v4-flash}"
-export BENCH_SOTA_JUDGE_MODEL="${BENCH_SOTA_JUDGE_MODEL:-deepseek-v4-flash}"
+# Owner default: Claude Haiku 5.5 for answerer/judge.
+export BENCH_SOTA_ANSWER_MODEL="${BENCH_SOTA_ANSWER_MODEL:-claude-haiku-5-5}"
+export BENCH_SOTA_JUDGE_MODEL="${BENCH_SOTA_JUDGE_MODEL:-claude-haiku-5-5}"
 
 RUN_INGEST="${RUN_INGEST:-sota-locomo10-ingest}"
 RUN_EVAL="${RUN_EVAL:-sota-locomo10-eval}"

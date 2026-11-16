@@ -9,7 +9,7 @@ Choose **heavy** or **light** when bringing up a new deployment.
 | Graph | Neo4j | NetworkX on Postgres |
 | Data | MongoDB | PostgreSQL |
 | Vectors | Milvus | PostgreSQL + pgvector |
-| LLMs | GCP Vertex (small) + Azure (large) | DeepSeek (small + large) |
+| LLMs | See staging notes (product default is Anthropic `claude-haiku-5-5`) | See staging notes (product default is Anthropic `claude-haiku-5-5`) |
 | Embeddings | Azure | OpenAI (`text-embedding-3-large`) |
 | Container limits | Full (current production) | Smaller footprint (`mem_limit` / `cpus`) |
 | Suggested VM | ~8–16 GB RAM / 4+ vCPU | ~2 GB RAM / 1 vCPU |
@@ -49,6 +49,29 @@ nginx server file; do not expose port 80 beyond a trusted proxy without HTTPS.
 | `CELERY_WORKER_CONCURRENCY` | 4 | 1 |
 
 ## Notes
+
+- Product LLM default is Anthropic Claude Haiku 5.5 (`LLM_MODEL=claude-haiku-5-5`)
+  for every chat role (Scout, Architect, Janitor, KG agent, observations,
+  consolidator, plugins). Embeddings and rerankers are unchanged. Staging
+  compose env files are **not** rewritten here; operators should add the
+  following to the private `/etc/brainapi/{light,heavy}.env` (and keep
+  existing embedding provider settings):
+
+  ```
+  LLM_PROVIDER=anthropic
+  LLM_MODEL=claude-haiku-5-5
+  LLM_SMALL_PROVIDER=anthropic
+  LLM_LARGE_PROVIDER=anthropic
+  ANTHROPIC_API_KEY=sk-ant-...
+  # optional: fail startup if any role is not Haiku 5.5
+  # LLM_REQUIRE_HAIKU=true
+  # optional mock / proxy
+  # ANTHROPIC_BASE_URL=https://api.anthropic.com
+  ```
+
+  Per-role overrides `ANTHROPIC_SMALL_LLM_MODEL` / `ANTHROPIC_LARGE_LLM_MODEL`
+  still work and default to `LLM_MODEL`. Vertex/Azure/DeepSeek remain available
+  when `LLM_*_PROVIDER` is set explicitly.
 
 - `BRAINAPI_IMAGE`, `BRAINAPI_ENV_FILE`, Redis credentials, and profile backend
   credentials are required and fail during Compose interpolation when absent.
@@ -92,16 +115,22 @@ plus an individual custom-format dump for every `brain_*` PostgreSQL database.
 
 ## Production validation
 
-The CI-only Compose override supplies a deterministic OpenAI-compatible model
-stub; it is not a production deployment file. It lets both profiles exercise
-the complete storage and gateway path without external model credentials:
+The CI-only Compose override supplies a deterministic embedding stub plus an
+Anthropic Messages / OpenAI-compatible chat stub (`claude-haiku-5-5`); it is
+not a production deployment file. It lets both profiles exercise the complete
+storage and gateway path without external model credentials:
 
 ```bash
 docker compose -f deploy/docker-compose.light.yaml \
   -f deploy/docker-compose.ci.yaml up -d --wait
 python scripts/production_smoke.py exercise --profile light \
   --system-token "$BRAINPAT_TOKEN" --artifact-dir release-artifacts
+python scripts/haiku_llm_e2e.py --api-url http://localhost \
+  --stub-url http://127.0.0.1:18080 --token "$BRAINPAT_TOKEN"
 ```
+
+The CI stub publishes `127.0.0.1:18080` so tests can assert every chat call
+used `claude-haiku-5-5` (ingest with enrichment plus retrieve).
 
 After backup, clean-volume restore, and restart, run the same tool with
 `verify-restore`. CI retains the profile smoke, latency, restore, backup

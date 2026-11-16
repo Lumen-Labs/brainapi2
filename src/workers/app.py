@@ -122,6 +122,10 @@ ingestion_app.conf.update(
 install_celery_tracing(service_name="brainapi-worker")
 start_runtime_monitoring(service_name="brainapi-worker")
 
+from src.lib.llm.policy import log_and_enforce_llm_roles
+
+log_and_enforce_llm_roles()
+
 
 if os.getenv("STAGED_INGESTION_ENABLED") == "1" and os.getenv("INGEST_PUBLICATION_LOCK_DIR"):
     import logging

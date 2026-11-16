@@ -94,6 +94,9 @@ async def lifespan(app: FastAPI):
     from src.core.plugins.loader import PluginLoader
 
     start_runtime_monitoring("brainapi-api")
+    from src.lib.llm.policy import log_and_enforce_llm_roles
+
+    log_and_enforce_llm_roles()
     ctx = PluginContext.from_app(app)
     loader = PluginLoader(plugins_dir=PLUGINS_DIR, context=ctx)
     results = loader.load_all()

@@ -1,6 +1,7 @@
 import {
   ANTHROPIC_DEFAULT_LARGE_MODEL,
   ANTHROPIC_DEFAULT_SMALL_MODEL,
+  DEFAULT_LLM_MODEL,
   AZURE_DEFAULT_EMBEDDING_MODEL,
   AZURE_DEFAULT_LARGE_API_VERSION,
   AZURE_DEFAULT_LARGE_MODEL,
@@ -201,6 +202,11 @@ function applyRemoteModelValues(
   const anthropic = choices.models.anthropic;
   const deepseek = choices.models.deepseek;
   const bedrock = choices.models.bedrock;
+  values[ENV_KEYS.llmProvider] =
+    choices.models.llmSmallProvider === choices.models.llmLargeProvider
+      ? choices.models.llmSmallProvider
+      : "anthropic";
+  values[ENV_KEYS.llmModel] = DEFAULT_LLM_MODEL;
   values[ENV_KEYS.llmSmallProvider] = choices.models.llmSmallProvider;
   values[ENV_KEYS.llmLargeProvider] = choices.models.llmLargeProvider;
   values[ENV_KEYS.embeddingsProvider] = choices.models.embeddingsProvider;

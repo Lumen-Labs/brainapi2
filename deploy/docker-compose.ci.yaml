@@ -1,8 +1,13 @@
 # CI-only provider override. This file is never part of a production deployment.
 x-ci-model-environment: &ci-model-environment
   BRAINPAT_TOKEN: ${BRAINPAT_TOKEN:?BRAINPAT_TOKEN is required}
-  LLM_SMALL_PROVIDER: openai
-  LLM_LARGE_PROVIDER: openai
+  LLM_PROVIDER: anthropic
+  LLM_MODEL: claude-haiku-5-5
+  LLM_SMALL_PROVIDER: anthropic
+  LLM_LARGE_PROVIDER: anthropic
+  LLM_REQUIRE_HAIKU: "true"
+  ANTHROPIC_API_KEY: ci-isolated-token
+  ANTHROPIC_BASE_URL: http://embedding-stub:8080
   EMBEDDINGS_PROVIDER: openai
   OPENAI_API_KEY: ci-isolated-token
   OPENAI_BASE_URL: http://embedding-stub:8080/v1
@@ -15,6 +20,8 @@ services:
   embedding-stub:
     image: python:3.11.14-slim-bookworm
     command: [python, /stub.py]
+    ports:
+      - "127.0.0.1:18080:8080"
     volumes:
       - ../scripts/openai_ci_stub.py:/stub.py:ro
     networks: [appnet]

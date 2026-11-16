@@ -16,6 +16,13 @@ from typing import Literal
 import dotenv
 from pathlib import Path
 
+from src.lib.llm.policy import (
+    configured_llm_model,
+    default_provider_for_mode,
+    resolve_role_model,
+    resolve_role_provider,
+)
+
 _project_root = Path(__file__).resolve().parent.parent
 _env_name = os.getenv("ENV")
 _env_path = _project_root / f".env{'.' + _env_name if _env_name else ''}"
@@ -183,14 +190,26 @@ class OpenAIConfig:
 
 
 class AnthropicConfig:
-    def __init__(self):
+    def __init__(self, llm_model: str | None = None):
+        model = llm_model or configured_llm_model()
         self.api_key = os.getenv("ANTHROPIC_API_KEY")
-        self.small_llm_model = os.getenv(
-            "ANTHROPIC_SMALL_LLM_MODEL", "claude-3-5-haiku-latest"
-        )
-        self.large_llm_model = os.getenv(
-            "ANTHROPIC_LARGE_LLM_MODEL", "claude-sonnet-4-20250514"
-        )
+        self.base_url = (os.getenv("ANTHROPIC_BASE_URL") or "").strip() or None
+        self.small_llm_model = resolve_role_model("small", "anthropic", model)
+        self.large_llm_model = resolve_role_model("large", "anthropic", model)
+
+    def openai_compatible_base_url(self) -> str:
+        raw = (self.base_url or "https://api.anthropic.com").strip().rstrip("/")
+        if raw.endswith("/v1"):
+            return raw
+        return f"{raw}/v1"
+
+    def native_sdk_base_url(self) -> str | None:
+        if not self.base_url:
+            return None
+        raw = self.base_url.strip().rstrip("/")
+        if raw.endswith("/v1"):
+            raw = raw[:-3].rstrip("/")
+        return raw or None
 
     def validate_llm(self, require_large: bool):
         if not self.api_key:
@@ -542,14 +561,14 @@ class Config:
         if self.models_mode not in _MODES:
             raise ValueError(f"Invalid MODELS_MODE: {self.models_mode}")
 
-        default_small_provider = "ollama" if self.models_mode == "local" else "gcp_vertex"
-        default_large_provider = "ollama" if self.models_mode == "local" else "azure"
         default_embeddings_provider = (
             "ollama" if self.models_mode == "local" else "azure"
         )
 
-        self.llm_small_provider = os.getenv("LLM_SMALL_PROVIDER", default_small_provider)
-        self.llm_large_provider = os.getenv("LLM_LARGE_PROVIDER", default_large_provider)
+        self.llm_model = configured_llm_model()
+        self.llm_provider = default_provider_for_mode(self.models_mode)
+        self.llm_small_provider = resolve_role_provider("small", self.models_mode)
+        self.llm_large_provider = resolve_role_provider("large", self.models_mode)
         self.embeddings_provider = os.getenv(
             "EMBEDDINGS_PROVIDER", default_embeddings_provider
         )
@@ -625,7 +644,9 @@ class Config:
             if use_openai_embeddings:
                 self.openai.validate_embeddings()
 
-        self.anthropic = AnthropicConfig() if use_anthropic_llm else None
+        self.anthropic = (
+            AnthropicConfig(self.llm_model) if use_anthropic_llm else None
+        )
         if self.anthropic is not None:
             self.anthropic.validate_llm(require_large=use_anthropic_large)
 
