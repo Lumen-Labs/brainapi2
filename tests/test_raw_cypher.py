@@ -140,10 +140,13 @@ def test_execute_operation_rejects_cross_database_and_admin_without_session():
         "USE system MATCH (n) RETURN n",
         "USE neo4j MATCH (n) RETURN n",
         "CREATE DATABASE other",
+        "CREATE OR REPLACE DATABASE other",
         "DROP DATABASE neo4j",
         "SHOW DATABASES",
         "CALL dbms.components() YIELD name RETURN name",
         "CALL dbms.security.listUsers() YIELD user RETURN user",
+        "CALL `dbms`.components() YIELD name RETURN name",
+        r"WITH 'a\'' AS s CALL dbms.components() YIELD name RETURN name",
         "RETURN 1; MATCH (n) DETACH DELETE n",
     ]
     for query in rejected:

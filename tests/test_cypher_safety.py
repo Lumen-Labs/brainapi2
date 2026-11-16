@@ -143,10 +143,15 @@ class CypherSafetyHelperTests(unittest.TestCase):
         rejected = [
             "USE system MATCH (n) RETURN n",
             "CREATE DATABASE other",
+            "CREATE OR REPLACE DATABASE other",
+            "CREATE OR REPLACE COMPOSITE DATABASE other",
             "DROP DATABASE neo4j",
             "SHOW DATABASES",
             "CALL dbms.components() YIELD name RETURN name",
             "CALL db.admin.waitForIndexes() YIELD name RETURN name",
+            "CALL `dbms`.components() YIELD name RETURN name",
+            "CALL `db`.`admin`.waitForIndexes() YIELD name RETURN name",
+            r"WITH 'a\'' AS s CALL dbms.components() YIELD name RETURN name",
             "RETURN 1; MATCH (n) DETACH DELETE n",
             "",
         ]
@@ -154,6 +159,16 @@ class CypherSafetyHelperTests(unittest.TestCase):
             with self.subTest(query=query):
                 with self.assertRaises(RawCypherRejected):
                     validate_raw_cypher(query)
+
+    def test_validate_raw_cypher_ignores_quoted_labels_for_admin_keywords(self):
+        self.assertEqual(
+            validate_raw_cypher("MATCH (n:`USE`) RETURN n"),
+            "MATCH (n:`USE`) RETURN n",
+        )
+        self.assertIn(
+            "db.labels",
+            validate_raw_cypher("CALL db.labels() YIELD label RETURN label"),
+        )
 
 
 if __name__ == "__main__":

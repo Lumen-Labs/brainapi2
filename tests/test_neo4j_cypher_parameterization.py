@@ -97,6 +97,46 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
         self.assertNotIn("'alice-1'", query)
         self.assertNotIn("'Alice'", query)
 
+    def test_bind_property_value_keeps_homogeneous_lists_and_json_mixed(self):
+        client = _client()
+        self.assertEqual(client._bind_property_value([1, 2, 3]), [1, 2, 3])
+        self.assertEqual(client._bind_property_value(["a", "b"]), ["a", "b"])
+        self.assertEqual(client._bind_property_value([]), [])
+        mixed_null = client._bind_property_value([1, None])
+        mixed_types = client._bind_property_value([1, "two"])
+        self.assertIsInstance(mixed_null, str)
+        self.assertIsInstance(mixed_types, str)
+        self.assertIn("null", mixed_null)
+        self.assertIn("two", mixed_types)
+
+    def test_python_properties_convert_neo4j_temporals(self):
+        from datetime import datetime as dt
+        from neo4j.time import DateTime
+
+        client = _client()
+        neo4j_dt = DateTime(2026, 11, 16, 20, 17, 39)
+        coerced = client._python_value(neo4j_dt)
+        self.assertIsInstance(coerced, dt)
+        props = client._python_properties({"last_updated": neo4j_dt, "note": "x"})
+        self.assertIsInstance(props["last_updated"], dt)
+        self.assertEqual(props["note"], "x")
+        dumped = Node(
+            uuid="n1",
+            name="Ada",
+            labels=["PERSON"],
+            properties=props,
+        ).model_dump(mode="json")
+        self.assertEqual(dumped["properties"]["note"], "x")
+        self.assertIsInstance(dumped["properties"]["last_updated"], str)
+
+    def test_add_relationship_returns_ok_string(self):
+        client = _client()
+        predicate = Predicate(uuid="rel-1", name="OWNS", description="owns")
+        result = client.add_relationship(
+            _person("a"), predicate, _person("b", "Widget"), "braina"
+        )
+        self.assertEqual(result, "ok")
+
     def test_add_nodes_serializes_metadata_maps_for_storage(self):
         client = _client()
         node = _person()

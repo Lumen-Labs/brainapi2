@@ -239,12 +239,25 @@ def test_neo4j_injection_payloads_round_trip_every_graph_endpoint(neo4j_graph):
                 "predicate_description": INJECTION_VALUES[0],
             },
         )
-        assert rel.status_code != 400, rel.text
+        assert rel.status_code == 200, rel.text
         rels = api.get(
             "/retrieve/relationships",
             params={"query_text": INJECTION_VALUES[0], "query_search_target": "node_name"},
         )
         assert rels.status_code == 200, rels.text
+        rel_names = [
+            item["predicate"]["name"] for item in rels.json()["relationships"]
+        ]
+        assert "WORKS_AT" in rel_names
+        rel_lookup = client.execute_operation(
+            "MATCH (a)-[r]->(b) WHERE a['uuid'] = '%s' AND b['uuid'] = '%s' "
+            "RETURN r['uuid'] AS uuid, type(r) AS t"
+            % (subject_uuid, other_uuid),
+            BRAIN_ID,
+        )
+        assert _record_value(rel_lookup.records[0], "t") == "WORKS_AT"
+        rel_uuid = _record_value(rel_lookup.records[0], "uuid")
+        assert rel_uuid
 
         updated = api.put(
             "/model/entity",
@@ -268,7 +281,14 @@ def test_neo4j_injection_payloads_round_trip_every_graph_endpoint(neo4j_graph):
                 "limit": 10,
             },
         )
-        assert neighbors_post.status_code < 500, neighbors_post.text
+        assert neighbors_post.status_code == 200, neighbors_post.text
+        assert neighbors_post.json()["main_node"]["uuid"] == subject_uuid
+
+        updated_rel = api.put(
+            "/model/relationship",
+            json={"uuid": rel_uuid, "new_properties": {"note": INJECTION_VALUES[0]}},
+        )
+        assert updated_rel.status_code == 200, updated_rel.text
 
         for method, path in GRAPH_ENDPOINTS:
             response = getattr(api, method.lower())(
@@ -279,7 +299,11 @@ def test_neo4j_injection_payloads_round_trip_every_graph_endpoint(neo4j_graph):
                     "uuid": subject_uuid,
                 },
             )
-            assert response.status_code < 500, (path, response.status_code, response.text)
+            assert response.status_code == 200, (
+                path,
+                response.status_code,
+                response.text,
+            )
 
         rejected = api.post(
             "/model/entity",
@@ -327,7 +351,7 @@ def test_neo4j_deprecate_relationship_treats_payload_as_literal_name(neo4j_graph
                 "new_properties": {"note": payload},
             },
         )
-        assert updated.status_code < 500, updated.text
+        assert updated.status_code == 200, updated.text
 
     deprecated = adapter.deprecate_relationship(
         Node(uuid=subject_uuid, name=payload, labels=["PERSON"]),
@@ -397,6 +421,18 @@ def test_neo4j_raw_cypher_rejects_write_delete_and_cross_database(neo4j_graph):
         )
     with pytest.raises(RawCypherRejected):
         client.execute_operation("CREATE DATABASE stolen", BRAIN_ID)
+    with pytest.raises(RawCypherRejected):
+        client.execute_operation("CREATE OR REPLACE DATABASE stolen", BRAIN_ID)
+    with pytest.raises(RawCypherRejected):
+        client.execute_operation(
+            "CALL `dbms`.components() YIELD name RETURN name",
+            BRAIN_ID,
+        )
+    with pytest.raises(RawCypherRejected):
+        client.execute_operation(
+            r"WITH 'a\'' AS s CALL dbms.components() YIELD name RETURN name",
+            BRAIN_ID,
+        )
 
     read_ok = client.execute_operation("RETURN 1 AS n", BRAIN_ID)
     assert _record_value(read_ok.records[0], "n") == 1

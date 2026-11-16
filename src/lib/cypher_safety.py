@@ -25,7 +25,7 @@ RAW_QUERY_TIMEOUT_SECONDS = 10.0
 _CROSS_DATABASE_RE = re.compile(
     r"\b("
     r"USE|"
-    r"CREATE\s+(?:COMPOSITE\s+)?DATABASE|"
+    r"CREATE\s+(?:OR\s+REPLACE\s+)?(?:COMPOSITE\s+)?DATABASE|"
     r"DROP\s+(?:COMPOSITE\s+)?DATABASE|"
     r"ALTER\s+DATABASE|"
     r"STOP\s+DATABASE|"
@@ -35,7 +35,7 @@ _CROSS_DATABASE_RE = re.compile(
     re.IGNORECASE,
 )
 _ADMIN_PROCEDURE_RE = re.compile(
-    r"\bCALL\s+(?:dbms\.|db\.admin)",
+    r"\bCALL\s+(?:`?dbms`?\.|`?db`?\.`?admin)",
     re.IGNORECASE,
 )
 
@@ -296,8 +296,14 @@ def show_database_status_query(database: str) -> str:
     return "SHOW DATABASE " + quote_database_name(database) + " YIELD currentStatus"
 
 
-def _structural_cypher(query: str) -> str:
-    """Blank out comments and quoted literals so keyword scans ignore them."""
+def _structural_cypher(query: str, *, blank_identifiers: bool = True) -> str:
+    """Blank comments and quoted literals so keyword scans ignore them.
+
+    String literals honor Cypher backslash escapes and doubled quotes.
+    Backtick identifiers are blanked for database-admin scans so a quoted
+    label cannot look like USE/CREATE DATABASE, and left intact for
+    procedure scans so CALL `dbms`.components() is still visible.
+    """
     out: list[str] = []
     i = 0
     n = len(query)
@@ -318,25 +324,56 @@ def _structural_cypher(query: str) -> str:
                 i += 2
             continue
         ch = query[i]
-        if ch in {"'", '"', "`"}:
-            quote = ch
-            out.append(" ")
-            i += 1
-            while i < n:
-                if query[i] == quote:
-                    if i + 1 < n and query[i + 1] == quote:
-                        out.append("  ")
-                        i += 2
-                        continue
-                    out.append(" ")
-                    i += 1
-                    break
-                out.append("\n" if query[i] == "\n" else " ")
-                i += 1
+        if ch in {"'", '"'}:
+            i = _skip_quoted(query, i, ch, out, blank=True, escape_backslash=True)
+            continue
+        if ch == "`":
+            i = _skip_quoted(
+                query,
+                i,
+                "`",
+                out,
+                blank=blank_identifiers,
+                escape_backslash=False,
+            )
             continue
         out.append(ch)
         i += 1
     return "".join(out)
+
+
+def _skip_quoted(
+    query: str,
+    start: int,
+    quote: str,
+    out: list[str],
+    *,
+    blank: bool,
+    escape_backslash: bool,
+) -> int:
+    n = len(query)
+    i = start
+    out.append(" " if blank else query[i])
+    i += 1
+    while i < n:
+        if escape_backslash and query[i] == "\\" and i + 1 < n:
+            if blank:
+                out.append("  ")
+            else:
+                out.append(query[i : i + 2])
+            i += 2
+            continue
+        if query[i] == quote:
+            if i + 1 < n and query[i + 1] == quote:
+                out.append("  " if blank else query[i : i + 2])
+                i += 2
+                continue
+            out.append(" " if blank else query[i])
+            i += 1
+            break
+        out.append("\n" if query[i] == "\n" else (" " if blank else query[i]))
+        i += 1
+    return i
 
 
 def _cypher_statements(query: str) -> list[str]:
@@ -370,7 +407,8 @@ def validate_raw_cypher(query: str) -> str:
         raise RawCypherRejected(
             "Raw Cypher cannot switch databases or run database administration"
         )
-    if _ADMIN_PROCEDURE_RE.search(structural):
+    admin_structural = _structural_cypher(normalized, blank_identifiers=False)
+    if _ADMIN_PROCEDURE_RE.search(admin_structural):
         raise RawCypherRejected(
             "Raw Cypher cannot call dbms.* or db.admin procedures"
         )

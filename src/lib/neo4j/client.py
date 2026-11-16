@@ -47,6 +47,16 @@ from src.utils.logging import log
 from src.utils.serialization.data import always_dict
 
 
+def _is_homogeneous_neo4j_list(items: list) -> bool:
+    """True when every item is the same non-null Neo4j primitive type."""
+    if not items:
+        return True
+    kind = type(items[0])
+    if kind not in (bool, int, float, str):
+        return False
+    return all(type(item) is kind for item in items)
+
+
 class _RawQueryResult:
     def __init__(self, records: list[Any], keys: list[str], truncated: bool):
         self.records = records
@@ -279,10 +289,7 @@ class Neo4jClient(GraphClient):
             return value
         if isinstance(value, (list, tuple)):
             items = list(value)
-            if all(
-                item is None or isinstance(item, (bool, int, float, str))
-                for item in items
-            ):
+            if _is_homogeneous_neo4j_list(items):
                 return items
             return json.dumps(items, default=str)
         if isinstance(value, dict):
@@ -291,6 +298,40 @@ class Neo4jClient(GraphClient):
             return json.dumps(value, default=str)
         except TypeError:
             return str(value)
+
+    def _python_value(self, value: Any) -> Any:
+        """Convert Neo4j driver values (temporals, maps) into Python objects."""
+        if value is None or isinstance(value, (bool, int, float, str, bytes)):
+            return value
+        to_native = getattr(value, "to_native", None)
+        if callable(to_native):
+            try:
+                value = to_native()
+            except Exception:
+                return str(value)
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, dict):
+            return {str(key): self._python_value(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [self._python_value(item) for item in value]
+        items = getattr(value, "items", None)
+        if callable(items):
+            try:
+                return {
+                    str(key): self._python_value(item) for key, item in items()
+                }
+            except Exception:
+                return str(value)
+        return value
+
+    def _python_properties(self, value: Any) -> dict:
+        if not value:
+            return {}
+        if isinstance(value, str):
+            value = always_dict(value)
+        coerced = self._python_value(value)
+        return coerced if isinstance(coerced, dict) else {}
 
     def add_nodes(
         self,
@@ -428,7 +469,7 @@ class Neo4jClient(GraphClient):
                 brain_id (str): Database name to run the query against.
 
         Returns:
-                query_result: The raw result returned by the Neo4j driver for the executed Cypher query.
+                str: ``ok`` when the relationship was merged.
         """
 
         objects = [subject, to_object, predicate]
@@ -475,8 +516,8 @@ class Neo4jClient(GraphClient):
             + "\nRETURN a, b, r"
         )
 
-        result = self._run_query(cypher_query, brain_id, params)
-        return result
+        self._run_query(cypher_query, brain_id, params)
+        return "ok"
 
     def search_graph(self, nodes: list[Node], brain_id: str) -> list[Node]:
         """
@@ -666,7 +707,7 @@ class Neo4jClient(GraphClient):
             name=result.records[0].get("name", "") or "",
             labels=result.records[0].get("labels", []) or [],
             description=result.records[0].get("description", "") or "",
-            properties=result.records[0].get("properties", {}) or {},
+            properties=self._python_properties(result.records[0].get("properties", {}) or {}),
         )
 
     def get_by_uuids(self, uuids: list[str], brain_id: str) -> list[Node]:
@@ -696,7 +737,7 @@ class Neo4jClient(GraphClient):
                 name=record.get("name", ""),
                 labels=record.get("labels", []),
                 description=record.get("description", ""),
-                properties=record.get("properties", {}),
+                properties=self._python_properties(record.get("properties", {})),
                 polarity=record.get("polarity", "neutral"),
                 **(
                     {"happened_at": record.get("happened_at", None)}
@@ -705,8 +746,8 @@ class Neo4jClient(GraphClient):
                 ),
                 **(
                     {
-                        "last_updated": record.get(
-                            "last_updated", datetime.now(timezone.utc)
+                        "last_updated": self._python_value(
+                            record.get("last_updated", datetime.now(timezone.utc))
                         )
                     }
                     if record.get("last_updated", datetime.now(timezone.utc))
@@ -719,7 +760,11 @@ class Neo4jClient(GraphClient):
                     else {}
                 ),
                 **(
-                    {"metadata": record.get("metadata", {})}
+                    {
+                        "metadata": self._python_properties(
+                            record.get("metadata", {})
+                        )
+                    }
                     if record.get("metadata", {}) is not None
                     else {}
                 ),
@@ -780,7 +825,7 @@ class Neo4jClient(GraphClient):
             name=result.records[0].get("name", "") or "",
             labels=result.records[0].get("labels", []) or [],
             description=result.records[0].get("description", "") or "",
-            properties=result.records[0].get("properties", {}) or {},
+            properties=self._python_properties(result.records[0].get("properties", {}) or {}),
         )
 
     def get_neighbors(
@@ -858,7 +903,7 @@ class Neo4jClient(GraphClient):
                     name=record.get("rel_type", "") or "",
                     description=record.get("rel_description", "") or "",
                     direction=record.get("direction", "neutral"),
-                    properties=record.get("rel_properties", {}) or {},
+                    properties=self._python_properties(record.get("rel_properties", {}) or {}),
                     flow_key=record.get("rel_flowkey", "") or "",
                     uuid=record.get("rel_uuid", "") or "",
                 ),
@@ -867,7 +912,7 @@ class Neo4jClient(GraphClient):
                     name=record.get("c_name", "") or "",
                     labels=record.get("c_labels", []) or [],
                     description=record.get("c_description", "") or "",
-                    properties=record.get("c_properties", {}) or {},
+                    properties=self._python_properties(record.get("c_properties", {}) or {}),
                 ),
             )
             if source_uuid in neighbors_dict:
@@ -943,7 +988,7 @@ class Neo4jClient(GraphClient):
                         name=record.get("n_name", "") or "",
                         labels=record.get("n_labels", []) or [],
                         description=record.get("n_description", "") or "",
-                        properties=record.get("n_properties", {}) or {},
+                        properties=self._python_properties(record.get("n_properties", {}) or {}),
                     ),
                     Predicate(
                         name=rel_type,
@@ -955,7 +1000,7 @@ class Neo4jClient(GraphClient):
                         name=record.get("m_name", "") or "",
                         labels=record.get("m_labels", []) or [],
                         description=record.get("m_description", "") or "",
-                        properties=record.get("m_properties", {}) or {},
+                        properties=self._python_properties(record.get("m_properties", {}) or {}),
                     ),
                 )
             )
@@ -1004,7 +1049,7 @@ class Neo4jClient(GraphClient):
                     name=record.get("name", "") or "",
                     labels=record.get("labels", []) or [],
                     description=record.get("description", "") or "",
-                    properties=record.get("properties", {}) or {},
+                    properties=self._python_properties(record.get("properties", {}) or {}),
                 ),
                 Predicate(
                     name=record.get("rel_type", "") or "",
@@ -1016,7 +1061,7 @@ class Neo4jClient(GraphClient):
                     name=record.get("n_name", "") or "",
                     labels=record.get("n_labels", []) or [],
                     description=record.get("n_description", "") or "",
-                    properties=record.get("n_properties", {}) or {},
+                    properties=self._python_properties(record.get("n_properties", {}) or {}),
                 ),
             )
             for record in result.records
@@ -1093,9 +1138,9 @@ class Neo4jClient(GraphClient):
             relationship = record.get("rel")
             if relationship is None:
                 continue
-            subject_properties = dict(record.get("n_properties") or {})
-            object_properties = dict(record.get("m_properties") or {})
-            relationship_properties = dict(relationship)
+            subject_properties = self._python_properties(record.get("n_properties"))
+            object_properties = self._python_properties(record.get("m_properties"))
+            relationship_properties = self._python_properties(relationship)
             subject_uuid = record.get("n_uuid") or subject_properties.get("uuid")
             object_uuid = record.get("m_uuid") or object_properties.get("uuid")
             subject_name = (
@@ -1238,7 +1283,7 @@ class Neo4jClient(GraphClient):
             )
             uuid = record.get("uuid") or properties_record.get("uuid") or name
             labels = record.get("labels") or properties_record.get("labels") or []
-            properties = dict(properties_record)
+            properties = self._python_properties(properties_record)
             nodes.append(
                 Node(
                     uuid=str(uuid),
@@ -1287,7 +1332,7 @@ class Neo4jClient(GraphClient):
                     name=result.records[0].get("a_name", "") or "",
                     labels=result.records[0].get("a_labels", []) or [],
                     description=result.records[0].get("a_description", "") or "",
-                    properties=result.records[0].get("a_properties", {}) or {},
+                    properties=self._python_properties(result.records[0].get("a_properties", {}) or {}),
                 ),
                 Predicate(
                     name=result.records[0].get("r_type", "") or "",
@@ -1299,7 +1344,7 @@ class Neo4jClient(GraphClient):
                     name=result.records[0].get("b_name", "") or "",
                     labels=result.records[0].get("b_labels", []) or [],
                     description=result.records[0].get("b_description", "") or "",
-                    properties=result.records[0].get("b_properties", {}) or {},
+                    properties=self._python_properties(result.records[0].get("b_properties", {}) or {}),
                 ),
             )
         return None
@@ -1374,7 +1419,7 @@ class Neo4jClient(GraphClient):
                     name=result.records[0].get("name", "") or "",
                     labels=result.records[0].get("labels", []) or [],
                     description=result.records[0].get("description", "") or "",
-                    properties=result.records[0].get("properties", {}) or {},
+                    properties=self._python_properties(result.records[0].get("properties", {}) or {}),
                 )
             elif updating == "relationship":
                 return Predicate(
@@ -1547,7 +1592,7 @@ class Neo4jClient(GraphClient):
                 name=result.records[0].get("name", "") or "",
                 labels=result.records[0].get("labels", []) or [],
                 description=result.records[0].get("description", "") or "",
-                properties=result.records[0].get("properties", {}) or {},
+                properties=self._python_properties(result.records[0].get("properties", {}) or {}),
             )
 
         return None
@@ -1737,9 +1782,9 @@ class Neo4jClient(GraphClient):
                 name=record.get("m_name", "") or "",
                 labels=record.get("m_labels", []) or [],
                 description=record.get("m_description", "") or "",
-                properties=always_dict(record.get("m_properties", {})),
+                properties=self._python_properties(record.get("m_properties", {})),
                 polarity=record.get("m_polarity", "neutral"),
-                metadata=always_dict(record.get("m_metadata", {})),
+                metadata=self._python_properties(record.get("m_metadata", {})),
                 happened_at=record.get("m_happened_at", "") or "",
                 last_updated=record.get("m_last_updated", "") or "",
                 observations=record.get("m_observations", []) or [],
@@ -1749,7 +1794,7 @@ class Neo4jClient(GraphClient):
                 name=record.get("rel_type", "") or "",
                 description=record.get("rel_description", "") or "",
                 direction=record.get("direction", "neutral"),
-                properties=always_dict(record.get("rel_properties", {})),
+                properties=self._python_properties(record.get("rel_properties", {})),
                 flow_key=record.get("rel_flowkey", "") or "",
                 uuid=record.get("rel_uuid", "") or "",
                 last_updated=record.get("rel_last_updated", "") or "",
@@ -1810,9 +1855,9 @@ class Neo4jClient(GraphClient):
                     name=record.get("n_name", "") or "",
                     labels=record.get("n_labels", []) or [],
                     description=record.get("n_description", "") or "",
-                    properties=always_dict(record.get("n_properties", {})),
+                    properties=self._python_properties(record.get("n_properties", {})),
                     polarity=record.get("n_polarity", "neutral"),
-                    metadata=always_dict(record.get("n_metadata", {})),
+                    metadata=self._python_properties(record.get("n_metadata", {})),
                     happened_at=record.get("n_happened_at", "") or "",
                     last_updated=record.get("n_last_updated", "") or "",
                     observations=record.get("n_observations", []) or [],
@@ -1822,7 +1867,7 @@ class Neo4jClient(GraphClient):
                     name=record.get("r_type", "") or "",
                     description=record.get("r_description", "") or "",
                     direction=record.get("r_direction", "neutral"),
-                    properties=always_dict(record.get("r_properties", {})),
+                    properties=self._python_properties(record.get("r_properties", {})),
                     flow_key=record.get("r_flow_key", "") or "",
                     last_updated=record.get("r_last_updated", "") or "",
                     observations=record.get("r_observations", []) or [],
@@ -1833,9 +1878,9 @@ class Neo4jClient(GraphClient):
                     name=record.get("m_name", "") or "",
                     labels=record.get("m_labels", []) or [],
                     description=record.get("m_description", "") or "",
-                    properties=always_dict(record.get("m_properties", {})),
+                    properties=self._python_properties(record.get("m_properties", {})),
                     polarity=record.get("m_polarity", "neutral"),
-                    metadata=always_dict(record.get("m_metadata", {})),
+                    metadata=self._python_properties(record.get("m_metadata", {})),
                     happened_at=record.get("m_happened_at", "") or "",
                     last_updated=record.get("m_last_updated", "") or "",
                     observations=record.get("m_observations", []) or [],
@@ -1845,7 +1890,7 @@ class Neo4jClient(GraphClient):
                     name=record.get("r2_type", "") or "",
                     description=record.get("r2_description", "") or "",
                     direction=record.get("r2_direction", "neutral"),
-                    properties=always_dict(record.get("r2_properties", {})),
+                    properties=self._python_properties(record.get("r2_properties", {})),
                     flow_key=record.get("r2_flow_key", "") or "",
                     last_updated=record.get("r2_last_updated", "") or "",
                     observations=record.get("r2_observations", []) or [],
@@ -1856,9 +1901,9 @@ class Neo4jClient(GraphClient):
                     name=record.get("b_name", "") or "",
                     labels=record.get("b_labels", []) or [],
                     description=record.get("b_description", "") or "",
-                    properties=always_dict(record.get("b_properties", {})),
+                    properties=self._python_properties(record.get("b_properties", {})),
                     polarity=record.get("b_polarity", "neutral"),
-                    metadata=always_dict(record.get("b_metadata", {})),
+                    metadata=self._python_properties(record.get("b_metadata", {})),
                     happened_at=record.get("b_happened_at", "") or "",
                     last_updated=record.get("b_last_updated", "") or "",
                     observations=record.get("b_observations", []) or [],
@@ -1908,9 +1953,9 @@ class Neo4jClient(GraphClient):
                         name=record.get("m_name", "") or "",
                         labels=record.get("m_labels", []) or [],
                         description=record.get("m_description", "") or "",
-                        properties=always_dict(record.get("m_properties", {})),
+                        properties=self._python_properties(record.get("m_properties", {})),
                         polarity=record.get("m_polarity", "neutral"),
-                        metadata=always_dict(record.get("m_metadata", {})),
+                        metadata=self._python_properties(record.get("m_metadata", {})),
                         happened_at=record.get("m_happened_at", "") or "",
                         last_updated=record.get("m_last_updated", "") or "",
                         observations=record.get("m_observations", []) or [],
@@ -1920,7 +1965,7 @@ class Neo4jClient(GraphClient):
                         name=record.get("r2_type", "") or "",
                         description=record.get("r2_description", "") or "",
                         direction=record.get("r2_direction", "neutral"),
-                        properties=always_dict(record.get("r2_properties", {})),
+                        properties=self._python_properties(record.get("r2_properties", {})),
                         flow_key=record.get("r2_flow_key", "") or "",
                         last_updated=record.get("r2_last_updated", "") or "",
                         observations=record.get("r2_observations", []) or [],
@@ -1931,9 +1976,9 @@ class Neo4jClient(GraphClient):
                         name=record.get("b_name", "") or "",
                         labels=record.get("b_labels", []) or [],
                         description=record.get("b_description", "") or "",
-                        properties=always_dict(record.get("b_properties", {})),
+                        properties=self._python_properties(record.get("b_properties", {})),
                         polarity=record.get("b_polarity", "neutral"),
-                        metadata=always_dict(record.get("b_metadata", {})),
+                        metadata=self._python_properties(record.get("b_metadata", {})),
                         happened_at=record.get("b_happened_at", "") or "",
                         last_updated=record.get("b_last_updated", "") or "",
                         observations=record.get("b_observations", []) or [],
@@ -1964,20 +2009,20 @@ class Neo4jClient(GraphClient):
                     name=record.get("n_name", "") or "",
                     labels=record.get("n_labels", []) or [],
                     description=record.get("n_description", "") or "",
-                    properties=record.get("n_properties", {}) or {},
+                    properties=self._python_properties(record.get("n_properties", {}) or {}),
                 ),
                 Predicate(
                     name=record.get("r_type", "") or "",
                     description=record.get("r_description", "") or "",
                     direction=record.get("r_direction", "neutral"),
-                    properties=record.get("r_properties", {}) or {},
+                    properties=self._python_properties(record.get("r_properties", {}) or {}),
                 ),
                 Node(
                     uuid=record.get("m_uuid", "") or "",
                     name=record.get("m_name", "") or "",
                     labels=record.get("m_labels", []) or [],
                     description=record.get("m_description", "") or "",
-                    properties=record.get("m_properties", {}) or {},
+                    properties=self._python_properties(record.get("m_properties", {}) or {}),
                 ),
             )
             for record in result.records
@@ -2073,21 +2118,21 @@ class Neo4jClient(GraphClient):
                 name=record.get("n_name", "") or "",
                 labels=record.get("n_labels", []) or [],
                 description=record.get("n_description", "") or "",
-                properties=record.get("n_properties", {}) or {},
+                properties=self._python_properties(record.get("n_properties", {}) or {}),
             ),
             Predicate(
                 uuid=record.get("r_uuid", "") or "",
                 name=record.get("r_type", "") or "",
                 description=record.get("r_description", "") or "",
                 direction="neutral",
-                properties=record.get("r_properties", {}) or {},
+                properties=self._python_properties(record.get("r_properties", {}) or {}),
             ),
             Node(
                 uuid=record.get("m_uuid", "") or "",
                 name=record.get("m_name", "") or "",
                 labels=record.get("m_labels", []) or [],
                 description=record.get("m_description", "") or "",
-                properties=record.get("m_properties", {}) or {},
+                properties=self._python_properties(record.get("m_properties", {}) or {}),
             ),
         )
 
@@ -2136,7 +2181,7 @@ class Neo4jClient(GraphClient):
                     name=record.get("n_name", "") or "",
                     labels=record.get("n_labels", []) or [],
                     description=record.get("n_description", "") or "",
-                    properties=record.get("n_properties", {}) or {},
+                    properties=self._python_properties(record.get("n_properties", {}) or {}),
                     polarity=record.get("n_polarity", "neutral"),
                     metadata=record.get("n_metadata", {}) or {},
                     happened_at=record.get("n_happened_at", "") or "",
@@ -2148,7 +2193,7 @@ class Neo4jClient(GraphClient):
                     name=record.get("r_type", "") or "",
                     description=record.get("r_description", "") or "",
                     direction="neutral",
-                    properties=record.get("r_properties", {}) or {},
+                    properties=self._python_properties(record.get("r_properties", {}) or {}),
                     flow_key=record.get("r_flow_key", "") or "",
                     last_updated=record.get("r_last_updated", "") or "",
                     observations=record.get("r_observations", []) or [],
@@ -2159,7 +2204,7 @@ class Neo4jClient(GraphClient):
                     name=record.get("m_name", "") or "",
                     labels=record.get("m_labels", []) or [],
                     description=record.get("m_description", "") or "",
-                    properties=record.get("m_properties", {}) or {},
+                    properties=self._python_properties(record.get("m_properties", {}) or {}),
                     polarity=record.get("m_polarity", "neutral"),
                     metadata=record.get("m_metadata", {}) or {},
                     happened_at=record.get("m_happened_at", "") or "",
@@ -2206,9 +2251,9 @@ class Neo4jClient(GraphClient):
                     name=record.get("n_name", "") or "",
                     labels=record.get("n_labels", []) or [],
                     description=record.get("n_description", "") or "",
-                    properties=always_dict(record.get("n_properties", {})),
+                    properties=self._python_properties(record.get("n_properties", {})),
                     polarity=record.get("n_polarity", "neutral"),
-                    metadata=always_dict(record.get("n_metadata", {})),
+                    metadata=self._python_properties(record.get("n_metadata", {})),
                     happened_at=record.get("n_happened_at", "") or "",
                     last_updated=record.get("n_last_updated", "") or "",
                     observations=record.get("n_observations", []) or [],
@@ -2218,7 +2263,7 @@ class Neo4jClient(GraphClient):
                     name=record.get("r_type", "") or "",
                     description=record.get("r_description", "") or "",
                     direction=record.get("r_direction", "neutral"),
-                    properties=always_dict(record.get("r_properties", {})),
+                    properties=self._python_properties(record.get("r_properties", {})),
                     flow_key=record.get("r_flow_key", "") or "",
                     last_updated=record.get("r_last_updated", "") or "",
                     observations=record.get("r_observations", []) or [],
@@ -2229,9 +2274,9 @@ class Neo4jClient(GraphClient):
                     name=record.get("m_name", "") or "",
                     labels=record.get("m_labels", []) or [],
                     description=record.get("m_description", "") or "",
-                    properties=always_dict(record.get("m_properties", {})),
+                    properties=self._python_properties(record.get("m_properties", {})),
                     polarity=record.get("m_polarity", "neutral"),
-                    metadata=always_dict(record.get("m_metadata", {})),
+                    metadata=self._python_properties(record.get("m_metadata", {})),
                     happened_at=record.get("m_happened_at", "") or "",
                     last_updated=record.get("m_last_updated", "") or "",
                     observations=record.get("m_observations", []) or [],
@@ -2241,7 +2286,7 @@ class Neo4jClient(GraphClient):
                     name=record.get("r2_type", "") or "",
                     description=record.get("r2_description", "") or "",
                     direction=record.get("r2_direction", "neutral"),
-                    properties=always_dict(record.get("r2_properties", {})),
+                    properties=self._python_properties(record.get("r2_properties", {})),
                     flow_key=record.get("r2_flow_key", "") or "",
                     last_updated=record.get("r2_last_updated", "") or "",
                     observations=record.get("r2_observations", []) or [],
@@ -2252,9 +2297,9 @@ class Neo4jClient(GraphClient):
                     name=record.get("b_name", "") or "",
                     labels=record.get("b_labels", []) or [],
                     description=record.get("b_description", "") or "",
-                    properties=always_dict(record.get("b_properties", {})),
+                    properties=self._python_properties(record.get("b_properties", {})),
                     polarity=record.get("b_polarity", "neutral"),
-                    metadata=always_dict(record.get("b_metadata", {})),
+                    metadata=self._python_properties(record.get("b_metadata", {})),
                     happened_at=record.get("b_happened_at", "") or "",
                     last_updated=record.get("b_last_updated", "") or "",
                     observations=record.get("b_observations", []) or [],
