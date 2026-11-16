@@ -184,21 +184,11 @@ class Neo4jUpsertContractTests(unittest.TestCase):
         client.ensure_database = MagicMock()
         queries = []
 
-        def _capture(query, brain_id):
-            queries.append(query)
-            return "ok"
-
-        client._execute_query_with_retry = _capture
         client._clean_labels = lambda labels: [str(l).upper() for l in labels]
-        client._format_property_key = lambda key: key
-        client._format_value = lambda value: (
-            "null"
-            if value is None
-            else f"'{value}'"
-            if isinstance(value, str)
-            else str(value)
-        )
         client._clean_property_key = lambda key: key
+        client._run_query = lambda query, brain_id, parameters=None, retry=False, ensure=True: (
+            queries.append((query, dict(parameters or {}))) or "ok"
+        )
 
         node = Node(
             uuid="alice-1",
@@ -209,8 +199,10 @@ class Neo4jUpsertContractTests(unittest.TestCase):
         )
         client.add_nodes([node], "brain-a")
         self.assertEqual(len(queries), 1)
-        self.assertIn("MERGE (n:PERSON {uuid: 'alice-1'})", queries[0])
-        self.assertNotIn("{name:", queries[0])
+        query, params = queries[0]
+        self.assertIn("MERGE (n:`PERSON` {uuid: $uuid})", query)
+        self.assertEqual(params["uuid"], "alice-1")
+        self.assertNotIn("{name:", query)
 
     def test_add_relationship_merges_by_endpoint_and_relationship_uuid(self):
         from src.constants.kg import Node, Predicate
@@ -220,13 +212,6 @@ class Neo4jUpsertContractTests(unittest.TestCase):
         client.ensure_database = MagicMock()
         client.driver = MagicMock()
         client._clean_labels = lambda labels: [str(l).upper() for l in labels]
-        client._format_value = lambda value: (
-            "null"
-            if value is None
-            else f"'{value}'"
-            if isinstance(value, str)
-            else str(value)
-        )
 
         subject = Node(uuid="a", name="Alice", labels=["PERSON"], properties={})
         obj = Node(uuid="b", name="Widget", labels=["PRODUCT"], properties={})
@@ -239,9 +224,13 @@ class Neo4jUpsertContractTests(unittest.TestCase):
         )
         client.add_relationship(subject, predicate, obj, "brain-a")
         query = client.driver.execute_query.call_args.args[0]
-        self.assertIn("WHERE a['uuid'] = 'a'", query)
-        self.assertIn("WHERE b['uuid'] = 'b'", query)
-        self.assertIn("MERGE (a)-[r:OWNS {uuid: 'rel-1'}]->(b)", query)
+        params = client.driver.execute_query.call_args.kwargs["parameters_"]
+        self.assertIn("WHERE a['uuid'] = $subject_uuid", query)
+        self.assertIn("WHERE b['uuid'] = $object_uuid", query)
+        self.assertIn("MERGE (a)-[r:`OWNS` {uuid: $predicate_uuid}]->(b)", query)
+        self.assertEqual(params["subject_uuid"], "a")
+        self.assertEqual(params["object_uuid"], "b")
+        self.assertEqual(params["predicate_uuid"], "rel-1")
 
 
 if __name__ == "__main__":
