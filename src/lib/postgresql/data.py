@@ -371,6 +371,35 @@ class PostgreSQLDataClient(DataClient):
             conn.commit()
         return text_chunk
 
+    def mark_text_chunks_superseded(
+        self, ids: List[str], superseded_at: str, brain_id: str
+    ) -> None:
+        if not ids:
+            return
+        with self._brain_connection(brain_id) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE data_text_chunks
+                    SET metadata = jsonb_set(
+                            COALESCE(metadata, '{}'::jsonb),
+                            '{superseded_at}',
+                            to_jsonb(%s::text),
+                            true
+                        ),
+                        document = jsonb_set(
+                            COALESCE(document, '{}'::jsonb),
+                            '{metadata}',
+                            COALESCE(document->'metadata', '{}'::jsonb)
+                                || jsonb_build_object('superseded_at', %s::text),
+                            true
+                        )
+                    WHERE id = ANY(%s)
+                    """,
+                    (superseded_at, superseded_at, list(ids)),
+                )
+            conn.commit()
+
     def save_observations(
         self, observations: List[Observation], brain_id: str
     ) -> List[Observation]:

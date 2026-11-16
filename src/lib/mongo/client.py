@@ -51,6 +51,17 @@ class MongoClient(DataClient):
         collection.insert_one(text_chunk.model_dump(mode="json"))
         return text_chunk
 
+    def mark_text_chunks_superseded(
+        self, ids: List[str], superseded_at: str, brain_id: str
+    ) -> None:
+        if not ids:
+            return
+        collection = self.get_collection("text_chunks", database=brain_id)
+        collection.update_many(
+            {"id": {"$in": list(ids)}},
+            {"$set": {"metadata.superseded_at": superseded_at}},
+        )
+
     def save_observations(
         self, observations: List[Observation], brain_id: str
     ) -> List[Observation]:

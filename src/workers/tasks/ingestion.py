@@ -720,6 +720,24 @@ def _ingest_data(self, args, *, staged=False):
         )
 
         source_text = source_text_from_payload(payload)
+        from src.core.saving.source_passages import prepare_source_revision
+
+        revision = prepare_source_revision(
+            data_adapter,
+            brain_id=payload.brain_id,
+            source_text=source_text,
+            meta_keys=payload.meta_keys,
+            source_timestamp=payload.source_timestamp,
+        )
+        if revision == "unchanged":
+            set_ingestion_task_status(
+                self.request.id,
+                payload.brain_id,
+                "completed",
+                stage="completed",
+                group_tracking=payload.group_tracking,
+            )
+            return self.request.id
 
         checkpoint()
         text_chunk = _save_source(payload, source_text)
