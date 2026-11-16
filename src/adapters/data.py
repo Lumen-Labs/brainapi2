@@ -38,6 +38,13 @@ class DataAdapter:
             return text_chunk
         return self.data.save_text_chunk(text_chunk=text_chunk, brain_id=brain_id)
 
+    def mark_text_chunks_superseded(
+        self, ids: List[str], superseded_at: str, brain_id: str = "default"
+    ) -> None:
+        self.data.mark_text_chunks_superseded(
+            ids=ids, superseded_at=superseded_at, brain_id=brain_id
+        )
+
     def save_observations(
         self, observations: List[Observation], brain_id: str = "default"
     ) -> List[Observation]:

@@ -9,7 +9,6 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 """
 
 import asyncio
-import json
 import re
 from collections import defaultdict
 from datetime import datetime
@@ -1921,6 +1920,11 @@ async def _build_context(
 
     async def _get_historical_context():
         nonlocal historical_context
+        from src.core.saving.source_passages import (
+            current_record_texts,
+            screened_passage_texts,
+        )
+
         with profile_stage("historical.context", blocking=False):
             passages = await asyncio.to_thread(
                 _retrieve_passages,
@@ -1929,9 +1933,13 @@ async def _build_context(
                 limit=max(request.historical_limit, _PASSAGE_K),
             )
             if passages:
-                historical_context = [
-                    text for _, _, text in passages[: request.historical_limit]
-                ]
+                historical_context = screened_passage_texts(
+                    data_adapter,
+                    request.brain_id,
+                    passages,
+                    include_history=include_history,
+                    limit=request.historical_limit,
+                )
                 return historical_context
             with profile_stage("historical.fallback", blocking=False):
                 text_chunks, structured_data = await asyncio.gather(
@@ -1946,11 +1954,22 @@ async def _build_context(
                         limit=request.historical_limit,
                     ),
                 )
-            historical_context = [text_chunk.text for text_chunk in text_chunks] + [
-                json.dumps(structured_data.data)
-                for structured_data in structured_data
-                if len(structured_data.data.items()) > 0
-            ]
+            historical_context = screened_passage_texts(
+                data_adapter,
+                request.brain_id,
+                [
+                    (str(getattr(text_chunk, "id", "") or ""), 0.0, text_chunk.text or "")
+                    for text_chunk in text_chunks
+                ],
+                include_history=include_history,
+                limit=request.historical_limit,
+            ) + current_record_texts(
+                data_adapter,
+                request.brain_id,
+                structured_data,
+                text_chunks,
+                include_history=include_history,
+            )
             return historical_context
 
     with profile_stage(
@@ -2029,6 +2048,25 @@ async def _build_context(
 
     max_facts = max(0, request.max_facts)
 
+    from src.core.saving.source_passages import (
+        current_chunk_body,
+        current_fact_candidates,
+        screen_passage_hits,
+    )
+
+    passage_hits = screen_passage_hits(
+        data_adapter,
+        request.brain_id,
+        passage_hits,
+        include_history=include_history,
+    )
+    ranked = current_fact_candidates(
+        data_adapter,
+        request.brain_id,
+        ranked,
+        include_history=include_history,
+    )
+
     provenance_ids: list[str] = []
     for candidate in ranked:
         provenance_ids.extend(candidate.get("chunk_ids") or [])
@@ -2052,13 +2090,21 @@ async def _build_context(
                     False,
                     request.brain_id,
                 )
+                passage_cache: dict[str, set[str] | None] = {}
                 for chunk in chunks:
-                    body = (chunk.text or "").strip()
+                    raw = (chunk.text or "").strip()
                     chunk_id = str(getattr(chunk, "id", "") or "")
-                    if chunk_id and body:
-                        sessions = _session_ids_from_text(body)
+                    if chunk_id and raw:
+                        sessions = _session_ids_from_text(raw)
                         if sessions:
                             chunk_sessions[chunk_id] = sessions
+                    body = current_chunk_body(
+                        data_adapter,
+                        request.brain_id,
+                        chunk,
+                        include_history=include_history,
+                        cache=passage_cache,
+                    )
                     if body and body not in source_passages:
                         source_passages.append(body)
             except Exception:
@@ -2100,6 +2146,13 @@ async def _build_context(
                         candidate["topic_preferred"] = True
         except Exception as exc:
             topic_detail["error"] = str(exc)[:120]
+
+    ranked = current_fact_candidates(
+        data_adapter,
+        request.brain_id,
+        ranked,
+        include_history=include_history,
+    )
 
     with profile_stage("fact_filter") as detail:
         if request.apply_fact_filter and fact_filter_adapter is not None and ranked:
@@ -2167,6 +2220,12 @@ async def _build_context(
                 )
                 seed_hits.extend(seeds)
                 extra_variant_lists.append(local)
+            extra_passages = screen_passage_hits(
+                data_adapter,
+                request.brain_id,
+                extra_passages,
+                include_history=include_history,
+            )
             for chunk_id, _, body in extra_passages:
                 if body and body not in source_passages:
                     source_passages.append(body)
@@ -2208,6 +2267,12 @@ async def _build_context(
                                 chunk_sessions[chunk_id] = sessions
                 except Exception:
                     pass
+            curated = current_fact_candidates(
+                data_adapter,
+                request.brain_id,
+                curated,
+                include_history=include_history,
+            )
             text_lines, triples, graph_session_ids = _build_fact_channel(
                 curated, chunk_sessions
             )

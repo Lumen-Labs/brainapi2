@@ -38,6 +38,12 @@ class DataClient(ABC):
         raise NotImplementedError("save method not implemented")
 
     @abstractmethod
+    def mark_text_chunks_superseded(
+        self, ids: List[str], superseded_at: str, brain_id: str
+    ) -> None:
+        raise NotImplementedError("mark_text_chunks_superseded method not implemented")
+
+    @abstractmethod
     def save_observations(
         self, observations: List[Observation], brain_id: str
     ) -> List[Observation]:
