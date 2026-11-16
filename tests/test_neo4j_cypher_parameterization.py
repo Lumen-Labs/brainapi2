@@ -143,6 +143,25 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
         self.assertEqual(extra.get("source"), "structured_deterministic")
         self.assertIsInstance(extra.get("last_updated"), str)
 
+    def test_add_relationship_keeps_zero_amount_and_omits_endpoint_uuid(self):
+        client = _client()
+        subject = _person("a")
+        subject.properties = {"uuid": "node-a", "note": "subject"}
+        obj = _person("b", "Widget")
+        obj.properties = {"uuid": "node-b"}
+        predicate = Predicate(
+            uuid="rel-1",
+            name="OWNS",
+            description="owns",
+            amount=0.0,
+            properties={"uuid": "should-not-win", "v_id": "v1"},
+        )
+        client.add_relationship(subject, predicate, obj, "braina")
+        extra = client.driver.calls[0][1]["extra_props"]
+        self.assertEqual(extra.get("amount"), 0.0)
+        self.assertNotIn("uuid", extra)
+        self.assertEqual(extra.get("v_id"), "v1")
+
     def test_deprecate_relationship_does_not_interpolate_names(self):
         client = _client()
         for payload in INJECTION_VALUES:

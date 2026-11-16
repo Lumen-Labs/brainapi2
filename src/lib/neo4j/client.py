@@ -406,7 +406,7 @@ class Neo4jClient(GraphClient):
         for obj in objects:
             for attr in attributes:
                 value = getattr(obj, attr, None)
-                if not value:
+                if value is None or value == "":
                     continue
                 if attr == "properties" and isinstance(value, dict):
                     extra_props.update(_flatten_neo4j_props(value))
@@ -417,6 +417,7 @@ class Neo4jClient(GraphClient):
         from src.core.saving.validity import validity_props_from_mapping
 
         extra_props.update(validity_props_from_mapping(predicate.properties))
+        extra_props.pop("uuid", None)
 
         rel_type = self._quoted_rel_type(predicate.name)
         params = {
