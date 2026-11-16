@@ -12,6 +12,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, JsonValue
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from src.lib.cypher_safety import InvalidCypherIdentifier
+
 
 class ErrorInfo(BaseModel):
     """Stable machine-readable information attached to every API error."""
@@ -155,6 +157,28 @@ def install_error_handlers(app: FastAPI) -> None:
             request,
             status_code=422,
             detail=exc.errors(),
+        )
+
+    @app.exception_handler(InvalidCypherIdentifier)
+    async def cypher_identifier_handler(
+        request: Request,
+        exc: InvalidCypherIdentifier,
+    ):
+        value = exc.value if isinstance(exc.value, str) and len(exc.value) <= 200 else None
+        extra = {"kind": exc.kind}
+        if value is not None:
+            extra["value"] = value
+        return error_response(
+            request,
+            status_code=400,
+            detail=str(exc),
+            code="CYPHER_IDENTIFIER_INVALID",
+            message="A graph identifier in the request is invalid.",
+            resolution=(
+                "Use labels, relationship types, and brain IDs made of letters, "
+                "digits, and underscore. Pass values as data, not as query syntax."
+            ),
+            extra=extra,
         )
 
     @app.exception_handler(Exception)
