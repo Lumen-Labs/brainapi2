@@ -80,7 +80,9 @@ def cmd_evaluate(args: argparse.Namespace, settings: Settings) -> int:
         tune=not args.no_tune,
         smoke=args.smoke or args.split == "smoke",
         use_judge=args.judge,
-        skip_enrichment=not getattr(args, "enrich", False),
+        skip_enrichment=True
+        if (args.smoke or args.split == "smoke")
+        else bool(getattr(args, "skip_enrichment", False)),
     )
     run_dir = settings.runs_dir / report["run_id"]
     md_path = write_report(report, run_dir)
@@ -104,7 +106,6 @@ def cmd_smoke(args: argparse.Namespace, settings: Settings) -> int:
     args.systems = args.systems or "hybrid,brainapi"
     args.no_tune = True
     args.judge = False
-    args.enrich = False
     args.skip_enrichment = True
     args.include_optional = True
     args.run = args.run or "local-smoke"
@@ -172,14 +173,11 @@ def build_parser() -> argparse.ArgumentParser:
     ev.add_argument("--answerer", default="extractive", choices=("extractive", "llm"))
     ev.add_argument("--no-tune", action="store_true")
     ev.add_argument("--judge", action="store_true")
-    ev.add_argument("--skip-enrichment", action="store_true", default=True)
     ev.add_argument(
-        "--enrich",
+        "--skip-enrichment",
         action="store_true",
-        help=(
-            "Allow BrainAPI ingest enrichment. The target stack's chat LLM must be "
-            "Claude Haiku 5.5; this harness cannot change server model routing."
-        ),
+        default=False,
+        help="CI smoke only. Real BrainAPI comparisons run graph enrichment.",
     )
     ev.add_argument("--include-optional", action="store_true")
     ev.add_argument("--smoke", action="store_true")
@@ -191,7 +189,6 @@ def build_parser() -> argparse.ArgumentParser:
     sm.add_argument("--run", default="local-smoke")
     sm.add_argument("--answerer", default="extractive", choices=("extractive", "llm"))
     sm.add_argument("--skip-enrichment", action="store_true", default=True)
-    sm.add_argument("--enrich", action="store_true", default=False)
     sm.add_argument("--judge", action="store_true")
     sm.add_argument("--no-tune", action="store_true")
     sm.add_argument("--include-optional", action="store_true")

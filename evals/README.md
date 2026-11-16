@@ -62,7 +62,7 @@ cp .env.example .env
 ./evals.sh smoke
 ```
 
-`./evals.sh smoke` runs the tiny `smoke` split of every use case with **hashed embeddings + lexical rerank** (no model download, no secrets). If `BRAINPAT_TOKEN` (or `EVAL_API_KEY`) is unset, the BrainAPI arm is skipped and the report stays `local/small-scale`. If the docker stack is up, the same command will ingest into `evaluc*` brains with **skip-enrichment** (no BrainAPI LLM) and query `/retrieve/context`. Full ingest enrichment is `--enrich` only, and the target stack's chat LLM must be Haiku 5.5.
+`./evals.sh smoke` runs the tiny `smoke` split of every use case with **hashed embeddings + lexical rerank** (no model download, no secrets). If `BRAINPAT_TOKEN` (or `EVAL_API_KEY`) is unset, the BrainAPI arm is skipped and the report stays `local/small-scale`. Smoke ingest uses **skip-enrichment** only. Staging/real BrainAPI comparisons run **graph enrichment by default**, after a preflight that the target reports Claude Haiku 5.5 (or `EVAL_BRAINAPI_LLM_CONFIRMED=claude-haiku-5-5` when health/config does not yet expose the model).
 
 Test splits are ≥150 scored items for versioned rules, policy conflicts, and expert know-how. Gold production is documented in each dataset `GOLD.md`. Regenerate from public sources with `PYTHONPATH=. python3 -m evals.datasets.build_public_corpora`.
 
@@ -97,6 +97,7 @@ Do **not** hardcode or commit secrets. Staging keys are expected to already exis
 | `ANTHROPIC_API_KEY` / `EVAL_LLM_API_KEY` | for `--answerer llm` / `--judge` | Shared Haiku 5.5 client. Not `DEEPSEEK_API_KEY` / `OPENAI_API_KEY`. |
 | `EVAL_LLM_MODEL` | optional | Default `claude-haiku-5-5`. Any other chat model is rejected. |
 | `EVAL_LLM_BASE_URL` | optional | Default `https://api.anthropic.com/v1`. DeepSeek/OpenAI/Azure chat hosts are rejected. |
+| `EVAL_BRAINAPI_LLM_CONFIRMED` | for enriched BrainAPI runs if health/config omit the model | Must be `claude-haiku-5-5`. Staging ingest enrichment is on by default and refused without Haiku 5.5. |
 | `EVAL_EMBEDDING_PROVIDER` | optional | Default `sentence-transformers`. `openai`/`azure` with a key, or `hash` for CI smoke. |
 | `EVAL_EMBEDDING_API_KEY` / `EVAL_EMBEDDING_BASE_URL` / `EVAL_EMBEDDING_MODEL` | optional | OpenAI embeddings, or override the MiniLM model name. |
 | `EVAL_RERANKER` / `EVAL_CROSS_ENCODER_MODEL` | optional | Default `cross-encoder` (`cross-encoder/ms-marco-MiniLM-L-6-v2`). `lexical` is smoke-only. |

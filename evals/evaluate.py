@@ -12,6 +12,7 @@ from evals.baseline.dense import make_embedder
 from evals.baseline.rerank import CrossEncoderReranker
 from evals.baseline.tune import SMOKE_GRID, TUNE_GRID, tune_hybrid
 from evals.config import DEFAULT_LLM_MODEL, Settings
+from evals.preflight import preflight_brainapi_haiku
 from evals.datasets.loader import docs_for_run, load_judge_labels, load_use_case, pairs_for_run
 from evals.judge import judge_answer
 from evals.metrics import (
@@ -483,8 +484,31 @@ def evaluate(
     use_judge: bool,
     skip_enrichment: bool,
 ) -> dict[str, Any]:
-    rid, run_dir = ensure_run_dir(settings, run_id)
     include_brainapi = "brainapi" in systems and bool(settings.brainpat_token)
+    smoke_run = smoke or split == "smoke"
+    if include_brainapi and smoke_run:
+        skip_enrichment = True
+        llm_preflight: dict[str, Any] = {
+            "ok": True,
+            "mode": "smoke_skip_enrichment",
+            "llm_model": settings.llm_model or DEFAULT_LLM_MODEL,
+            "note": "CI smoke skips BrainAPI graph enrichment and does not call server LLMs.",
+        }
+    elif include_brainapi:
+        if skip_enrichment:
+            raise SystemExit(
+                "skip-enrichment is CI-smoke only. Staging/real BrainAPI comparisons "
+                "must run ingest enrichment (graph extraction) so the arm matches the product."
+            )
+        llm_preflight = preflight_brainapi_haiku(settings)
+        skip_enrichment = False
+    else:
+        llm_preflight = {
+            "ok": True,
+            "mode": "brainapi_not_attempted",
+            "llm_model": settings.llm_model or DEFAULT_LLM_MODEL,
+        }
+    rid, run_dir = ensure_run_dir(settings, run_id)
     rows = []
     all_records: list[dict[str, Any]] = []
     for name in use_cases:
@@ -548,6 +572,7 @@ def evaluate(
         "judge_agreement": agreement,
         "brainapi_attempted": include_brainapi,
         "brainapi_skip_enrichment": skip_enrichment,
+        "brainapi_llm_preflight": llm_preflight,
         "systems_requested": systems,
         "baseline_tier": "smoke_hash" if smoke else "strong",
     }

@@ -39,6 +39,10 @@ class SmokeRunTests(unittest.TestCase):
             self.assertEqual(report.get("baseline_tier"), "smoke_hash")
             self.assertEqual(report.get("llm_model"), "claude-haiku-5-5")
             self.assertTrue(report.get("brainapi_skip_enrichment"))
+            self.assertEqual(
+                (report.get("brainapi_llm_preflight") or {}).get("mode"),
+                "brainapi_not_attempted",
+            )
             for use in report["use_cases"]:
                 hybrid = use["systems"]["hybrid_baseline"]
                 self.assertIn("metrics", hybrid)

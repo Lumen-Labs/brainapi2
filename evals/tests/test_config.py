@@ -27,6 +27,7 @@ _LLM_ENV = (
     "ANTHROPIC_API_KEY",
     "DEEPSEEK_API_KEY",
     "OPENAI_API_KEY",
+    "EVAL_BRAINAPI_LLM_CONFIRMED",
 )
 
 
@@ -99,3 +100,11 @@ class ConfigTests(unittest.TestCase):
             settings = Settings.load()
         self.assertEqual(settings.llm_api_key, "")
         self.assertEqual(settings.embedding_api_key, "sk-openai")
+
+    def test_brainapi_confirmed_must_be_haiku(self) -> None:
+        with isolated_env(EVAL_BRAINAPI_LLM_CONFIRMED="gpt-4o"):
+            with self.assertRaises(SystemExit):
+                Settings.load()
+        with isolated_env(EVAL_BRAINAPI_LLM_CONFIRMED="claude-haiku-5-5"):
+            settings = Settings.load()
+        self.assertEqual(settings.brainapi_llm_confirmed, "claude-haiku-5-5")

@@ -164,6 +164,7 @@ class Settings:
     datasets_dir: Path
     scale: str
     brain_prefix: str
+    brainapi_llm_confirmed: str = ""
     prompt_budget: dict[str, int | float] = field(default_factory=lambda: dict(PROMPT_BUDGET))
     schema_version: str = SCHEMA_VERSION
 
@@ -231,6 +232,9 @@ class Settings:
             "OPENAI_API_KEY",
             "AZURE_EMBEDDING_KEY",
         )
+        confirmed = _first_env("EVAL_BRAINAPI_LLM_CONFIRMED")
+        if confirmed:
+            canonicalize_llm_model(confirmed, source="EVAL_BRAINAPI_LLM_CONFIRMED")
         return cls(
             brainapi_url=_first_env(
                 "EVAL_BRAINAPI_URL", "BRAINAPI_URL", default="http://localhost:8000"
@@ -275,6 +279,7 @@ class Settings:
             brain_prefix=_first_env(
                 "EVAL_BRAIN_PREFIX", default=DEFAULT_BRAIN_PREFIX
             ),
+            brainapi_llm_confirmed=confirmed,
         )
 
     def require_brainapi(self) -> None:
@@ -324,4 +329,5 @@ class Settings:
             "conflict_path": self.conflict_path or "",
             "llm_key_present": "yes" if self.llm_api_key else "no",
             "embedding_key_present": "yes" if self.embedding_api_key else "no",
+            "brainapi_llm_confirmed": "yes" if self.brainapi_llm_confirmed else "no",
         }
