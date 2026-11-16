@@ -906,13 +906,15 @@ def _apply_resolution(
     conflict = get_conflict(adapter, brain_id, conflict_id, graph=graph)
     if conflict is None:
         raise KeyError(conflict_id)
+    if method == "verified_side" and status == "resolved" and not winning_fact_id:
+        raise ValueError("winning_fact_id is required for method=verified_side")
     live_graph = _optional_graph(graph)
     if winning_fact_id:
         side_ids = {side.fact_id for side in conflict.sides}
         if winning_fact_id not in side_ids:
             raise ValueError("winning_fact_id must be one of the conflict sides")
         if apply_facts and method == "verified_side" and status == "resolved":
-            apply_verified_side_to_facts(
+            outcome = apply_verified_side_to_facts(
                 live_graph,
                 brain_id,
                 winning_fact_id=winning_fact_id,
@@ -924,6 +926,8 @@ def _apply_resolution(
                 verified_by=resolved_by,
                 note=notes,
             )
+            if outcome == "failed":
+                raise ValueError("fact verification failed")
     conflict.status = status  # type: ignore[assignment]
     conflict.resolution = ConflictResolution(
         method=method,  # type: ignore[arg-type]

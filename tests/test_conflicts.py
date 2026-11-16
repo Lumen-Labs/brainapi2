@@ -471,7 +471,7 @@ class DetectionEngineTests(unittest.TestCase):
 
         def fake_apply(graph, *, fact_id, brain_id, action, verified_by=None, note=None):
             actions.append((fact_id, action))
-            return True
+            return "applied"
 
         applied = apply_verified_side_to_facts(
             object(),
@@ -480,8 +480,27 @@ class DetectionEngineTests(unittest.TestCase):
             losing_fact_ids=["b"],
             apply_action=fake_apply,
         )
-        self.assertTrue(applied)
+        self.assertEqual(applied, "applied")
         self.assertEqual(actions, [("a", "verify"), ("b", "reject")])
+
+    def test_verified_side_skips_reject_when_verify_fails(self):
+        from src.core.saving.conflict_verification import apply_verified_side_to_facts
+
+        actions: list[tuple[str, str]] = []
+
+        def fake_apply(graph, *, fact_id, brain_id, action, verified_by=None, note=None):
+            actions.append((fact_id, action))
+            return "failed"
+
+        result = apply_verified_side_to_facts(
+            object(),
+            "brain",
+            winning_fact_id="a",
+            losing_fact_ids=["b"],
+            apply_action=fake_apply,
+        )
+        self.assertEqual(result, "failed")
+        self.assertEqual(actions, [("a", "verify")])
 
     def test_hydrate_sides_from_verification_reader(self):
         from src.constants.conflicts import ConflictEntity, ConflictSide, FactConflict
@@ -522,16 +541,49 @@ class DetectionEngineTests(unittest.TestCase):
     def test_verification_adapter_absent_is_noop(self):
         from src.core.saving.conflict_verification import apply_fact_verification_action
 
-        self.assertFalse(
+        self.assertEqual(
             apply_fact_verification_action(
                 None, fact_id="a", brain_id="brain", action="verify"
-            )
+            ),
+            "absent",
         )
-        self.assertFalse(
+        self.assertEqual(
             apply_fact_verification_action(
                 object(), fact_id="a", brain_id="brain", action="verify"
-            )
+            ),
+            "absent",
         )
+
+    def test_verified_side_requires_winner(self):
+        store = MemoryConflictStore()
+        found = detect_conflicts(store, FakeGraph(self._refund_triples()), "brain")
+        conflict_id = found[0].id
+        with self.assertRaises(ValueError):
+            resolve_conflict(store, "brain", conflict_id, method="verified_side")
+        self.assertEqual(store.rows[conflict_id].status, "open")
+        manual = resolve_conflict(store, "brain", conflict_id, method="manual")
+        self.assertEqual(manual.status, "resolved")
+        self.assertEqual(manual.resolution.method, "manual")
+
+    def test_verified_side_failure_keeps_conflict_open(self):
+        store = MemoryConflictStore()
+        found = detect_conflicts(store, FakeGraph(self._refund_triples()), "brain")
+        numeric = next(
+            item for item in found if item.disagreement_type == "numeric_mismatch"
+        )
+        with patch(
+            "src.core.saving.conflict_verification.apply_verified_side_to_facts"
+        ) as apply_mock:
+            apply_mock.return_value = "failed"
+            with self.assertRaises(ValueError):
+                resolve_conflict(
+                    store,
+                    "brain",
+                    numeric.id,
+                    winning_fact_id=numeric.sides[0].fact_id,
+                    method="verified_side",
+                )
+        self.assertEqual(store.rows[numeric.id].status, "open")
 
     def test_resolve_verified_side_calls_adapter_hook_does_not(self):
         store = MemoryConflictStore()
@@ -542,7 +594,7 @@ class DetectionEngineTests(unittest.TestCase):
         with patch(
             "src.core.saving.conflict_verification.apply_verified_side_to_facts"
         ) as apply_mock:
-            apply_mock.return_value = True
+            apply_mock.return_value = "applied"
             resolve_conflict(
                 store,
                 "brain",
@@ -621,6 +673,10 @@ class McpConflictToolTests(unittest.TestCase):
         detail = read_conflict(store, "brain", conflict_id, authorized=True)
         self.assertEqual(detail["conflict"]["id"], conflict_id)
         self.assertEqual(len(detail["conflict"]["sides"]), 2)
+        missing_winner = resolve_conflict_tool(
+            store, "brain", conflict_id, authorized=True, method="verified_side"
+        )
+        self.assertIn("winning_fact_id", str(missing_winner))
         resolved = resolve_conflict_tool(
             store,
             "brain",

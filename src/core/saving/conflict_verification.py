@@ -11,7 +11,9 @@ Until #113 merges, these helpers no-op and sides stay ``unverified``.
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any, Callable, Literal
+
+VerificationApplyResult = Literal["applied", "absent", "failed"]
 
 
 def read_fact_verification_state(
@@ -57,14 +59,20 @@ def apply_fact_verification_action(
     action: str,
     verified_by: str | None = None,
     note: str | None = None,
-) -> bool:
-    """Ask #113 to verify or reject a fact. Returns False when #113 is absent."""
-    if graph is None or action not in {"verify", "reject"}:
-        return False
+) -> VerificationApplyResult:
+    """Ask #113 to verify or reject a fact.
+
+    ``absent`` means the verification package is not imported or there is no
+    graph to call. ``failed`` means #113 is present and the action raised.
+    """
+    if action not in {"verify", "reject"}:
+        return "failed"
+    if graph is None:
+        return "absent"
     try:
         from src.core.verification.service import apply_verification_action
     except ImportError:
-        return False
+        return "absent"
     try:
         apply_verification_action(
             graph,
@@ -76,8 +84,8 @@ def apply_fact_verification_action(
             note=note,
         )
     except Exception:
-        return False
-    return True
+        return "failed"
+    return "applied"
 
 
 def apply_verified_side_to_facts(
@@ -88,8 +96,8 @@ def apply_verified_side_to_facts(
     losing_fact_ids: list[str],
     verified_by: str | None = None,
     note: str | None = None,
-    apply_action: Callable[..., bool] | None = None,
-) -> bool:
+    apply_action: Callable[..., VerificationApplyResult] | None = None,
+) -> VerificationApplyResult:
     """Verify the winning fact and reject the other conflict side via #113."""
     apply = apply_action or apply_fact_verification_action
     applied = apply(
@@ -100,8 +108,10 @@ def apply_verified_side_to_facts(
         verified_by=verified_by,
         note=note,
     )
+    if applied != "applied":
+        return applied
     for fact_id in losing_fact_ids:
-        apply(
+        rejected = apply(
             graph,
             fact_id=fact_id,
             brain_id=brain_id,
@@ -109,7 +119,9 @@ def apply_verified_side_to_facts(
             verified_by=verified_by,
             note=note,
         )
-    return applied
+        if rejected != "applied":
+            return "failed"
+    return "applied"
 
 
 def hydrate_conflict_sides(
