@@ -29,4 +29,9 @@ tui/embedded
 
 .agent_tmp
 
+evals/.venv/
+evals/runs/*
+!evals/runs/.gitkeep
+evals/datasets/versioned_rules/downloads/
+
 dump.rdb

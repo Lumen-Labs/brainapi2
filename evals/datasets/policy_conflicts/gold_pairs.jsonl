@@ -1,0 +1,4 @@
+{"left": "stmt-refund-14", "right": "stmt-refund-30", "topic": "refund_window", "seeded": true, "rationale": "14-day vs 30-day refund for website purchases, same audience, no plan split."}
+{"left": "stmt-retain-30", "right": "stmt-retain-90", "topic": "retention", "seeded": true, "rationale": "30-day delete vs 90-day retain after cancel."}
+{"left": "stmt-pw-8", "right": "stmt-pw-12", "topic": "password_length", "seeded": true, "rationale": "Minimum 8 vs minimum 12 characters at login."}
+{"left": "stmt-2fa-optional", "right": "stmt-2fa-required", "topic": "two_factor", "seeded": true, "rationale": "2FA optional vs required for all users; password-only allowed vs disabled."}
