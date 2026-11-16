@@ -68,6 +68,8 @@ jobs:
       - run: evals/.venv/bin/pytest -q evals/tests
         env:
           PYTHONPATH: .
+          EVAL_EMBEDDING_PROVIDER: hash
+          EVAL_RERANKER: lexical
 
   frontend:
     runs-on: ubuntu-latest

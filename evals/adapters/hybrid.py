@@ -8,7 +8,12 @@ from evals.answer import extractive_answer, llm_answer, pack_context
 from evals.baseline.contradict import detect_conflicts
 from evals.baseline.dates import filter_as_of
 from evals.baseline.dense import make_embedder
-from evals.baseline.index import DEFAULT_HYBRID_CONFIG, HybridIndex, build_index
+from evals.baseline.index import (
+    DEFAULT_HYBRID_CONFIG,
+    SMOKE_HYBRID_CONFIG,
+    HybridIndex,
+    build_index,
+)
 from evals.baseline.rerank import CrossEncoderReranker
 from evals.baseline.textlib import sentences
 from evals.config import Settings, PROMPT_BUDGET
@@ -49,11 +54,17 @@ class HybridAdapter:
         *,
         config: dict[str, Any] | None = None,
         answerer: str = "extractive",
+        smoke: bool = False,
     ) -> None:
         self.settings = settings
-        self.config = dict(DEFAULT_HYBRID_CONFIG)
+        self.smoke = smoke
+        self.config = dict(SMOKE_HYBRID_CONFIG if smoke else DEFAULT_HYBRID_CONFIG)
         if config:
             self.config.update(config)
+        if smoke:
+            self.config.update(
+                {"dense": "hash", "reranker": "lexical", "dense_dim": 256}
+            )
         self.answerer = answerer
         self.index: HybridIndex | None = None
         self.docs: list[dict[str, Any]] = []
@@ -69,23 +80,47 @@ class HybridAdapter:
 
     def ingest(self, docs: list[dict[str, Any]]) -> dict[str, Any]:
         self.docs = list(docs)
-        embedder = make_embedder(
-            self.settings.embedding_provider
-            if self.settings.embedding_provider != "hash"
-            else str(self.config.get("dense") or "hash"),
-            api_key=self.settings.embedding_api_key,
-            model=self.settings.embedding_model,
-            base_url=self.settings.embedding_base_url,
-            dim=int(self.config.get("dense_dim") or 256),
-        )
+        if self.smoke or str(self.config.get("dense") or "").lower() in {
+            "hash",
+            "hashed",
+            "ngram",
+        }:
+            provider = "hash"
+            self.config["dense"] = "hash"
+            self.config["reranker"] = "lexical"
+        else:
+            provider = self.settings.embedding_provider or str(
+                self.config.get("dense") or "sentence-transformers"
+            )
+        try:
+            embedder = make_embedder(
+                provider,
+                api_key=self.settings.embedding_api_key,
+                model=self.settings.embedding_model
+                if provider in {"openai", "azure"}
+                else (
+                    self.settings.embedding_model
+                    or str(self.config.get("dense_model") or "")
+                ),
+                base_url=self.settings.embedding_base_url,
+                dim=int(self.config.get("dense_dim") or 256),
+            )
+        except ImportError as exc:
+            raise SystemExit(str(exc)) from exc
         cross = None
-        if self.settings.reranker in {"cross-encoder", "ce", "cross_encoder"}:
+        reranker = "lexical" if self.smoke else (
+            self.settings.reranker or str(self.config.get("reranker") or "cross-encoder")
+        )
+        if reranker in {"cross-encoder", "ce", "cross_encoder"}:
             try:
                 cross = CrossEncoderReranker(self.settings.cross_encoder_model)
                 self.config["reranker"] = "cross-encoder"
-            except Exception as exc:
-                self.config["reranker"] = "lexical"
-                self.capabilities["reranker_fallback"] = f"lexical ({exc.__class__.__name__})"
+            except ImportError as exc:
+                raise SystemExit(
+                    "sentence-transformers is required for the cross-encoder reranker. "
+                    "Install with `pip install -r evals/requirements-strong.txt`, "
+                    "or set EVAL_RERANKER=lexical. CI smoke uses lexical rerank."
+                ) from exc
         started = time.perf_counter()
         self.index = build_index(
             docs, self.config, embedder=embedder, cross_encoder=cross

@@ -32,6 +32,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         "",
         f"- Scale: **{report.get('scale')}**",
         f"- Split: `{report.get('split')}`",
+        f"- Baseline tier: `{report.get('baseline_tier') or ('smoke_hash' if report.get('smoke') else 'strong')}`",
         f"- Answerer: `{report.get('answerer')}`",
         (
             "- Extractive scoring is a **retrieval ceiling** (gold facts in the packed window), "

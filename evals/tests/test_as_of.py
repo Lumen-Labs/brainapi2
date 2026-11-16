@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from evals.baseline.dates import filter_as_of, in_force, parse_date
-from evals.baseline.index import build_index
+from evals.baseline.index import HASH_INDEX_CONFIG, build_index
 from evals.datasets.loader import load_corpus, load_questions
 from evals.metrics import must_include
 
@@ -29,8 +29,14 @@ class AsOfTests(unittest.TestCase):
         self.assertIn("Net 30", pay[0]["text"])
 
     def test_hybrid_as_of_does_not_return_future_version(self) -> None:
-        docs = load_corpus("versioned_rules")
-        index = build_index(docs, {"retrieve_k": 8, "rerank_depth": 8})
+        docs = [
+            doc
+            for doc in load_corpus("versioned_rules")
+            if str(doc.get("id") or "").startswith("famr-")
+        ]
+        index = build_index(
+            docs, {**HASH_INDEX_CONFIG, "retrieve_k": 8, "rerank_depth": 8}
+        )
         hits = index.search("FAMR 12.4 payment period Net", k=8, as_of="2021-06-15")
         versions = {hit.get("version") for hit in hits if hit.get("clause_id") == "FAMR 12.4"}
         self.assertTrue(versions)

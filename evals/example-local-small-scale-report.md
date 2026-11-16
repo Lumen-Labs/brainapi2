@@ -1,12 +1,15 @@
 # Example local/small-scale report (not staging)
 
-This file is a checked-in copy of a **local/small-scale** hybrid-only run against the in-repo fixtures (`--answerer extractive`, hashed n-gram dense, lexical reranker, no BrainAPI, no LLM keys). It is a retrieval ceiling on a tiny synthetic corpus. **Do not quote it externally as product quality.** Wilson intervals are wide. BrainAPI was not compared, so the head-to-head verdict is `incomplete`.
+This file is a checked-in copy of a **local/small-scale** hybrid-only run against the **original tiny synthetic fixtures** (`--answerer extractive`, hashed n-gram dense, lexical reranker, no BrainAPI, no LLM keys). It is a retrieval ceiling on n=8/4/6/2 and is **obsolete as an external number**. The scored splits are now ≥150 items from public FAR/eCFR, GitHub Docs / GSA-TTS handbook, and prometheus-operator runbooks; the well-tuned baseline is MiniLM embeddings + cross-encoder (`baseline_tier: strong`). **Do not quote this file externally.** Wilson intervals on the old n are wide. BrainAPI was not compared, so the head-to-head verdict is `incomplete`.
 
 Regenerate with:
 
 ```bash
-./evals.sh evaluate --use-case versioned_rules,policy_conflicts,expert_knowhow,decision_precedent \
-  --split test --systems hybrid --include-optional --run local-test-hybrid --answerer extractive
+# Smoke (hash + lexical, no models):
+./evals.sh smoke
+# Strong baseline on the scored split (requires requirements-strong.txt):
+./evals.sh evaluate --use-case versioned_rules,policy_conflicts,expert_knowhow \
+  --split test --systems hybrid --run local-test-hybrid --answerer extractive
 ```
 
 ---

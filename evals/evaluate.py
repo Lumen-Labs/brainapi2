@@ -8,9 +8,11 @@ from typing import Any
 from evals.adapters.base import QueryResult, SystemAdapter
 from evals.adapters.brainapi import BrainAPIAdapter
 from evals.adapters.hybrid import HybridAdapter
+from evals.baseline.dense import make_embedder
+from evals.baseline.rerank import CrossEncoderReranker
 from evals.baseline.tune import SMOKE_GRID, TUNE_GRID, tune_hybrid
 from evals.config import Settings
-from evals.datasets.loader import load_judge_labels, load_use_case
+from evals.datasets.loader import docs_for_run, load_judge_labels, load_use_case, pairs_for_run
 from evals.judge import judge_answer
 from evals.metrics import (
     cohens_kappa,
@@ -198,13 +200,40 @@ def _build_hybrid(
     tune: bool,
     smoke: bool,
 ) -> tuple[HybridAdapter, dict[str, Any]]:
-    adapter = HybridAdapter(settings, answerer=answerer)
+    adapter = HybridAdapter(settings, answerer=answerer, smoke=smoke)
     tune_info: dict[str, Any] = {"tuned": False, "config": dict(adapter.config)}
     if tune and dev_questions:
         grid = SMOKE_GRID if smoke else TUNE_GRID
-        result = tune_hybrid(docs, dev_questions, grid=grid)
+        if smoke:
+            embedder = make_embedder("hash", dim=256)
+            cross = None
+        else:
+            try:
+                embedder = make_embedder(
+                    settings.embedding_provider,
+                    api_key=settings.embedding_api_key,
+                    model=settings.embedding_model,
+                    base_url=settings.embedding_base_url,
+                    dim=256,
+                )
+                cross = None
+                if settings.reranker in {"cross-encoder", "ce", "cross_encoder"}:
+                    cross = CrossEncoderReranker(settings.cross_encoder_model)
+            except ImportError as exc:
+                raise SystemExit(str(exc)) from exc
+        result = tune_hybrid(
+            docs,
+            dev_questions,
+            grid=grid,
+            embedder=embedder,
+            cross_encoder=cross,
+        )
         adapter.config = dict(result["best_config"])
-        adapter.index = result["index"]
+        if smoke:
+            adapter.config["dense"] = "hash"
+            adapter.config["reranker"] = "lexical"
+            result["best_config"] = dict(adapter.config)
+        adapter.index = result["index"].with_config(adapter.config)
         adapter.docs = list(docs)
         adapter.ingest_stats = {
             "docs": len(docs),
@@ -244,19 +273,23 @@ def evaluate_use_case(
     questions = bundle["questions"].get(split) or []
     if not questions:
         raise SystemExit(f"No questions for {name} split={split}")
-    docs = bundle["corpus"]
-    gold_pairs = bundle["gold_pairs"]
+    smoke_run = smoke or split == "smoke"
+    docs = docs_for_run(bundle["corpus"], smoke=smoke_run)
+    gold_pairs = pairs_for_run(bundle["gold_pairs"], docs, smoke=smoke_run)
     system_runs: dict[str, Any] = {}
     all_records: list[dict[str, Any]] = []
+    tune_questions = (
+        bundle["questions"]["smoke"] if smoke_run else bundle["questions"]["dev"]
+    )
 
     if "hybrid" in systems:
         hybrid, tune_info = _build_hybrid(
             settings,
             docs,
-            bundle["questions"]["dev"],
+            tune_questions,
             answerer=answerer,
             tune=tune,
-            smoke=smoke,
+            smoke=smoke_run,
         )
         records = []
         for question in questions:
@@ -442,6 +475,7 @@ def evaluate(
         "judge_agreement": agreement,
         "brainapi_attempted": include_brainapi,
         "systems_requested": systems,
+        "baseline_tier": "smoke_hash" if smoke else "strong",
     }
     write_jsonl(run_dir / "answers.jsonl", all_records)
     (run_dir / "report.json").write_text(

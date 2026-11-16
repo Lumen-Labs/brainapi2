@@ -16,6 +16,7 @@ DEFAULT_SCALE = "local/small-scale"
 DEFAULT_ANSWER_MODEL = "deepseek-v4-flash"
 DEFAULT_LLM_BASE_URL = "https://api.deepseek.com"
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large"
+DEFAULT_ST_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 DEFAULT_CROSS_ENCODER = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 DEFAULT_BRAIN_PREFIX = "evaluc"
 PROMPT_BUDGET = {
@@ -170,7 +171,7 @@ class Settings:
                 default="2024-12-01-preview",
             ),
             embedding_provider=_first_env(
-                "EVAL_EMBEDDING_PROVIDER", default="hash"
+                "EVAL_EMBEDDING_PROVIDER", default="sentence-transformers"
             ).lower(),
             embedding_api_key=embedding_key,
             embedding_base_url=_first_env(
@@ -178,9 +179,17 @@ class Settings:
             )
             or None,
             embedding_model=_first_env(
-                "EVAL_EMBEDDING_MODEL", default=DEFAULT_EMBEDDING_MODEL
+                "EVAL_EMBEDDING_MODEL",
+                default=(
+                    DEFAULT_EMBEDDING_MODEL
+                    if _first_env(
+                        "EVAL_EMBEDDING_PROVIDER", default="sentence-transformers"
+                    ).lower()
+                    in {"openai", "azure"}
+                    else DEFAULT_ST_EMBEDDING_MODEL
+                ),
             ),
-            reranker=_first_env("EVAL_RERANKER", default="lexical").lower(),
+            reranker=_first_env("EVAL_RERANKER", default="cross-encoder").lower(),
             cross_encoder_model=_first_env(
                 "EVAL_CROSS_ENCODER_MODEL", default=DEFAULT_CROSS_ENCODER
             ),

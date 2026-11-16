@@ -36,11 +36,16 @@ class SmokeRunTests(unittest.TestCase):
             self.assertEqual(report["scale"], "local/small-scale")
             self.assertFalse(report["brainapi_attempted"])
             self.assertEqual(len(report["use_cases"]), 4)
+            self.assertEqual(report.get("baseline_tier"), "smoke_hash")
             for use in report["use_cases"]:
                 hybrid = use["systems"]["hybrid_baseline"]
                 self.assertIn("metrics", hybrid)
                 self.assertGreater(hybrid["metrics"]["n"], 0)
+                self.assertLessEqual(use["n_docs"], 20)
                 self.assertIsNone(use["systems"].get("brainapi"))
+                ingest_cfg = (hybrid.get("ingest") or {}).get("config") or {}
+                self.assertEqual(ingest_cfg.get("dense"), "hash")
+                self.assertEqual(ingest_cfg.get("reranker"), "lexical")
                 if use["use_case"] == "versioned_rules":
                     self.assertGreater(hybrid["metrics"]["accuracy"] or 0, 0.0)
             md = write_report(report, Path(tmp) / "ci-smoke")

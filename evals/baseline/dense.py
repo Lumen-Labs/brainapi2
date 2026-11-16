@@ -5,6 +5,7 @@ import math
 from typing import Protocol
 
 from evals.baseline.textlib import tokenize
+from evals.config import DEFAULT_ST_EMBEDDING_MODEL
 
 
 def _l2_normalize(vec: list[float]) -> list[float]:
@@ -90,6 +91,44 @@ class OpenAIEmbedder:
         }
 
 
+class SentenceTransformerEmbedder:
+    name = "sentence-transformers"
+
+    def __init__(self, model: str = DEFAULT_ST_EMBEDDING_MODEL) -> None:
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ImportError as exc:
+            raise ImportError(
+                "sentence-transformers is required for the strong hybrid baseline. "
+                "Install with `pip install -r evals/requirements-strong.txt`. "
+                "CI smoke uses hashed n-grams and does not need this package."
+            ) from exc
+        self.model_name = model or DEFAULT_ST_EMBEDDING_MODEL
+        self.model = SentenceTransformer(self.model_name)
+
+    def embed(self, texts: list[str]) -> tuple[list[list[float]], dict[str, int]]:
+        if not texts:
+            return [], {
+                "embedding_calls": 0,
+                "embedding_tokens": 0,
+                "embedding_backend": 0,
+            }
+        encoded = self.model.encode(
+            texts,
+            normalize_embeddings=True,
+            show_progress_bar=False,
+            batch_size=32,
+        )
+        vectors = [list(map(float, row)) for row in encoded]
+        chars = sum(len(text) for text in texts)
+        return vectors, {
+            "embedding_calls": 1,
+            "embedding_tokens": max(1, chars // 4),
+            "embedding_backend": 0,
+            "embedding_model": self.model_name,
+        }
+
+
 def make_embedder(
     provider: str,
     *,
@@ -98,7 +137,18 @@ def make_embedder(
     base_url: str | None = None,
     dim: int = 256,
 ) -> Embedder:
-    name = (provider or "hash").strip().lower()
-    if name in {"openai", "azure"} and api_key:
+    name = (provider or "sentence-transformers").strip().lower()
+    if name in {"hash", "hashed", "ngram"}:
+        return HashEmbedder(dim=dim)
+    if name in {"openai", "azure"}:
+        if not api_key:
+            raise SystemExit(
+                "EVAL_EMBEDDING_API_KEY or OPENAI_API_KEY is required for openai embeddings."
+            )
         return OpenAIEmbedder(api_key=api_key, model=model, base_url=base_url)
-    return HashEmbedder(dim=dim)
+    if name in {"sentence-transformers", "st", "local", "auto"}:
+        return SentenceTransformerEmbedder(model=model or DEFAULT_ST_EMBEDDING_MODEL)
+    raise SystemExit(
+        f"Unknown embedding provider {provider!r}. "
+        "Use sentence-transformers (default), openai, or hash (CI smoke only)."
+    )

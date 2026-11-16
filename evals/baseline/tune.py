@@ -4,6 +4,7 @@ import itertools
 from typing import Any, Callable
 
 from evals.baseline.index import DEFAULT_HYBRID_CONFIG, HybridIndex, build_index
+from evals.baseline.rerank import CrossEncoderReranker
 from evals.metrics import exact_match, must_include, token_f1
 
 TUNE_GRID: dict[str, list[Any]] = {
@@ -56,6 +57,18 @@ def extractive_answer(question: dict[str, Any], hits: list[dict[str, Any]]) -> s
     return (hits[0].get("text") or "").strip() if hits else ""
 
 
+def _chunk_cache_key(config: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        config.get("chunk_size"),
+        config.get("chunk_overlap"),
+        config.get("bm25_k1"),
+        config.get("bm25_b"),
+        config.get("dense"),
+        config.get("dense_model"),
+        config.get("dense_dim"),
+    )
+
+
 def evaluate_config(
     docs: list[dict[str, Any]],
     questions: list[dict[str, Any]],
@@ -63,8 +76,14 @@ def evaluate_config(
     *,
     answer_fn: Callable[[dict[str, Any], list[dict[str, Any]]], str] | None = None,
     embedder=None,
+    cross_encoder: CrossEncoderReranker | None = None,
+    index: HybridIndex | None = None,
 ) -> dict[str, Any]:
-    index = build_index(docs, config, embedder=embedder)
+    index = index or build_index(
+        docs, config, embedder=embedder, cross_encoder=cross_encoder
+    )
+    if dict(index.config) != dict(config):
+        index = index.with_config(config)
     scores: list[float] = []
     for question in questions:
         as_of = question.get("as_of")
@@ -88,6 +107,7 @@ def tune_hybrid(
     *,
     grid: dict[str, list[Any]] | None = None,
     embedder=None,
+    cross_encoder: CrossEncoderReranker | None = None,
     answer_fn: Callable[[dict[str, Any], list[dict[str, Any]]], str] | None = None,
 ) -> dict[str, Any]:
     base = dict(DEFAULT_HYBRID_CONFIG)
@@ -95,14 +115,26 @@ def tune_hybrid(
     keys = list(chosen.keys())
     trials: list[dict[str, Any]] = []
     best: dict[str, Any] | None = None
+    chunk_cache: dict[tuple[Any, ...], HybridIndex] = {}
     for values in itertools.product(*[chosen[key] for key in keys]):
         cfg = dict(base)
         cfg.update(dict(zip(keys, values)))
         if cfg.get("fusion") == "rrf" and "dense_weight" in chosen:
             if cfg.get("dense_weight") not in (chosen["dense_weight"][0],):
                 continue
+        cache_key = _chunk_cache_key(cfg)
+        if cache_key not in chunk_cache:
+            chunk_cache[cache_key] = build_index(
+                docs, cfg, embedder=embedder, cross_encoder=cross_encoder
+            )
         result = evaluate_config(
-            docs, questions, cfg, embedder=embedder, answer_fn=answer_fn
+            docs,
+            questions,
+            cfg,
+            embedder=embedder,
+            cross_encoder=cross_encoder,
+            answer_fn=answer_fn,
+            index=chunk_cache[cache_key],
         )
         summary = {
             "config": result["config"],
@@ -125,7 +157,7 @@ def tune_hybrid(
         "score": 0.0,
         "n": 0,
         "build_ms": 0.0,
-        "index": build_index(docs, base, embedder=embedder),
+        "index": build_index(docs, base, embedder=embedder, cross_encoder=cross_encoder),
     }
     return {
         "best_config": winner["config"],

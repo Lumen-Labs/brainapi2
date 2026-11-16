@@ -21,15 +21,17 @@ Each dataset has `smoke` / `dev` / `test` splits and a README covering provenanc
 
 Independent of the product search stack:
 
-1. Chunk documents (size/overlap tuned on **dev**).
+1. Chunk documents (size/overlap tuned on **dev** only).
 2. Okapi BM25.
-3. Dense vectors: hashed n-grams locally, or OpenAI embeddings when keys are set.
+3. Dense vectors: **`sentence-transformers/all-MiniLM-L6-v2` by default** (no API key). OpenAI/Azure embeddings when `EVAL_EMBEDDING_PROVIDER=openai` and a key is set. **Hashed n-grams are CI-smoke only.**
 4. Fuse with **RRF** or **min-max weighted** fusion (grid-searched on dev).
-5. Rerank the fused head: lexical coverage by default; `sentence-transformers` cross-encoder when `EVAL_RERANKER=cross-encoder`.
+5. Rerank the fused head with **`cross-encoder/ms-marco-MiniLM-L-6-v2`** by default. Lexical rerank is smoke-only.
 6. **As-of:** filter chunks by `valid_from` / `valid_to` before retrieval (this is why the baseline is strong on versioned rules).
 7. **Conflicts:** retrieve near-duplicate statements from *other* docs, score numeric/negation clashes, down-rank plan-scoped or sunset articles. Threshold can be tuned on dev.
 
-Tune grid (full): chunk size `{500,800}`, overlap `{80,120}`, fusion `{rrf,weighted}`, `rrf_k` `{10,60}`, dense weight `{0.35,0.65}`, retrieve_k `{20,40}`, rerank depth `{8,16}`. Smoke uses a tiny grid. Trials are written into `report.json`.
+Install the strong stack with `pip install -r evals/requirements-strong.txt`. Reports set `baseline_tier` to `strong` or `smoke_hash`. Do not quote `smoke_hash` numbers as the well-tuned bar.
+
+Tune grid (full): chunk size `{500,800}`, overlap `{80,120}`, fusion `{rrf,weighted}`, `rrf_k` `{10,60}`, dense weight `{0.35,0.65}`, retrieve_k `{20,40}`, rerank depth `{8,16}`. Smoke uses a tiny grid and hashed embeddings. Trials are written into `report.json`.
 
 Naive RAG (no date filter, no rerank, no fusion) is **not** the baseline.
 
@@ -52,14 +54,17 @@ Scoring: exact match where the gold is short; otherwise `must_include` phrases. 
 ```bash
 cd evals
 python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+.venv/bin/pip install -r requirements.txt          # CI / smoke (no models)
+.venv/bin/pip install -r requirements-strong.txt   # test/dev hybrid (MiniLM + cross-encoder)
 cp .env.example .env
 # edit .env — never commit it
 ./evals.sh selftest
 ./evals.sh smoke
 ```
 
-`./evals.sh smoke` runs the tiny `smoke` split of every use case with the hybrid baseline. If `BRAINPAT_TOKEN` (or `EVAL_API_KEY`) is unset, the BrainAPI arm is skipped and the report stays `local/small-scale`. If the docker stack is up, the same command will ingest into `evaluc*` brains (skip-enrichment) and query `/retrieve/context`.
+`./evals.sh smoke` runs the tiny `smoke` split of every use case with **hashed embeddings + lexical rerank** (no model download, no secrets). If `BRAINPAT_TOKEN` (or `EVAL_API_KEY`) is unset, the BrainAPI arm is skipped and the report stays `local/small-scale`. If the docker stack is up, the same command will ingest into `evaluc*` brains (skip-enrichment) and query `/retrieve/context`.
+
+Test splits are ≥150 scored items for versioned rules, policy conflicts, and expert know-how. Gold production is documented in each dataset `GOLD.md`. Regenerate from public sources with `PYTHONPATH=. python3 -m evals.datasets.build_public_corpora`.
 
 ## Commands
 
@@ -94,9 +99,9 @@ Do **not** hardcode or commit secrets. Staging keys are expected to already exis
 | `EVAL_ANSWER_MODEL` | optional | Default `deepseek-v4-flash`. |
 | `EVAL_JUDGE_MODEL` / `EVAL_JUDGE_API_KEY` / `EVAL_JUDGE_BASE_URL` | optional | Prefer a **different family** from the answerer. |
 | `EVAL_JUDGE_AZURE_ENDPOINT` / `EVAL_JUDGE_AZURE_KEY` | optional | Azure judge; falls back to `AZURE_LARGE_LLM_*`. |
-| `EVAL_EMBEDDING_PROVIDER` | optional | `hash` (default, local) or `openai`. |
-| `EVAL_EMBEDDING_API_KEY` / `EVAL_EMBEDDING_BASE_URL` / `EVAL_EMBEDDING_MODEL` | staging-quality hybrid | Real dense embeddings. |
-| `EVAL_RERANKER` / `EVAL_CROSS_ENCODER_MODEL` | optional | `lexical` (default) or `cross-encoder` (needs `sentence-transformers`). |
+| `EVAL_EMBEDDING_PROVIDER` | optional | Default `sentence-transformers`. `openai`/`azure` with a key, or `hash` for CI smoke. |
+| `EVAL_EMBEDDING_API_KEY` / `EVAL_EMBEDDING_BASE_URL` / `EVAL_EMBEDDING_MODEL` | optional | OpenAI embeddings, or override the MiniLM model name. |
+| `EVAL_RERANKER` / `EVAL_CROSS_ENCODER_MODEL` | optional | Default `cross-encoder` (`cross-encoder/ms-marco-MiniLM-L-6-v2`). `lexical` is smoke-only. |
 | `EVAL_AS_OF_FIELD` | optional | If OpenAPI `GetContextRequestBody` grows an as-of field, set its name (e.g. `as_of`). |
 | `EVAL_CONFLICT_PATH` | optional | Future pair-conflict endpoint, e.g. `/retrieve/conflicts`. |
 | `EVAL_CONFLICT_PLUGIN` | optional | Default `temporal_conflicts` (sidecar on `/retrieve/context`, **not** statement-pair gold). |
@@ -117,7 +122,7 @@ Metrics: accuracy (or conflict-pair P/R/F1), Wilson 95% CI, p50/p95 end-to-end a
 
 ## Local vs staging
 
-Anything produced without staging URL + real embedding/LLM keys is **`scale: local/small-scale`**. Do not paste those numbers into external claims. The CI job only runs unit tests plus a hybrid-only smoke against the in-repo fixtures (no docker, no secrets).
+Anything produced without staging URL + LLM keys is labeled **`scale: local/small-scale`** unless you set `EVAL_SCALE`. Do not paste smoke-hash numbers into external claims. The well-tuned hybrid bar is `baseline_tier: strong` (MiniLM embeddings + cross-encoder, tuned on dev). The CI job only installs `evals/requirements.txt` and runs unit tests plus a hybrid-only **smoke** split (no docker, no secrets, no model download).
 
 ## Product constraints honoured
 

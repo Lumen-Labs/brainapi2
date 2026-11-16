@@ -10,7 +10,7 @@ from evals.adapters.brainapi import (
 )
 from evals.adapters.hybrid import HybridAdapter
 from evals.config import Settings
-from evals.datasets.loader import load_corpus, load_questions
+from evals.datasets.loader import docs_for_run, load_corpus, load_questions
 
 
 def _settings() -> Settings:
@@ -19,9 +19,9 @@ def _settings() -> Settings:
 
 class AdapterTests(unittest.TestCase):
     def test_hybrid_as_of_smoke_question(self) -> None:
-        docs = load_corpus("versioned_rules")
+        docs = docs_for_run(load_corpus("versioned_rules"), smoke=True)
         question = load_questions("versioned_rules", split="smoke")[0]
-        adapter = HybridAdapter(_settings(), answerer="extractive")
+        adapter = HybridAdapter(_settings(), answerer="extractive", smoke=True)
         adapter.ingest(docs)
         result = adapter.query(question)
         self.assertTrue(result.answer)

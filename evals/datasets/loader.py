@@ -61,19 +61,44 @@ def load_questions(
     return rows
 
 
-def load_gold_pairs(
+def load_gold_pair_rows(
     name: str, datasets_dir: Path | None = None
-) -> list[tuple[str, str]]:
+) -> list[dict[str, Any]]:
     path = use_case_dir(name, datasets_dir) / "gold_pairs.jsonl"
     if not path.exists():
         return []
+    return _read_jsonl(path)
+
+
+def load_gold_pairs(
+    name: str, datasets_dir: Path | None = None
+) -> list[tuple[str, str]]:
     pairs: list[tuple[str, str]] = []
-    for row in _read_jsonl(path):
+    for row in load_gold_pair_rows(name, datasets_dir):
         left = str(row.get("left") or "")
         right = str(row.get("right") or "")
         if left and right:
             pairs.append((left, right))
     return pairs
+
+
+def docs_for_run(docs: list[dict[str, Any]], *, smoke: bool) -> list[dict[str, Any]]:
+    if not smoke:
+        return list(docs)
+    tagged = [doc for doc in docs if doc.get("ci_smoke")]
+    return tagged or list(docs)
+
+
+def pairs_for_run(
+    pairs: list[tuple[str, str]],
+    docs: list[dict[str, Any]],
+    *,
+    smoke: bool,
+) -> list[tuple[str, str]]:
+    if not smoke:
+        return list(pairs)
+    allowed = {str(doc.get("statement_id") or doc.get("id") or "") for doc in docs}
+    return [(left, right) for left, right in pairs if left in allowed and right in allowed]
 
 
 def load_use_case(name: str, datasets_dir: Path | None = None) -> dict[str, Any]:

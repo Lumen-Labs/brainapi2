@@ -21,10 +21,24 @@ DEFAULT_HYBRID_CONFIG: dict[str, Any] = {
     "dense_weight": 0.5,
     "retrieve_k": 30,
     "rerank_depth": 15,
+    "reranker": "cross-encoder",
+    "dense": "sentence-transformers",
+    "dense_model": "sentence-transformers/all-MiniLM-L6-v2",
+    "dense_dim": 256,
+    "conflict_threshold": 0.5,
+}
+
+SMOKE_HYBRID_CONFIG: dict[str, Any] = {
+    **DEFAULT_HYBRID_CONFIG,
     "reranker": "lexical",
     "dense": "hash",
     "dense_dim": 256,
-    "conflict_threshold": 0.5,
+}
+
+HASH_INDEX_CONFIG: dict[str, Any] = {
+    "reranker": "lexical",
+    "dense": "hash",
+    "dense_dim": 256,
 }
 
 
@@ -91,6 +105,19 @@ class HybridIndex:
         limit = int(k or self.config.get("retrieve_k") or 10)
         return ranked[:limit]
 
+    def with_config(self, config: dict[str, Any]) -> "HybridIndex":
+        return HybridIndex(
+            config=dict(config),
+            chunks=self.chunks,
+            bm25=self.bm25,
+            vectors=self.vectors,
+            embedder=self.embedder,
+            cross_encoder=self.cross_encoder,
+            build_ms=self.build_ms,
+            cost=dict(self.cost),
+            by_id=self.by_id,
+        )
+
 
 def build_index(
     docs: list[dict[str, Any]],
@@ -112,7 +139,8 @@ def build_index(
     for chunk in chunks:
         bm25.add(chunk["id"], f"{chunk.get('title') or ''} {chunk.get('text') or ''}")
     embedder = embedder or make_embedder(
-        str(cfg.get("dense") or "hash"),
+        str(cfg.get("dense") or "sentence-transformers"),
+        model=str(cfg.get("dense_model") or ""),
         dim=int(cfg.get("dense_dim") or 256),
     )
     texts = [f"{chunk.get('title') or ''} {chunk.get('text') or ''}" for chunk in chunks]
