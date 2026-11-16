@@ -121,7 +121,11 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
             uuid="rel-1",
             name="OWNS",
             description="owns",
-            properties={"v_id": "v1"},
+            properties={
+                "v_id": "v1",
+                "valid_from": "2026-01-01T00:00:00Z",
+                "source": "structured_deterministic",
+            },
             flow_key="flow-1",
         )
         client.add_relationship(_person("a"), predicate, _person("b", "Widget"), "braina")
@@ -132,6 +136,11 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
         self.assertEqual(params["subject_uuid"], "a")
         self.assertEqual(params["object_uuid"], "b")
         self.assertEqual(params["predicate_uuid"], "rel-1")
+        extra = params["extra_props"]
+        self.assertNotIsInstance(extra.get("properties"), dict)
+        self.assertEqual(extra.get("v_id"), "v1")
+        self.assertEqual(extra.get("valid_from"), "2026-01-01T00:00:00Z")
+        self.assertEqual(extra.get("source"), "structured_deterministic")
 
     def test_deprecate_relationship_does_not_interpolate_names(self):
         client = _client()

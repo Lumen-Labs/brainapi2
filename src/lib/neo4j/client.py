@@ -44,6 +44,15 @@ from src.utils.logging import log
 from src.utils.serialization.data import always_dict
 
 
+def _flatten_neo4j_props(mapping: dict[str, Any]) -> dict[str, Any]:
+    flattened: dict[str, Any] = {}
+    for key, value in mapping.items():
+        if value in (None, "") or isinstance(value, dict):
+            continue
+        flattened[clean_property_key(key)] = value
+    return flattened
+
+
 class Neo4jClient(GraphClient):
     """
     Neo4j client with support for multiple databases.
@@ -381,8 +390,14 @@ class Neo4jClient(GraphClient):
         for obj in objects:
             for attr in attributes:
                 value = getattr(obj, attr, None)
-                if value:
-                    extra_props[static_property_key(attr)] = value
+                if not value:
+                    continue
+                if attr == "properties" and isinstance(value, dict):
+                    extra_props.update(_flatten_neo4j_props(value))
+                    continue
+                if isinstance(value, dict):
+                    continue
+                extra_props[static_property_key(attr)] = value
         from src.core.saving.validity import validity_props_from_mapping
 
         extra_props.update(validity_props_from_mapping(predicate.properties))
