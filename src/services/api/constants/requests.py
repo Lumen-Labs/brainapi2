@@ -553,6 +553,7 @@ class GetContextRequestBody(BaseModel):
 
     text: str
     brain_id: str = "default"
+    include_history: Optional[bool] = None
     historical_limit: int = 10
     max_facts: int = Field(40, ge=0)
     max_passages: int = 8
