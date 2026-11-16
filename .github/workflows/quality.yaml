@@ -135,9 +135,6 @@ jobs:
           docker compose --project-name brainapi-ci -f deploy/docker-compose.light.yaml -f deploy/docker-compose.ci.yaml up -d --wait
           curl --fail --retry 12 --retry-delay 5 http://localhost/health
           python scripts/production_smoke.py exercise --profile light --system-token "$BRAINPAT_TOKEN" --artifact-dir "$RELEASE_ARTIFACT_DIR"
-      - name: Haiku LLM ingest and retrieve e2e
-        run: |
-          python scripts/haiku_llm_e2e.py --api-url http://localhost --stub-url http://127.0.0.1:18080 --token "$BRAINPAT_TOKEN" | tee "$RELEASE_ARTIFACT_DIR/haiku-llm-e2e.json"
       - name: Light backup and clean restore
         run: |
           archive=$(deploy/brainapi-backup backup --profile light --project-name brainapi-ci --env-file deploy/env.light.example --compose-file deploy/docker-compose.ci.yaml --backup-dir "$BACKUP_DIR" | tail -1)
@@ -147,6 +144,9 @@ jobs:
           deploy/brainapi-backup restore --profile light --project-name brainapi-ci --env-file deploy/env.light.example --compose-file deploy/docker-compose.ci.yaml --archive "$archive"
           curl --fail --retry 12 --retry-delay 5 http://localhost/health
           python scripts/production_smoke.py verify-restore --profile light --system-token "$BRAINPAT_TOKEN" --artifact-dir "$RELEASE_ARTIFACT_DIR"
+      - name: Haiku LLM ingest and retrieve e2e
+        run: |
+          python scripts/haiku_llm_e2e.py --api-url http://localhost --stub-url http://127.0.0.1:18080 --token "$BRAINPAT_TOKEN" | tee "$RELEASE_ARTIFACT_DIR/haiku-llm-e2e.json"
       - name: Record exact-image security evidence
         run: |
           cp brainapi.spdx.json "$RELEASE_ARTIFACT_DIR/brainapi.spdx.json"
