@@ -1,22 +1,27 @@
 # Policy contradiction audit
 
-Task: from a help-center-style corpus, surface pairs of statements that a reader cannot follow at once for the same audience and time. Score precision/recall of unordered statement-id pairs.
+Task: from a help-center / policy corpus, surface pairs of statements that a reader cannot follow at once for the same audience and time. Score precision/recall of unordered statement-id pairs.
 
 ## Provenance
 
-Original **Northwind Cloud** help-center articles written for this harness. Four contradictions are **seeded** (refund window, retention, password length, 2FA). Two near-misses are **not** contradictions because they are scoped to different plans (standard vs enterprise support SLA) or to a clearly dated sunset. Remaining articles are internally consistent decoys.
+**Scored split:** real public help-center and policy text.
 
-This is not scraped from a live vendor help center.
+- GitHub Docs (`github/docs`, CC-BY-4.0) — authentication, billing, org security, REST intro.
+- GSA-TTS handbook (`GSA-TTS/handbook`, U.S. government work / CC0) — travel, leave, tech policies.
+
+Gold pairs are mostly **seeded** (one documented numeric or required/optional mutation of a real paragraph, stored as a "stale copy") plus a smaller set of **naturally occurring** numeric clashes between unmodified paragraphs that share title topic tokens. Plan-scoped Standard vs Enterprise near-misses are `non_pairs`, not gold. See [`GOLD.md`](GOLD.md).
+
+**Smoke split:** original Northwind Cloud articles (`ci_smoke: true`).
 
 ## Licensing
 
-CC0 1.0 (original work in this repository).
+- GitHub Docs excerpts: CC-BY-4.0; attribution: [github/docs](https://github.com/github/docs).
+- GSA-TTS handbook excerpts: U.S. government work / CC0.
+- Seeded mutations and Northwind smoke fixtures: original annotations in this repository (CC0).
 
 ## Split
 
-`gold_pairs.jsonl` is the full gold set. Questions in `questions.jsonl` ask the system to list conflicts (used for the QA view). Pair-level P/R is the headline metric and uses the gold file, not the free-text answer.
-
-`smoke` / `dev` / `test` questions exist so the same runner works for QA and for pair detection. Tuning of the contradiction threshold uses `dev` questions plus the gold pairs listed on those rows.
+`gold_pairs.jsonl` is the full gold set (≥150 pairs). Pair-level P/R is the headline metric. `smoke` / `dev` / `test` questions exist so the same runner works for QA and for pair detection. Tune on `dev` only.
 
 ## BrainAPI note
 

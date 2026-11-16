@@ -1,25 +1,31 @@
 # Versioned rules / as-of
 
-Task: answer questions of the form "what did clause X say as of date D" and "what changed between D1 and D2" over a small regulation corpus with dated versions.
+Task: answer "what did clause X say as of date D" and "what changed between D1 and D2" over historical FAR clause text.
 
 ## Provenance
 
-The in-repo fixture is **original evaluation text** written for this harness. It follows the *shape* of the U.S. Federal Acquisition Regulation (clause ids, dated revisions, inspection/payment/option language) but is **not** an excerpt of FAR or eCFR. Do not cite it as current law.
+**Scored split (dev/test):** U.S. Federal Acquisition Regulation as published in eCFR Title 48 Chapter 1. Snapshots are fetched from the eCFR Versioner API (`/api/versioner/v1/full/{date}/title-48.xml?chapter=1&part=…`). Gold answers are derived **reproducibly from section-level diffs** (see [`GOLD.md`](GOLD.md) and `far_fetch.json`). FAMR fixtures are **not** in the scored split.
 
-A download helper (`download_far.py`) can fetch **public-domain** U.S. government FAR HTML from [acquisition.gov](https://www.acquisition.gov/) for a larger run. Those files are U.S. government works and are not copyrighted in the United States (see 17 U.S.C. § 105). The helper stores fetch timestamps and source URLs; it does **not** auto-label gold as-of answers. Historical versions still need a human or eCFR-history pass before they are scored.
+**Smoke split:** original FAMR evaluation text (`ci_smoke: true`). Shape-compatible, not an excerpt of FAR. Used only by CI.
+
+Rebuild:
+
+```bash
+PYTHONPATH=. python3 -m evals.datasets.build_public_corpora
+```
 
 ## Licensing
 
-- Fixture (`corpus.jsonl`, `questions.jsonl`): CC0 1.0 (original work in this repository).
-- Downloaded FAR HTML: U.S. government public domain. Keep source URLs in the sidecar manifest.
+- Scored FAR/eCFR excerpts: U.S. government work, 17 U.S.C. § 105 (public domain in the U.S.). Source URLs are stored on each document.
+- Smoke FAMR fixtures: CC0 1.0 (original work in this repository).
 
 ## Split
 
-Questions are tagged `smoke` / `dev` / `test`. Tune fusion and chunking on `dev` only. Report `test`. `smoke` is a disjoint wiring set for CI.
+`smoke` is a tiny disjoint wiring set. Tune on `dev` only. Report `test` (≥150 scored items). Spot-check sample: `spotcheck.jsonl`.
 
 ## Scoring
 
-Short answers use exact match (normalized) plus `must_include` phrases. Changelog items require every `must_include` phrase.
+Short answers use exact match plus `must_include` phrases. Changelog items require every `must_include` phrase.
 
 ## BrainAPI note
 

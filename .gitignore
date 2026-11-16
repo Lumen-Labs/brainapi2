@@ -33,5 +33,6 @@ evals/.venv/
 evals/runs/*
 !evals/runs/.gitkeep
 evals/datasets/versioned_rules/downloads/
+evals/datasets/.cache/
 
 dump.rdb
