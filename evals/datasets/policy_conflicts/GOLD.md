@@ -4,23 +4,13 @@ The scored corpus is built from **GitHub Docs** (CC-BY-4.0 help center) and the 
 
 1. Extract short paragraphs that contain a number+unit or required/optional polarity.
 2. **Seeded pairs (majority):** duplicate the paragraph with a single documented mutation (number change or required↔optional) stored as a `stale copy`. Gold pair = original statement_id vs `*-seed`.
-3. **Natural pairs:** two unmodified paragraphs from the same source whose titles share a topic token and whose numeric facts are disjoint.
+3. **Natural pairs:** two unmodified paragraphs from the same source whose titles share a *specific* topic token (generic words like “about” or “plans” do not count) and whose numeric facts are disjoint **but in the same unit family** (days vs days, money vs money). Pairs that only share a generic title word, or that mix unrelated units (e.g. 2FA days vs refund days, $1 hold vs 10 business days), are not gold.
 4. **Near-misses:** Standard vs Enterprise plan titles with different numbers — listed on questions as `non_pairs`, **not** in `gold_pairs.jsonl`.
 5. Original Northwind fixtures remain `ci_smoke`.
 
 Every committed gold pair was produced by this script; a sample is reviewed in this file.
 
-## Human review (sample)
-
-- `stmt-gi-5e084203e9` vs seed — **pass**. GitHub Docs budget paragraph `$100` SKU budget vs seeded `$150`. Same audience, not plan-scoped.
-- `stmt-gi-dd73555c97` vs seed — **pass**. India payment reminder "7 and 14 days later" vs seeded 21 days.
-- `stmt-gi-b608972242` vs seed — **pass**. "After 14 days, paid features … will be locked" vs seeded 21 days.
-- Northwind smoke pairs (`stmt-refund-14`/`30`, retention, password, 2FA) — **pass** (original hand-seeded fixtures).
-- Plan-scoped near-misses titled `(Standard plan)` / `(Enterprise plan)` are listed as `non_pairs` only.
-
-Seeded pairs are labeled `seeded: true`. Natural pairs (`seeded: false`) are unmodified GitHub/TTS paragraphs with disjoint numeric facts and overlapping title tokens.
-
-Builder meta: `{"n_original_statements": 260, "n_seeded_twins": 175, "n_natural_pairs": 20, "n_gold_pairs": 195, "n_github_files": 105, "n_tts_files": 87}`
+False-positive natural pairs called out in review (2FA vs refunds; $1 hold vs 10 business days; mixed-unit plan prices) were removed. Seeded `CC0`→`5` mutations are rejected.
 
 ## Spot-check sample
 
@@ -96,38 +86,38 @@ Builder meta: `{"n_original_statements": 260, "n_seeded_twins": 175, "n_natural_
 - must_include: `['stmt-tt-121999007e', 'stmt-tt-121999007e-seed']`
 - gold_pairs: `[['stmt-tt-121999007e', 'stmt-tt-121999007e-seed']]`
 
-### 9. `pc-pair-stmt-tt-3b9c2148c2-stmt-tt-3b9c2148c2-seed`
+### 9. `pc-pair-stmt-tt-b16b253d49-stmt-tt-b16b253d49-seed`
 
 - split: `test`
 - gold method: `seeded`
-- question: Do statements stmt-tt-3b9c2148c2 and stmt-tt-3b9c2148c2-seed contradict each other for the same audience and time? If yes, list the statement ids.
-- gold: `stmt-tt-3b9c2148c2 vs stmt-tt-3b9c2148c2-seed`
-- must_include: `['stmt-tt-3b9c2148c2', 'stmt-tt-3b9c2148c2-seed']`
-- gold_pairs: `[['stmt-tt-3b9c2148c2', 'stmt-tt-3b9c2148c2-seed']]`
+- question: Do statements stmt-tt-b16b253d49 and stmt-tt-b16b253d49-seed contradict each other for the same audience and time? If yes, list the statement ids.
+- gold: `stmt-tt-b16b253d49 vs stmt-tt-b16b253d49-seed`
+- must_include: `['stmt-tt-b16b253d49', 'stmt-tt-b16b253d49-seed']`
+- gold_pairs: `[['stmt-tt-b16b253d49', 'stmt-tt-b16b253d49-seed']]`
 
-### 10. `pc-pair-stmt-tt-8a00cf121a-stmt-tt-8a00cf121a-seed`
-
-- split: `test`
-- gold method: `seeded`
-- question: Do statements stmt-tt-8a00cf121a and stmt-tt-8a00cf121a-seed contradict each other for the same audience and time? If yes, list the statement ids.
-- gold: `stmt-tt-8a00cf121a vs stmt-tt-8a00cf121a-seed`
-- must_include: `['stmt-tt-8a00cf121a', 'stmt-tt-8a00cf121a-seed']`
-- gold_pairs: `[['stmt-tt-8a00cf121a', 'stmt-tt-8a00cf121a-seed']]`
-
-### 11. `pc-pair-stmt-tt-df53134947-stmt-tt-df53134947-seed`
+### 10. `pc-pair-stmt-tt-1e1a87f547-stmt-tt-1e1a87f547-seed`
 
 - split: `test`
 - gold method: `seeded`
-- question: Do statements stmt-tt-df53134947 and stmt-tt-df53134947-seed contradict each other for the same audience and time? If yes, list the statement ids.
-- gold: `stmt-tt-df53134947 vs stmt-tt-df53134947-seed`
-- must_include: `['stmt-tt-df53134947', 'stmt-tt-df53134947-seed']`
-- gold_pairs: `[['stmt-tt-df53134947', 'stmt-tt-df53134947-seed']]`
+- question: Do statements stmt-tt-1e1a87f547 and stmt-tt-1e1a87f547-seed contradict each other for the same audience and time? If yes, list the statement ids.
+- gold: `stmt-tt-1e1a87f547 vs stmt-tt-1e1a87f547-seed`
+- must_include: `['stmt-tt-1e1a87f547', 'stmt-tt-1e1a87f547-seed']`
+- gold_pairs: `[['stmt-tt-1e1a87f547', 'stmt-tt-1e1a87f547-seed']]`
 
-### 12. `pc-pair-stmt-gi-1068387d8c-stmt-gi-0ef8ec786f`
+### 11. `pc-pair-stmt-tt-45e29dbe89-stmt-tt-45e29dbe89-seed`
+
+- split: `test`
+- gold method: `seeded`
+- question: Do statements stmt-tt-45e29dbe89 and stmt-tt-45e29dbe89-seed contradict each other for the same audience and time? If yes, list the statement ids.
+- gold: `stmt-tt-45e29dbe89 vs stmt-tt-45e29dbe89-seed`
+- must_include: `['stmt-tt-45e29dbe89', 'stmt-tt-45e29dbe89-seed']`
+- gold_pairs: `[['stmt-tt-45e29dbe89', 'stmt-tt-45e29dbe89-seed']]`
+
+### 12. `pc-pair-stmt-gi-e6f1105773-stmt-gi-9662dfbe64`
 
 - split: `test`
 - gold method: `natural_numeric_clash`
-- question: Do statements stmt-gi-1068387d8c and stmt-gi-0ef8ec786f contradict each other for the same audience and time? If yes, list the statement ids.
-- gold: `stmt-gi-1068387d8c vs stmt-gi-0ef8ec786f`
-- must_include: `['stmt-gi-1068387d8c', 'stmt-gi-0ef8ec786f']`
-- gold_pairs: `[['stmt-gi-1068387d8c', 'stmt-gi-0ef8ec786f']]`
+- question: Do statements stmt-gi-e6f1105773 and stmt-gi-9662dfbe64 contradict each other for the same audience and time? If yes, list the statement ids.
+- gold: `stmt-gi-e6f1105773 vs stmt-gi-9662dfbe64`
+- must_include: `['stmt-gi-e6f1105773', 'stmt-gi-9662dfbe64']`
+- gold_pairs: `[['stmt-gi-e6f1105773', 'stmt-gi-9662dfbe64']]`

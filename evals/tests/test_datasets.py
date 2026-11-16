@@ -80,6 +80,44 @@ class DatasetTests(unittest.TestCase):
             for phrase in question.get("must_include") or []:
                 self.assertIn(phrase.lower(), blob, question.get("id"))
 
+    def test_knowhow_gold_is_scoped_to_hops(self) -> None:
+        bundle = load_use_case("expert_knowhow")
+        by_id = {str(doc.get("id")): doc for doc in bundle["corpus"]}
+        for question in bundle["questions"]["test"]:
+            hops = [str(item) for item in (question.get("hops") or [])]
+            phrases = list(question.get("must_include") or [])
+            if len(hops) < 2 or len(phrases) < 2:
+                continue
+            for hop_id, phrase in zip(hops, phrases):
+                doc = by_id.get(hop_id)
+                self.assertIsNotNone(doc, question.get("id"))
+                self.assertIn(
+                    phrase.lower(),
+                    str(doc.get("text") or "").lower(),
+                    question.get("id"),
+                )
+
+    def test_policy_natural_pairs_share_unit_family(self) -> None:
+        from evals.datasets.build_public_corpora import is_natural_clash
+
+        bundle = load_use_case("policy_conflicts")
+        by_sid = {
+            str(doc.get("statement_id") or doc["id"]): doc for doc in bundle["corpus"]
+        }
+        natural_questions = [
+            q
+            for q in bundle["questions"]["test"]
+            if q.get("gold_method") == "natural_numeric_clash"
+        ]
+        for question in natural_questions:
+            pairs = question.get("gold_pairs") or []
+            self.assertTrue(pairs, question.get("id"))
+            left, right = pairs[0]
+            self.assertTrue(
+                is_natural_clash(by_sid[left], by_sid[right]),
+                question.get("id"),
+            )
+
     def test_default_hybrid_is_strong(self) -> None:
         self.assertEqual(DEFAULT_HYBRID_CONFIG["dense"], "sentence-transformers")
         self.assertEqual(DEFAULT_HYBRID_CONFIG["reranker"], "cross-encoder")

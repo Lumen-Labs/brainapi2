@@ -125,7 +125,6 @@ class SentenceTransformerEmbedder:
             "embedding_calls": 1,
             "embedding_tokens": max(1, chars // 4),
             "embedding_backend": 0,
-            "embedding_model": self.model_name,
         }
 
 

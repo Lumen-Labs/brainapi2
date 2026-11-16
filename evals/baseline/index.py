@@ -8,6 +8,18 @@ from evals.baseline.bm25 import BM25Index
 from evals.baseline.chunk import chunk_corpus
 from evals.baseline.dates import filter_as_of
 from evals.baseline.dense import Embedder, cosine, make_embedder
+
+
+def numeric_cost(cost: dict[str, Any] | None) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for key, value in (cost or {}).items():
+        if isinstance(value, bool) or isinstance(value, str):
+            continue
+        try:
+            out[str(key)] = int(value)
+        except (TypeError, ValueError):
+            continue
+    return out
 from evals.baseline.fusion import fuse
 from evals.baseline.rerank import CrossEncoderReranker, rerank_candidates
 
@@ -68,8 +80,8 @@ class HybridIndex:
             if doc_id in allowed
         ]
         q_vec, embed_cost = self.embedder.embed([query])
-        for key, value in embed_cost.items():
-            self.cost[key] = self.cost.get(key, 0) + int(value)
+        for key, value in numeric_cost(embed_cost).items():
+            self.cost[key] = self.cost.get(key, 0) + value
         dense_hits: list[tuple[str, float]] = []
         if q_vec:
             scored = []
@@ -155,7 +167,7 @@ def build_index(
         embedder=embedder,
         cross_encoder=cross_encoder,
         build_ms=(time.perf_counter() - started) * 1000,
-        cost={str(k): int(v) for k, v in cost.items()},
+        cost=numeric_cost(cost),
         by_id={chunk["id"]: chunk for chunk in chunks},
     )
     return index

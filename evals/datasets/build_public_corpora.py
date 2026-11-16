@@ -156,10 +156,14 @@ def facts_in(text: str) -> list[str]:
     return found
 
 
-def fetch_far_xml(snapshot: str, part: str, cache_dir: Path) -> Path | None:
+def fetch_far_xml(
+    snapshot: str, part: str, cache_dir: Path, skip_fetch: bool = False
+) -> Path | None:
     dest = cache_dir / f"title48-part{part}-{snapshot}.xml"
     if dest.exists() and dest.stat().st_size > 500:
         return dest
+    if skip_fetch:
+        return None
     dest.parent.mkdir(parents=True, exist_ok=True)
     try:
         import httpx
@@ -192,15 +196,17 @@ def parse_far_sections(path: Path) -> list[dict[str, str]]:
         clause = (el.attrib.get("N") or "").strip()
         if not clause:
             continue
-        head = _norm_space("".join(el.findtext("HEAD") or ""))
+        head = _norm_space("".join((el.find("HEAD").itertext() if el.find("HEAD") is not None else [])))
         chunks: list[str] = []
+        seen: set[str] = set()
         for child in el.iter():
             if child.tag in SKIP_TAGS:
                 continue
-            if child.tag in {"P", "FP", "HEAD"} and (child.text or "").strip():
-                chunks.append(_norm_space(child.text or ""))
-            if child.tail and child.tag in {"E", "I"} and child.tail.strip():
-                chunks.append(_norm_space(child.tail))
+            if child.tag in {"P", "FP", "HEAD"}:
+                text = _norm_space("".join(child.itertext()))
+                if text and text not in seen:
+                    seen.add(text)
+                    chunks.append(text)
         body = _norm_space(" ".join(chunks))
         if len(body) < 80:
             continue
@@ -415,11 +421,16 @@ def load_smoke_pairs(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def build_far(cache_dir: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+def build_far(
+    cache_dir: Path, *, skip_fetch: bool = False
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     jobs: list[tuple[str, str]] = [(snap, part) for snap in FAR_DATES for part in FAR_PARTS]
     paths: dict[tuple[str, str], Path] = {}
     with ThreadPoolExecutor(max_workers=8) as pool:
-        futs = {pool.submit(fetch_far_xml, snap, part, cache_dir): (snap, part) for snap, part in jobs}
+        futs = {
+            pool.submit(fetch_far_xml, snap, part, cache_dir, skip_fetch): (snap, part)
+            for snap, part in jobs
+        }
         for fut in as_completed(futs):
             snap, part = futs[fut]
             path = fut.result()
@@ -490,7 +501,10 @@ def paragraphs_with_facts(text: str) -> list[str]:
 
 
 def mutate_statement(text: str) -> tuple[str, str] | None:
-    fact = facts_in(text)
+    header_m = re.match(r"^(\[stmt-[^\]]+\]\s*)", text)
+    header = header_m.group(1) if header_m else ""
+    body = text[len(header) :]
+    fact = facts_in(body)
     if fact:
         original = fact[0]
         digits = re.search(r"[\d.]+", original)
@@ -506,49 +520,121 @@ def mutate_statement(text: str) -> tuple[str, str] | None:
             mutated_num = str(nxt)
         else:
             mutated_num = str(round(value * 1.5, 1))
-        mutated_fact = original.replace(number, mutated_num, 1)
-        return text.replace(original, mutated_fact, 1), f"{original} vs {mutated_fact}"
-    if re.search(r"\brequired\b", text, re.I):
-        return re.sub(r"\brequired\b", "optional", text, count=1, flags=re.I), "required vs optional"
-    if re.search(r"\boptional\b", text, re.I):
-        return re.sub(r"\boptional\b", "required", text, count=1, flags=re.I), "optional vs required"
-    lone = re.search(r"\b(\d{1,3})\b", text)
-    if lone:
-        number = lone.group(1)
-        if int(number) >= 1900:
+        mutated_fact = original[: digits.start()] + mutated_num + original[digits.end() :]
+        idx = body.find(original)
+        if idx < 0:
             return None
+        mutated_body = body[:idx] + mutated_fact + body[idx + len(original) :]
+        return header + mutated_body, f"{original} vs {mutated_fact}"
+    if re.search(r"\brequired\b", body, re.I):
+        mutated_body = re.sub(r"\brequired\b", "optional", body, count=1, flags=re.I)
+        return header + mutated_body, "required vs optional"
+    if re.search(r"\boptional\b", body, re.I):
+        mutated_body = re.sub(r"\boptional\b", "required", body, count=1, flags=re.I)
+        return header + mutated_body, "optional vs required"
+    for lone in re.finditer(r"\b(\d{1,3})\b", body):
+        number = lone.group(1)
+        if int(number) >= 1900 or int(number) == 0:
+            continue
+        start, end = lone.span(1)
+        ctx = body[max(0, start - 8) : end + 3]
+        if re.search(r"CC0|Commons", ctx, re.I):
+            continue
         nxt = str(int(number) + 5)
-        return text.replace(number, nxt, 1), f"{number} vs {nxt}"
+        mutated_body = body[:start] + nxt + body[end:]
+        return header + mutated_body, f"{number} vs {nxt}"
     return None
 
 
+GENERIC_TOPIC_TOKENS = {
+    "the",
+    "a",
+    "an",
+    "and",
+    "or",
+    "of",
+    "for",
+    "to",
+    "in",
+    "on",
+    "your",
+    "our",
+    "with",
+    "from",
+    "plan",
+    "plans",
+    "standard",
+    "enterprise",
+    "github",
+    "tts",
+    "gsa",
+    "handbook",
+    "guide",
+    "policy",
+    "about",
+    "faq",
+    "docs",
+    "documentation",
+    "changes",
+    "intro",
+    "using",
+    "how",
+    "what",
+    "when",
+    "why",
+    "overview",
+    "index",
+}
+
+
 def topic_tokens(title: str) -> set[str]:
-    stop = {
-        "the",
-        "a",
-        "an",
-        "and",
-        "or",
-        "of",
-        "for",
-        "to",
-        "in",
-        "on",
-        "your",
-        "our",
-        "with",
-        "from",
-        "plan",
-        "standard",
-        "enterprise",
-        "github",
-        "tts",
-        "gsa",
-        "handbook",
-        "guide",
-        "policy",
+    return {
+        tok
+        for tok in re.findall(r"[a-z0-9]+", title.lower())
+        if tok not in GENERIC_TOPIC_TOKENS and len(tok) > 2
     }
-    return {tok for tok in re.findall(r"[a-z0-9]+", title.lower()) if tok not in stop and len(tok) > 2}
+
+
+def fact_families(facts: Iterable[str]) -> set[str]:
+    families: set[str] = set()
+    for item in facts:
+        text = item.lower()
+        if re.search(r"\bdays?\b", text):
+            families.add("day")
+        if re.search(r"\bweeks?\b", text):
+            families.add("week")
+        if re.search(r"\bmonths?\b", text):
+            families.add("month")
+        if re.search(r"\byears?\b", text):
+            families.add("year")
+        if re.search(r"\bhours?\b", text):
+            families.add("hour")
+        if re.search(r"\bminutes?\b", text):
+            families.add("minute")
+        if "$" in text or "dollar" in text:
+            families.add("money")
+        if "percent" in text or "%" in text:
+            families.add("percent")
+        if "character" in text:
+            families.add("length")
+        if re.search(r"\bnet\s+\d+", text):
+            families.add("payment_terms")
+    return families
+
+
+def is_natural_clash(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    if left.get("source") != right.get("source"):
+        return False
+    overlap = topic_tokens(str(left.get("title") or "")) & topic_tokens(str(right.get("title") or ""))
+    if not overlap:
+        return False
+    left_facts = {item.lower() for item in facts_in(str(left.get("text") or ""))}
+    right_facts = {item.lower() for item in facts_in(str(right.get("text") or ""))}
+    if not left_facts or not right_facts or left_facts == right_facts or left_facts & right_facts:
+        return False
+    only_left = left_facts - right_facts
+    only_right = right_facts - left_facts
+    return bool(fact_families(only_left) & fact_families(only_right))
 
 
 def build_policy(
@@ -612,6 +698,8 @@ def build_policy(
         new_text, rationale = mutated
         if new_text == doc["text"]:
             continue
+        if "CC0" in doc["text"] and rationale.startswith("0 vs"):
+            continue
         seed_id = f"{doc['statement_id']}-seed"
         seeded_docs.append(
             {
@@ -641,27 +729,20 @@ def build_policy(
         if len(seeded_docs) >= 200:
             break
 
-    # Naturally occurring clashes among originals (same topic tokens, different facts).
+    # Naturally occurring clashes among originals (same topic tokens, same unit family).
     natural = 0
     for idx, left in enumerate(originals):
-        lfacts = {item.lower() for item in facts_in(left["text"])}
-        ltopic = topic_tokens(str(left["title"]))
-        if not lfacts or not ltopic:
-            continue
         for right in originals[idx + 1 :]:
-            if left["source"] != right["source"]:
+            if not is_natural_clash(left, right):
                 continue
-            rtopic = topic_tokens(str(right["title"]))
-            if len(ltopic & rtopic) < 1:
-                continue
+            overlap = topic_tokens(str(left["title"])) & topic_tokens(str(right["title"]))
+            lfacts = {item.lower() for item in facts_in(left["text"])}
             rfacts = {item.lower() for item in facts_in(right["text"])}
-            if not rfacts or lfacts == rfacts or lfacts & rfacts:
-                continue
             gold_pairs.append(
                 {
                     "left": left["statement_id"],
                     "right": right["statement_id"],
-                    "topic": "|".join(sorted(ltopic & rtopic)[:4]),
+                    "topic": "|".join(sorted(overlap)[:4]),
                     "seeded": False,
                     "rationale": f"numeric clash {sorted(lfacts)[:2]} vs {sorted(rfacts)[:2]}",
                     "ci_smoke": False,
@@ -757,6 +838,105 @@ def build_policy(
     return docs, gold_pairs, questions, meta
 
 
+ACTION_RE = re.compile(
+    r"\b(check|review|scale|restart|delete|increase|run|kubectl|describe|cordon|"
+    r"drain|update|adjust|verify|inspect|roll|patch|apply|migrate|talk|see|add|"
+    r"remove|set|use|follow|contact|wait|ensure|look|read|open|enable|disable|"
+    r"fail|happen|occur)\b",
+    re.I,
+)
+GOLD_STOP_END = {
+    "the",
+    "a",
+    "an",
+    "and",
+    "or",
+    "of",
+    "to",
+    "in",
+    "on",
+    "for",
+    "with",
+    "from",
+    "which",
+    "that",
+    "this",
+    "can",
+    "be",
+    "is",
+    "are",
+}
+
+
+def phrase_for_gold(text: str, *, min_words: int = 6, max_words: int = 16) -> str:
+    words = _norm_space(text).split()
+    if not words:
+        return ""
+    n = min(max_words, max(min_words, len(words)))
+    n = min(n, len(words))
+    while n >= min_words and words[n - 1].lower().strip(".,;:") in GOLD_STOP_END:
+        n -= 1
+    if n < min_words:
+        n = min(min_words, len(words))
+    return " ".join(words[:n])
+
+
+def distinctive_action_span(source: str, other: str, *, min_words: int = 6, max_words: int = 16) -> str | None:
+    other_l = other.lower()
+    for sent in sentences(source) + [_norm_space(source)]:
+        words = _norm_space(sent).split()
+        upper = min(max_words, len(words))
+        for n in range(upper, min_words - 1, -1):
+            for i in range(0, len(words) - n + 1):
+                chunk = words[i : i + n]
+                if chunk[-1].lower().strip(".,;:") in GOLD_STOP_END:
+                    continue
+                span = " ".join(chunk)
+                if not ACTION_RE.search(span):
+                    continue
+                if span.lower() in other_l:
+                    continue
+                return span
+    words = _norm_space(source).split()
+    for n in range(min(max_words, len(words)), min_words - 1, -1):
+        for i in range(0, len(words) - n + 1):
+            chunk = words[i : i + n]
+            if chunk[-1].lower().strip(".,;:") in GOLD_STOP_END:
+                continue
+            span = " ".join(chunk)
+            if span.lower() in other_l:
+                continue
+            return span
+    return None
+
+
+def repair_knowhow_questions(
+    docs: list[dict[str, Any]], questions: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    by_id = {str(doc.get("id")): doc for doc in docs}
+    repaired: list[dict[str, Any]] = []
+    for row in questions:
+        hops = [str(item) for item in (row.get("hops") or [])]
+        if row.get("split") == "smoke" or len(hops) < 2:
+            repaired.append(row)
+            continue
+        left = by_id.get(hops[0])
+        right = by_id.get(hops[1])
+        if not left or not right:
+            continue
+        left_text = str(left.get("text") or "")
+        right_text = str(right.get("text") or "")
+        mit = distinctive_action_span(left_text, right_text)
+        diag = distinctive_action_span(right_text, left_text)
+        if not mit or not diag:
+            continue
+        clone = dict(row)
+        clone["must_include"] = [mit, diag]
+        clone["gold"] = f"{mit} / {diag}"
+        repaired.append(clone)
+    return repaired
+
+
 def parse_runbook(path: Path) -> dict[str, Any] | None:
     raw = path.read_text(encoding="utf-8", errors="ignore")
     text = strip_markup(raw)
@@ -784,8 +964,16 @@ def parse_runbook(path: Path) -> dict[str, Any] | None:
         for key in key_opts:
             blob = sections.get(key) or ""
             sents = sentences(blob) or ([blob] if blob else [])
-            if sents:
-                return sents[0][:240]
+            for sent in sents:
+                clean = _norm_space(sent)
+                if len(clean) < 24 or clean.upper().startswith("TODO"):
+                    continue
+                if ACTION_RE.search(clean):
+                    return phrase_for_gold(clean)
+            for sent in sents:
+                clean = _norm_space(sent)
+                if len(clean) >= 24 and not clean.upper().startswith("TODO"):
+                    return phrase_for_gold(clean)
         return ""
 
     mitigation = first_sentence(("mitigation", "mitigations", "response", "steps"))
@@ -836,9 +1024,13 @@ def build_knowhow(
                 diag = right.get("diagnosis") or ""
                 if len(mit) < 20 or len(diag) < 20:
                     continue
-                mit_key = " ".join(mit.split()[:8])
-                diag_key = " ".join(diag.split()[:8])
+                mit_key = phrase_for_gold(mit)
+                diag_key = phrase_for_gold(diag)
                 if len(mit_key) < 12 or len(diag_key) < 12:
+                    continue
+                if mit_key.lower() in str(right.get("text") or "").lower():
+                    continue
+                if diag_key.lower() in str(left.get("text") or "").lower():
                     continue
                 questions.append(
                     {
@@ -861,29 +1053,31 @@ def build_knowhow(
                 related_name = str(left["related"][0])
                 match = next((row for row in runbooks if row["alert"] == related_name), None)
                 if match and match["id"] != left["id"]:
-                    questions.append(
-                        {
-                            "id": f"ek-rel-{left['alert']}-{match['alert']}",
-                            "split": "pending",
-                            "task": "qa",
-                            "question": (
-                                f"The {left['alert']} runbook links to {match['alert']}. "
-                                f"What is {left['alert']}'s first mitigation step, and what is "
-                                f"{match['alert']}'s first diagnosis/meaning sentence?"
-                            ),
-                            "gold": (
-                                f"{' '.join((left.get('mitigation') or '').split()[:8])} / "
-                                f"{' '.join((match.get('diagnosis') or '').split()[:8])}"
-                            ),
-                            "must_include": [
-                                " ".join((left.get("mitigation") or "").split()[:8]),
-                                " ".join((match.get("diagnosis") or "").split()[:8]),
-                            ],
-                            "scoring": "must_include",
-                            "gold_method": "runbook_link_multi_hop",
-                            "hops": [left["id"], match["id"]],
-                        }
-                    )
+                    mit_key = phrase_for_gold(str(left.get("mitigation") or ""))
+                    diag_key = phrase_for_gold(str(match.get("diagnosis") or ""))
+                    if (
+                        len(mit_key) >= 12
+                        and len(diag_key) >= 12
+                        and mit_key.lower() not in str(match.get("text") or "").lower()
+                        and diag_key.lower() not in str(left.get("text") or "").lower()
+                    ):
+                        questions.append(
+                            {
+                                "id": f"ek-rel-{left['alert']}-{match['alert']}",
+                                "split": "pending",
+                                "task": "qa",
+                                "question": (
+                                    f"The {left['alert']} runbook links to {match['alert']}. "
+                                    f"What is {left['alert']}'s first mitigation step, and what is "
+                                    f"{match['alert']}'s first diagnosis/meaning sentence?"
+                                ),
+                                "gold": f"{mit_key} / {diag_key}",
+                                "must_include": [mit_key, diag_key],
+                                "scoring": "must_include",
+                                "gold_method": "runbook_link_multi_hop",
+                                "hops": [left["id"], match["id"]],
+                            }
+                        )
     docs = list(existing_docs) + [
         {k: v for k, v in row.items() if k not in {"mitigation", "diagnosis", "related", "alert"}}
         | {
@@ -893,6 +1087,7 @@ def build_knowhow(
         }
         for row in runbooks
     ]
+    questions = repair_knowhow_questions(docs, questions)
     meta = {
         "n_runbooks": len(runbooks),
         "n_candidate_questions": len(questions),
@@ -959,13 +1154,18 @@ def main(argv: list[str] | None = None) -> int:
     smoke_ek_qs = load_smoke_questions(ek_dir / "questions.jsonl")
 
     print("Building FAR/eCFR versioned rules…")
-    far_docs, far_qs, far_meta = build_far(args.cache)
-    far_qs = split_assign(far_qs, n_dev=40, n_test=180)
-    vr_docs = smoke_vr_docs + far_docs
-    vr_qs = smoke_vr_qs + far_qs
-    _write_jsonl(vr_dir / "corpus.jsonl", vr_docs)
-    _write_jsonl(vr_dir / "questions.jsonl", vr_qs)
-    (vr_dir / "far_fetch.json").write_text(json.dumps(far_meta, indent=2) + "\n", encoding="utf-8")
+    far_docs, far_qs, far_meta = build_far(args.cache, skip_fetch=args.skip_far_fetch)
+    if args.skip_far_fetch and not far_docs:
+        print(f"No cached FAR XML under {args.cache}; leaving versioned_rules unchanged")
+        vr_qs = _read_jsonl(vr_dir / "questions.jsonl")
+        far_meta = {"skipped_fetch": True, "n_docs": 0}
+    else:
+        far_qs = split_assign(far_qs, n_dev=40, n_test=180)
+        vr_docs = smoke_vr_docs + far_docs
+        vr_qs = smoke_vr_qs + far_qs
+        _write_jsonl(vr_dir / "corpus.jsonl", vr_docs)
+        _write_jsonl(vr_dir / "questions.jsonl", vr_qs)
+        (vr_dir / "far_fetch.json").write_text(json.dumps(far_meta, indent=2) + "\n", encoding="utf-8")
 
     print("Building policy contradiction corpus…")
     pc_docs, pc_pairs, pc_qs, pc_meta = build_policy(
@@ -1030,7 +1230,7 @@ The scored corpus is built from **GitHub Docs** (CC-BY-4.0 help center) and the 
 
 1. Extract short paragraphs that contain a number+unit or required/optional polarity.
 2. **Seeded pairs (majority):** duplicate the paragraph with a single documented mutation (number change or required↔optional) stored as a `stale copy`. Gold pair = original statement_id vs `*-seed`.
-3. **Natural pairs:** two unmodified paragraphs from the same source whose titles share a topic token and whose numeric facts are disjoint.
+3. **Natural pairs:** two unmodified paragraphs from the same source whose titles share a *specific* topic token (generic words like “about” do not count) and whose numeric facts are disjoint **but in the same unit family** (duration vs duration, money vs money). Pairs that only share a generic title word, or that mix unrelated units (e.g. 2FA days vs refund days, $1 hold vs 10 business days), are not gold.
 4. **Near-misses:** Standard vs Enterprise plan titles with different numbers — listed on questions as `non_pairs`, **not** in `gold_pairs.jsonl`.
 5. Original Northwind fixtures remain `ci_smoke`.
 
@@ -1047,7 +1247,7 @@ Scored items are multi-hop questions over **prometheus-operator/runbooks** (Apac
 
 1. Parse each runbook's `## Mitigation` (or Response/Steps) and `## Diagnosis`/`## Meaning` first sentence.
 2. Pair two runbooks in the same component (or a runbook and a markdown-linked peer).
-3. Gold `must_include` spans are those extracted sentences (truncated). Answering requires both documents.
+3. Gold `must_include` spans are action-bearing phrases unique to each hop document (not truncated mid-function-word). Answering requires both documents.
 4. Original Northwind SRE/lab fixtures remain `ci_smoke`.
 """,
         extra=f"Builder meta: `{json.dumps(ek_meta)}`",

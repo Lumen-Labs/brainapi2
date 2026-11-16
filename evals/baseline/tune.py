@@ -82,18 +82,19 @@ def evaluate_config(
     index = index or build_index(
         docs, config, embedder=embedder, cross_encoder=cross_encoder
     )
-    if dict(index.config) != dict(config):
-        index = index.with_config(config)
+    merged = {**index.config, **config}
+    if dict(index.config) != dict(merged):
+        index = index.with_config(merged)
     scores: list[float] = []
     for question in questions:
         as_of = question.get("as_of")
         query = str(question.get("question") or "")
-        hits = index.search(query, k=int(config.get("retrieve_k") or 20), as_of=as_of)
+        hits = index.search(query, k=int(merged.get("retrieve_k") or 20), as_of=as_of)
         prediction = (answer_fn or extractive_answer)(question, hits)
         scores.append(_score_answer(question, prediction))
     mean_score = sum(scores) / len(scores) if scores else 0.0
     return {
-        "config": dict(config),
+        "config": dict(merged),
         "score": mean_score,
         "n": len(scores),
         "build_ms": index.build_ms,
@@ -111,6 +112,10 @@ def tune_hybrid(
     answer_fn: Callable[[dict[str, Any], list[dict[str, Any]]], str] | None = None,
 ) -> dict[str, Any]:
     base = dict(DEFAULT_HYBRID_CONFIG)
+    if cross_encoder is None:
+        base["reranker"] = "lexical"
+    else:
+        base["reranker"] = "cross-encoder"
     chosen = grid or TUNE_GRID
     keys = list(chosen.keys())
     trials: list[dict[str, Any]] = []

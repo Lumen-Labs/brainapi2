@@ -574,7 +574,7 @@ def evaluate(
         "brainapi_skip_enrichment": skip_enrichment,
         "brainapi_llm_preflight": llm_preflight,
         "systems_requested": systems,
-        "baseline_tier": "smoke_hash" if smoke else "strong",
+        "baseline_tier": "smoke_hash" if smoke_run else "strong",
     }
     write_jsonl(run_dir / "answers.jsonl", all_records)
     (run_dir / "report.json").write_text(

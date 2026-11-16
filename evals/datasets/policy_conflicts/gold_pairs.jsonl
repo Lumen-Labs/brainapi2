@@ -133,7 +133,6 @@
 {"left": "stmt-tt-121999007e", "right": "stmt-tt-121999007e-seed", "topic": "external_speaking_request_playbook", "seeded": true, "rationale": "15 days vs 22 days", "ci_smoke": false}
 {"left": "stmt-tt-6ef13c4a17", "right": "stmt-tt-6ef13c4a17-seed", "topic": "external_speaking_request_playbook", "seeded": true, "rationale": "required vs optional", "ci_smoke": false}
 {"left": "stmt-tt-36437f61a6", "right": "stmt-tt-36437f61a6-seed", "topic": "individual_development_plan", "seeded": true, "rationale": "required vs optional", "ci_smoke": false}
-{"left": "stmt-tt-062bcbff67", "right": "stmt-tt-062bcbff67-seed", "topic": "intro_to_github", "seeded": true, "rationale": "0 vs 5", "ci_smoke": false}
 {"left": "stmt-tt-1fb3232c46", "right": "stmt-tt-1fb3232c46-seed", "topic": "online_learning_university", "seeded": true, "rationale": "optional vs required", "ci_smoke": false}
 {"left": "stmt-tt-a3fd7448ad", "right": "stmt-tt-a3fd7448ad-seed", "topic": "online_learning_university", "seeded": true, "rationale": "required vs optional", "ci_smoke": false}
 {"left": "stmt-tt-f38e009eb2", "right": "stmt-tt-f38e009eb2-seed", "topic": "online_learning_university", "seeded": true, "rationale": "required vs optional", "ci_smoke": false}
@@ -178,22 +177,15 @@
 {"left": "stmt-tt-e28f909f58", "right": "stmt-tt-e28f909f58-seed", "topic": "tts_onboarding_classes", "seeded": true, "rationale": "required vs optional", "ci_smoke": false}
 {"left": "stmt-tt-09f4226a9c", "right": "stmt-tt-09f4226a9c-seed", "topic": "tts_onboarding_classes", "seeded": true, "rationale": "required vs optional", "ci_smoke": false}
 {"left": "stmt-gi-a55e906e86", "right": "stmt-gi-1068387d8c", "topic": "about|authentication", "seeded": false, "rationale": "numeric clash ['28 days'] vs ['45 day', '7 day']", "ci_smoke": false}
-{"left": "stmt-gi-a55e906e86", "right": "stmt-gi-0ef8ec786f", "topic": "about", "seeded": false, "rationale": "numeric clash ['28 days'] vs ['30 days']", "ci_smoke": false}
 {"left": "stmt-gi-6e3e52f590", "right": "stmt-gi-1068387d8c", "topic": "about|authentication", "seeded": false, "rationale": "numeric clash ['28 days'] vs ['45 day', '7 day']", "ci_smoke": false}
-{"left": "stmt-gi-6e3e52f590", "right": "stmt-gi-0ef8ec786f", "topic": "about", "seeded": false, "rationale": "numeric clash ['28 days'] vs ['30 days']", "ci_smoke": false}
 {"left": "stmt-gi-35f808018c", "right": "stmt-gi-e03cca5969", "topic": "log|reviewing", "seeded": false, "rationale": "numeric clash ['90 days'] vs ['180 days']", "ci_smoke": false}
 {"left": "stmt-gi-1068387d8c", "right": "stmt-gi-7ad883659e", "topic": "authentication|factor|two", "seeded": false, "rationale": "numeric clash ['45 day', '7 day'] vs ['28 days']", "ci_smoke": false}
 {"left": "stmt-gi-1068387d8c", "right": "stmt-gi-ca94152ead", "topic": "authentication|factor|two", "seeded": false, "rationale": "numeric clash ['45 day', '7 day'] vs ['28 days']", "ci_smoke": false}
 {"left": "stmt-gi-1068387d8c", "right": "stmt-gi-297c10255e", "topic": "authentication|factor|two", "seeded": false, "rationale": "numeric clash ['45 day', '7 day'] vs ['28 days']", "ci_smoke": false}
 {"left": "stmt-gi-1068387d8c", "right": "stmt-gi-a52cb7787a", "topic": "authentication|factor|two", "seeded": false, "rationale": "numeric clash ['45 day', '7 day'] vs ['28 days']", "ci_smoke": false}
-{"left": "stmt-gi-1068387d8c", "right": "stmt-gi-0ef8ec786f", "topic": "about", "seeded": false, "rationale": "numeric clash ['45 day', '7 day'] vs ['30 days']", "ci_smoke": false}
-{"left": "stmt-gi-a8d37d4bca", "right": "stmt-gi-46b5e64b29", "topic": "account", "seeded": false, "rationale": "numeric clash ['5 day'] vs ['24 hours']", "ci_smoke": false}
 {"left": "stmt-gi-dd67a919de", "right": "stmt-gi-9662dfbe64", "topic": "license", "seeded": false, "rationale": "numeric clash ['30 days'] vs ['90 days']", "ci_smoke": false}
 {"left": "stmt-gi-1949084652", "right": "stmt-gi-5e084203e9", "topic": "budgets|control|metered|products", "seeded": false, "rationale": "numeric clash ['$50'] vs ['$100']", "ci_smoke": false}
 {"left": "stmt-gi-931f687a3f", "right": "stmt-gi-5e084203e9", "topic": "budgets|control|metered|products", "seeded": false, "rationale": "numeric clash ['$50'] vs ['$100']", "ci_smoke": false}
-{"left": "stmt-gi-24aa8d4da6", "right": "stmt-gi-45ba0f1c59", "topic": "authorization|holds|troubleshooting", "seeded": false, "rationale": "numeric clash ['$1'] vs ['10 business days']", "ci_smoke": false}
 {"left": "stmt-gi-e6f1105773", "right": "stmt-gi-9662dfbe64", "topic": "reference|reports", "seeded": false, "rationale": "numeric clash ['31 days'] vs ['90 days']", "ci_smoke": false}
 {"left": "stmt-gi-46c8fbdb95", "right": "stmt-gi-9662dfbe64", "topic": "reference|reports", "seeded": false, "rationale": "numeric clash ['31 days'] vs ['90 days']", "ci_smoke": false}
-{"left": "stmt-gi-0ef8ec786f", "right": "stmt-gi-449139d78a", "topic": "plans", "seeded": false, "rationale": "numeric clash ['30 days'] vs ['$12', '$18']", "ci_smoke": false}
-{"left": "stmt-gi-bd51ef7d63", "right": "stmt-gi-b9521da8a5", "topic": "api", "seeded": false, "rationale": "numeric clash ['24 months'] vs ['60 minutes']", "ci_smoke": false}
 {"left": "stmt-tt-8efdff1e33", "right": "stmt-tt-28ff74e74f", "topic": "advanced|leave|sick", "seeded": false, "rationale": "numeric clash ['240 hours'] vs ['4 hours']", "ci_smoke": false}

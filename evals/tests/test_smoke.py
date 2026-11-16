@@ -62,6 +62,25 @@ class SmokeRunTests(unittest.TestCase):
             self.assertIn("claude-haiku-5-5", saved)
             self.assertIn('"llm_model"', saved)
 
+    def test_split_smoke_is_hash_tier_without_smoke_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = Settings.load()
+            settings.runs_dir = Path(tmp)
+            settings.scale = "local/small-scale"
+            report = evaluate(
+                settings,
+                use_cases=["decision_precedent"],
+                split="smoke",
+                systems=["hybrid"],
+                run_id="ci-smoke-tier",
+                answerer="extractive",
+                tune=False,
+                smoke=False,
+                use_judge=False,
+                skip_enrichment=True,
+            )
+            self.assertEqual(report.get("baseline_tier"), "smoke_hash")
+
     def test_missing_token_skips_brainapi(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             settings = Settings.load()
