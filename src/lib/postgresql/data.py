@@ -10,6 +10,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import json
 import threading
+from datetime import datetime
 from typing import Any, Iterator, List, Literal, Optional, Tuple
 
 import psycopg2
@@ -372,31 +373,36 @@ class PostgreSQLDataClient(DataClient):
         return text_chunk
 
     def mark_text_chunks_superseded(
-        self, ids: List[str], superseded_at: str, brain_id: str
+        self,
+        ids: List[str],
+        superseded_at: str,
+        brain_id: str,
+        superseded_by: str | None = None,
+        valid_to: str | None = None,
     ) -> None:
         if not ids:
             return
+        patch = {"superseded_at": superseded_at}
+        if valid_to:
+            patch["valid_to"] = valid_to
+        if superseded_by:
+            patch["superseded_by"] = superseded_by
+        payload = json.dumps(patch)
         with self._brain_connection(brain_id) as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
                     UPDATE data_text_chunks
-                    SET metadata = jsonb_set(
-                            COALESCE(metadata, '{}'::jsonb),
-                            '{superseded_at}',
-                            to_jsonb(%s::text),
-                            true
-                        ),
+                    SET metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb,
                         document = jsonb_set(
                             COALESCE(document, '{}'::jsonb),
                             '{metadata}',
-                            COALESCE(document->'metadata', '{}'::jsonb)
-                                || jsonb_build_object('superseded_at', %s::text),
+                            COALESCE(document->'metadata', '{}'::jsonb) || %s::jsonb,
                             true
                         )
                     WHERE id = ANY(%s)
                     """,
-                    (superseded_at, superseded_at, list(ids)),
+                    (payload, payload, list(ids)),
                 )
             conn.commit()
 
@@ -895,6 +901,8 @@ class PostgreSQLDataClient(DataClient):
         skip: int = 0,
         types: list[str] = None,
         query_text: str = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
     ) -> list[KGChanges]:
         clauses: list[str] = []
         params: list[Any] = []
@@ -905,6 +913,12 @@ class PostgreSQLDataClient(DataClient):
             pattern = _ilike_pattern(query_text)
             clauses.append("(change::text ILIKE %s OR type ILIKE %s)")
             params.extend([pattern, pattern])
+        if since is not None:
+            clauses.append("timestamp >= %s")
+            params.append(since)
+        if until is not None:
+            clauses.append("timestamp < %s")
+            params.append(until)
         where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         with self._brain_connection(brain_id) as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:

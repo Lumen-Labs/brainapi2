@@ -8,10 +8,11 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
+from datetime import datetime
 from typing import Any, List, Literal, Optional, Tuple
 from src.adapters.interfaces.data import DataClient, SearchResult
 from src.constants.data import Brain, KGChanges, Observation, StructuredData, TextChunk
-from src.core.saving.ingest_write_buffer import capture_data_write
+from src.core.saving.ingest_write_buffer import capture_data_write, capture_operation
 
 
 class DataAdapter:
@@ -39,10 +40,33 @@ class DataAdapter:
         return self.data.save_text_chunk(text_chunk=text_chunk, brain_id=brain_id)
 
     def mark_text_chunks_superseded(
-        self, ids: List[str], superseded_at: str, brain_id: str = "default"
+        self,
+        ids: List[str],
+        superseded_at: str,
+        brain_id: str = "default",
+        superseded_by: str | None = None,
+        valid_to: str | None = None,
     ) -> None:
+        if capture_operation(
+            brain_id,
+            {
+                "adapter": "data",
+                "method": "mark_text_chunks_superseded",
+                "args": {
+                    "ids": list(ids),
+                    "superseded_at": superseded_at,
+                    "superseded_by": superseded_by,
+                    "valid_to": valid_to,
+                },
+            },
+        ):
+            return
         self.data.mark_text_chunks_superseded(
-            ids=ids, superseded_at=superseded_at, brain_id=brain_id
+            ids=ids,
+            superseded_at=superseded_at,
+            brain_id=brain_id,
+            superseded_by=superseded_by,
+            valid_to=valid_to,
         )
 
     def save_observations(
@@ -233,6 +257,8 @@ class DataAdapter:
         skip: int = 0,
         types: list[str] = None,
         query_text: str = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
     ) -> list[KGChanges]:
         """
         Retrieve a paginated list of knowledge-graph changelogs for a brain.
@@ -253,6 +279,8 @@ class DataAdapter:
             skip=skip,
             types=types,
             query_text=query_text,
+            since=since,
+            until=until,
         )
 
     def get_changelog_types(self, brain_id: str = "default") -> list[str]:

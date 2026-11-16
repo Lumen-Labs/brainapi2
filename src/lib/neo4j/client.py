@@ -34,6 +34,7 @@ from src.lib.cypher_safety import (
     optional_node_labels,
     quote_identifier,
     quote_rel_types_pattern,
+    relationship_changed_in_window_clause,
     require_database_name,
     require_limit,
     require_path_depth,
@@ -382,6 +383,9 @@ class Neo4jClient(GraphClient):
                 value = getattr(obj, attr, None)
                 if value:
                     extra_props[static_property_key(attr)] = value
+        from src.core.saving.validity import validity_props_from_mapping
+
+        extra_props.update(validity_props_from_mapping(predicate.properties))
 
         rel_type = self._quoted_rel_type(predicate.name)
         params = {
@@ -1102,6 +1106,72 @@ class Neo4jClient(GraphClient):
             )
         return SearchRelationshipsResult(results=triples, total=total)
 
+    def list_validity_relationships(
+        self,
+        brain_id: str,
+        skip: int = 0,
+        limit: int = 100,
+        since: str | None = None,
+        until: str | None = None,
+    ) -> tuple[list[tuple[Node, Predicate, Node]], int]:
+        params: dict[str, Any] = {
+            "skip": require_limit(skip, name="skip"),
+            "limit": require_limit(limit),
+        }
+        where_str = ""
+        if since and until:
+            params["since"] = since
+            params["until"] = until
+            where_str = "WHERE " + relationship_changed_in_window_clause("r") + "\n"
+        cypher_query = (
+            "MATCH (n)-[r]->(m)\n"
+            + where_str
+            + "RETURN n['uuid'] AS n_uuid, n['name'] AS n_name, labels(n) AS n_labels,\n"
+            "    n['description'] AS n_description, properties(n) AS n_properties,\n"
+            "    type(r) AS rel_type, r['description'] AS rel_description,\n"
+            "    properties(r) AS rel_properties, r['uuid'] AS rel_uuid,\n"
+            "    m['uuid'] AS m_uuid, m['name'] AS m_name, labels(m) AS m_labels,\n"
+            "    m['description'] AS m_description, properties(m) AS m_properties\n"
+            "SKIP $skip LIMIT $limit"
+        )
+        count_query = (
+            "MATCH (n)-[r]->(m)\n" + where_str + "RETURN count(r) AS total"
+        )
+        result = self._run_query(cypher_query, brain_id, params)
+        count_result = self._run_query(count_query, brain_id, params, ensure=False)
+        total = 0
+        if count_result and count_result.records:
+            total = count_result.records[0].get("total") or 0
+        triples: list[tuple[Node, Predicate, Node]] = []
+        for record in result.records:
+            rel_props = dict(record.get("rel_properties") or {})
+            triples.append(
+                (
+                    Node(
+                        uuid=str(record.get("n_uuid") or ""),
+                        name=str(record.get("n_name") or ""),
+                        labels=list(record.get("n_labels") or []),
+                        description=record.get("n_description") or "",
+                        properties=dict(record.get("n_properties") or {}),
+                    ),
+                    Predicate(
+                        uuid=str(record.get("rel_uuid") or rel_props.get("uuid") or ""),
+                        name=str(record.get("rel_type") or ""),
+                        description=record.get("rel_description") or "",
+                        properties=rel_props,
+                        deprecated=rel_props.get("deprecated", False),
+                    ),
+                    Node(
+                        uuid=str(record.get("m_uuid") or ""),
+                        name=str(record.get("m_name") or ""),
+                        labels=list(record.get("m_labels") or []),
+                        description=record.get("m_description") or "",
+                        properties=dict(record.get("m_properties") or {}),
+                    ),
+                )
+            )
+        return triples, int(total)
+
     def search_entities(
         self,
         brain_id: str,
@@ -1197,7 +1267,9 @@ class Neo4jClient(GraphClient):
             "MATCH (a:" + subject_labels + ") WHERE a['name'] = $subject_name\n"
             "MATCH (b:" + object_labels + ") WHERE b['name'] = $object_name\n"
             "MATCH (a)-[r:" + rel_type + "]->(b)\n"
-            "SET r['deprecated'] = true\n"
+            "SET r['deprecated'] = true,\n"
+            "    r['valid_to'] = coalesce(r['valid_to'], $closed_at),\n"
+            "    r['invalid_at'] = coalesce(r['invalid_at'], $closed_at)\n"
             "RETURN a['uuid'] as a_uuid, a['name'] as a_name, labels(a) as a_labels, "
             "a['description'] as a_description, properties(a) as a_properties,\n"
             "    b['uuid'] as b_uuid, b['name'] as b_name, labels(b) as b_labels, "
@@ -1205,10 +1277,16 @@ class Neo4jClient(GraphClient):
             "    r['uuid'] as r_uuid, type(r) as r_type, r['description'] as r_description, "
             "properties(r) as r_properties"
         )
+        from src.core.saving.validity import format_instant, utc_now
+
         result = self._run_query(
             cypher_query,
             brain_id,
-            {"subject_name": subject.name, "object_name": object.name},
+            {
+                "subject_name": subject.name,
+                "object_name": object.name,
+                "closed_at": format_instant(utc_now()),
+            },
         )
         if result.records:
             return (

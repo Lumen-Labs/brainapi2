@@ -500,6 +500,11 @@ def _resolve_relationship_entities(
                 **(relationship.properties or {}),
                 "valid_at": source_timestamp,
             }
+        from src.core.saving.validity import stamp_valid_from
+
+        relationship.properties = stamp_valid_from(
+            relationship.properties, source_timestamp
+        )
         for entity in (relationship.tail, relationship.tip):
             entity.properties = stamp_provenance(
                 entity.properties,
@@ -594,14 +599,26 @@ def _invalidate_superseded_relationships(
         if props.get("invalid_at"):
             continue
         try:
+            from src.core.saving.validity import close_validity, format_instant, parse_instant, utc_now
+
+            closed_at = valid_at or format_instant(utc_now())
+            closed = close_validity(
+                props,
+                closed_at=closed_at,
+                superseded_by=getattr(relationship, "uuid", None),
+            )
             graph_adapter.update_properties(
                 predicate.uuid,
                 "relationship",
                 brain_id=brain_id,
                 new_properties={
-                    "invalid_at": valid_at
+                    "invalid_at": closed.get("invalid_at")
                     or datetime.datetime.utcnow().strftime("%d/%m/%Y"),
                     "deprecated": True,
+                    "valid_to": closed.get("valid_to")
+                    or format_instant(parse_instant(closed_at) or utc_now()),
+                    "superseded_by": closed.get("superseded_by")
+                    or getattr(relationship, "uuid", None),
                 },
             )
         except Exception as exc:
@@ -721,13 +738,16 @@ def _ingest_data(self, args, *, staged=False):
 
         source_text = source_text_from_payload(payload)
         from src.core.saving.source_passages import prepare_source_revision
+        from src.core.saving.validity import format_instant, parse_instant, stamp_valid_from, utc_now
 
+        superseded_ids: list[str] = []
         revision = prepare_source_revision(
             data_adapter,
             brain_id=payload.brain_id,
             source_text=source_text,
             meta_keys=payload.meta_keys,
             source_timestamp=payload.source_timestamp,
+            out_superseded=superseded_ids,
         )
         if revision == "unchanged":
             set_ingestion_task_status(
@@ -739,8 +759,21 @@ def _ingest_data(self, args, *, staged=False):
             )
             return self.request.id
 
+        if payload.meta_keys is None:
+            payload.meta_keys = {}
+        payload.meta_keys = stamp_valid_from(payload.meta_keys, payload.source_timestamp)
+
         checkpoint()
         text_chunk = _save_source(payload, source_text)
+        if superseded_ids:
+            closed_at = payload.source_timestamp or format_instant(utc_now())
+            data_adapter.mark_text_chunks_superseded(
+                superseded_ids,
+                closed_at,
+                payload.brain_id,
+                superseded_by=str(text_chunk.id),
+                valid_to=format_instant(parse_instant(closed_at) or utc_now()),
+            )
 
         if config.pipeline_mode == "lightweight":
             print("[DEBUG (ingest_data)]: Lightweight pipeline mode selected")

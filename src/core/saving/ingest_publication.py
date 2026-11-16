@@ -17,6 +17,16 @@ _DATA_OPERATIONS = {
 def replay_data_operation(client, brain_id, operation):
     """Replay supported data writes using stable document identities."""
     method = operation["method"]
+    if method == "mark_text_chunks_superseded":
+        args = operation["args"]
+        client.mark_text_chunks_superseded(
+            args["ids"],
+            args["superseded_at"],
+            brain_id,
+            superseded_by=args.get("superseded_by"),
+            valid_to=args.get("valid_to"),
+        )
+        return
     name, argument, model = _DATA_OPERATIONS[method]
     value = operation["args"][argument]
     records = (
