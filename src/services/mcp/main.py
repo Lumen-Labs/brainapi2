@@ -596,7 +596,7 @@ async def resolve_conflict(
 ) -> Any:
     """
     Resolve a conflict. Pass winning_fact_id to choose a side; method=verified_side
-    is the hook for later fact verification.
+    verifies the winner and rejects the other side via the fact verification API.
     """
     return await asyncio.to_thread(
         _resolve_conflict_sync, brain_id, id, winning_fact_id, notes, method

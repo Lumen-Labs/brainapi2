@@ -4,9 +4,10 @@ A conflict links two facts that share a subject+predicate claim slot, disagree
 on value/amount/polarity, and are valid at the same time. Same-source
 revisions (superseded v1 vs current v2) are not conflicts.
 
-`verification_state` on each side is reserved for a parallel fact-state
-change: verifying one side should resolve the conflict via
-`resolve_by_verified_fact` without this module implementing verification.
+`verification_state` on each side is a read-through of fact verification
+(PR #113). Conflicts do not store their own fact states. Resolving with
+`method="verified_side"` asks #113 to verify/reject; `resolve_by_verified_fact`
+closes open conflicts after #113 has already verified a fact.
 """
 
 from __future__ import annotations

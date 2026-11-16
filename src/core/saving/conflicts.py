@@ -1,8 +1,8 @@
 """Detect and store cross-source conflicts between graph facts.
 
-Deterministic matching is the default. An optional batched Haiku 5.5 call
-judges leftover semantic pairs. Ingest-time detection is gated by
-``CONFLICT_DETECT_ON_INGEST`` (default off).
+Deterministic matching is the default. An optional batched call through the
+configured small LLM judges leftover semantic pairs. Ingest-time detection
+is gated by ``CONFLICT_DETECT_ON_INGEST`` (default off).
 """
 
 from __future__ import annotations
@@ -32,7 +32,6 @@ from src.core.saving.validity import (
     utc_now,
 )
 
-HAIKU_55_BEDROCK_MODEL = "us.anthropic.claude-haiku-5-5"
 _REL_PAGE = 200
 _MAX_SCAN = 10000
 _LLM_BATCH = 10
@@ -245,6 +244,18 @@ def _chunk_ids(props: dict[str, Any]) -> list[str]:
     return ids
 
 
+def _verification_state_of(predicate: Any, props: dict[str, Any]) -> str:
+    from src.core.saving.conflict_verification import read_fact_verification_state
+
+    return (
+        read_fact_verification_state(
+            str(getattr(predicate, "uuid", None) or props.get("uuid") or ""),
+            entity=predicate if predicate is not None else props,
+        )
+        or "unverified"
+    )
+
+
 def _polarity_of(node: Any, props: dict[str, Any]) -> str:
     node_props = getattr(node, "properties", None) if node is not None else None
     if not isinstance(node_props, dict):
@@ -396,6 +407,7 @@ def snapshot_from_triple(triple: Any) -> dict[str, Any] | None:
         "value": value,
         "description": description,
         "polarity": _polarity_of(obj, props),
+        "verification_state": _verification_state_of(predicate, props),
         "amount": amount,
         VALID_FROM: props.get(VALID_FROM) or props.get("valid_at"),
         VALID_TO: props.get(VALID_TO) or props.get("invalid_at"),
@@ -531,7 +543,7 @@ def _side_from_snapshot(snapshot: dict[str, Any]) -> ConflictSide:
         valid_from=snapshot.get(VALID_FROM),
         valid_to=snapshot.get(VALID_TO),
         superseded_by=snapshot.get(SUPERSEDED_BY),
-        verification_state="unverified",
+        verification_state=snapshot.get("verification_state") or "unverified",
         source=ConflictSource(
             chunk_ids=list(snapshot.get("source_chunk_ids") or []),
             source_key=snapshot.get("source_key"),
@@ -570,11 +582,11 @@ def _build_conflict(
     )
 
 
-def _haiku_client_factory() -> Any | None:
+def _configured_llm_client() -> Any | None:
     try:
-        from src.core.saving.pipeline_runtime import route_client
+        from src.core.instances import llm_small_adapter
 
-        return route_client("amazon_bedrock", HAIKU_55_BEDROCK_MODEL, None)
+        return llm_small_adapter
     except Exception:
         return None
 
@@ -587,11 +599,11 @@ def judge_semantic_pairs(
 ) -> dict[int, tuple[bool, float, str]]:
     """Return index -> (contradicts, confidence, type) for each pair.
 
-    Uses Claude Haiku 5.5 via Bedrock only. Callers must bound ``pairs``.
+    Uses the product's configured small LLM. Callers must bound ``pairs``.
     """
     if not pairs:
         return {}
-    llm = client if client is not None else (client_factory or _haiku_client_factory)()
+    llm = client if client is not None else (client_factory or _configured_llm_client)()
     if llm is None:
         return {}
     payload = []
@@ -802,11 +814,34 @@ def upsert_conflict(adapter: Any, brain_id: str, conflict: FactConflict) -> Fact
     return conflict
 
 
-def get_conflict(adapter: Any, brain_id: str, conflict_id: str) -> FactConflict | None:
+def _optional_graph(graph: Any | None = None) -> Any | None:
+    if graph is not None:
+        return graph
+    try:
+        from src.core.instances import graph_adapter
+
+        return graph_adapter
+    except Exception:
+        return None
+
+
+def get_conflict(
+    adapter: Any,
+    brain_id: str,
+    conflict_id: str,
+    *,
+    graph: Any | None = None,
+) -> FactConflict | None:
+    from src.core.saving.conflict_verification import hydrate_conflict_sides
+
     row = adapter.get_conflict_by_id(conflict_id, brain_id)
     if isinstance(row, FactConflict):
-        return row
-    return conflict_from_document(row if isinstance(row, dict) else None)
+        conflict = row
+    else:
+        conflict = conflict_from_document(row if isinstance(row, dict) else None)
+    return hydrate_conflict_sides(
+        conflict, graph=_optional_graph(graph), brain_id=brain_id
+    )
 
 
 def list_conflicts(
@@ -820,6 +855,7 @@ def list_conflicts(
     until: Any = None,
     limit: int = 10,
     skip: int = 0,
+    graph: Any | None = None,
 ) -> tuple[list[FactConflict], int]:
     rows, total = adapter.get_conflicts_list(
         brain_id,
@@ -839,7 +875,14 @@ def list_conflicts(
             parsed = conflict_from_document(row if isinstance(row, dict) else None)
             if parsed is not None:
                 conflicts.append(parsed)
-    return conflicts, int(total or len(conflicts))
+    from src.core.saving.conflict_verification import hydrate_conflict_sides
+
+    live_graph = _optional_graph(graph)
+    hydrated = [
+        hydrate_conflict_sides(item, graph=live_graph, brain_id=brain_id)
+        for item in conflicts
+    ]
+    return hydrated, int(total or len(hydrated))
 
 
 def _apply_resolution(
@@ -852,19 +895,35 @@ def _apply_resolution(
     winning_fact_id: str | None = None,
     notes: str | None = None,
     resolved_by: str = "api",
+    graph: Any | None = None,
+    apply_facts: bool = True,
 ) -> FactConflict:
-    conflict = get_conflict(adapter, brain_id, conflict_id)
+    from src.core.saving.conflict_verification import (
+        apply_verified_side_to_facts,
+        hydrate_conflict_sides,
+    )
+
+    conflict = get_conflict(adapter, brain_id, conflict_id, graph=graph)
     if conflict is None:
         raise KeyError(conflict_id)
+    live_graph = _optional_graph(graph)
     if winning_fact_id:
         side_ids = {side.fact_id for side in conflict.sides}
         if winning_fact_id not in side_ids:
             raise ValueError("winning_fact_id must be one of the conflict sides")
-        for side in conflict.sides:
-            if side.fact_id == winning_fact_id:
-                side.verification_state = "verified"
-            elif status == "resolved":
-                side.verification_state = "rejected"
+        if apply_facts and method == "verified_side" and status == "resolved":
+            apply_verified_side_to_facts(
+                live_graph,
+                brain_id,
+                winning_fact_id=winning_fact_id,
+                losing_fact_ids=[
+                    side.fact_id
+                    for side in conflict.sides
+                    if side.fact_id != winning_fact_id
+                ],
+                verified_by=resolved_by,
+                note=notes,
+            )
     conflict.status = status  # type: ignore[assignment]
     conflict.resolution = ConflictResolution(
         method=method,  # type: ignore[arg-type]
@@ -873,6 +932,7 @@ def _apply_resolution(
         resolved_at=format_instant(utc_now()),
         resolved_by=resolved_by,
     )
+    hydrate_conflict_sides(conflict, graph=live_graph, brain_id=brain_id)
     return adapter.update_conflict(conflict, brain_id) or conflict
 
 
@@ -885,6 +945,8 @@ def resolve_conflict(
     notes: str | None = None,
     method: str = "manual",
     resolved_by: str = "api",
+    graph: Any | None = None,
+    apply_facts: bool = True,
 ) -> FactConflict:
     if method not in {"manual", "verified_side"}:
         method = "manual"
@@ -897,6 +959,8 @@ def resolve_conflict(
         winning_fact_id=winning_fact_id,
         notes=notes,
         resolved_by=resolved_by,
+        graph=graph,
+        apply_facts=apply_facts,
     )
 
 
@@ -925,8 +989,14 @@ def resolve_by_verified_fact(
     fact_id: str,
     *,
     notes: str | None = None,
+    graph: Any | None = None,
 ) -> list[FactConflict]:
-    """Hook for verified/rejected fact states: verifying one side resolves opens."""
+    """Close open conflicts after #113 verifies one side.
+
+    Does not write fact states. #113's verify/reject endpoints should call
+    this after they persist. Conflict resolve with method=verified_side is
+    the inverse: it asks #113 to verify/reject, then closes the conflict.
+    """
     rows = adapter.get_open_conflicts_for_facts([fact_id], brain_id)
     resolved: list[FactConflict] = []
     for row in rows or []:
@@ -942,6 +1012,8 @@ def resolve_by_verified_fact(
                 notes=notes or "Resolved by verifying one side",
                 method="verified_side",
                 resolved_by="verification",
+                graph=graph,
+                apply_facts=False,
             )
         )
     return resolved

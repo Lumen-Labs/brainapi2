@@ -3,7 +3,6 @@ from unittest.mock import MagicMock, patch
 
 from src.constants.kg import Node, Predicate
 from src.core.saving.conflicts import (
-    HAIKU_55_BEDROCK_MODEL,
     annotation_payload,
     classify_disagreement,
     conflict_detect_on_ingest_enabled,
@@ -351,7 +350,7 @@ class DetectionEngineTests(unittest.TestCase):
         self.assertEqual(definite, [])
         self.assertEqual(len(semantic), 1)
 
-    def test_llm_judge_uses_haiku_and_can_drop_false_positives(self):
+    def test_llm_judge_uses_injected_client_and_can_drop_false_positives(self):
         left = {"subject_name": "Policy", "predicate": "HAS_POLICY", "value": "a month"}
         right = {"subject_name": "Policy", "predicate": "HAS_POLICY", "value": "30 days"}
         client = MagicMock()
@@ -428,8 +427,8 @@ class DetectionEngineTests(unittest.TestCase):
         )
         self.assertEqual(resolved.status, "resolved")
         self.assertEqual(resolved.resolution.method, "verified_side")
-        self.assertEqual(resolved.sides[0].verification_state, "verified")
-        self.assertEqual(resolved.sides[1].verification_state, "rejected")
+        self.assertEqual(resolved.sides[0].verification_state, "unverified")
+        self.assertEqual(resolved.sides[1].verification_state, "unverified")
         leftover = next(
             item for item in found if item.status == "open" and "fee-yes" in item.fact_ids()
         )
@@ -438,6 +437,7 @@ class DetectionEngineTests(unittest.TestCase):
         self.assertEqual(hooked[0].id, leftover.id)
         self.assertEqual(hooked[0].status, "resolved")
         self.assertEqual(hooked[0].resolution.method, "verified_side")
+        self.assertEqual(hooked[0].sides[0].verification_state, "unverified")
 
     def test_report_json_and_markdown(self):
         store = MemoryConflictStore()
@@ -464,8 +464,115 @@ class DetectionEngineTests(unittest.TestCase):
                 maybe_detect_after_ingest("brain", ["fact-1"])
         fake_tasks.detect_conflicts_incremental.apply_async.assert_called_once()
 
-    def test_haiku_model_id(self):
-        self.assertEqual(HAIKU_55_BEDROCK_MODEL, "us.anthropic.claude-haiku-5-5")
+    def test_conflict_llm_path_has_no_model_id(self):
+        import inspect
+
+        from src.core.saving import conflicts as module
+
+        self.assertFalse(hasattr(module, "HAIKU_55_BEDROCK_MODEL"))
+        source = inspect.getsource(module)
+        self.assertNotIn("us.anthropic.claude-haiku-5-5", source)
+        self.assertNotIn("HAIKU", source)
+        self.assertNotIn("amazon_bedrock", source)
+        self.assertIn("llm_small_adapter", inspect.getsource(module._configured_llm_client))
+
+    def test_verified_side_asks_verification_adapter(self):
+        from src.core.saving.conflict_verification import apply_verified_side_to_facts
+
+        actions: list[tuple[str, str]] = []
+
+        def fake_apply(graph, *, fact_id, brain_id, action, verified_by=None, note=None):
+            actions.append((fact_id, action))
+            return True
+
+        applied = apply_verified_side_to_facts(
+            object(),
+            "brain",
+            winning_fact_id="a",
+            losing_fact_ids=["b"],
+            apply_action=fake_apply,
+        )
+        self.assertTrue(applied)
+        self.assertEqual(actions, [("a", "verify"), ("b", "reject")])
+
+    def test_hydrate_sides_from_verification_reader(self):
+        from src.constants.conflicts import ConflictEntity, ConflictSide, FactConflict
+        from src.core.saving.conflict_verification import hydrate_conflict_sides
+
+        conflict = FactConflict(
+            id="c",
+            pair_key="p",
+            claim_key="k",
+            disagreement_type="value_mismatch",
+            subject=ConflictEntity(uuid="s", name="S"),
+            predicate="HAS",
+            sides=[
+                ConflictSide(
+                    fact_id="a",
+                    subject=ConflictEntity(),
+                    predicate="HAS",
+                    object=ConflictEntity(),
+                ),
+                ConflictSide(
+                    fact_id="b",
+                    subject=ConflictEntity(),
+                    predicate="HAS",
+                    object=ConflictEntity(),
+                ),
+            ],
+        )
+        states = {"a": "verified", "b": "rejected"}
+        hydrate_conflict_sides(
+            conflict,
+            graph=object(),
+            brain_id="brain",
+            read_state=lambda fact_id, **kwargs: states[fact_id],
+        )
+        self.assertEqual(conflict.sides[0].verification_state, "verified")
+        self.assertEqual(conflict.sides[1].verification_state, "rejected")
+
+    def test_verification_adapter_absent_is_noop(self):
+        from src.core.saving.conflict_verification import apply_fact_verification_action
+
+        self.assertFalse(
+            apply_fact_verification_action(
+                None, fact_id="a", brain_id="brain", action="verify"
+            )
+        )
+        self.assertFalse(
+            apply_fact_verification_action(
+                object(), fact_id="a", brain_id="brain", action="verify"
+            )
+        )
+
+    def test_resolve_verified_side_calls_adapter_hook_does_not(self):
+        store = MemoryConflictStore()
+        found = detect_conflicts(store, FakeGraph(self._refund_triples()), "brain")
+        numeric = next(
+            item for item in found if item.disagreement_type == "numeric_mismatch"
+        )
+        with patch(
+            "src.core.saving.conflict_verification.apply_verified_side_to_facts"
+        ) as apply_mock:
+            apply_mock.return_value = True
+            resolve_conflict(
+                store,
+                "brain",
+                numeric.id,
+                winning_fact_id=numeric.sides[0].fact_id,
+                method="verified_side",
+            )
+            apply_mock.assert_called_once()
+            leftover = next(
+                item
+                for item in found
+                if item.status == "open" and "fee-yes" in item.fact_ids()
+            )
+            apply_mock.reset_mock()
+            hooked = resolve_by_verified_fact(store, "brain", "fee-yes")
+            apply_mock.assert_not_called()
+        self.assertEqual(len(hooked), 1)
+        self.assertEqual(hooked[0].id, leftover.id)
 
     def test_open_conflict_annotation_payload(self):
         store = MemoryConflictStore()

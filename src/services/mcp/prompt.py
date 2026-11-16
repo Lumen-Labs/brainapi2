@@ -89,7 +89,7 @@ MCP_TOOL_SPECS: list[dict[str, object]] = [
     },
     {
         "name": "resolve_conflict",
-        "description": "Resolves a conflict. Pass winning_fact_id when one side is chosen; verification of a fact can use method=verified_side.",
+        "description": "Resolves a conflict. Pass winning_fact_id when one side is chosen; method=verified_side verifies the winner and rejects the other side via the fact verification API.",
         "parameters": {
             "brain_id": "str",
             "id": "str",
