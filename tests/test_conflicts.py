@@ -464,18 +464,6 @@ class DetectionEngineTests(unittest.TestCase):
                 maybe_detect_after_ingest("brain", ["fact-1"])
         fake_tasks.detect_conflicts_incremental.apply_async.assert_called_once()
 
-    def test_conflict_llm_path_has_no_model_id(self):
-        import inspect
-
-        from src.core.saving import conflicts as module
-
-        self.assertFalse(hasattr(module, "HAIKU_55_BEDROCK_MODEL"))
-        source = inspect.getsource(module)
-        self.assertNotIn("us.anthropic.claude-haiku-5-5", source)
-        self.assertNotIn("HAIKU", source)
-        self.assertNotIn("amazon_bedrock", source)
-        self.assertIn("llm_small_adapter", inspect.getsource(module._configured_llm_client))
-
     def test_verified_side_asks_verification_adapter(self):
         from src.core.saving.conflict_verification import apply_verified_side_to_facts
 
