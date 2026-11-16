@@ -240,6 +240,68 @@ def screen_passage_hits(
     return screened
 
 
+def prior_revision_texts(
+    adapter: Any,
+    brain_id: str,
+    hits: list[tuple[str, float, str]],
+    *,
+    limit: int,
+) -> list[str]:
+    """Load superseded copies for the source keys already in these hits.
+
+    Search does not have to rank the older copy. The key on a current hit is enough.
+    """
+    cap = max(0, limit)
+    if cap == 0:
+        return []
+    ids = [str(chunk_id) for chunk_id, _, _ in hits if chunk_id]
+    if not ids:
+        return []
+    try:
+        chunks, _ = adapter.get_text_chunks_by_ids(ids, False, brain_id)
+    except Exception:
+        return []
+    keys: list[str] = []
+    for chunk in chunks:
+        key = source_key_from_meta(getattr(chunk, "metadata", None))
+        if key and key not in keys:
+            keys.append(key)
+    texts: list[str] = []
+    seen: set[str] = set()
+    for key in keys:
+        try:
+            stored, _ = adapter.get_text_chunks(
+                brain_id=brain_id,
+                limit=_MAX_CHUNKS,
+                skip=0,
+                metadata_eq={"source_key": key},
+            )
+        except Exception:
+            continue
+        older = [
+            chunk
+            for chunk in stored
+            if (getattr(chunk, "metadata", None) or {}).get("superseded_at")
+        ]
+        older.sort(
+            key=lambda chunk: str((getattr(chunk, "metadata", None) or {}).get("superseded_at")),
+            reverse=True,
+        )
+        for chunk in older:
+            body = visible_passage_body(
+                getattr(chunk, "metadata", None),
+                getattr(chunk, "text", None),
+                include_history=True,
+            )
+            if not body or body in seen:
+                continue
+            seen.add(body)
+            texts.append(body)
+            if len(texts) >= cap:
+                return texts
+    return texts
+
+
 def screened_passage_texts(
     adapter: Any,
     brain_id: str,

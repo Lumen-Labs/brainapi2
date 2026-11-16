@@ -214,5 +214,27 @@ class TraverseConstantsTests(unittest.TestCase):
         self.assertEqual(MAX_TRAVERSE_HOPS, 100)
 
 
+class InvalidatedHopTests(unittest.TestCase):
+    def test_invalidated_hops_stay_in_the_walk(self):
+        from src.services.mcp.versions import invalidated_hops
+
+        current = {
+            "predicate": {"name": "HAS_CODE", "properties": {}},
+            "node": {"uuid": "new"},
+        }
+        retired = {
+            "predicate": {
+                "name": "HAS_CODE",
+                "properties": {"invalid_at": "16/11/2026", "deprecated": True},
+            },
+            "node": {"uuid": "old"},
+        }
+        hops = [current, retired]
+        selected = invalidated_hops(hops)
+        self.assertEqual(selected, [retired])
+        self.assertIn(retired, hops)
+        self.assertNotIn(current, selected)
+
+
 if __name__ == "__main__":
     unittest.main()
