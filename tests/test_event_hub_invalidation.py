@@ -49,8 +49,13 @@ class _FakeGraphAdapter:
         self.nodes[uuid] = Node(uuid=uuid, name=name, labels=[node_type])
         return self.nodes[uuid]
 
-    def add_edge(self, rel_uuid, tail_uuid, name, tip_uuid):
-        predicate = Predicate(uuid=rel_uuid, name=name, description=f"desc-{name}")
+    def add_edge(self, rel_uuid, tail_uuid, name, tip_uuid, properties=None):
+        predicate = Predicate(
+            uuid=rel_uuid,
+            name=name,
+            description=f"desc-{name}",
+            properties=dict(properties or {}),
+        )
         self.edges.append((tail_uuid, predicate, tip_uuid))
         return predicate
 
@@ -209,6 +214,92 @@ class EventHubInvalidationTests(unittest.TestCase):
             )
 
         self.assertEqual(graph.updates, [])
+
+    def test_works_with_many_people_is_not_superseded(self):
+        from src.workers.tasks import ingestion as ingestion_mod
+
+        graph = _FakeGraphAdapter()
+        graph.add_node("alice", "Alice", "PERSON")
+        graph.add_node("bob", "Bob", "PERSON")
+        graph.add_node("carol", "Carol", "PERSON")
+        graph.add_edge("rel-1", "alice", "WORKS_WITH", "bob")
+        graph.add_edge("rel-2", "alice", "WORKS_WITH", "carol")
+
+        relationship = _relationship(
+            "rel-2",
+            _entity("alice", "Alice", "PERSON"),
+            "WORKS_WITH",
+            _entity("carol", "Carol", "PERSON"),
+            valid_at="02/02/2024",
+        )
+        with patch.object(ingestion_mod, "graph_adapter", graph):
+            ingestion_mod._invalidate_superseded_relationships(
+                relationship, brain_id="brain-a"
+            )
+        self.assertEqual(graph.updates, [])
+
+    def test_applies_to_many_plans_is_not_superseded(self):
+        from src.workers.tasks import ingestion as ingestion_mod
+
+        graph = _FakeGraphAdapter()
+        graph.add_node("policy", "Policy 12", "POLICY")
+        graph.add_node("plan-a", "Plan A", "PLAN")
+        graph.add_node("plan-b", "Plan B", "PLAN")
+        graph.add_edge("rel-1", "policy", "APPLIES_TO", "plan-a")
+        graph.add_edge("rel-2", "policy", "APPLIES_TO", "plan-b")
+
+        relationship = _relationship(
+            "rel-2",
+            _entity("policy", "Policy 12", "POLICY"),
+            "APPLIES_TO",
+            _entity("plan-b", "Plan B", "PLAN"),
+            valid_at="2025-01-01T00:00:00Z",
+        )
+        with patch.object(ingestion_mod, "graph_adapter", graph):
+            ingestion_mod._invalidate_superseded_relationships(
+                relationship, brain_id="brain-a"
+            )
+        self.assertEqual(graph.updates, [])
+
+    def test_source_revision_closes_multi_valued_edge_from_superseded_chunk(self):
+        from src.services.api.controllers import retrieve as retrieve_mod
+        from src.workers.tasks import ingestion as ingestion_mod
+
+        graph = _FakeGraphAdapter()
+        graph.add_node("alice", "Alice", "PERSON")
+        graph.add_node("bob", "Bob", "PERSON")
+        graph.add_node("dana", "Dana", "PERSON")
+        graph.add_edge(
+            "rel-1",
+            "alice",
+            "WORKS_WITH",
+            "bob",
+            properties={"source_chunk_ids": ["chunk-v1"]},
+        )
+        graph.add_edge(
+            "rel-2",
+            "alice",
+            "WORKS_WITH",
+            "dana",
+            properties={"source_chunk_ids": ["chunk-v2"]},
+        )
+        relationship = _relationship(
+            "rel-2",
+            _entity("alice", "Alice", "PERSON"),
+            "WORKS_WITH",
+            _entity("dana", "Dana", "PERSON"),
+            valid_at="2025-01-01T00:00:00Z",
+        )
+        with patch.object(ingestion_mod, "graph_adapter", graph):
+            ingestion_mod._invalidate_superseded_relationships(
+                relationship,
+                brain_id="brain-a",
+                superseded_chunk_ids=["chunk-v1"],
+            )
+        self.assertEqual(len(graph.updates), 1)
+        self.assertEqual(graph.updates[0][0], "rel-1")
+        self.assertFalse(retrieve_mod._is_currently_valid(graph.predicate("rel-1")))
+        self.assertTrue(retrieve_mod._is_currently_valid(graph.predicate("rel-2")))
 
 
 if __name__ == "__main__":

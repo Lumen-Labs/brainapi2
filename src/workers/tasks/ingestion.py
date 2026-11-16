@@ -560,11 +560,13 @@ def _invalidate_superseded_relationships(
     relationship: ArchitectAgentRelationship,
     *,
     brain_id: str,
+    superseded_chunk_ids: list[str] | tuple[str, ...] | None = None,
 ) -> None:
-    """Mark older same-type outgoing edges from the same subject as invalid when tip changes.
+    """Close an older outgoing edge only when it is single-valued or source-revision-driven.
 
-    Event hub legs are never invalidated: an actor accumulates one leg per event and
-    none of them supersede the others.
+    Event hub legs are never invalidated. Multi-valued types such as WORKS_WITH
+    and APPLIES_TO accumulate unless the existing edge came from a chunk this
+    ingest just superseded.
     """
     if _is_event_entity(relationship.tail) or _is_event_entity(relationship.tip):
         return
@@ -578,6 +580,8 @@ def _invalidate_superseded_relationships(
         )
     except Exception:
         return
+    from src.core.saving.validity_cardinality import should_close_outgoing_edge
+
     pairs = (neighbors or {}).get(relationship.tail.uuid) or []
     valid_at = (relationship.properties or {}).get("valid_at") or (
         relationship.properties or {}
@@ -596,7 +600,13 @@ def _invalidate_superseded_relationships(
         if getattr(predicate, "uuid", None) == relationship.uuid:
             continue
         props = getattr(predicate, "properties", None) or {}
-        if props.get("invalid_at"):
+        if props.get("invalid_at") or props.get("valid_to"):
+            continue
+        if not should_close_outgoing_edge(
+            relationship_name=relationship.name,
+            existing_properties=props,
+            superseded_chunk_ids=superseded_chunk_ids,
+        ):
             continue
         try:
             from src.core.saving.validity import close_validity, format_instant, parse_instant, utc_now
@@ -858,6 +868,7 @@ def _ingest_data(self, args, *, staged=False):
                         "brain_id": enrich_result.brain_id,
                         "session_id": enrich_result.session_id,
                         "parent_task_id": parent_task_id,
+                        "superseded_chunk_ids": superseded_ids,
                     }
                 )
             )
@@ -1234,6 +1245,7 @@ def process_architect_relationships(self, args: dict):
                     _invalidate_superseded_relationships(
                         relationship,
                         brain_id=brain_id,
+                        superseded_chunk_ids=args.get("superseded_chunk_ids") or [],
                     )
                 except FutureTimeoutError:
                     rel_name = getattr(relationship, "name", "unknown")
