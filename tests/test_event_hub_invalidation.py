@@ -179,7 +179,7 @@ class EventHubInvalidationTests(unittest.TestCase):
                     "rel-1",
                     "relationship",
                     {
-                        "invalid_at": "02/02/2024",
+                        "invalid_at": "2024-02-02T00:00:00Z",
                         "deprecated": True,
                         "valid_to": "2024-02-02T00:00:00Z",
                         "superseded_by": "rel-2",
@@ -364,6 +364,94 @@ class EventHubInvalidationTests(unittest.TestCase):
             )
         self.assertEqual(relationship.uuid, open_id)
         self.assertEqual(relationship.properties["valid_from"], "2020-01-01T00:00:00Z")
+
+    def test_inbound_reverse_edge_is_not_reused_as_open_match(self):
+        from src.core.saving.identity import stable_relationship_id
+        from src.workers.tasks import ingestion as ingestion_mod
+
+        graph = _FakeGraphAdapter()
+        graph.add_node("alice", "Alice", "PERSON")
+        graph.add_node("bob", "Bob", "PERSON")
+        reverse_id = "rev-works-with"
+        graph.add_edge(
+            reverse_id,
+            "bob",
+            "WORKS_WITH",
+            "alice",
+            properties={"valid_from": "2020-01-01T00:00:00Z"},
+        )
+        incoming = stable_relationship_id("alice", "WORKS_WITH", "bob", "flow-1")
+        relationship = _relationship(
+            incoming,
+            _entity("alice", "Alice", "PERSON"),
+            "WORKS_WITH",
+            _entity("bob", "Bob", "PERSON"),
+            valid_at="2024-06-01T00:00:00Z",
+        )
+        relationship.properties["valid_from"] = "2024-06-01T00:00:00Z"
+        with patch.object(ingestion_mod, "graph_adapter", graph):
+            ingestion_mod._assign_relationship_interval(
+                relationship, brain_id="brain-a"
+            )
+        self.assertEqual(relationship.uuid, incoming)
+        self.assertNotEqual(relationship.uuid, reverse_id)
+
+    def test_distinct_flow_keys_keep_separate_open_edges(self):
+        from src.core.saving.identity import stable_relationship_id
+        from src.workers.tasks import ingestion as ingestion_mod
+
+        graph = _FakeGraphAdapter()
+        graph.add_node("alice", "Alice", "PERSON")
+        graph.add_node("bob", "Bob", "PERSON")
+        existing_id = "works-with-flow-a"
+        graph.add_edge(
+            existing_id,
+            "alice",
+            "WORKS_WITH",
+            "bob",
+            properties={
+                "valid_from": "2020-01-01T00:00:00Z",
+                "flow_key": "flow-a",
+            },
+        )
+        incoming = stable_relationship_id("alice", "WORKS_WITH", "bob", "flow-b")
+        relationship = _relationship(
+            incoming,
+            _entity("alice", "Alice", "PERSON"),
+            "WORKS_WITH",
+            _entity("bob", "Bob", "PERSON"),
+            valid_at="2024-06-01T00:00:00Z",
+        )
+        relationship.flow_key = "flow-b"
+        relationship.properties["valid_from"] = "2024-06-01T00:00:00Z"
+        with patch.object(ingestion_mod, "graph_adapter", graph):
+            ingestion_mod._assign_relationship_interval(
+                relationship, brain_id="brain-a"
+            )
+        self.assertEqual(relationship.uuid, incoming)
+        self.assertNotEqual(relationship.uuid, existing_id)
+
+    def test_neighbor_lookup_failure_propagates(self):
+        from src.workers.tasks import ingestion as ingestion_mod
+
+        graph = _FakeGraphAdapter()
+        graph.add_node("alice", "Alice", "PERSON")
+        graph.add_node("paris", "Paris", "CITY")
+        graph.get_neighbors = lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("graph down")
+        )
+        relationship = _relationship(
+            "rel-closed",
+            _entity("alice", "Alice", "PERSON"),
+            "LIVES_IN",
+            _entity("paris", "Paris", "CITY"),
+            valid_at="2024-06-01T00:00:00Z",
+        )
+        with patch.object(ingestion_mod, "graph_adapter", graph):
+            with self.assertRaises(RuntimeError):
+                ingestion_mod._assign_relationship_interval(
+                    relationship, brain_id="brain-a"
+                )
 
 
 if __name__ == "__main__":

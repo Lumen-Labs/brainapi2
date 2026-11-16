@@ -466,11 +466,26 @@ async def retrieve_data(
         await asyncio.to_thread(_get_data)
     )
     if as_of_dt is not None:
+        excluded_chunk_ids = {
+            chunk.id
+            for chunk in [*ts_text_chunks, *v_text_chunks]
+            if not chunk_is_valid_at(chunk, as_of_dt)
+        }
         ts_text_chunks = [
             chunk for chunk in ts_text_chunks if chunk_is_valid_at(chunk, as_of_dt)
         ]
         v_text_chunks = [
             chunk for chunk in v_text_chunks if chunk_is_valid_at(chunk, as_of_dt)
+        ]
+        ts_observations = [
+            obs
+            for obs in ts_observations
+            if getattr(obs, "resource_id", None) not in excluded_chunk_ids
+        ]
+        v_observations = [
+            obs
+            for obs in v_observations
+            if getattr(obs, "resource_id", None) not in excluded_chunk_ids
         ]
         nodes = [
             hit

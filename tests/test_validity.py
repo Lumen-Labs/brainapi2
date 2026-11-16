@@ -38,7 +38,7 @@ ENV_DEFAULTS = {
 for key, value in ENV_DEFAULTS.items():
     os.environ.setdefault(key, value)
 
-from src.constants.data import TextChunk
+from src.constants.data import Observation, TextChunk
 from src.constants.embeddings import Vector
 from src.constants.kg import Node, Predicate
 from src.core.saving.validity import (
@@ -165,6 +165,9 @@ class ValidityIntervalTests(unittest.TestCase):
         again = close_validity(closed, closed_at="2026-01-01T00:00:00Z", superseded_by="n3")
         self.assertEqual(closed["valid_to"], again["valid_to"])
         self.assertEqual(closed["superseded_by"], "n2")
+        messy = close_validity({}, closed_at="15/01/2025")
+        self.assertEqual(messy["invalid_at"], "2025-01-15T00:00:00Z")
+        self.assertEqual(messy["valid_to"], "2025-01-15T00:00:00Z")
 
 
 class ValidityBackfillTests(unittest.TestCase):
@@ -479,6 +482,38 @@ class ValidityChangesTests(unittest.TestCase):
         self.assertEqual(payload["count"], 10)
         self.assertEqual(payload["changes"][0]["id"], "chg-200")
 
+    def test_changelog_typeerror_fallback_stays_inside_the_window(self):
+        class Adapter:
+            def get_text_chunks(self, brain_id, limit=10, skip=0, order="desc"):
+                return [], 0
+
+            def get_changelogs_list(self, *args):
+                if len(args) > 5:
+                    raise TypeError("old adapter")
+                return [
+                    SimpleNamespace(
+                        id="in-window",
+                        type="relationship_created",
+                        timestamp=datetime(2025, 1, 15, tzinfo=timezone.utc),
+                    ),
+                    SimpleNamespace(
+                        id="out-of-window",
+                        type="relationship_created",
+                        timestamp=datetime(2023, 1, 1, tzinfo=timezone.utc),
+                    ),
+                ]
+
+        payload = collect_validity_changes(
+            Adapter(),
+            None,
+            "brain",
+            since=_utc("2025-01-01T00:00:00Z"),
+            until=_utc("2025-02-01T00:00:00Z"),
+            limit=10,
+            skip=0,
+        )
+        self.assertEqual([item["id"] for item in payload["changes"]], ["in-window"])
+
     def test_backfill_pages_past_ten_thousand(self):
         seen = []
         dummy = TextChunk(id="x", text="t", metadata={"valid_from": "2024-01-01T00:00:00Z"})
@@ -676,7 +711,11 @@ class AsOfRetrieveTests(unittest.IsolatedAsyncioTestCase):
         mock_vs.search_triplets.return_value = []
         mock_data = MagicMock()
         mock_data.search.return_value = SearchResult(
-            text_chunks=[v1, v2], observations=[]
+            text_chunks=[v1, v2],
+            observations=[
+                Observation(id="o1", text="five", resource_id="v1"),
+                Observation(id="o2", text="seven", resource_id="v2"),
+            ],
         )
         mock_data.get_text_chunks_by_ids.return_value = ([], [])
         mock_graph = MagicMock()
@@ -706,6 +745,9 @@ class AsOfRetrieveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({chunk.id for chunk in current.data}, {"v1", "v2"})
         self.assertEqual({chunk.id for chunk in as_of.data}, {"v1"})
         self.assertEqual({chunk.id for chunk in later.data}, {"v2"})
+        self.assertEqual({obs.resource_id for obs in current.observations}, {"v1", "v2"})
+        self.assertEqual({obs.resource_id for obs in as_of.observations}, {"v1"})
+        self.assertEqual({obs.resource_id for obs in later.observations}, {"v2"})
         self.assertEqual(len(current.relationships), 1)
         self.assertEqual(as_of.relationships, [])
         self.assertEqual(len(later.relationships), 1)

@@ -228,6 +228,11 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
             self.assertEqual(params["query_text"], payload)
         self.assertTrue(any("SKIP $skip" in query for query, _p, _d in client.driver.calls))
         self.assertTrue(any("LIMIT $limit" in query for query, _p, _d in client.driver.calls))
+        relationship_queries = [
+            query for query, _p, _d in client.driver.calls if "MATCH (n)-[r]->(m)" in query
+        ]
+        self.assertGreaterEqual(len(relationship_queries), 2)
+        self.assertTrue(all("MATCH (n)-[r]->(m)" in query for query in relationship_queries))
 
     def test_update_properties_uses_dynamic_keys(self):
         client = _client()
@@ -265,7 +270,7 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
             new_name=payload,
             new_description=payload,
             new_labels=["PERSON"],
-            new_properties={"note": payload},
+            new_properties={"note": payload, "meta": {"k": 1}},
             properties_to_remove=["stale"],
         )
         query, params, _db = client.driver.calls[-1]
@@ -273,6 +278,7 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
         self.assertIn("SET n:`PERSON`", query)
         self.assertEqual(params["new_name"], payload)
         self.assertNotIn(payload, query)
+        self.assertIn('{"k": 1}', list(params.values()))
 
     def test_check_node_existence_quotes_labels(self):
         client = _client()

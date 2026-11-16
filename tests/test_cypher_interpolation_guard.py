@@ -115,22 +115,16 @@ def _is_quoted_value_concat(node: ast.BinOp) -> bool:
 
 class CypherInterpolationGuardTests(unittest.TestCase):
     def test_keyword_only_format_is_detected(self):
-        tree = ast.parse(
+        source = (
             'query = "MATCH (n) WHERE n.name = \'{name}\' RETURN n".format(name=user_input)\n'
         )
-        hits = []
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            func = node.func
-            if (
-                isinstance(func, ast.Attribute)
-                and func.attr == "format"
-                and _CYPHER_HINT.search(_constant_text(func.value))
-                and (node.args or node.keywords)
-            ):
-                hits.append("str.format interpolates Cypher")
-        self.assertEqual(hits, ["str.format interpolates Cypher"])
+        path = _REPO_ROOT / "tests" / "_keyword_format_guard_probe.py"
+        try:
+            path.write_text(source, encoding="utf-8")
+            hits = _find_interpolated_cypher(path)
+        finally:
+            path.unlink(missing_ok=True)
+        self.assertTrue(any("str.format interpolates Cypher" in hit for hit in hits))
 
     def test_no_interpolated_cypher_outside_helper(self):
         os.environ.setdefault("BRAINPAT_TOKEN", "test-token")

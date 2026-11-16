@@ -556,6 +556,11 @@ def _is_event_entity(entity) -> bool:
     )
 
 
+def _relationship_flow_key(obj) -> str:
+    props = getattr(obj, "properties", None) or {}
+    return str(getattr(obj, "flow_key", None) or props.get("flow_key") or "").strip()
+
+
 def _assign_relationship_interval(
     relationship: ArchitectAgentRelationship,
     *,
@@ -563,9 +568,13 @@ def _assign_relationship_interval(
 ) -> None:
     """Keep a closed interval intact when the same fact is observed again.
 
-    Open same-endpoint edges reuse their identifier and original ``valid_from``.
-    Closed same-endpoint edges get a new identifier keyed by the new start so
-    MERGE cannot overwrite the historical interval.
+    Only outgoing same-endpoint edges are considered. Open edges reuse their
+    identifier and original ``valid_from``. Distinct ``flow_key`` values keep
+    separate open edges when both sides have a key; otherwise reuse is by
+    endpoints and name. Closed edges get a new identifier keyed by the new
+    start so MERGE cannot overwrite the historical interval. Neighbor lookup
+    failures propagate so the caller can retry instead of merging onto a
+    closed interval.
     """
     from src.core.saving.identity import stable_relationship_id, stable_uuid
     from src.core.saving.validity import VALID_FROM, is_valid_at
@@ -576,21 +585,23 @@ def _assign_relationship_interval(
         relationship.tip.uuid,
         relationship.flow_key,
     )
-    try:
-        neighbors = graph_adapter.get_neighbors(
-            [relationship.tail.uuid], brain_id=brain_id
-        )
-    except Exception:
-        relationship.uuid = base
-        return
+    neighbors = graph_adapter.get_neighbors(
+        [relationship.tail.uuid], brain_id=brain_id
+    )
     open_match = None
     closed_match = None
+    rel_flow = _relationship_flow_key(relationship)
     for predicate, neighbor in (neighbors or {}).get(relationship.tail.uuid) or []:
         if not predicate or not neighbor:
+            continue
+        if (getattr(predicate, "direction", None) or "").strip().lower() != "out":
             continue
         if neighbor.uuid != relationship.tip.uuid:
             continue
         if (predicate.name or "").strip().upper() != (relationship.name or "").strip().upper():
+            continue
+        pred_flow = _relationship_flow_key(predicate)
+        if rel_flow and pred_flow and rel_flow != pred_flow:
             continue
         props = getattr(predicate, "properties", None) or {}
         if is_valid_at(props, None, deprecated=bool(getattr(predicate, "deprecated", False))):
@@ -681,8 +692,7 @@ def _invalidate_superseded_relationships(
                 "relationship",
                 brain_id=brain_id,
                 new_properties={
-                    "invalid_at": closed.get("invalid_at")
-                    or datetime.datetime.utcnow().strftime("%d/%m/%Y"),
+                    "invalid_at": closed.get("invalid_at") or closed_at,
                     "deprecated": True,
                     "valid_to": closed.get("valid_to")
                     or format_instant(parse_instant(closed_at) or utc_now()),
@@ -810,9 +820,10 @@ def _ingest_data(self, args, *, staged=False):
         from src.core.saving.validity import format_instant, parse_instant, stamp_valid_from, utc_now
 
         superseded_ids: list[str] = []
-        revision_at = payload.source_timestamp or format_instant(utc_now())
-        if not payload.source_timestamp:
-            payload.source_timestamp = revision_at
+        revision_at = format_instant(
+            parse_instant(payload.source_timestamp) or utc_now()
+        )
+        payload.source_timestamp = revision_at
         revision = prepare_source_revision(
             data_adapter,
             brain_id=payload.brain_id,

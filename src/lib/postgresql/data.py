@@ -397,7 +397,8 @@ class PostgreSQLDataClient(DataClient):
                         document = jsonb_set(
                             COALESCE(document, '{}'::jsonb),
                             '{metadata}',
-                            COALESCE(document->'metadata', '{}'::jsonb) || %s::jsonb,
+                            (CASE WHEN jsonb_typeof(document->'metadata') = 'object'
+                                  THEN document->'metadata' ELSE '{}'::jsonb END) || %s::jsonb,
                             true
                         )
                     WHERE id = ANY(%s)
@@ -421,7 +422,8 @@ class PostgreSQLDataClient(DataClient):
                         document = jsonb_set(
                             COALESCE(document, '{}'::jsonb),
                             '{metadata}',
-                            %s::jsonb || COALESCE(document->'metadata', '{}'::jsonb),
+                            %s::jsonb || CASE WHEN jsonb_typeof(document->'metadata') = 'object'
+                                              THEN document->'metadata' ELSE '{}'::jsonb END,
                             true
                         )
                     WHERE id = %s

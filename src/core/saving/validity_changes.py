@@ -19,6 +19,19 @@ _CHUNK_PAGE = 100
 _REL_PAGE = 100
 
 
+def _timestamp_in_window(
+    value: Any, since: datetime | None, until: datetime | None
+) -> bool:
+    stamp = parse_instant(value)
+    if stamp is None:
+        return False
+    if since is not None and stamp < since:
+        return False
+    if until is not None and stamp >= until:
+        return False
+    return True
+
+
 def _jsonish(value: Any) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
@@ -198,6 +211,8 @@ def _iter_changelogs(
         if not rows:
             break
         for row in rows:
+            if not _timestamp_in_window(getattr(row, "timestamp", None), since, until):
+                continue
             yield row
         skip += len(rows)
         if len(rows) < _CHUNK_PAGE:

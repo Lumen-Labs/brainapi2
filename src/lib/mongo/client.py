@@ -80,9 +80,6 @@ class MongoClient(DataClient):
         set_expr: dict[str, Any] = {}
         for key, value in patch.items():
             set_expr[f"metadata.{key}"] = {"$ifNull": [f"$metadata.{key}", value]}
-            set_expr[f"document.metadata.{key}"] = {
-                "$ifNull": [f"$document.metadata.{key}", value]
-            }
         collection = self.get_collection("text_chunks", database=brain_id)
         collection.update_one({"id": chunk_id}, [{"$set": set_expr}])
 
@@ -469,10 +466,10 @@ class MongoClient(DataClient):
             string_bounds: dict[str, Any] = {}
             dt_bounds: dict[str, Any] = {}
             if since is not None:
-                string_bounds["$gte"] = format_instant(since)
+                string_bounds["$gte"] = format_instant(since).rstrip("Z")
                 dt_bounds["$gte"] = since
             if until is not None:
-                string_bounds["$lt"] = format_instant(until)
+                string_bounds["$lt"] = format_instant(until).rstrip("Z")
                 dt_bounds["$lt"] = until
             window = {
                 "$or": [

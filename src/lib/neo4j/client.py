@@ -1100,7 +1100,7 @@ class Neo4jClient(GraphClient):
         )
         cypher_query = "MATCH (n)-[r]->(m)\n" + where_str + "\n" + return_clause
         cypher_count = (
-            "MATCH (n)-[r]-(m)\n" + where_str + "\nRETURN count(r) AS total"
+            "MATCH (n)-[r]->(m)\n" + where_str + "\nRETURN count(r) AS total"
         )
         result = self._run_query(cypher_query, brain_id, params)
         count_result = self._run_query(cypher_count, brain_id, params, ensure=False)
@@ -1218,6 +1218,7 @@ class Neo4jClient(GraphClient):
             "    properties(r) AS rel_properties, r['uuid'] AS rel_uuid,\n"
             "    m['uuid'] AS m_uuid, m['name'] AS m_name, labels(m) AS m_labels,\n"
             "    m['description'] AS m_description, properties(m) AS m_properties\n"
+            "ORDER BY r['uuid'], elementId(r)\n"
             "SKIP $skip LIMIT $limit"
         )
         count_query = (
@@ -1592,7 +1593,7 @@ class Neo4jClient(GraphClient):
             key_name = "prop_key_" + str(idx)
             value_name = "prop_val_" + str(idx)
             params[key_name] = self._clean_property_key(property_key)
-            params[value_name] = new_value
+            params[value_name] = self._neo4j_property_value(new_value)
             operations.append("n[$" + key_name + "] = $" + value_name)
 
         set_clause = ("SET " + ", ".join(operations)) if operations else ""
