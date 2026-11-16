@@ -547,12 +547,13 @@ class DetectionEngineTests(unittest.TestCase):
             ),
             "absent",
         )
-        self.assertEqual(
-            apply_fact_verification_action(
-                object(), fact_id="a", brain_id="brain", action="verify"
-            ),
-            "absent",
-        )
+        with patch.dict("sys.modules", {"src.core.verification.service": None}):
+            self.assertEqual(
+                apply_fact_verification_action(
+                    object(), fact_id="a", brain_id="brain", action="verify"
+                ),
+                "absent",
+            )
 
     def test_verified_side_requires_winner(self):
         store = MemoryConflictStore()
