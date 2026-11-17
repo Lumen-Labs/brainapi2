@@ -45,7 +45,7 @@ Naive RAG (no date filter, no rerank, no fusion) is **not** the baseline.
 | temperature | 0 |
 | system prompt | `evals/prompts.py` `ANSWER_SYSTEM` (hashed into the report) |
 
-`--answerer extractive` (CI / local smoke) uses span/must-include extraction from retrieved chunks — no LLM. `--answerer llm` and `--judge` use `EVAL_LLM_MODEL` (and optional `EVAL_LLM_PROVIDER` / `EVAL_LLM_BASE_URL`) for both systems and the judge. Example: `claude-haiku-5-5` via Anthropic. Embeddings and the cross-encoder reranker are not chat LLMs.
+`--answerer extractive` (CI / local smoke) uses span/must-include extraction from retrieved chunks — no LLM. `--answerer llm` and `--judge` use `EVAL_LLM_MODEL` (and optional `EVAL_LLM_PROVIDER` / `EVAL_LLM_BASE_URL`) for both systems and the judge. There is no default chat model. Embeddings and the cross-encoder reranker are not chat LLMs.
 
 Scoring: exact match where the gold is short; otherwise `must_include` phrases. Optional LLM judge (`--judge`) with a fixed rubric. Cohen's kappa vs the hand-labeled sample in `datasets/judge_agreement.jsonl` is always reported against exact-match, and against the LLM judge when `--judge` is on.
 
@@ -95,9 +95,9 @@ Do **not** hardcode or commit secrets. Staging keys are expected to already exis
 | `BRAINAPI_URL` / `EVAL_BRAINAPI_URL` | for BrainAPI arm | Default `http://localhost:8000` (docker stack). Point at staging for real runs. |
 | `BRAINPAT_TOKEN` / `EVAL_API_KEY` | for BrainAPI arm | PAT. Server also needs `BRAIN_CREATION_ALLOWED=true` so `evaluc*` brains can be created. |
 | `EVAL_LLM_API_KEY` | for `--answerer llm` / `--judge` | Chat API key (`ANTHROPIC_API_KEY` is also accepted). `OPENAI_API_KEY` is used for embeddings unless `EVAL_EMBEDDING_API_KEY` is set. |
-| `EVAL_LLM_MODEL` | for `--answerer llm` / `--judge` | Shared chat model id. Example: `claude-haiku-5-5`. Recorded as `llm_model` in `report.json`. |
-| `EVAL_LLM_PROVIDER` | optional | Provider label, e.g. `anthropic` or `openai`. Recorded in the report; not validated against a allow-list. |
-| `EVAL_LLM_BASE_URL` | optional | OpenAI-compatible chat base URL, e.g. `https://api.anthropic.com/v1`. |
+| `EVAL_LLM_MODEL` | for `--answerer llm` / `--judge` | Shared chat model id. Empty by default. Recorded as `llm_model` in `report.json`. |
+| `EVAL_LLM_PROVIDER` | optional | Provider label. Recorded in the report; not validated against an allow-list. |
+| `EVAL_LLM_BASE_URL` | optional | OpenAI-compatible chat base URL. Empty by default. |
 | `EVAL_EXPECTED_BRAINAPI_MODEL` | optional | If set, BrainAPI preflight fails unless health/config report that chat model. |
 | `EVAL_EMBEDDING_PROVIDER` | optional | Default `sentence-transformers`. `openai`/`azure` with a key, or `hash` for CI smoke. |
 | `EVAL_BASELINE_PROFILE` | optional | Default `sota` (`BAAI/bge-large-en-v1.5` + `BAAI/bge-reranker-v2-m3`). `minilm` selects the cheaper MiniLM pair. |

@@ -19,7 +19,7 @@ Regenerate with:
 - Scale: **local/small-scale**
 - Split: `test`
 - Answerer: `extractive`
-- LLM: `claude-haiku-5-5` (shared answerer, judge, and any BrainAPI LLM calls)
+- LLM: `` (shared answerer, judge, and any BrainAPI LLM calls)
 - Extractive scoring is a **retrieval ceiling** (gold facts in the packed window), not LLM answer quality. Use `--answerer llm` for the shared generative answerer.
 - Prompt budget: `{"max_passages": 8, "max_chars": 6000, "max_answer_tokens": 256, "temperature": 0.0}`
 - Answer prompt sha256: `095cb9e41f9f5b44e1b78db61ab11de9330114fa6785f9fdf732e59a37dd14e9`
@@ -34,9 +34,9 @@ Local/small-scale numbers are not a staging result and must not be quoted as pro
 {
   "brainapi_url": "http://localhost:8000",
   "brainpat_token": "",
-  "llm_model": "claude-haiku-5-5",
-  "answer_model": "claude-haiku-5-5",
-  "judge_model": "claude-haiku-5-5",
+  "llm_model": "",
+  "answer_model": "",
+  "judge_model": "",
   "embedding_provider": "hash",
   "embedding_model": "text-embedding-3-large",
   "reranker": "lexical",

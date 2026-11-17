@@ -32,7 +32,6 @@ _CHAT_MARKERS = (
     "o3-",
     "deepseek",
     "sonnet",
-    "haiku",
     "opus",
     "fable",
     "gemini",

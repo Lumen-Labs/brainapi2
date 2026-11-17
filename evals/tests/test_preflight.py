@@ -22,8 +22,8 @@ class PreflightTests(unittest.TestCase):
             payloads={
                 "/health": {
                     "status": "ok",
-                    "small_llm_model": "claude-sonnet-5-5",
-                    "large_llm_model": "gpt-4o",
+                    "small_llm_model": "gpt-4o",
+                    "large_llm_model": "deepseek-v4-flash",
                     "embedding_model": "text-embedding-3-large",
                 }
             },
@@ -37,7 +37,7 @@ class PreflightTests(unittest.TestCase):
         with self.assertRaises(SystemExit) as ctx:
             preflight_brainapi_model(
                 settings,
-                payloads={"/health": {"large_llm_model": "claude-sonnet-5-5"}},
+                payloads={"/health": {"large_llm_model": "deepseek-v4-flash"}},
             )
         self.assertIn("expected chat model", str(ctx.exception))
         self.assertIn("gpt-4o", str(ctx.exception))
@@ -66,7 +66,7 @@ class PreflightTests(unittest.TestCase):
         self.assertEqual(result["mode"], "unchecked")
 
     def test_model_id_match_strips_provider_prefix(self) -> None:
-        self.assertTrue(model_ids_match("anthropic/claude-haiku-5-5", "claude-haiku-5-5"))
+        self.assertTrue(model_ids_match("openai/gpt-4o", "gpt-4o"))
         self.assertFalse(model_ids_match("gpt-4o", "gpt-4o-mini"))
 
     def test_collect_ignores_embeddings(self) -> None:
