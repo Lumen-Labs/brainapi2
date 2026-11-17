@@ -499,6 +499,23 @@ def test_rollback_failed_cleanup_is_retryable_and_idempotent(run, monkeypatch, t
     assert attempts == ["staged", "staged"]
 
 
+def test_register_ocr_callback_rejects_expired_deadline_and_duplicates(run):
+    from src.core.saving import ingest_staging as staging
+
+    staging.create_run("brain", "ocr", callback_deadline=1)
+    assert staging.register_ocr_callback("brain", "ocr", {"payload": {}}) is None
+    stored = cancellation._runs("brain").find_one({"_id": "ocr"})
+    assert stored["status"] == "staging"
+    assert stored["units"] == {}
+
+    staging.create_run("brain", "live", callback_deadline=10**12)
+    first = staging.register_ocr_callback("brain", "live", {"payload": {"n": 1}})
+    second = staging.register_ocr_callback("brain", "live", {"payload": {"n": 2}})
+    assert first
+    assert second is None
+    assert staging.register_unit("brain", "live", "source", {"payload": {"n": 3}}, seal=True) == first
+
+
 def test_ocr_callback_after_deadline_is_rejected(run, monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
@@ -524,6 +541,19 @@ def test_ocr_callback_after_deadline_is_rejected(run, monkeypatch):
     assert late.status_code == 409
     dispatch.assert_not_called()
     assert cancellation._runs("brain").find_one({"_id": "ocr"})["status"] == "failed"
+
+    ingest_staging.create_run("brain", "late-reg", callback_deadline=1)
+    monkeypatch.setattr(ingest_staging, "expire_remote_ocr", lambda *args, **kwargs: None)
+    skipped_expire = TestClient(app).post(
+        "/ingest/",
+        json={"data": {"data_type": "text", "text_data": "too late"}},
+        headers={"Task-Identifier": "late-reg"},
+    )
+    assert skipped_expire.status_code == 409
+    dispatch.assert_not_called()
+    leftover = cancellation._runs("brain").find_one({"_id": "late-reg"})
+    assert leftover["status"] == "staging"
+    assert leftover["units"] == {}
 
 
 def test_staged_upload_max_bytes_falls_back_on_invalid_values(run, monkeypatch, caplog):

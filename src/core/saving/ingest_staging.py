@@ -72,15 +72,29 @@ def register_unit(brain_id, root_id, key, message, *, seal=False, task_id=None):
 def register_ocr_callback(brain_id, root_id, message):
     """Accept one OCR payload on an open run. Duplicates and late calls return None."""
     unit_id = uuid5(NAMESPACE_URL, f"brainapi:ingest:{root_id}:source").hex
-    run = ingest_cancellation._runs(brain_id).find_one({"_id": root_id})
-    if (
-        not run
-        or run["status"] != "staging"
-        or run.get("sealed")
-        or unit_id in run.get("units", {})
-    ):
-        return None
-    return register_unit(brain_id, root_id, "source", message, seal=True)
+    inserted = []
+
+    def transition(run):
+        deadline = run.get("callback_deadline")
+        if (
+            run["status"] != "staging"
+            or run.get("sealed")
+            or unit_id in run.get("units", {})
+            or (deadline is not None and deadline <= time())
+        ):
+            return None
+        unit = {
+            "state": "pending",
+            "ordinal": len(run["units"]),
+            "message": message,
+        }
+        inserted.append(unit)
+        return {"sealed": True, "units": {**run["units"], unit_id: unit}}
+
+    run = ingest_cancellation._change(brain_id, root_id, transition)
+    if inserted and run and run["status"] == "staging" and run["units"].get(unit_id) is inserted[-1]:
+        return unit_id
+    return None
 
 
 def _update_unit(brain_id, root_id, unit_id, update):
