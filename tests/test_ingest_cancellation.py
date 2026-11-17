@@ -25,11 +25,34 @@ def run(monkeypatch):
         row.update(update.get("$set", {}))
         return SimpleNamespace(modified_count=1)
 
+    def _matches(row, query):
+        for key, value in query.items():
+            if key == "$or":
+                if not any(_matches(row, item) for item in value):
+                    return False
+                continue
+            actual = row.get(key)
+            if isinstance(value, dict):
+                if "$in" in value:
+                    if actual not in value["$in"]:
+                        return False
+                elif "$ne" in value:
+                    if actual == value["$ne"]:
+                        return False
+                else:
+                    return False
+            elif actual != value:
+                return False
+        return True
+
+    def find(query):
+        return [row.copy() for row in documents.values() if _matches(row, query)]
+
     monkeypatch.setenv("INGESTION_CANCELLATION_ENABLED", "1")
     monkeypatch.setattr(
         cancellation, "_runs",
-        lambda brain_id: SimpleNamespace(find_one=find_one, update_one=update_one)
-        if brain_id == "brain" else Mock(find_one=Mock(return_value=None)),
+        lambda brain_id: SimpleNamespace(find_one=find_one, update_one=update_one, find=find)
+        if brain_id == "brain" else Mock(find_one=Mock(return_value=None), find=Mock(return_value=[])),
     )
     cancellation.register("brain", "root")
     return documents["root"]
@@ -354,7 +377,7 @@ def test_ocr_callback_registers_work_and_rejects_late_payload(run, monkeypatch):
     from src.services.api.routes import ingest
 
     monkeypatch.setenv("STAGED_INGESTION_ENABLED", "1")
-    ingest_staging.create_run("brain", "ocr", callback_deadline=1000)
+    ingest_staging.create_run("brain", "ocr", callback_deadline=10**12)
     dispatch = Mock()
     set_status = Mock()
     monkeypatch.setattr(ingest_worker, "dispatch_staged_source", dispatch)
@@ -375,8 +398,200 @@ def test_ocr_callback_registers_work_and_rejects_late_payload(run, monkeypatch):
     dispatch.assert_called_once_with("brain", "ocr", unit)
     assert cancellation._runs("brain").find_one({"_id": "ocr"})["sealed"]
 
+    duplicate = api.post("/ingest/", json=payload, headers=headers)
+    assert duplicate.status_code == 409
+    assert dispatch.call_count == 1
+
     cancellation.request_cancellation("brain", "ocr", "rollback")
     late = api.post("/ingest/", json=payload, headers=headers)
     assert late.status_code == 409
     assert dispatch.call_count == 1
     set_status.assert_not_called()
+
+
+def test_expired_upload_cleanup_failure_is_terminal_and_reopens_access(run, monkeypatch, tmp_path):
+    from src.core.saving import ingest_access_gate as gate, ingest_recovery, ingest_staging as staging
+
+    monkeypatch.setenv("INGEST_PUBLICATION_LOCK_DIR", str(tmp_path))
+    monkeypatch.setattr(gate, "_gates", cancellation._runs)
+    monkeypatch.setattr(staging, "time", lambda: 2000)
+    monkeypatch.setattr(ingest_recovery, "discard_outputs", Mock(side_effect=RuntimeError("cleanup failed")))
+
+    staging.create_run("brain", "expired", upload_deadline=1000)
+
+    for _ in range(staging.MAX_SETTLEMENT_FAILURES - 1):
+        with pytest.raises(RuntimeError, match="cleanup failed"):
+            ingest_recovery.reconcile_run("brain", "expired", Mock(), Mock())
+        assert cancellation.public_state("brain", "expired", {})["status"] == "processing"
+
+    ingest_recovery.reconcile_run("brain", "expired", Mock(), Mock())
+    stored = cancellation._runs("brain").find_one({"_id": "expired"})
+    assert stored["status"] == "failed"
+    assert stored["pending_cleanup"] is True
+    assert cancellation.public_state("brain", "expired", {})["status"] == "failed"
+    with gate.brain_access("brain"):
+        pass
+
+
+def test_publication_replay_failure_is_terminal_and_reopens_access(run, monkeypatch, tmp_path):
+    from src.core.saving import ingest_access_gate as gate, ingest_recovery, ingest_staging as staging
+
+    monkeypatch.setenv("INGEST_PUBLICATION_LOCK_DIR", str(tmp_path))
+    monkeypatch.setattr(gate, "_gates", cancellation._runs)
+
+    staging.create_run("brain", "staged")
+    unit = staging.register_unit("brain", "staged", "source", {"payload": {}})
+    claim = staging.claim_unit("brain", "staged", unit)
+    assert staging.complete_unit("brain", "staged", unit, claim, "output")
+    staging.seal_units("brain", "staged")
+    assert staging.close_staging("brain", "staged")["status"] == "publishing"
+
+    def publish(brain, root):
+        with gate.publication_gate(brain, root):
+            raise RuntimeError("replay failed")
+
+    for _ in range(staging.MAX_SETTLEMENT_FAILURES - 1):
+        with pytest.raises(RuntimeError, match="replay failed"):
+            ingest_recovery.reconcile_run("brain", "staged", Mock(), publish)
+        assert cancellation.public_state("brain", "staged", {})["status"] == "processing"
+
+    ingest_recovery.reconcile_run("brain", "staged", Mock(), publish)
+    stored = cancellation._runs("brain").find_one({"_id": "staged"})
+    assert stored["status"] == "failed"
+    assert stored["pending_cleanup"] is True
+    assert cancellation.public_state("brain", "staged", {})["status"] == "failed"
+    with gate.brain_access("brain"):
+        pass
+
+
+def test_rollback_failed_cleanup_is_retryable_and_idempotent(run, monkeypatch, tmp_path):
+    from src.core.saving import ingest_access_gate as gate, ingest_recovery, ingest_runtime, ingest_staging as staging
+
+    monkeypatch.setenv("INGEST_PUBLICATION_LOCK_DIR", str(tmp_path))
+    monkeypatch.setattr(gate, "_gates", cancellation._runs)
+
+    staging.create_run("brain", "staged", message={"payload": {"text": "private"}})
+    cancellation.request_cancellation("brain", "staged", "rollback")
+    monkeypatch.setattr(ingest_recovery, "discard_outputs", Mock(side_effect=RuntimeError("cleanup failed")))
+    for _ in range(staging.MAX_SETTLEMENT_FAILURES - 1):
+        with pytest.raises(RuntimeError, match="cleanup failed"):
+            ingest_recovery.reconcile_run("brain", "staged", Mock(), Mock())
+    ingest_recovery.reconcile_run("brain", "staged", Mock(), Mock())
+    stored = cancellation._runs("brain").find_one({"_id": "staged"})
+    assert stored["status"] == "rollback_failed"
+    assert stored["pending_cleanup"] is True
+
+    attempts = []
+
+    def discard(brain, root):
+        attempts.append(root)
+        if len(attempts) == 1:
+            raise RuntimeError("still held")
+
+    monkeypatch.setattr(ingest_recovery, "discard_outputs", discard)
+    ingest_runtime.recover_brain("brain", Mock(), Mock(), Mock())
+    assert attempts == ["staged"]
+    assert cancellation._runs("brain").find_one({"_id": "staged"})["pending_cleanup"] is True
+    ingest_runtime.recover_brain("brain", Mock(), Mock(), Mock())
+    assert attempts == ["staged", "staged"]
+    assert cancellation._runs("brain").find_one({"_id": "staged"})["pending_cleanup"] is False
+    ingest_runtime.recover_brain("brain", Mock(), Mock(), Mock())
+    assert attempts == ["staged", "staged"]
+
+
+def test_ocr_callback_after_deadline_is_rejected(run, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from src.core.saving import ingest_staging, ingest_worker
+    from src.services.api.dependencies import get_brain_id
+    from src.services.api.routes import ingest
+
+    monkeypatch.setenv("STAGED_INGESTION_ENABLED", "1")
+    ingest_staging.create_run("brain", "ocr", callback_deadline=1)
+    dispatch = Mock()
+    monkeypatch.setattr(ingest_worker, "dispatch_staged_source", dispatch)
+    monkeypatch.setattr(ingest, "set_ingestion_task_status", Mock())
+
+    app = FastAPI()
+    app.include_router(ingest.ingest_router)
+    app.dependency_overrides[get_brain_id] = lambda: "brain"
+    late = TestClient(app).post(
+        "/ingest/",
+        json={"data": {"data_type": "text", "text_data": "too late"}},
+        headers={"Task-Identifier": "ocr"},
+    )
+    assert late.status_code == 409
+    dispatch.assert_not_called()
+    assert cancellation._runs("brain").find_one({"_id": "ocr"})["status"] == "failed"
+
+
+def test_staged_file_upload_rejects_oversize_and_ignores_limit_when_disabled(run, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from src.services.api.dependencies import get_brain_id
+    from src.services.api.routes import ingest
+
+    monkeypatch.setenv("STAGED_UPLOAD_MAX_BYTES", "10")
+    monkeypatch.setattr(ingest.config, "ocr_mode", "docling")
+    monkeypatch.setattr(ingest, "set_ingestion_task_status", Mock())
+    monkeypatch.setattr("src.core.saving.ingest_staged_input.save_file", lambda *args, **kwargs: 1)
+    dispatch = Mock()
+    queued = Mock()
+    monkeypatch.setattr("src.core.saving.ingest_worker.dispatch_staged_source", dispatch)
+    monkeypatch.setattr(ingest.ingest_file_task, "apply_async", queued)
+    assert ingest.staged_upload_max_bytes() == 10
+    monkeypatch.delenv("STAGED_UPLOAD_MAX_BYTES")
+    assert ingest.staged_upload_max_bytes() == ingest.DEFAULT_STAGED_UPLOAD_MAX_BYTES
+    monkeypatch.setenv("STAGED_UPLOAD_MAX_BYTES", "10")
+
+    app = FastAPI()
+    app.include_router(ingest.ingest_router)
+    app.dependency_overrides[get_brain_id] = lambda: "brain"
+    api = TestClient(app)
+
+    monkeypatch.setenv("STAGED_INGESTION_ENABLED", "1")
+    monkeypatch.setenv("STAGED_ENRICHMENT_ENABLED", "1")
+    oversized = api.post("/ingest/file", files={"file": ("big.txt", b"01234567890")})
+    assert oversized.status_code == 413
+    dispatch.assert_not_called()
+
+    accepted = api.post("/ingest/file", files={"file": ("ok.txt", b"0123456789")})
+    assert accepted.status_code == 202
+    dispatch.assert_called_once()
+
+    monkeypatch.delenv("STAGED_INGESTION_ENABLED")
+    monkeypatch.delenv("STAGED_ENRICHMENT_ENABLED")
+    unstaged = api.post("/ingest/file", files={"file": ("big.txt", b"01234567890")})
+    assert unstaged.status_code == 202
+    queued.assert_called_once()
+
+
+def test_staged_structured_batch_uses_configured_upload_limit(run, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from src.services.api.dependencies import get_brain_id
+    from src.services.api.routes import ingest
+
+    monkeypatch.setenv("STAGED_INGESTION_ENABLED", "1")
+    monkeypatch.setenv("STAGED_ENRICHMENT_ENABLED", "1")
+    monkeypatch.setenv("STAGED_UPLOAD_MAX_BYTES", "80")
+    monkeypatch.setattr(ingest, "set_ingestion_task_status", Mock())
+
+    app = FastAPI()
+    app.include_router(ingest.ingest_router)
+    app.dependency_overrides[get_brain_id] = lambda: "brain"
+    api = TestClient(app)
+    payload = [{
+        "data": [{
+            "event": {"name": "Purchase", "type": "EVENT"},
+            "event_obj": {"name": "TARGETED"},
+            "object": {"name": "Widget", "type": "PRODUCT"},
+        }],
+    }]
+    assert api.post("/ingest/structured/batch", json=payload).status_code == 413
+    monkeypatch.setenv("STAGED_UPLOAD_MAX_BYTES", "10000")
+    accepted = api.post("/ingest/structured/batch", json=payload)
+    assert accepted.status_code == 202
