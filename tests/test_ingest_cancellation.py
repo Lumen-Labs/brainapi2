@@ -526,6 +526,36 @@ def test_ocr_callback_after_deadline_is_rejected(run, monkeypatch):
     assert cancellation._runs("brain").find_one({"_id": "ocr"})["status"] == "failed"
 
 
+def test_staged_upload_max_bytes_falls_back_on_invalid_values(run, monkeypatch, caplog):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from src.services.api.dependencies import get_brain_id
+    from src.services.api.routes import ingest
+
+    monkeypatch.delenv("STAGED_UPLOAD_MAX_BYTES", raising=False)
+    assert ingest.staged_upload_max_bytes() == ingest.DEFAULT_STAGED_UPLOAD_MAX_BYTES
+    for raw in ("abc", "12.5", "0", "-1"):
+        monkeypatch.setenv("STAGED_UPLOAD_MAX_BYTES", raw)
+        assert ingest.staged_upload_max_bytes() == ingest.DEFAULT_STAGED_UPLOAD_MAX_BYTES
+    assert "STAGED_UPLOAD_MAX_BYTES" in caplog.text
+    monkeypatch.setenv("STAGED_UPLOAD_MAX_BYTES", "4096")
+    assert ingest.staged_upload_max_bytes() == 4096
+
+    monkeypatch.setenv("STAGED_UPLOAD_MAX_BYTES", "not-an-int")
+    monkeypatch.setenv("STAGED_INGESTION_ENABLED", "1")
+    monkeypatch.setenv("STAGED_ENRICHMENT_ENABLED", "1")
+    monkeypatch.setattr(ingest.config, "ocr_mode", "docling")
+    monkeypatch.setattr(ingest, "set_ingestion_task_status", Mock())
+    monkeypatch.setattr("src.core.saving.ingest_staged_input.save_file", lambda *args, **kwargs: 1)
+    monkeypatch.setattr("src.core.saving.ingest_worker.dispatch_staged_source", Mock())
+    app = FastAPI()
+    app.include_router(ingest.ingest_router)
+    app.dependency_overrides[get_brain_id] = lambda: "brain"
+    accepted = TestClient(app).post("/ingest/file", files={"file": ("ok.txt", b"hello")})
+    assert accepted.status_code == 202
+
+
 def test_staged_file_upload_rejects_oversize_and_ignores_limit_when_disabled(run, monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient

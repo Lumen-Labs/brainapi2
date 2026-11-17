@@ -45,11 +45,28 @@ from src.workers.tasks.ingestion import set_ingestion_task_status
 MAX_TASK_RETRIES = 3
 RETRY_DELAY_BASE = 0.1
 DEFAULT_STAGED_UPLOAD_MAX_BYTES = 12 * 1024 * 1024
+logger = logging.getLogger(__name__)
 
 
 def staged_upload_max_bytes():
     raw = os.getenv("STAGED_UPLOAD_MAX_BYTES")
-    return int(raw) if raw else DEFAULT_STAGED_UPLOAD_MAX_BYTES
+    if raw is None or not str(raw).strip():
+        return DEFAULT_STAGED_UPLOAD_MAX_BYTES
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        logger.warning(
+            "Invalid STAGED_UPLOAD_MAX_BYTES %r; using %s",
+            raw, DEFAULT_STAGED_UPLOAD_MAX_BYTES,
+        )
+        return DEFAULT_STAGED_UPLOAD_MAX_BYTES
+    if value <= 0:
+        logger.warning(
+            "Non-positive STAGED_UPLOAD_MAX_BYTES %r; using %s",
+            raw, DEFAULT_STAGED_UPLOAD_MAX_BYTES,
+        )
+        return DEFAULT_STAGED_UPLOAD_MAX_BYTES
+    return value
 
 
 def _read_upload_capped(upload, limit):
@@ -66,7 +83,6 @@ def _read_upload_capped(upload, limit):
     return b"".join(chunks)
 
 ingest_router = APIRouter(prefix="/ingest", tags=["ingest"])
-logger = logging.getLogger(__name__)
 
 
 def _submit_staged(
