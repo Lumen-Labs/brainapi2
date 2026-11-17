@@ -4,6 +4,12 @@ import unittest
 
 from evals.baseline.dates import filter_as_of
 from evals.baseline.index import DEFAULT_HYBRID_CONFIG
+from evals.config import (
+    CHEAP_CROSS_ENCODER,
+    CHEAP_ST_EMBEDDING_MODEL,
+    DEFAULT_CROSS_ENCODER,
+    DEFAULT_ST_EMBEDDING_MODEL,
+)
 from evals.config import REQUIRED_USE_CASES, USE_CASES
 from evals.datasets.loader import load_judge_labels, load_use_case
 
@@ -121,6 +127,15 @@ class DatasetTests(unittest.TestCase):
     def test_default_hybrid_is_strong(self) -> None:
         self.assertEqual(DEFAULT_HYBRID_CONFIG["dense"], "sentence-transformers")
         self.assertEqual(DEFAULT_HYBRID_CONFIG["reranker"], "cross-encoder")
+        self.assertEqual(DEFAULT_HYBRID_CONFIG["dense_model"], DEFAULT_ST_EMBEDDING_MODEL)
+        self.assertEqual(DEFAULT_ST_EMBEDDING_MODEL, "BAAI/bge-large-en-v1.5")
+        self.assertEqual(DEFAULT_CROSS_ENCODER, "BAAI/bge-reranker-v2-m3")
+        self.assertEqual(
+            CHEAP_ST_EMBEDDING_MODEL, "sentence-transformers/all-MiniLM-L6-v2"
+        )
+        self.assertEqual(
+            CHEAP_CROSS_ENCODER, "cross-encoder/ms-marco-MiniLM-L-6-v2"
+        )
 
     def test_judge_sample_has_both_labels(self) -> None:
         rows = load_judge_labels()

@@ -23,15 +23,15 @@ Independent of the product search stack:
 
 1. Chunk documents (size/overlap tuned on **dev** only).
 2. Okapi BM25.
-3. Dense vectors: **`sentence-transformers/all-MiniLM-L6-v2` by default** (no API key). OpenAI/Azure embeddings when `EVAL_EMBEDDING_PROVIDER=openai` and a key is set. **Hashed n-grams are CI-smoke only.**
+3. Dense vectors: **`BAAI/bge-large-en-v1.5` by default** (no API key; BGE-EN query instruction applied only to queries). OpenAI/Azure embeddings when `EVAL_EMBEDDING_PROVIDER=openai` and a key is set. **`sentence-transformers/all-MiniLM-L6-v2` is the cheaper documented option** (`EVAL_BASELINE_PROFILE=minilm`). **Hashed n-grams are CI-smoke only.**
 4. Fuse with **RRF** or **min-max weighted** fusion (grid-searched on dev).
-5. Rerank the fused head with **`cross-encoder/ms-marco-MiniLM-L-6-v2`** by default. Lexical rerank is smoke-only.
+5. Rerank the fused head with **`BAAI/bge-reranker-v2-m3`** by default. MiniLM’s `cross-encoder/ms-marco-MiniLM-L-6-v2` is the cheaper option. Lexical rerank is smoke-only.
 6. **As-of:** filter chunks by `valid_from` / `valid_to` before retrieval (this is why the baseline is strong on versioned rules).
 7. **Conflicts:** retrieve near-duplicate statements from *other* docs, score numeric/negation clashes, down-rank plan-scoped or sunset articles. Threshold can be tuned on dev.
 
-Install the strong stack with `pip install -r evals/requirements-strong.txt`. Reports set `baseline_tier` to `strong` or `smoke_hash`. Do not quote `smoke_hash` numbers as the well-tuned bar.
+Install the strong stack with `pip install -r evals/requirements-strong.txt`. Reports set `baseline_tier` to `strong` or `smoke_hash`, and `baseline_profile` to `sota` (BGE) or `minilm`. Do not quote `smoke_hash` numbers as the well-tuned bar.
 
-Tune grid (full): chunk size `{500,800}`, overlap `{80,120}`, fusion `{rrf,weighted}`, `rrf_k` `{10,60}`, dense weight `{0.35,0.65}`, retrieve_k `{20,40}`, rerank depth `{8,16}`. Smoke uses a tiny grid and hashed embeddings. Trials are written into `report.json`.
+Tune grid for MiniLM (`EVAL_BASELINE_PROFILE=minilm`): chunk size `{500,800}`, overlap `{80,120}`, fusion `{rrf,weighted}`, `rrf_k` `{10,60}`, dense weight `{0.35,0.65}`, retrieve_k `{20,40}`, rerank depth `{8,16}` (96 trials after dropping unused RRF dense weights). The default BGE SOTA profile uses a smaller grid (chunk `{500,800}`, fusion `{rrf,weighted}`, dense weight `{0.35,0.65}`, retrieve_k `{20,40}`, rerank depth `16`; 12 trials after the same RRF skip) because `bge-reranker-v2-m3` is too expensive for 96 cells on CPU. Both grids are searched on **dev only**. Smoke uses a tiny grid and hashed embeddings. Trials are written into `report.json`.
 
 Naive RAG (no date filter, no rerank, no fusion) is **not** the baseline.
 
@@ -55,7 +55,7 @@ Scoring: exact match where the gold is short; otherwise `must_include` phrases. 
 cd evals
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt          # CI / smoke (no models)
-.venv/bin/pip install -r requirements-strong.txt   # test/dev hybrid (MiniLM + cross-encoder)
+.venv/bin/pip install -r requirements-strong.txt   # test/dev hybrid (BGE SOTA; MiniLM via EVAL_BASELINE_PROFILE=minilm)
 cp .env.example .env
 # edit .env — never commit it
 ./evals.sh selftest
@@ -99,8 +99,9 @@ Do **not** hardcode or commit secrets. Staging keys are expected to already exis
 | `EVAL_LLM_BASE_URL` | optional | Default `https://api.anthropic.com/v1`. DeepSeek/OpenAI/Azure chat hosts are rejected. |
 | `EVAL_BRAINAPI_LLM_CONFIRMED` | for enriched BrainAPI runs if health/config omit the model | Must be `claude-haiku-5-5`. Staging ingest enrichment is on by default and refused without Haiku 5.5. |
 | `EVAL_EMBEDDING_PROVIDER` | optional | Default `sentence-transformers`. `openai`/`azure` with a key, or `hash` for CI smoke. |
-| `EVAL_EMBEDDING_API_KEY` / `EVAL_EMBEDDING_BASE_URL` / `EVAL_EMBEDDING_MODEL` | optional | OpenAI embeddings, or override the MiniLM model name. |
-| `EVAL_RERANKER` / `EVAL_CROSS_ENCODER_MODEL` | optional | Default `cross-encoder` (`cross-encoder/ms-marco-MiniLM-L-6-v2`). `lexical` is smoke-only. |
+| `EVAL_BASELINE_PROFILE` | optional | Default `sota` (`BAAI/bge-large-en-v1.5` + `BAAI/bge-reranker-v2-m3`). `minilm` selects the cheaper MiniLM pair. |
+| `EVAL_EMBEDDING_API_KEY` / `EVAL_EMBEDDING_BASE_URL` / `EVAL_EMBEDDING_MODEL` | optional | OpenAI embeddings, or override the dense model name. |
+| `EVAL_RERANKER` / `EVAL_CROSS_ENCODER_MODEL` | optional | Default `cross-encoder` (`BAAI/bge-reranker-v2-m3`). `lexical` is smoke-only. |
 | `EVAL_AS_OF_FIELD` | optional | If OpenAPI `GetContextRequestBody` grows an as-of field, set its name (e.g. `as_of`). |
 | `EVAL_CONFLICT_PATH` | optional | Future pair-conflict endpoint, e.g. `/retrieve/conflicts`. |
 | `EVAL_CONFLICT_PLUGIN` | optional | Default `temporal_conflicts` (sidecar on `/retrieve/context`, **not** statement-pair gold). |
@@ -121,7 +122,7 @@ Metrics: accuracy (or conflict-pair P/R/F1), Wilson 95% CI, p50/p95 end-to-end a
 
 ## Local vs staging
 
-Anything produced without staging URL + LLM keys is labeled **`scale: local/small-scale`** unless you set `EVAL_SCALE`. Do not paste smoke-hash numbers into external claims. The well-tuned hybrid bar is `baseline_tier: strong` (MiniLM embeddings + cross-encoder, tuned on dev). The CI job only installs `evals/requirements.txt` and runs unit tests plus a hybrid-only **smoke** split (no docker, no secrets, no model download).
+Anything produced without staging URL + LLM keys is labeled **`scale: local/small-scale`** unless you set `EVAL_SCALE`. Do not paste smoke-hash numbers into external claims. The well-tuned hybrid bar is `baseline_tier: strong` with `baseline_profile: sota` (BGE-large embeddings + BGE reranker-v2-m3, tuned on dev). MiniLM is a cheaper documented option, not the external bar. The CI job only installs `evals/requirements.txt` and runs unit tests plus a hybrid-only **smoke** split (no docker, no secrets, no model download).
 
 ## Product constraints honoured
 

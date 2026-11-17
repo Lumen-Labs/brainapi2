@@ -6,9 +6,15 @@ from contextlib import contextmanager
 from unittest.mock import patch
 
 from evals.config import (
+    CHEAP_CROSS_ENCODER,
+    CHEAP_ST_EMBEDDING_MODEL,
+    DEFAULT_CROSS_ENCODER,
     DEFAULT_LLM_MODEL,
+    DEFAULT_ST_EMBEDDING_MODEL,
     Settings,
     canonicalize_llm_model,
+    embedding_dim_for,
+    query_prefix_for_embedding_model,
 )
 from evals.llm import is_anthropic_api_host
 
@@ -29,6 +35,10 @@ _LLM_ENV = (
     "DEEPSEEK_API_KEY",
     "OPENAI_API_KEY",
     "EVAL_BRAINAPI_LLM_CONFIRMED",
+    "EVAL_BASELINE_PROFILE",
+    "EVAL_EMBEDDING_MODEL",
+    "EVAL_CROSS_ENCODER_MODEL",
+    "EVAL_EMBEDDING_PROVIDER",
 )
 
 
@@ -117,3 +127,35 @@ class ConfigTests(unittest.TestCase):
         with isolated_env(EVAL_BRAINAPI_LLM_CONFIRMED="claude-haiku-5-5"):
             settings = Settings.load()
         self.assertEqual(settings.brainapi_llm_confirmed, "claude-haiku-5-5")
+
+    def test_default_baseline_is_bge_sota(self) -> None:
+        with isolated_env():
+            settings = Settings.load()
+        self.assertEqual(settings.baseline_profile, "sota")
+        self.assertEqual(settings.embedding_model, DEFAULT_ST_EMBEDDING_MODEL)
+        self.assertEqual(settings.cross_encoder_model, DEFAULT_CROSS_ENCODER)
+
+    def test_minilm_profile_selects_cheap_models(self) -> None:
+        with isolated_env(EVAL_BASELINE_PROFILE="minilm"):
+            settings = Settings.load()
+        self.assertEqual(settings.baseline_profile, "minilm")
+        self.assertEqual(settings.embedding_model, CHEAP_ST_EMBEDDING_MODEL)
+        self.assertEqual(settings.cross_encoder_model, CHEAP_CROSS_ENCODER)
+
+    def test_bge_en_gets_query_prefix_minilm_does_not(self) -> None:
+        self.assertTrue(
+            query_prefix_for_embedding_model("BAAI/bge-large-en-v1.5").startswith(
+                "Represent this sentence"
+            )
+        )
+        self.assertEqual(
+            query_prefix_for_embedding_model("sentence-transformers/all-MiniLM-L6-v2"),
+            "",
+        )
+        self.assertEqual(query_prefix_for_embedding_model("BAAI/bge-m3"), "")
+
+    def test_embedding_dim_matches_profile_models(self) -> None:
+        self.assertEqual(embedding_dim_for("BAAI/bge-large-en-v1.5"), 1024)
+        self.assertEqual(
+            embedding_dim_for("sentence-transformers/all-MiniLM-L6-v2"), 384
+        )

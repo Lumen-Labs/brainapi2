@@ -8,7 +8,7 @@ from evals.baseline.dense import cosine, hashed_ngram_vector, make_embedder
 from evals.baseline.fusion import fuse, reciprocal_rank_fusion, weighted_fusion
 from evals.baseline.index import HASH_INDEX_CONFIG, build_index, numeric_cost
 from evals.baseline.rerank import lexical_rerank
-from evals.baseline.tune import SMOKE_GRID, evaluate_config, tune_hybrid
+from evals.baseline.tune import SMOKE_GRID, SOTA_TUNE_GRID, TUNE_GRID, evaluate_config, tune_hybrid
 
 
 class BaselineTests(unittest.TestCase):
@@ -95,7 +95,8 @@ class BaselineTests(unittest.TestCase):
         class TaggedHash:
             name = "hash"
 
-            def embed(self, texts):
+            def embed(self, texts, *, is_query=False):
+                del is_query
                 vectors, cost = make_embedder("hash", dim=32).embed(texts)
                 cost["embedding_model"] = "should-not-crash"
                 return vectors, cost
@@ -149,3 +150,15 @@ class BaselineTests(unittest.TestCase):
             embedder=make_embedder("hash", dim=32),
         )
         self.assertEqual(result["best_config"]["reranker"], "lexical")
+        self.assertEqual(result["best_config"]["dense_dim"], 32)
+
+    def test_sota_grid_is_smaller_than_minilm_grid(self) -> None:
+        def n_cells(grid: dict) -> int:
+            n = 1
+            for values in grid.values():
+                n *= len(values)
+            return n
+
+        self.assertLess(n_cells(SOTA_TUNE_GRID), n_cells(TUNE_GRID))
+        self.assertEqual(n_cells(SOTA_TUNE_GRID), 16)
+        self.assertIn(16, SOTA_TUNE_GRID["rerank_depth"])

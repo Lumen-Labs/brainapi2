@@ -5,7 +5,10 @@ import math
 from typing import Protocol
 
 from evals.baseline.textlib import tokenize
-from evals.config import DEFAULT_ST_EMBEDDING_MODEL
+from evals.config import (
+    DEFAULT_ST_EMBEDDING_MODEL,
+    query_prefix_for_embedding_model,
+)
 
 
 def _l2_normalize(vec: list[float]) -> list[float]:
@@ -40,7 +43,9 @@ def cosine(a: list[float], b: list[float]) -> float:
 class Embedder(Protocol):
     name: str
 
-    def embed(self, texts: list[str]) -> tuple[list[list[float]], dict[str, int]]:
+    def embed(
+        self, texts: list[str], *, is_query: bool = False
+    ) -> tuple[list[list[float]], dict[str, int]]:
         ...
 
 
@@ -50,7 +55,10 @@ class HashEmbedder:
     def __init__(self, dim: int = 256) -> None:
         self.dim = dim
 
-    def embed(self, texts: list[str]) -> tuple[list[list[float]], dict[str, int]]:
+    def embed(
+        self, texts: list[str], *, is_query: bool = False
+    ) -> tuple[list[list[float]], dict[str, int]]:
+        del is_query
         vectors = [hashed_ngram_vector(text, dim=self.dim) for text in texts]
         chars = sum(len(text) for text in texts)
         return vectors, {
@@ -77,7 +85,10 @@ class OpenAIEmbedder:
         self._client = OpenAI(**kwargs)
         self.model = model
 
-    def embed(self, texts: list[str]) -> tuple[list[list[float]], dict[str, int]]:
+    def embed(
+        self, texts: list[str], *, is_query: bool = False
+    ) -> tuple[list[list[float]], dict[str, int]]:
+        del is_query
         if not texts:
             return [], {"embedding_calls": 0, "embedding_tokens": 0, "embedding_backend": 0}
         response = self._client.embeddings.create(model=self.model, input=texts)
@@ -104,17 +115,23 @@ class SentenceTransformerEmbedder:
                 "CI smoke uses hashed n-grams and does not need this package."
             ) from exc
         self.model_name = model or DEFAULT_ST_EMBEDDING_MODEL
+        self.query_prefix = query_prefix_for_embedding_model(self.model_name)
         self.model = SentenceTransformer(self.model_name)
 
-    def embed(self, texts: list[str]) -> tuple[list[list[float]], dict[str, int]]:
+    def embed(
+        self, texts: list[str], *, is_query: bool = False
+    ) -> tuple[list[list[float]], dict[str, int]]:
         if not texts:
             return [], {
                 "embedding_calls": 0,
                 "embedding_tokens": 0,
                 "embedding_backend": 0,
             }
+        payload = texts
+        if is_query and self.query_prefix:
+            payload = [f"{self.query_prefix}{text}" for text in texts]
         encoded = self.model.encode(
-            texts,
+            payload,
             normalize_embeddings=True,
             show_progress_bar=False,
             batch_size=32,

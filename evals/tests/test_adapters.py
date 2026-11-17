@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from evals.adapters.brainapi import (
     BrainAPIAdapter,
@@ -28,6 +28,16 @@ class AdapterTests(unittest.TestCase):
         self.assertGreater(result.e2e_ms, 0)
         blob = result.answer.lower() + " " + " ".join(p.get("text", "") for p in result.passages)
         self.assertIn("30", blob)
+
+    def test_conflict_detection_is_cached_across_questions(self) -> None:
+        docs = docs_for_run(load_corpus("policy_conflicts"), smoke=True)
+        question = load_questions("policy_conflicts", split="smoke")[0]
+        adapter = HybridAdapter(_settings(), answerer="extractive", smoke=True)
+        adapter.ingest(docs)
+        with patch("evals.adapters.hybrid.detect_conflicts", return_value=[]) as mocked:
+            adapter.query(question)
+            adapter.query(question)
+        self.assertEqual(mocked.call_count, 1)
 
     def test_as_of_plugin_unsupported_without_schema(self) -> None:
         body, mode = default_as_of_plugin(

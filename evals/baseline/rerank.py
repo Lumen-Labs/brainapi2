@@ -36,10 +36,41 @@ def lexical_rerank(
 
 class CrossEncoderReranker:
     def __init__(self, model_name: str) -> None:
-        from sentence_transformers import CrossEncoder
-
-        self.model = CrossEncoder(model_name)
+        self.model_name = model_name
         self.name = "cross-encoder"
+        self._predict = self._load(model_name)
+
+    @staticmethod
+    def _load(model_name: str):
+        try:
+            from sentence_transformers import CrossEncoder
+        except ImportError as exc:
+            raise ImportError(
+                "sentence-transformers is required for the cross-encoder reranker. "
+                "Install with `pip install -r evals/requirements-strong.txt`, "
+                "or set EVAL_RERANKER=lexical. CI smoke uses lexical rerank."
+            ) from exc
+        try:
+            model = CrossEncoder(model_name, trust_remote_code=True)
+
+            def _predict(pairs: list[list[str]]):
+                try:
+                    return model.predict(pairs, show_progress_bar=False)
+                except TypeError:
+                    return model.predict(pairs)
+
+            return _predict
+        except Exception as exc:
+            try:
+                from FlagEmbedding import FlagReranker
+            except ImportError as flag_exc:
+                raise SystemExit(
+                    f"Could not load reranker {model_name!r} via sentence-transformers "
+                    f"({exc}). Install FlagEmbedding or pick a CrossEncoder-compatible "
+                    "model such as BAAI/bge-reranker-large."
+                ) from flag_exc
+            flag = FlagReranker(model_name, use_fp16=False)
+            return lambda pairs: flag.compute_score(pairs, normalize=True)
 
     def rerank(
         self,
@@ -49,15 +80,21 @@ class CrossEncoderReranker:
         depth: int,
     ) -> list[dict[str, Any]]:
         head = candidates[: max(1, int(depth))]
+        if not head:
+            return candidates
         pairs = [
             [query, f"{item.get('title') or ''} {item.get('text') or ''}".strip()]
             for item in head
         ]
-        scores = self.model.predict(pairs)
+        raw = self._predict(pairs)
+        if isinstance(raw, (int, float)):
+            scores = [float(raw)]
+        else:
+            scores = [float(item) for item in list(raw)]
         ranked = []
         for item, score in zip(head, scores):
             clone = dict(item)
-            clone["rerank_score"] = float(score)
+            clone["rerank_score"] = score
             ranked.append(clone)
         ranked.sort(key=lambda row: (-float(row["rerank_score"]), str(row.get("id") or "")))
         return ranked + [dict(item) for item in candidates[len(head) :]]

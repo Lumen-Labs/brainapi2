@@ -17,8 +17,13 @@ DEFAULT_SCALE = "local/small-scale"
 DEFAULT_LLM_MODEL = "claude-haiku-5-5"
 DEFAULT_LLM_BASE_URL = "https://api.anthropic.com/v1"
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large"
-DEFAULT_ST_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-DEFAULT_CROSS_ENCODER = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+DEFAULT_ST_EMBEDDING_MODEL = "BAAI/bge-large-en-v1.5"
+DEFAULT_CROSS_ENCODER = "BAAI/bge-reranker-v2-m3"
+CHEAP_ST_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+CHEAP_CROSS_ENCODER = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+BGE_EN_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
+SOTA_BASELINE_PROFILES = frozenset({"sota", "strong", "bge", "default", ""})
+CHEAP_BASELINE_PROFILES = frozenset({"minilm", "cheap", "light"})
 DEFAULT_BRAIN_PREFIX = "evaluc"
 PROMPT_BUDGET = {
     "max_passages": 8,
@@ -66,6 +71,49 @@ FORBIDDEN_LLM_HOST_MARKERS = (
     "openai.azure.com",
     "cognitiveservices.azure.com",
 )
+
+
+def resolve_baseline_profile(value: str | None = None) -> str:
+    raw = (value if value is not None else _first_env("EVAL_BASELINE_PROFILE")).strip().lower()
+    if raw in CHEAP_BASELINE_PROFILES:
+        return "minilm"
+    if raw in SOTA_BASELINE_PROFILES or not raw:
+        return "sota"
+    raise SystemExit(
+        f"EVAL_BASELINE_PROFILE={value!r} is not supported. Use 'sota' "
+        f"(BAAI/bge-large-en-v1.5 + BAAI/bge-reranker-v2-m3) or 'minilm' "
+        f"({CHEAP_ST_EMBEDDING_MODEL} + {CHEAP_CROSS_ENCODER})."
+    )
+
+
+def models_for_baseline_profile(profile: str) -> tuple[str, str]:
+    if profile == "minilm":
+        return CHEAP_ST_EMBEDDING_MODEL, CHEAP_CROSS_ENCODER
+    return DEFAULT_ST_EMBEDDING_MODEL, DEFAULT_CROSS_ENCODER
+
+
+def query_prefix_for_embedding_model(model: str) -> str:
+    name = (model or "").strip().lower()
+    if not name:
+        return ""
+    if "bge-m3" in name:
+        return ""
+    if "bge-large-en" in name or "bge-base-en" in name or "bge-small-en" in name:
+        return BGE_EN_QUERY_PREFIX
+    return ""
+
+
+def embedding_dim_for(model: str, *, default: int = 1024) -> int:
+    name = (model or "").strip().lower()
+    if "minilm" in name:
+        return 384
+    if "bge-small" in name:
+        return 384
+    if "bge-base" in name and "m3" not in name:
+        return 768
+    if "bge-large" in name or "bge-m3" in name:
+        return 1024
+    return default
 
 
 def _first_env(*names: str, default: str = "") -> str:
@@ -164,6 +212,7 @@ class Settings:
     datasets_dir: Path
     scale: str
     brain_prefix: str
+    baseline_profile: str = "sota"
     brainapi_llm_confirmed: str = ""
     prompt_budget: dict[str, int | float] = field(default_factory=lambda: dict(PROMPT_BUDGET))
     schema_version: str = SCHEMA_VERSION
@@ -235,6 +284,8 @@ class Settings:
         confirmed = _first_env("EVAL_BRAINAPI_LLM_CONFIRMED")
         if confirmed:
             canonicalize_llm_model(confirmed, source="EVAL_BRAINAPI_LLM_CONFIRMED")
+        baseline_profile = resolve_baseline_profile()
+        default_st, default_ce = models_for_baseline_profile(baseline_profile)
         return cls(
             brainapi_url=_first_env(
                 "EVAL_BRAINAPI_URL", "BRAINAPI_URL", default="http://localhost:8000"
@@ -261,12 +312,12 @@ class Settings:
                         "EVAL_EMBEDDING_PROVIDER", default="sentence-transformers"
                     ).lower()
                     in {"openai", "azure"}
-                    else DEFAULT_ST_EMBEDDING_MODEL
+                    else default_st
                 ),
             ),
             reranker=_first_env("EVAL_RERANKER", default="cross-encoder").lower(),
             cross_encoder_model=_first_env(
-                "EVAL_CROSS_ENCODER_MODEL", default=DEFAULT_CROSS_ENCODER
+                "EVAL_CROSS_ENCODER_MODEL", default=default_ce
             ),
             as_of_field=_first_env("EVAL_AS_OF_FIELD") or None,
             conflict_path=_first_env("EVAL_CONFLICT_PATH") or None,
@@ -279,6 +330,7 @@ class Settings:
             brain_prefix=_first_env(
                 "EVAL_BRAIN_PREFIX", default=DEFAULT_BRAIN_PREFIX
             ),
+            baseline_profile=baseline_profile,
             brainapi_llm_confirmed=confirmed,
         )
 
@@ -324,6 +376,8 @@ class Settings:
             "embedding_provider": self.embedding_provider,
             "embedding_model": self.embedding_model,
             "reranker": self.reranker,
+            "reranker_model": self.cross_encoder_model,
+            "baseline_profile": self.baseline_profile,
             "scale": self.scale,
             "as_of_field": self.as_of_field or "",
             "conflict_path": self.conflict_path or "",

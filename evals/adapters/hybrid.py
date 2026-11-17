@@ -16,7 +16,7 @@ from evals.baseline.index import (
 )
 from evals.baseline.rerank import CrossEncoderReranker
 from evals.baseline.textlib import sentences
-from evals.config import Settings, PROMPT_BUDGET
+from evals.config import Settings, PROMPT_BUDGET, embedding_dim_for
 
 
 def _diff_versions(d1_docs: list[dict[str, Any]], d2_docs: list[dict[str, Any]]) -> str:
@@ -69,6 +69,7 @@ class HybridAdapter:
         self.index: HybridIndex | None = None
         self.docs: list[dict[str, Any]] = []
         self.ingest_stats: dict[str, Any] = {}
+        self._conflict_cache: list[dict[str, Any]] | None = None
         self.capabilities = {
             "as_of": True,
             "as_of_mode": "validity_interval_filter",
@@ -80,6 +81,7 @@ class HybridAdapter:
 
     def ingest(self, docs: list[dict[str, Any]]) -> dict[str, Any]:
         self.docs = list(docs)
+        self._conflict_cache = None
         if self.smoke or str(self.config.get("dense") or "").lower() in {
             "hash",
             "hashed",
@@ -103,7 +105,10 @@ class HybridAdapter:
                     or str(self.config.get("dense_model") or "")
                 ),
                 base_url=self.settings.embedding_base_url,
-                dim=int(self.config.get("dense_dim") or 256),
+                dim=int(
+                    self.config.get("dense_dim")
+                    or embedding_dim_for(self.settings.embedding_model)
+                ),
             )
         except ImportError as exc:
             raise SystemExit(str(exc)) from exc
@@ -158,9 +163,11 @@ class HybridAdapter:
             answer = self._answer(question, extract_seed, fallback=diff)
         elif question.get("task") == "conflict_audit":
             threshold = float(self.config.get("conflict_threshold") or 0.5)
-            detected = detect_conflicts(
-                self.index, self.docs, threshold=threshold, neighbors=8
-            )
+            if self._conflict_cache is None:
+                self._conflict_cache = detect_conflicts(
+                    self.index, self.docs, threshold=threshold, neighbors=8
+                )
+            detected = self._conflict_cache
             pairs = [(row["left"], row["right"]) for row in detected]
             passages = [
                 {

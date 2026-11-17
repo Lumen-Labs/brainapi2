@@ -5,6 +5,7 @@ from typing import Any, Callable
 
 from evals.baseline.index import DEFAULT_HYBRID_CONFIG, HybridIndex, build_index
 from evals.baseline.rerank import CrossEncoderReranker
+from evals.config import embedding_dim_for
 from evals.metrics import exact_match, must_include, token_f1
 
 TUNE_GRID: dict[str, list[Any]] = {
@@ -15,6 +16,19 @@ TUNE_GRID: dict[str, list[Any]] = {
     "dense_weight": [0.35, 0.65],
     "retrieve_k": [20, 40],
     "rerank_depth": [8, 16],
+}
+
+# Full grid is used for MiniLM. BGE-reranker-v2-m3 is ~568M params; 96 cells
+# would spend hours per use case on CPU. This 12-cell grid still tunes chunk
+# size, fusion, dense weight, and retrieve_k on held-out dev.
+SOTA_TUNE_GRID: dict[str, list[Any]] = {
+    "chunk_size": [500, 800],
+    "chunk_overlap": [120],
+    "fusion": ["rrf", "weighted"],
+    "rrf_k": [60],
+    "dense_weight": [0.35, 0.65],
+    "retrieve_k": [20, 40],
+    "rerank_depth": [16],
 }
 
 SMOKE_GRID: dict[str, list[Any]] = {
@@ -112,10 +126,23 @@ def tune_hybrid(
     answer_fn: Callable[[dict[str, Any], list[dict[str, Any]]], str] | None = None,
 ) -> dict[str, Any]:
     base = dict(DEFAULT_HYBRID_CONFIG)
+    if embedder is not None:
+        model_name = getattr(embedder, "model_name", None) or getattr(embedder, "model", None)
+        if getattr(embedder, "name", "") == "hash":
+            base["dense"] = "hash"
+            dim = getattr(embedder, "dim", None)
+            if dim:
+                base["dense_dim"] = int(dim)
+        elif model_name:
+            base["dense_model"] = str(model_name)
+            base["dense_dim"] = embedding_dim_for(str(model_name))
     if cross_encoder is None:
         base["reranker"] = "lexical"
     else:
         base["reranker"] = "cross-encoder"
+        model_name = getattr(cross_encoder, "model_name", None)
+        if model_name:
+            base["reranker_model"] = str(model_name)
     chosen = grid or TUNE_GRID
     keys = list(chosen.keys())
     trials: list[dict[str, Any]] = []

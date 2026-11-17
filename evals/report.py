@@ -33,6 +33,9 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- Scale: **{report.get('scale')}**",
         f"- Split: `{report.get('split')}`",
         f"- Baseline tier: `{report.get('baseline_tier') or ('smoke_hash' if report.get('smoke') else 'strong')}`",
+        f"- Baseline profile: `{report.get('baseline_profile') or (report.get('env') or {}).get('baseline_profile') or 'sota'}`",
+        f"- Dense: `{report.get('embedding_model') or (report.get('env') or {}).get('embedding_model') or ''}`",
+        f"- Reranker: `{report.get('reranker_model') or (report.get('env') or {}).get('reranker_model') or ''}`",
         f"- Answerer: `{report.get('answerer')}`",
         f"- LLM: `{report.get('llm_model') or (report.get('env') or {}).get('llm_model') or 'claude-haiku-5-5'}` (shared answerer, judge, and any BrainAPI LLM calls)",
         (

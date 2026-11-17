@@ -10,8 +10,8 @@ from evals.adapters.brainapi import BrainAPIAdapter
 from evals.adapters.hybrid import HybridAdapter
 from evals.baseline.dense import make_embedder
 from evals.baseline.rerank import CrossEncoderReranker
-from evals.baseline.tune import SMOKE_GRID, TUNE_GRID, tune_hybrid
-from evals.config import DEFAULT_LLM_MODEL, Settings
+from evals.baseline.tune import SMOKE_GRID, SOTA_TUNE_GRID, TUNE_GRID, tune_hybrid
+from evals.config import DEFAULT_LLM_MODEL, Settings, embedding_dim_for
 from evals.preflight import preflight_brainapi_haiku
 from evals.datasets.loader import docs_for_run, load_judge_labels, load_use_case, pairs_for_run
 from evals.judge import judge_answer
@@ -245,7 +245,12 @@ def _build_hybrid(
     adapter = HybridAdapter(settings, answerer=answerer, smoke=smoke)
     tune_info: dict[str, Any] = {"tuned": False, "config": dict(adapter.config)}
     if tune and dev_questions:
-        grid = SMOKE_GRID if smoke else TUNE_GRID
+        if smoke:
+            grid = SMOKE_GRID
+        elif settings.baseline_profile == "sota":
+            grid = SOTA_TUNE_GRID
+        else:
+            grid = TUNE_GRID
         if smoke:
             embedder = make_embedder("hash", dim=256)
             cross = None
@@ -256,7 +261,7 @@ def _build_hybrid(
                     api_key=settings.embedding_api_key,
                     model=settings.embedding_model,
                     base_url=settings.embedding_base_url,
-                    dim=256,
+                    dim=embedding_dim_for(settings.embedding_model),
                 )
                 cross = None
                 if settings.reranker in {"cross-encoder", "ce", "cross_encoder"}:
@@ -277,6 +282,7 @@ def _build_hybrid(
             result["best_config"] = dict(adapter.config)
         adapter.index = result["index"].with_config(adapter.config)
         adapter.docs = list(docs)
+        adapter._conflict_cache = None
         adapter.ingest_stats = {
             "docs": len(docs),
             "chunks": len(result["index"].chunks),
@@ -575,6 +581,13 @@ def evaluate(
         "brainapi_llm_preflight": llm_preflight,
         "systems_requested": systems,
         "baseline_tier": "smoke_hash" if smoke_run else "strong",
+        "baseline_profile": "smoke_hash" if smoke_run else settings.baseline_profile,
+        "embedding_model": (
+            "hash" if smoke_run else settings.embedding_model
+        ),
+        "reranker_model": (
+            "lexical" if smoke_run else settings.cross_encoder_model
+        ),
     }
     write_jsonl(run_dir / "answers.jsonl", all_records)
     (run_dir / "report.json").write_text(

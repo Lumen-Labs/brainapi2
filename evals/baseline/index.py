@@ -7,6 +7,7 @@ from typing import Any
 from evals.baseline.bm25 import BM25Index
 from evals.baseline.chunk import chunk_corpus
 from evals.baseline.dates import filter_as_of
+from evals.config import DEFAULT_ST_EMBEDDING_MODEL, embedding_dim_for
 from evals.baseline.dense import Embedder, cosine, make_embedder
 
 
@@ -35,8 +36,8 @@ DEFAULT_HYBRID_CONFIG: dict[str, Any] = {
     "rerank_depth": 15,
     "reranker": "cross-encoder",
     "dense": "sentence-transformers",
-    "dense_model": "sentence-transformers/all-MiniLM-L6-v2",
-    "dense_dim": 256,
+    "dense_model": DEFAULT_ST_EMBEDDING_MODEL,
+    "dense_dim": embedding_dim_for(DEFAULT_ST_EMBEDDING_MODEL),
     "conflict_threshold": 0.5,
 }
 
@@ -79,7 +80,7 @@ class HybridIndex:
             for doc_id, score in self.bm25.search(query, k=max(50, int(self.config["retrieve_k"])))
             if doc_id in allowed
         ]
-        q_vec, embed_cost = self.embedder.embed([query])
+        q_vec, embed_cost = self.embedder.embed([query], is_query=True)
         for key, value in numeric_cost(embed_cost).items():
             self.cost[key] = self.cost.get(key, 0) + value
         dense_hits: list[tuple[str, float]] = []
@@ -157,8 +158,12 @@ def build_index(
     )
     texts = [f"{chunk.get('title') or ''} {chunk.get('text') or ''}" for chunk in chunks]
     vectors, cost = embedder.embed(texts) if texts else ([], {})
+    dim = len(vectors[0]) if vectors else int(cfg.get("dense_dim") or 256)
+    cfg["dense_dim"] = dim
+    if getattr(embedder, "model_name", None):
+        cfg["dense_model"] = str(getattr(embedder, "model_name"))
     if len(vectors) < len(chunks):
-        vectors.extend([[0.0] * int(cfg.get("dense_dim") or 256)] * (len(chunks) - len(vectors)))
+        vectors.extend([[0.0] * dim] * (len(chunks) - len(vectors)))
     index = HybridIndex(
         config=cfg,
         chunks=chunks,

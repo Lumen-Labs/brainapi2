@@ -1,6 +1,6 @@
 # Example local/small-scale report (not staging)
 
-This file is a checked-in copy of a **local/small-scale** hybrid-only run against the **original tiny synthetic fixtures** (`--answerer extractive`, hashed n-gram dense, lexical reranker, no BrainAPI, no LLM keys). It is a retrieval ceiling on n=8/4/6/2 and is **obsolete as an external number**. The scored splits are now ≥150 items from public FAR/eCFR, GitHub Docs / GSA-TTS handbook, and prometheus-operator runbooks; the well-tuned baseline is MiniLM embeddings + cross-encoder (`baseline_tier: strong`). **Do not quote this file externally.** Wilson intervals on the old n are wide. BrainAPI was not compared, so the head-to-head verdict is `incomplete`.
+This file is a checked-in copy of a **local/small-scale** hybrid-only run against the **original tiny synthetic fixtures** (`--answerer extractive`, hashed n-gram dense, lexical reranker, no BrainAPI, no LLM keys). It is a retrieval ceiling on n=8/4/6/2 and is **obsolete as an external number**. The scored splits are now ≥150 items from public FAR/eCFR, GitHub Docs / GSA-TTS handbook, and prometheus-operator runbooks; the well-tuned baseline is BGE-large embeddings + BGE reranker-v2-m3 (`baseline_tier: strong`, `baseline_profile: sota`). MiniLM is the cheaper documented option. **Do not quote this file externally.** Wilson intervals on the old n are wide. BrainAPI was not compared, so the head-to-head verdict is `incomplete`.
 
 Regenerate with:
 
