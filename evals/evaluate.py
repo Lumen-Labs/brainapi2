@@ -11,8 +11,8 @@ from evals.adapters.hybrid import HybridAdapter
 from evals.baseline.dense import make_embedder
 from evals.baseline.rerank import CrossEncoderReranker
 from evals.baseline.tune import SMOKE_GRID, SOTA_TUNE_GRID, TUNE_GRID, tune_hybrid
-from evals.config import DEFAULT_LLM_MODEL, Settings, embedding_dim_for
-from evals.preflight import preflight_brainapi_haiku
+from evals.config import Settings, embedding_dim_for
+from evals.preflight import preflight_brainapi_model
 from evals.datasets.loader import docs_for_run, load_judge_labels, load_use_case, pairs_for_run
 from evals.judge import judge_answer
 from evals.metrics import (
@@ -497,7 +497,7 @@ def evaluate(
         llm_preflight: dict[str, Any] = {
             "ok": True,
             "mode": "smoke_skip_enrichment",
-            "llm_model": settings.llm_model or DEFAULT_LLM_MODEL,
+            "llm_model": settings.llm_model,
             "note": "CI smoke skips BrainAPI graph enrichment and does not call server LLMs.",
         }
     elif include_brainapi:
@@ -506,13 +506,13 @@ def evaluate(
                 "skip-enrichment is CI-smoke only. Staging/real BrainAPI comparisons "
                 "must run ingest enrichment (graph extraction) so the arm matches the product."
             )
-        llm_preflight = preflight_brainapi_haiku(settings)
+        llm_preflight = preflight_brainapi_model(settings)
         skip_enrichment = False
     else:
         llm_preflight = {
             "ok": True,
             "mode": "brainapi_not_attempted",
-            "llm_model": settings.llm_model or DEFAULT_LLM_MODEL,
+            "llm_model": settings.llm_model,
         }
     rid, run_dir = ensure_run_dir(settings, run_id)
     rows = []
@@ -563,9 +563,9 @@ def evaluate(
         "split": split,
         "smoke": smoke,
         "answerer": answerer,
-        "llm_model": settings.llm_model or DEFAULT_LLM_MODEL,
-        "answer_model": settings.llm_model or DEFAULT_LLM_MODEL,
-        "judge_model": settings.llm_model or DEFAULT_LLM_MODEL,
+        "llm_model": settings.llm_model,
+        "answer_model": settings.llm_model,
+        "judge_model": settings.llm_model,
         "prompt_budget": dict(settings.prompt_budget),
         "answer_prompt_sha256": prompt_sha256(ANSWER_SYSTEM),
         "env": settings.redacted_env(),

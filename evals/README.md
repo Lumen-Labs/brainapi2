@@ -45,7 +45,7 @@ Naive RAG (no date filter, no rerank, no fusion) is **not** the baseline.
 | temperature | 0 |
 | system prompt | `evals/prompts.py` `ANSWER_SYSTEM` (hashed into the report) |
 
-`--answerer extractive` (CI / local smoke) uses span/must-include extraction from retrieved chunks — no LLM. `--answerer llm` and `--judge` use **Claude Haiku 5.5 only** (`claude-haiku-5-5`) for both systems and the judge. The harness fails at load if a different chat model or DeepSeek/OpenAI/Azure chat endpoint is configured. Embeddings and the cross-encoder reranker are not LLMs.
+`--answerer extractive` (CI / local smoke) uses span/must-include extraction from retrieved chunks — no LLM. `--answerer llm` and `--judge` use `EVAL_LLM_MODEL` (and optional `EVAL_LLM_PROVIDER` / `EVAL_LLM_BASE_URL`) for both systems and the judge. Example: `claude-haiku-5-5` via Anthropic. Embeddings and the cross-encoder reranker are not chat LLMs.
 
 Scoring: exact match where the gold is short; otherwise `must_include` phrases. Optional LLM judge (`--judge`) with a fixed rubric. Cohen's kappa vs the hand-labeled sample in `datasets/judge_agreement.jsonl` is always reported against exact-match, and against the LLM judge when `--judge` is on.
 
@@ -62,7 +62,7 @@ cp .env.example .env
 ./evals.sh smoke
 ```
 
-`./evals.sh smoke` runs the tiny `smoke` split of every use case with **hashed embeddings + lexical rerank** (no model download, no secrets). If `BRAINPAT_TOKEN` (or `EVAL_API_KEY`) is unset, the BrainAPI arm is skipped and the report stays `local/small-scale`. Smoke ingest uses **skip-enrichment** only. Staging/real BrainAPI comparisons run **graph enrichment by default**, after a preflight that the target reports Claude Haiku 5.5 (or `EVAL_BRAINAPI_LLM_CONFIRMED=claude-haiku-5-5` when health/config does not yet expose the model).
+`./evals.sh smoke` runs the tiny `smoke` split of every use case with **hashed embeddings + lexical rerank** (no model download, no secrets). If `BRAINPAT_TOKEN` (or `EVAL_API_KEY`) is unset, the BrainAPI arm is skipped and the report stays `local/small-scale`. Smoke ingest uses **skip-enrichment** only. Staging/real BrainAPI comparisons run **graph enrichment by default**. If `EVAL_EXPECTED_BRAINAPI_MODEL` is set, preflight checks that the target reports that chat model; otherwise the BrainAPI LLM is not verified.
 
 Test splits are ≥150 scored items for versioned rules, policy conflicts, and expert know-how. Gold production is documented in each dataset `GOLD.md`. Regenerate from public sources with `PYTHONPATH=. python3 -m evals.datasets.build_public_corpora`.
 
@@ -94,10 +94,11 @@ Do **not** hardcode or commit secrets. Staging keys are expected to already exis
 | --- | --- | --- |
 | `BRAINAPI_URL` / `EVAL_BRAINAPI_URL` | for BrainAPI arm | Default `http://localhost:8000` (docker stack). Point at staging for real runs. |
 | `BRAINPAT_TOKEN` / `EVAL_API_KEY` | for BrainAPI arm | PAT. Server also needs `BRAIN_CREATION_ALLOWED=true` so `evaluc*` brains can be created. |
-| `ANTHROPIC_API_KEY` / `EVAL_LLM_API_KEY` | for `--answerer llm` / `--judge` | Shared Haiku 5.5 client. Not `DEEPSEEK_API_KEY` / `OPENAI_API_KEY`. |
-| `EVAL_LLM_MODEL` | optional | Default `claude-haiku-5-5`. Any other chat model is rejected. |
-| `EVAL_LLM_BASE_URL` | optional | Default `https://api.anthropic.com/v1`. DeepSeek/OpenAI/Azure chat hosts are rejected. |
-| `EVAL_BRAINAPI_LLM_CONFIRMED` | for enriched BrainAPI runs if health/config omit the model | Must be `claude-haiku-5-5`. Staging ingest enrichment is on by default and refused without Haiku 5.5. |
+| `EVAL_LLM_API_KEY` | for `--answerer llm` / `--judge` | Chat API key (`ANTHROPIC_API_KEY` is also accepted). `OPENAI_API_KEY` is used for embeddings unless `EVAL_EMBEDDING_API_KEY` is set. |
+| `EVAL_LLM_MODEL` | for `--answerer llm` / `--judge` | Shared chat model id. Example: `claude-haiku-5-5`. Recorded as `llm_model` in `report.json`. |
+| `EVAL_LLM_PROVIDER` | optional | Provider label, e.g. `anthropic` or `openai`. Recorded in the report; not validated against a allow-list. |
+| `EVAL_LLM_BASE_URL` | optional | OpenAI-compatible chat base URL, e.g. `https://api.anthropic.com/v1`. |
+| `EVAL_EXPECTED_BRAINAPI_MODEL` | optional | If set, BrainAPI preflight fails unless health/config report that chat model. |
 | `EVAL_EMBEDDING_PROVIDER` | optional | Default `sentence-transformers`. `openai`/`azure` with a key, or `hash` for CI smoke. |
 | `EVAL_BASELINE_PROFILE` | optional | Default `sota` (`BAAI/bge-large-en-v1.5` + `BAAI/bge-reranker-v2-m3`). `minilm` selects the cheaper MiniLM pair. |
 | `EVAL_EMBEDDING_API_KEY` / `EVAL_EMBEDDING_BASE_URL` / `EVAL_EMBEDDING_MODEL` | optional | OpenAI embeddings, or override the dense model name. |
@@ -113,7 +114,7 @@ The harness **never** writes locomo/beam/searchbench/demorecsys brains.
 
 Each run directory (`evals/runs/<run_id>/`):
 
-- `report.json` — machine-readable results (schema_version, `llm_model`, scale, env redacted, per-system metrics, tuning trials, capabilities). `llm_model` is always `claude-haiku-5-5`.
+- `report.json` — machine-readable results (schema_version, `llm_model`, scale, env redacted, per-system metrics, tuning trials, capabilities). `llm_model` is whatever `EVAL_LLM_MODEL` was.
 - `report.md` — human report with the no-claim policy, Wilson intervals, p50/p95, ingest time, tokens/calls.
 - `answers.jsonl` — per-question predictions.
 - `<use_case>.jsonl` — same, split by use case.

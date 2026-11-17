@@ -14,7 +14,7 @@ class ReportTests(unittest.TestCase):
             "scale": "local/small-scale",
             "split": "smoke",
             "answerer": "extractive",
-            "llm_model": "claude-haiku-5-5",
+            "llm_model": "example-chat-model",
             "prompt_budget": {"max_passages": 8},
             "answer_prompt_sha256": "abc",
             "claim_policy": "No claim that BrainAPI beats hybrid search unless the numbers show it.",
@@ -52,7 +52,7 @@ class ReportTests(unittest.TestCase):
         self.assertIn("local/small-scale", md)
         self.assertIn("No claim that BrainAPI beats hybrid search", md)
         self.assertIn("incomplete", md)
-        self.assertIn("claude-haiku-5-5", md)
+        self.assertIn("example-chat-model", md)
         with tempfile.TemporaryDirectory() as tmp:
             path = write_report(report, Path(tmp))
             self.assertTrue(path.exists())

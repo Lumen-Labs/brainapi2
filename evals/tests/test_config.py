@@ -9,10 +9,8 @@ from evals.config import (
     CHEAP_CROSS_ENCODER,
     CHEAP_ST_EMBEDDING_MODEL,
     DEFAULT_CROSS_ENCODER,
-    DEFAULT_LLM_MODEL,
     DEFAULT_ST_EMBEDDING_MODEL,
     Settings,
-    canonicalize_llm_model,
     embedding_dim_for,
     query_prefix_for_embedding_model,
 )
@@ -31,10 +29,12 @@ _LLM_ENV = (
     "EVAL_JUDGE_AZURE_ENDPOINT",
     "EVAL_JUDGE_AZURE_KEY",
     "EVAL_LLM_API_KEY",
+    "EVAL_LLM_PROVIDER",
     "ANTHROPIC_API_KEY",
     "DEEPSEEK_API_KEY",
     "OPENAI_API_KEY",
     "EVAL_BRAINAPI_LLM_CONFIRMED",
+    "EVAL_EXPECTED_BRAINAPI_MODEL",
     "EVAL_BASELINE_PROFILE",
     "EVAL_EMBEDDING_MODEL",
     "EVAL_CROSS_ENCODER_MODEL",
@@ -47,64 +47,73 @@ def isolated_env(**values: str):
     with patch.dict(os.environ, values, clear=False):
         for key in _LLM_ENV:
             if key not in values:
-                os.environ.pop(key, None)
+                os.environ[key] = ""
         yield
 
 
 class ConfigTests(unittest.TestCase):
-    def test_default_llm_is_haiku(self) -> None:
+    def test_llm_model_is_plain_config(self) -> None:
         with isolated_env():
             settings = Settings.load()
-        self.assertEqual(settings.llm_model, DEFAULT_LLM_MODEL)
-        self.assertEqual(settings.answer_model, DEFAULT_LLM_MODEL)
-        self.assertEqual(settings.judge_model, DEFAULT_LLM_MODEL)
-        self.assertEqual(settings.llm_base_url, "https://api.anthropic.com/v1")
+        self.assertEqual(settings.llm_model, "")
+        self.assertEqual(settings.answer_model, "")
+        self.assertEqual(settings.judge_model, "")
+        self.assertEqual(settings.llm_provider, "")
+        self.assertIsNone(settings.llm_base_url)
         self.assertEqual(settings.llm_api_key, "")
+        self.assertEqual(settings.expected_brainapi_model, "")
 
-    def test_alias_normalizes_to_canonical_id(self) -> None:
-        self.assertEqual(
-            canonicalize_llm_model("claude-haiku-5.5", source="test"),
-            DEFAULT_LLM_MODEL,
-        )
-        with isolated_env(EVAL_LLM_MODEL="anthropic/claude-haiku-5-5"):
-            self.assertEqual(Settings.load().llm_model, DEFAULT_LLM_MODEL)
+        with isolated_env(
+            EVAL_LLM_MODEL="gpt-4o",
+            EVAL_LLM_PROVIDER="openai",
+            EVAL_LLM_BASE_URL="https://api.openai.com/v1",
+        ):
+            settings = Settings.load()
+        self.assertEqual(settings.llm_model, "gpt-4o")
+        self.assertEqual(settings.llm_provider, "openai")
+        self.assertEqual(settings.llm_base_url, "https://api.openai.com/v1")
 
-    def test_rejects_openai_and_deepseek_chat_models(self) -> None:
-        for model in ("gpt-4o", "deepseek-v4-flash", "claude-sonnet-5-5"):
-            with isolated_env(EVAL_LLM_MODEL=model):
-                with self.assertRaises(SystemExit) as ctx:
-                    Settings.load()
-                self.assertIn("Haiku 5.5", str(ctx.exception))
-
-    def test_rejects_legacy_answer_model_env(self) -> None:
-        with isolated_env(EVAL_ANSWER_MODEL="deepseek-v4-flash"):
-            with self.assertRaises(SystemExit):
+    def test_conflicting_model_envs_fail(self) -> None:
+        with isolated_env(
+            EVAL_LLM_MODEL="gpt-4o",
+            EVAL_ANSWER_MODEL="deepseek-v4-flash",
+        ):
+            with self.assertRaises(SystemExit) as ctx:
                 Settings.load()
+        self.assertIn("Conflicting LLM model", str(ctx.exception))
 
-    def test_rejects_deepseek_and_openai_chat_hosts(self) -> None:
+    def test_legacy_answer_model_env_is_accepted(self) -> None:
+        with isolated_env(EVAL_ANSWER_MODEL="deepseek-v4-flash"):
+            settings = Settings.load()
+        self.assertEqual(settings.llm_model, "deepseek-v4-flash")
+
+    def test_openai_and_deepseek_hosts_are_allowed(self) -> None:
         for url in (
             "https://api.deepseek.com",
             "https://api.openai.com/v1",
             "https://my.openai.azure.com/openai",
         ):
-            with isolated_env(EVAL_LLM_BASE_URL=url):
-                with self.assertRaises(SystemExit) as ctx:
-                    Settings.load()
-                self.assertIn("Haiku 5.5", str(ctx.exception))
+            with isolated_env(EVAL_LLM_BASE_URL=url, EVAL_LLM_MODEL="any-model"):
+                settings = Settings.load()
+            self.assertEqual(settings.llm_base_url, url)
 
-    def test_rejects_azure_judge(self) -> None:
-        with isolated_env(EVAL_JUDGE_AZURE_ENDPOINT="https://example.openai.azure.com"):
-            with self.assertRaises(SystemExit):
+    def test_mismatched_judge_base_url_fails(self) -> None:
+        with isolated_env(
+            EVAL_LLM_BASE_URL="https://api.openai.com/v1",
+            EVAL_JUDGE_BASE_URL="https://api.deepseek.com",
+        ):
+            with self.assertRaises(SystemExit) as ctx:
                 Settings.load()
+        self.assertIn("EVAL_JUDGE_BASE_URL", str(ctx.exception))
 
-    def test_chat_key_ignores_openai_and_deepseek(self) -> None:
+    def test_chat_key_prefers_eval_llm_key(self) -> None:
         with isolated_env(
             OPENAI_API_KEY="sk-openai",
             DEEPSEEK_API_KEY="sk-deepseek",
-            EVAL_LLM_API_KEY="sk-ant-eval",
+            EVAL_LLM_API_KEY="sk-eval",
         ):
             settings = Settings.load()
-        self.assertEqual(settings.llm_api_key, "sk-ant-eval")
+        self.assertEqual(settings.llm_api_key, "sk-eval")
 
     def test_openai_key_is_not_the_chat_key(self) -> None:
         with isolated_env(OPENAI_API_KEY="sk-openai"):
@@ -120,13 +129,21 @@ class ConfigTests(unittest.TestCase):
         self.assertFalse(is_anthropic_api_host("anthropic.com.evil.example"))
         self.assertFalse(is_anthropic_api_host(""))
 
-    def test_brainapi_confirmed_must_be_haiku(self) -> None:
-        with isolated_env(EVAL_BRAINAPI_LLM_CONFIRMED="gpt-4o"):
-            with self.assertRaises(SystemExit):
-                Settings.load()
-        with isolated_env(EVAL_BRAINAPI_LLM_CONFIRMED="claude-haiku-5-5"):
+    def test_expected_brainapi_model_is_plain_config(self) -> None:
+        with isolated_env(EVAL_EXPECTED_BRAINAPI_MODEL="gpt-4o"):
             settings = Settings.load()
-        self.assertEqual(settings.brainapi_llm_confirmed, "claude-haiku-5-5")
+        self.assertEqual(settings.expected_brainapi_model, "gpt-4o")
+
+    def test_require_llm_needs_model_and_key(self) -> None:
+        with isolated_env():
+            settings = Settings.load()
+        with self.assertRaises(SystemExit) as ctx:
+            settings.require_llm()
+        self.assertIn("EVAL_LLM_MODEL", str(ctx.exception))
+        settings.llm_model = "gpt-4o"
+        with self.assertRaises(SystemExit) as ctx:
+            settings.require_llm()
+        self.assertIn("EVAL_LLM_API_KEY", str(ctx.exception))
 
     def test_default_baseline_is_bge_sota(self) -> None:
         with isolated_env():

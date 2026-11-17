@@ -37,7 +37,7 @@ class SmokeRunTests(unittest.TestCase):
             self.assertFalse(report["brainapi_attempted"])
             self.assertEqual(len(report["use_cases"]), 4)
             self.assertEqual(report.get("baseline_tier"), "smoke_hash")
-            self.assertEqual(report.get("llm_model"), "claude-haiku-5-5")
+            self.assertEqual(report.get("llm_model"), settings.llm_model)
             self.assertTrue(report.get("brainapi_skip_enrichment"))
             self.assertEqual(
                 (report.get("brainapi_llm_preflight") or {}).get("mode"),
@@ -59,7 +59,6 @@ class SmokeRunTests(unittest.TestCase):
             json_path = Path(tmp) / "ci-smoke" / "report.json"
             self.assertTrue(json_path.exists())
             saved = json_path.read_text(encoding="utf-8")
-            self.assertIn("claude-haiku-5-5", saved)
             self.assertIn('"llm_model"', saved)
 
     def test_split_smoke_is_hash_tier_without_smoke_flag(self) -> None:

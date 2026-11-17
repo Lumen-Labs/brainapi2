@@ -37,7 +37,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- Dense: `{report.get('embedding_model') or (report.get('env') or {}).get('embedding_model') or ''}`",
         f"- Reranker: `{report.get('reranker_model') or (report.get('env') or {}).get('reranker_model') or ''}`",
         f"- Answerer: `{report.get('answerer')}`",
-        f"- LLM: `{report.get('llm_model') or (report.get('env') or {}).get('llm_model') or 'claude-haiku-5-5'}` (shared answerer, judge, and any BrainAPI LLM calls)",
+        f"- LLM: `{report.get('llm_model') or (report.get('env') or {}).get('llm_model') or ''}` (shared answerer, judge, and any BrainAPI LLM calls)",
         (
             "- Extractive scoring is a **retrieval ceiling** (gold facts in the packed window), "
             "not LLM answer quality. Use `--answerer llm` for the shared generative answerer."

@@ -4,12 +4,7 @@ from typing import Any, Iterable
 
 import httpx
 
-from evals.config import (
-    ALLOWED_LLM_ALIASES,
-    DEFAULT_LLM_MODEL,
-    Settings,
-    canonicalize_llm_model,
-)
+from evals.config import Settings
 
 PROBE_PATHS = (
     "/health",
@@ -44,9 +39,20 @@ _CHAT_MARKERS = (
     "mistral",
     "llama",
 )
-def is_haiku_llm(value: str) -> bool:
+
+
+def normalize_model_id(value: str) -> str:
     key = (value or "").strip().lower().replace("_", "-")
-    return key in ALLOWED_LLM_ALIASES
+    for sep in ("/", ":"):
+        if sep in key:
+            key = key.rsplit(sep, 1)[-1]
+    return key
+
+
+def model_ids_match(left: str, right: str) -> bool:
+    a = normalize_model_id(left)
+    b = normalize_model_id(right)
+    return bool(a) and a == b
 
 
 def looks_like_embedding(value: str) -> bool:
@@ -116,47 +122,45 @@ def fetch_probe_payloads(settings: Settings) -> dict[str, Any]:
     return payloads
 
 
-def preflight_brainapi_haiku(
+def preflight_brainapi_model(
     settings: Settings,
     *,
     payloads: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     probes = payloads if payloads is not None else fetch_probe_payloads(settings)
     reported = collect_reported_chat_models(probes)
-    if reported:
-        bad = [row for row in reported if not is_haiku_llm(row["model"])]
-        if bad:
-            detail = ", ".join(f"{row['source']} {row['path']}={row['model']!r}" for row in bad)
-            raise SystemExit(
-                "BrainAPI preflight failed: target reports a chat LLM that is not "
-                f"Claude Haiku 5.5 ({DEFAULT_LLM_MODEL}): {detail}"
-            )
+    expected = (settings.expected_brainapi_model or "").strip()
+    base = {
+        "ok": True,
+        "llm_model": settings.llm_model,
+        "expected": expected,
+        "reported": reported,
+        "probed_paths": sorted(probes),
+    }
+    if not expected:
         return {
-            "ok": True,
-            "mode": "reported",
-            "llm_model": DEFAULT_LLM_MODEL,
-            "reported": reported,
-            "probed_paths": sorted(probes),
-        }
-
-    confirmed = (settings.brainapi_llm_confirmed or "").strip()
-    if confirmed:
-        canonicalize_llm_model(confirmed, source="EVAL_BRAINAPI_LLM_CONFIRMED")
-        return {
-            "ok": True,
-            "mode": "operator_confirmed",
-            "llm_model": DEFAULT_LLM_MODEL,
-            "reported": [],
-            "probed_paths": sorted(probes),
+            **base,
+            "mode": "unchecked",
             "note": (
-                "Target /health and config endpoints did not report a chat model; "
-                "EVAL_BRAINAPI_LLM_CONFIRMED=claude-haiku-5-5 was accepted."
+                "EVAL_EXPECTED_BRAINAPI_MODEL is unset; BrainAPI chat model "
+                "was not verified."
             ),
         }
-    raise SystemExit(
-        "BrainAPI preflight failed: enrichment is on for real comparisons, but the "
-        "target did not report Claude Haiku 5.5 on /health or config endpoints. "
-        "Set EVAL_BRAINAPI_LLM_CONFIRMED=claude-haiku-5-5 after confirming the "
-        "stack's server LLM routing is Haiku 5.5, or wait for that health field "
-        f"on the Haiku routing PR. Required model id: {DEFAULT_LLM_MODEL}."
-    )
+    if not reported:
+        raise SystemExit(
+            "BrainAPI preflight failed: "
+            f"EVAL_EXPECTED_BRAINAPI_MODEL={expected!r} is set, but /health "
+            "and config endpoints did not report a chat model."
+        )
+    mismatches = [
+        row for row in reported if not model_ids_match(row["model"], expected)
+    ]
+    if mismatches:
+        detail = ", ".join(
+            f"{row['source']} {row['path']}={row['model']!r}" for row in mismatches
+        )
+        raise SystemExit(
+            "BrainAPI preflight failed: expected chat model "
+            f"{expected!r}, target reported: {detail}"
+        )
+    return {**base, "mode": "reported"}
