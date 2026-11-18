@@ -23,6 +23,7 @@ from src.constants.kg import (
     SearchRelationshipsResult,
     Triple,
 )
+from src.lib.cypher_safety import clean_label, clean_property_key, quote_property_key
 from src.lib.postgresql.graph_store import (
     GraphDatabaseError,
     PostgreSQLGraphStore,
@@ -48,6 +49,7 @@ class NetworkXGraphClient(GraphClient):
         self._store.invalidate_brain(brain_id)
 
     def execute_operation(self, operation: str, brain_id: str) -> Any:
+        # Raw SQL stays read-only even when GRAPH_RAW_WRITE_ENABLED is on.
         self._store.ensure_database(brain_id)
         return self._store.execute_read_query(brain_id, operation)
 
@@ -95,50 +97,21 @@ class NetworkXGraphClient(GraphClient):
         )
 
     def _clean_labels(self, labels: list[str]) -> list[str]:
-        return [
-            label.replace(" ", "_")
-            .upper()
-            .replace("-", "_")
-            .replace(".", "_")
-            .replace(",", "_")
-            .replace(":", "_")
-            .replace(";", "_")
-            .replace("(", "_")
-            .replace(")", "_")
-            .replace("[", "_")
-            .replace("]", "_")
-            .replace("{", "_")
-            .replace("}", "_")
-            .replace("'", "_")
-            for label in labels
-        ]
+        return [clean_label(label) for label in labels]
 
     def _node_label_set(self, brain, node_uuid: str) -> set[str]:
         return set(self._clean_labels(list(brain.labels(node_uuid))))
 
     def _clean_property_key(self, property_key: str) -> str:
-        words = property_key.split()
-        return words[0].lower() + "".join(word.capitalize() for word in words[1:])
+        return clean_property_key(property_key)
 
     def _format_property_key(self, property_key: str) -> str:
-        sanitized_key = property_key.rstrip("`").lstrip("`")
-        needs_quoting = any(
-            char in sanitized_key
-            for char in ["-", " ", ".", "+", "*", "/", "%", ":", "@", "#", "$"]
-        )
-        cleaned_key = self._clean_property_key(sanitized_key)
-        return f"`{cleaned_key}`" if needs_quoting else cleaned_key
+        return quote_property_key(property_key)
 
     def _format_value(self, value: Any) -> str:
-        if isinstance(value, str):
-            v = value.replace("'", "\\'")
-            return f"'{v}'"
-        if isinstance(value, (int, float, bool)):
-            return str(value)
-        if value is None:
-            return "null"
-        v = str(value).replace("'", "\\'")
-        return f"'{v}'"
+        raise RuntimeError(
+            "Graph values must be passed as data, not interpolated into a query"
+        )
 
     def add_nodes(
         self,
