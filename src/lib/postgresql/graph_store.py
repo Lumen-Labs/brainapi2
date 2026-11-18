@@ -756,7 +756,7 @@ class PostgreSQLGraphStore:
         brain = self._load_brain(brain_id)
         if is_relationship:
             for source, target, key, data in brain.graph.edges(keys=True, data=True):
-                if data.get("uuid") != entity_uuid:
+                if data.get("uuid") != entity_uuid and key != entity_uuid:
                     continue
                 for prop, value in new_properties.items():
                     data[prop] = value

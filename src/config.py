@@ -723,6 +723,9 @@ class Config:
         self.graph_raw_write_enabled = (
             os.getenv("GRAPH_RAW_WRITE_ENABLED", "false") == "true"
         )
+        self.verified_fact_rank_boost = float(
+            os.getenv("VERIFIED_FACT_RANK_BOOST", "0.15")
+        )
         self.search_use_dense = os.getenv("SEARCH_USE_DENSE", "true") == "true"
         self.search_use_bm25 = os.getenv("SEARCH_USE_BM25", "true") == "true"
         community_raw = os.getenv("SEARCH_COMMUNITY_LABELS", "TYPE,CLASS,TOPIC")

@@ -119,13 +119,17 @@ async def retrieve(
         None,
         description="ISO-8601 datetime. When set, return the knowledge state valid at that instant.",
     ),
+    include_rejected: bool = Query(
+        False,
+        description="If true, include expert-rejected facts.",
+    ),
     brain_id: str = Depends(get_brain_id),
 ):
     """
     Retrieve data from the knowledge graph and data store.
     """
     return await retrieve_data_controller(
-        text, limit, preferred_entities, brain_id, as_of
+        text, limit, preferred_entities, brain_id, as_of, include_rejected
     )
 
 
@@ -139,13 +143,21 @@ async def get_neighbors(
         None,
         description="The description of what in the neighbors should share with the target.",
     ),
+    include_rejected: bool = Query(
+        False,
+        description="If true, include expert-rejected facts.",
+    ),
     brain_id: str = Depends(get_brain_id),
 ):
     """
     Get the neighbors of an entity.
     """
     return await retrieve_neighbors_controller(
-        uuid=uuid, limit=limit, look_for=look_for, brain_id=brain_id
+        uuid=uuid,
+        limit=limit,
+        look_for=look_for,
+        brain_id=brain_id,
+        include_rejected=include_rejected,
     )
 
 
@@ -165,6 +177,7 @@ async def get_neighbors_with_identification_params(
         limit=request.limit,
         look_for=request.look_for if request.look_for else None,
         brain_id=request.brain_id,
+        include_rejected=request.include_rejected,
     )
 
 
@@ -223,6 +236,10 @@ async def get_relationships(
     to_node_labels: Optional[str] = None,
     query_text: Optional[str] = None,
     query_search_target: Optional[str] = "all",
+    include_rejected: bool = Query(
+        False,
+        description="If true, include expert-rejected facts.",
+    ),
     brain_id: str = Depends(get_brain_id),
 ):
     """
@@ -256,6 +273,7 @@ async def get_relationships(
         query_text,
         query_search_target,
         brain_id,
+        include_rejected,
     )
 
 
@@ -265,6 +283,10 @@ async def get_entities(
     skip: int = 0,
     node_labels: Optional[str] = None,
     query_text: Optional[str] = None,
+    include_rejected: bool = Query(
+        False,
+        description="If true, include expert-rejected facts.",
+    ),
     brain_id: str = Depends(get_brain_id),
 ):
     """
@@ -281,7 +303,7 @@ async def get_entities(
     if node_labels:
         node_labels = node_labels.split(",")
     return await retrieve_get_entities_controller(
-        limit, skip, node_labels, query_text, brain_id
+        limit, skip, node_labels, query_text, brain_id, include_rejected
     )
 
 

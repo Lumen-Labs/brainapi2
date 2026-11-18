@@ -94,6 +94,8 @@ async def resolve_conflict_by_id(
 ):
     def _resolve():
         try:
+            from src.services.kg_agent.main import graph_adapter
+
             return resolve_conflict(
                 data_adapter,
                 brain_id,
@@ -101,6 +103,7 @@ async def resolve_conflict_by_id(
                 winning_fact_id=winning_fact_id,
                 notes=notes,
                 method=method,
+                graph=graph_adapter,
             )
         except KeyError:
             raise HTTPException(status_code=404, detail="Conflict not found")

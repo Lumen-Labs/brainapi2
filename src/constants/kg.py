@@ -11,7 +11,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 from datetime import datetime
 from typing import List, Literal, Optional, Tuple, TypedDict, Union
 import uuid
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.constants.data import Observation
 
@@ -49,6 +49,29 @@ class Node(BaseModel):
     observations: Optional[List[Observation]] = Field(
         default=None, description="The observations of the node."
     )
+
+    verification_state: Optional[Literal["unverified", "verified", "rejected"]] = Field(
+        default="unverified",
+        description="Expert verification state of this fact-representing node.",
+    )
+    verified_by: Optional[str] = Field(
+        default=None, description="User or agent identity that last verified or rejected this node."
+    )
+    verified_at: Optional[str] = Field(
+        default=None, description="ISO timestamp of the last verification state change."
+    )
+    verification_source: Optional[str] = Field(
+        default=None, description="Source, document, or reference id for the verification."
+    )
+    verification_note: Optional[str] = Field(
+        default=None, description="Optional note attached to the last verification action."
+    )
+
+    @model_validator(mode="after")
+    def _hydrate_verification(self):
+        from src.core.verification.facts import hydrate_entity_verification
+
+        return hydrate_entity_verification(self)
 
     class Meta:
         """
@@ -92,6 +115,30 @@ class Predicate(BaseModel):
     )
 
     properties: dict = Field(default_factory=dict)
+
+    verification_state: Optional[Literal["unverified", "verified", "rejected"]] = Field(
+        default="unverified",
+        description="Expert verification state of this fact relationship.",
+    )
+    verified_by: Optional[str] = Field(
+        default=None,
+        description="User or agent identity that last verified or rejected this fact.",
+    )
+    verified_at: Optional[str] = Field(
+        default=None, description="ISO timestamp of the last verification state change."
+    )
+    verification_source: Optional[str] = Field(
+        default=None, description="Source, document, or reference id for the verification."
+    )
+    verification_note: Optional[str] = Field(
+        default=None, description="Optional note attached to the last verification action."
+    )
+
+    @model_validator(mode="after")
+    def _hydrate_verification(self):
+        from src.core.verification.facts import hydrate_entity_verification
+
+        return hydrate_entity_verification(self)
 
     level: Optional[Literal["1", "2", "3"]] = Field(
         default=None,

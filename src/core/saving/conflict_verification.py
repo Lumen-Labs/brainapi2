@@ -1,12 +1,10 @@
 """Adapter seam onto PR #113 fact verification.
 
 Conflict sides do not own verification state. They read it from
-``src.core.verification`` when that package is present, and
-``resolve_conflict(..., method="verified_side")`` asks #113 to verify the
-winning fact and reject the other side. ``resolve_by_verified_fact`` only
-closes open conflicts for a fact that #113 has already verified.
-
-Until #113 merges, these helpers no-op and sides stay ``unverified``.
+``src.core.verification``, and ``resolve_conflict(..., method="verified_side")``
+asks #113 to verify the winning fact and reject the other side.
+``resolve_by_verified_fact`` only closes open conflicts for a fact that #113
+has already verified. #113 verify endpoints call that hook after they persist.
 """
 
 from __future__ import annotations
@@ -144,3 +142,31 @@ def hydrate_conflict_sides(
         if state:
             side.verification_state = state
     return conflict
+
+
+def close_open_conflicts_for_verified_fact(
+    adapter: Any | None,
+    brain_id: str,
+    fact_id: str,
+    *,
+    graph: Any | None = None,
+    notes: str | None = None,
+) -> list[Any]:
+    """Close open conflicts after #113 verifies a fact. Errors are swallowed."""
+    if adapter is None or not str(fact_id or "").strip():
+        return []
+    try:
+        from src.core.saving.conflicts import resolve_by_verified_fact
+
+        return list(
+            resolve_by_verified_fact(
+                adapter,
+                brain_id,
+                str(fact_id).strip(),
+                notes=notes,
+                graph=graph,
+            )
+            or []
+        )
+    except Exception:
+        return []

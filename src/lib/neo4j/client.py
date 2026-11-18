@@ -1260,9 +1260,11 @@ class Neo4jClient(GraphClient):
                         properties=subject_properties,
                     ),
                     predicate=Predicate(
+                        uuid=str(relationship_properties.get("uuid") or ""),
                         name=str(relationship_type),
                         description=relationship_description or "",
                         direction=direction,
+                        properties=relationship_properties,
                         observations=None,
                         level=None,
                         deprecated=relationship_properties.get("deprecated", False),
@@ -2632,7 +2634,172 @@ class Neo4jClient(GraphClient):
                     weight=float(record.get("weight") or 1.0),
                 )
             )
-        return bridges
+            return bridges
+
+    def get_fact_record(self, fact_id: str, brain_id: str) -> Optional[dict]:
+        if not fact_id:
+            return None
+        params = {"uuid": fact_id}
+        rel_query = (
+            "MATCH (a)-[r]->(b)\n"
+            "WHERE r['uuid'] = $uuid\n"
+            "RETURN 'relationship' AS kind,\n"
+            "       r['uuid'] AS uuid,\n"
+            "       type(r) AS name,\n"
+            "       coalesce(r['description'], '') AS description,\n"
+            "       properties(r) AS properties,\n"
+            "       a['uuid'] AS subject_uuid,\n"
+            "       a['name'] AS subject_name,\n"
+            "       labels(a) AS subject_labels,\n"
+            "       b['uuid'] AS object_uuid,\n"
+            "       b['name'] AS object_name,\n"
+            "       labels(b) AS object_labels,\n"
+            "       [] AS labels"
+        )
+        result = self._run_query(rel_query, brain_id, params)
+        if result.records:
+            return self._fact_row_from_record(result.records[0])
+        node_query = (
+            "MATCH (n)\n"
+            "WHERE n['uuid'] = $uuid\n"
+            "RETURN 'node' AS kind,\n"
+            "       n['uuid'] AS uuid,\n"
+            "       n['name'] AS name,\n"
+            "       coalesce(n['description'], '') AS description,\n"
+            "       properties(n) AS properties,\n"
+            "       null AS subject_uuid,\n"
+            "       null AS subject_name,\n"
+            "       [] AS subject_labels,\n"
+            "       null AS object_uuid,\n"
+            "       null AS object_name,\n"
+            "       [] AS object_labels,\n"
+            "       labels(n) AS labels"
+        )
+        result = self._run_query(node_query, brain_id, params, ensure=False)
+        if result.records:
+            return self._fact_row_from_record(result.records[0])
+        return None
+
+    def _fact_row_from_record(self, record) -> dict:
+        row = dict(record)
+        row["properties"] = self._python_properties(row.get("properties"))
+        return row
+
+    def set_fact_verification(
+        self,
+        fact_id: str,
+        brain_id: str,
+        *,
+        kind: Literal["relationship", "node"],
+        properties: dict,
+    ) -> Optional[dict]:
+        params = {
+            "uuid": fact_id,
+            "verification_state": properties.get("verification_state"),
+            "verified_by": properties.get("verified_by"),
+            "verified_at": properties.get("verified_at"),
+            "verification_source": properties.get("verification_source"),
+            "verification_note": properties.get("verification_note"),
+            "verification_history": self._bind_property_value(
+                properties.get("verification_history") or []
+            ),
+        }
+        set_clause = (
+            "SET t['verification_state'] = $verification_state,\n"
+            "    t['verified_by'] = $verified_by,\n"
+            "    t['verified_at'] = $verified_at,\n"
+            "    t['verification_source'] = $verification_source,\n"
+            "    t['verification_note'] = $verification_note,\n"
+            "    t['verification_history'] = $verification_history"
+        )
+        if kind == "relationship":
+            cypher_query = (
+                "MATCH ()-[t]->() WHERE t['uuid'] = $uuid\n"
+                + set_clause
+                + "\nRETURN t['uuid'] AS uuid"
+            )
+        else:
+            cypher_query = (
+                "MATCH (t) WHERE t['uuid'] = $uuid\n"
+                + set_clause
+                + "\nRETURN t['uuid'] AS uuid"
+            )
+        result = self._run_query(cypher_query, brain_id, params)
+        if not result.records:
+            return None
+        return self.get_fact_record(fact_id, brain_id)
+
+    def list_facts_by_verification(
+        self,
+        brain_id: str,
+        *,
+        state: Optional[str] = None,
+        include_rejected: bool = False,
+        limit: int = 50,
+        skip: int = 0,
+    ) -> tuple[list[dict], int]:
+        params = {
+            "state": state,
+            "include_rejected": bool(include_rejected),
+            "skip": require_limit(skip, name="skip"),
+            "limit": require_limit(limit),
+        }
+        inner = (
+            "MATCH (a)-[r]->(b)\n"
+            "WHERE type(r) <> 'HUB_BRIDGE'\n"
+            "AND ($state IS NULL OR coalesce(r['verification_state'], 'unverified') = $state)\n"
+            "AND ($include_rejected OR coalesce(r['verification_state'], 'unverified') <> 'rejected')\n"
+            "RETURN 'relationship' AS kind,\n"
+            "       r['uuid'] AS uuid,\n"
+            "       type(r) AS name,\n"
+            "       coalesce(r['description'], '') AS description,\n"
+            "       properties(r) AS properties,\n"
+            "       a['uuid'] AS subject_uuid,\n"
+            "       a['name'] AS subject_name,\n"
+            "       labels(a) AS subject_labels,\n"
+            "       b['uuid'] AS object_uuid,\n"
+            "       b['name'] AS object_name,\n"
+            "       labels(b) AS object_labels,\n"
+            "       [] AS labels\n"
+            "UNION ALL\n"
+            "MATCH (n)\n"
+            "WHERE 'EVENT' IN labels(n)\n"
+            "AND ($state IS NULL OR coalesce(n['verification_state'], 'unverified') = $state)\n"
+            "AND ($include_rejected OR coalesce(n['verification_state'], 'unverified') <> 'rejected')\n"
+            "RETURN 'node' AS kind,\n"
+            "       n['uuid'] AS uuid,\n"
+            "       n['name'] AS name,\n"
+            "       coalesce(n['description'], '') AS description,\n"
+            "       properties(n) AS properties,\n"
+            "       null AS subject_uuid,\n"
+            "       null AS subject_name,\n"
+            "       [] AS subject_labels,\n"
+            "       null AS object_uuid,\n"
+            "       null AS object_name,\n"
+            "       [] AS object_labels,\n"
+            "       labels(n) AS labels"
+        )
+        list_query = (
+            "CALL {\n"
+            + inner
+            + "\n}\n"
+            "RETURN kind, uuid, name, description, properties, "
+            "subject_uuid, subject_name, subject_labels, "
+            "object_uuid, object_name, object_labels, labels\n"
+            "ORDER BY uuid\n"
+            "SKIP $skip\n"
+            "LIMIT $limit"
+        )
+        count_query = "CALL {\n" + inner + "\n}\nRETURN count(*) AS total"
+        result = self._run_query(list_query, brain_id, params)
+        count_result = self._run_query(count_query, brain_id, params, ensure=False)
+        total = 0
+        if count_result and count_result.records:
+            total = count_result.records[0].get("total") or 0
+        rows = []
+        for record in result.records:
+            rows.append(self._fact_row_from_record(record))
+        return rows, int(total)
 
 
 _neo4j_client = Neo4jClient()
