@@ -169,6 +169,21 @@ def test_execute_operation_rejects_cross_database_and_admin_without_session():
     assert client.driver.runs == []
 
 
+def test_execute_operation_rejects_load_csv_and_apoc_without_session():
+    client = _client()
+    rejected = [
+        "LOAD CSV FROM 'https://evil.test/x.csv' AS row RETURN row",
+        "CALL apoc.load.json('https://evil.test') YIELD value RETURN value",
+        "CALL apoc.cypher.run('USE system RETURN 1', {}) YIELD value RETURN value",
+        "CALL `apoc`.periodic.iterate('MATCH (n) RETURN n', 'RETURN 1', {}) YIELD batches RETURN batches",
+    ]
+    for query in rejected:
+        with pytest.raises(RawCypherRejected):
+            client.execute_operation(query, "braina")
+    assert client.driver.session_calls == []
+    assert client.driver.runs == []
+
+
 def test_execute_operation_rejects_database_admin_even_when_writes_enabled():
     client = _client()
     config.graph_raw_write_enabled = True

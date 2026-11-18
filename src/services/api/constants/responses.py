@@ -6,6 +6,7 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, JsonValue, RootModel
 
+from src.constants.conflicts import FactConflict
 from src.constants.data import KGChanges, Observation, StructuredData, TextChunk
 from src.constants.embeddings import Vector
 from src.constants.kg import Node, Predicate, Triple
@@ -115,10 +116,54 @@ class ChangelogItemResponse(BaseModel):
     changelog: KGChanges
 
 
+class ValidityChange(BaseModel):
+    kind: Literal["added", "superseded", "invalidated"]
+    target: Literal["chunk", "relationship", "changelog"]
+    id: str
+    timestamp: str
+    valid_from: Optional[str] = None
+    valid_to: Optional[str] = None
+    superseded_by: Optional[str] = None
+    source: Optional[dict[str, JsonValue]] = None
+    subject: Optional[JsonValue] = None
+    predicate: Optional[JsonValue] = None
+    object: Optional[JsonValue] = None
+    text: Optional[str] = None
+    changelog: Optional[dict[str, JsonValue]] = None
+
+
+class ConflictItemResponse(BaseModel):
+    message: str
+    conflict: FactConflict
+
+
+class ConflictListResponse(BaseModel):
+    message: str
+    conflicts: list[FactConflict]
+    count: int
+    total: int
+
+
+class ConflictScanAcceptedResponse(BaseModel):
+    message: str
+    task_id: str
+
+
+class ConflictReportResponse(BaseModel):
+    message: str
+    summary: dict[str, JsonValue]
+    conflicts: list[FactConflict]
+    markdown: Optional[str] = None
+
+
 class ChangelogListResponse(BaseModel):
     message: str
     changelogs: list[KGChanges]
     count: int
+    changes: Optional[list[ValidityChange]] = None
+    total: Optional[int] = None
+    since: Optional[str] = None
+    until: Optional[str] = None
 
 
 class VectorStoreInfo(BaseModel):
@@ -189,3 +234,39 @@ class IngestionCapabilitiesResponse(BaseModel):
 
 class IngestionActivityResponse(RootModel[dict[str, JsonValue]]):
     pass
+
+
+class PurgePassagesSummary(BaseModel):
+    delete: int
+    unlink: int
+    reused: int
+
+
+class PurgeNamedItems(BaseModel):
+    delete: list[str]
+    unlink: list[str]
+
+
+class PurgeConnectionsSummary(BaseModel):
+    delete: int
+    unlink: int
+
+
+class PurgeCompletedAction(BaseModel):
+    kind: str
+    id: str
+
+
+class PurgeIngestionResponse(BaseModel):
+    digest: str
+    executed: bool
+    passages: PurgePassagesSummary
+    records: int
+    entities: PurgeNamedItems
+    connections: PurgeConnectionsSummary
+    unresolved: int
+    ledger_incomplete: bool = False
+    ledger_error: Optional[str] = None
+    partial: bool = False
+    completed: Optional[list[PurgeCompletedAction]] = None
+    error: Optional[str] = None

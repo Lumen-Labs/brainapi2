@@ -17,6 +17,18 @@ class PurgeNotFound(Exception):
     pass
 
 
+class PurgeUnsafe(Exception):
+    def __init__(self, message: str, *, preview: Optional[dict] = None):
+        super().__init__(message)
+        self.preview = preview or {"executed": False, "unsafe": True}
+
+
+class PurgePartial(Exception):
+    def __init__(self, completed: list[dict], cause: BaseException):
+        super().__init__(str(cause))
+        self.completed = completed
+
+
 @dataclass
 class EffectTouch:
     uuid: str
@@ -37,6 +49,8 @@ class IngestEffect:
     edges: list[EffectTouch] = field(default_factory=list)
     purged_at: Optional[str] = None
     revision: str = ""
+    ledger_incomplete: bool = False
+    ledger_error: Optional[str] = None
 
     def chunk_ids(self) -> list[str]:
         return _unique([*self.created_chunk_ids, *self.reused_chunk_ids])
@@ -146,6 +160,8 @@ def merge_effect(current: Optional[IngestEffect], task_id: str, delta: dict) -> 
         edges=list(edges.values()),
         purged_at=base.purged_at,
         revision=uuid.uuid4().hex,
+        ledger_incomplete=base.ledger_incomplete,
+        ledger_error=base.ledger_error,
     )
 
 
@@ -296,53 +312,14 @@ def summarize(plan: PurgePlan) -> dict[str, Any]:
             "unlink": sum(1 for action in plan.actions if action.kind == "unlink_edge"),
         },
         "unresolved": sum(1 for action in plan.actions if action.kind == "unresolved"),
+        "ledger_incomplete": False,
+        "partial": False,
     }
 
 
 def confirm_digest(plan: PurgePlan, digest: str) -> None:
     if not digest or digest != plan.digest:
         raise DigestMismatch
-
-
-SCREENSHOT_IMPORTS = (
-    {"label": "Slack message", "chars": 26},
-    {"contains": "6612-WALRUS", "chars": 40},
-    {"contains": "joined the channel", "chars": 37},
-    {"contains": "2204-MINK", "chars": 34},
-    {"label": "Connect your tools", "chars": 270},
-    {"label": "Connect your tools", "chars": 1273},
-    {"label": "Sync probe cedar", "chars": 66},
-)
-
-TARGET_BRAIN = "6aeae5d478a5d35c3d03a00e"
-
-
-def matches_screenshot_import(label: str, chars: Optional[int]) -> bool:
-    text = (label or "").strip()
-    for spec in SCREENSHOT_IMPORTS:
-        if chars != spec["chars"]:
-            continue
-        exact = spec.get("label")
-        if exact is not None and text == exact:
-            return True
-        needle = spec.get("contains")
-        if needle and needle in text:
-            return True
-    return False
-
-
-def select_screenshot_jobs(jobs: Iterable[dict]) -> list[dict]:
-    chosen: list[dict] = []
-    for job in jobs:
-        if str(job.get("brain_id") or job.get("brainRef") or "") != TARGET_BRAIN:
-            continue
-        chars = job.get("chars")
-        if chars is None:
-            size = job.get("size") or {}
-            chars = size.get("chars")
-        if matches_screenshot_import(str(job.get("label") or ""), chars if chars is None else int(chars)):
-            chosen.append(job)
-    return chosen
 
 
 def reconstruct_effect(
@@ -434,6 +411,8 @@ def effect_from_document(document: dict) -> IngestEffect:
         edges=[EffectTouch(**item) for item in document.get("edges") or []],
         purged_at=document.get("purged_at"),
         revision=str(document.get("revision") or ""),
+        ledger_incomplete=bool(document.get("ledger_incomplete")),
+        ledger_error=str(document["ledger_error"]) if document.get("ledger_error") else None,
     )
 
 
@@ -456,6 +435,8 @@ def effect_document(effect: IngestEffect) -> dict:
         "edges": [touch(item) for item in effect.edges],
         "purged_at": effect.purged_at,
         "revision": effect.revision,
+        "ledger_incomplete": effect.ledger_incomplete,
+        "ledger_error": effect.ledger_error,
     }
 
 
@@ -483,10 +464,43 @@ def remember(brain_id: str, task_id: str, delta: Optional[dict] = None) -> None:
         _remember(brain_id, task_id, delta or {})
     except Exception as exc:
         print(f"[!] ingest effect was not recorded for {task_id}: {exc}")
+        _flag_ledger_incomplete(brain_id, task_id, str(exc))
+
+
+def _flag_ledger_incomplete(brain_id: str, task_id: str, error: str) -> None:
+    try:
+        store = _effects(brain_id)
+        payload = {
+            "ledger_incomplete": True,
+            "ledger_error": error[:500],
+        }
+        existing = store.find_one({"_id": task_id})
+        if existing:
+            store.update_one({"_id": task_id}, {"$set": payload})
+            return
+        document = effect_document(
+            IngestEffect(
+                task_id=task_id,
+                revision=uuid.uuid4().hex,
+                ledger_incomplete=True,
+                ledger_error=error[:500],
+            )
+        )
+        try:
+            store.insert_one(document)
+        except Exception:
+            store.update_one(
+                {"_id": task_id},
+                {"$set": payload, "$setOnInsert": {"task_id": task_id, "_id": task_id}},
+                upsert=True,
+            )
+    except Exception as exc:
+        print(f"[!] ingest effect incomplete flag was not recorded for {task_id}: {exc}")
 
 
 def _remember(brain_id: str, task_id: str, delta: dict) -> None:
     store = _effects(brain_id)
+    last_error: Optional[BaseException] = None
     for _attempt in range(5):
         current = load_effect(brain_id, task_id)
         if current and current.purged_at:
@@ -497,15 +511,23 @@ def _remember(brain_id: str, task_id: str, delta: dict) -> None:
             try:
                 store.insert_one(document)
                 return
-            except Exception:
+            except Exception as exc:
+                last_error = exc
                 continue
-        result = store.update_one(
-            {"_id": task_id, "revision": current.revision},
-            {"$set": document},
-        )
+        try:
+            result = store.update_one(
+                {"_id": task_id, "revision": current.revision},
+                {"$set": document},
+            )
+        except Exception as exc:
+            last_error = exc
+            continue
         if getattr(result, "modified_count", 0):
             return
-    print(f"[!] ingest effect revision conflict for {task_id}")
+        last_error = None
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError(f"ingest effect revision conflict for {task_id}")
 
 
 def claimed_chunk_ids(brain_id: str, task_id: str) -> set[str]:
@@ -519,37 +541,46 @@ def claimed_chunk_ids(brain_id: str, task_id: str) -> set[str]:
 
 
 def apply_actions(plan: PurgePlan, sink: Any) -> None:
-    chunk_deletes = [action.id for action in plan.actions if action.kind == "delete_chunk"]
-    chunk_vectors = [
-        action.detail["vector_id"]
-        for action in plan.actions
-        if action.kind == "delete_chunk" and action.detail.get("vector_id")
-    ]
-    if chunk_deletes:
-        sink.delete_chunks(chunk_deletes)
-        sink.delete_passage_vectors(chunk_deletes, chunk_vectors)
-    for action in plan.actions:
-        if action.kind == "unlink_chunk":
-            sink.unlink_chunk(action.id, action.detail.get("ingest_task_ids") or [])
-        elif action.kind == "delete_observation":
-            sink.delete_observations([action.id])
-        elif action.kind == "delete_structured":
-            sink.delete_structured(action.id)
-        elif action.kind == "unlink_node":
-            sink.unlink_graph("node", action.id, action.detail)
-        elif action.kind == "unlink_edge":
-            sink.unlink_graph("edge", action.id, action.detail)
-        elif action.kind == "delete_node":
-            sink.delete_nodes([action.id])
-            if action.detail.get("vector_id"):
-                sink.delete_graph_vectors("nodes", [action.detail["vector_id"]])
-        elif action.kind == "delete_edge":
-            sink.delete_edges([action.id])
-            if action.detail.get("vector_id"):
-                sink.delete_graph_vectors("relationships", [action.detail["vector_id"]])
-    hubs = [action.id for action in plan.actions if action.kind == "delete_hub"]
-    if hubs:
-        sink.delete_hubs(hubs)
+    completed: list[dict] = []
+    try:
+        chunk_deletes = [action.id for action in plan.actions if action.kind == "delete_chunk"]
+        chunk_vectors = [
+            action.detail["vector_id"]
+            for action in plan.actions
+            if action.kind == "delete_chunk" and action.detail.get("vector_id")
+        ]
+        if chunk_deletes:
+            sink.delete_chunks(chunk_deletes)
+            sink.delete_passage_vectors(chunk_deletes, chunk_vectors)
+            completed.extend({"kind": "delete_chunk", "id": chunk_id} for chunk_id in chunk_deletes)
+        for action in plan.actions:
+            if action.kind == "unlink_chunk":
+                sink.unlink_chunk(action.id, action.detail.get("ingest_task_ids") or [])
+            elif action.kind == "delete_observation":
+                sink.delete_observations([action.id])
+            elif action.kind == "delete_structured":
+                sink.delete_structured(action.id)
+            elif action.kind == "unlink_node":
+                sink.unlink_graph("node", action.id, action.detail)
+            elif action.kind == "unlink_edge":
+                sink.unlink_graph("edge", action.id, action.detail)
+            elif action.kind == "delete_node":
+                sink.delete_nodes([action.id])
+                if action.detail.get("vector_id"):
+                    sink.delete_graph_vectors("nodes", [action.detail["vector_id"]])
+            elif action.kind == "delete_edge":
+                sink.delete_edges([action.id])
+                if action.detail.get("vector_id"):
+                    sink.delete_graph_vectors("relationships", [action.detail["vector_id"]])
+            else:
+                continue
+            completed.append({"kind": action.kind, "id": action.id})
+        hubs = [action.id for action in plan.actions if action.kind == "delete_hub"]
+        if hubs:
+            sink.delete_hubs(hubs)
+            completed.extend({"kind": "delete_hub", "id": hub_id} for hub_id in hubs)
+    except Exception as exc:
+        raise PurgePartial(completed, exc) from exc
 
 
 def build_plan(
@@ -655,6 +686,34 @@ def _graph_snapshot(properties: Optional[dict], name: str = "") -> GraphSnapshot
     )
 
 
+def _chunk_task_ids(chunk: Any) -> list[str]:
+    if isinstance(chunk, dict):
+        metadata = chunk.get("metadata") or {}
+    else:
+        metadata = getattr(chunk, "metadata", None) or {}
+    if not isinstance(metadata, dict):
+        return []
+    return _unique(metadata.get("ingest_task_ids") or [])
+
+
+def chunks_linked_to_task(chunks: list[Any], task_id: str, *, source_key: Optional[str] = None) -> list[Any]:
+    matched = [chunk for chunk in chunks if task_id in _chunk_task_ids(chunk)]
+    if chunks and not matched:
+        raise PurgeUnsafe(
+            "This import cannot be purged safely. Passages for this source are not "
+            "linked to this task, so deleting them could remove other imports of the same source.",
+            preview={
+                "executed": False,
+                "unsafe": True,
+                "reason": "unlinked_source_key",
+                "source_key": source_key,
+                "candidate_passages": len(chunks),
+                "matched_passages": 0,
+            },
+        )
+    return matched
+
+
 def _chunks_for_source(brain_id: str, source_key: str) -> list[Any]:
     from src.services.data.main import data_adapter
 
@@ -690,7 +749,8 @@ def _structured_payload(brain_id: str, task_id: str) -> Optional[dict]:
 
 
 def reconstruct_live(brain_id: str, task_id: str, source_key: Optional[str] = None) -> Optional[IngestEffect]:
-    chunks = _chunks_for_source(brain_id, source_key) if source_key else []
+    candidates = _chunks_for_source(brain_id, source_key) if source_key else []
+    chunks = chunks_linked_to_task(candidates, task_id, source_key=source_key) if source_key else []
     payload = _structured_payload(brain_id, task_id)
     relationship_ids: list[str] = []
     if payload:
@@ -851,11 +911,28 @@ def purge_task(
         claimed_chunks=claimed_chunk_ids(brain_id, task_id),
     )
     summary = summarize(plan)
+    if effect.ledger_incomplete:
+        summary["ledger_incomplete"] = True
+        if effect.ledger_error:
+            summary["ledger_error"] = effect.ledger_error
     if not digest:
         return summary
     confirm_digest(plan, digest)
-    apply_actions(plan, BrainSink(brain_id))
-    mark_purged(brain_id, effect)
+    try:
+        apply_actions(plan, BrainSink(brain_id))
+    except PurgePartial as exc:
+        summary["executed"] = False
+        summary["partial"] = True
+        summary["completed"] = exc.completed
+        summary["error"] = str(exc)
+        return summary
+    try:
+        mark_purged(brain_id, effect)
+    except Exception as exc:
+        summary["executed"] = True
+        summary["partial"] = True
+        summary["error"] = f"deleted but not marked purged: {exc}"
+        return summary
     summary["executed"] = True
     return summary
 
@@ -872,10 +949,21 @@ def handle_purge(
 ) -> dict[str, Any]:
     plan = build_plan(effect, chunks=chunks, nodes=nodes, edges=edges, claimed_chunks=claimed_chunks)
     summary = summarize(plan)
+    if effect.ledger_incomplete:
+        summary["ledger_incomplete"] = True
+        if effect.ledger_error:
+            summary["ledger_error"] = effect.ledger_error
     if not digest:
         return summary
     confirm_digest(plan, digest)
     if sink is not None:
-        apply_actions(plan, sink)
+        try:
+            apply_actions(plan, sink)
+        except PurgePartial as exc:
+            summary["executed"] = False
+            summary["partial"] = True
+            summary["completed"] = exc.completed
+            summary["error"] = str(exc)
+            return summary
     summary["executed"] = True
     return summary

@@ -7,6 +7,13 @@ from datetime import datetime
 from typing import Any, Iterable
 
 from src.core.search.hybrid import dense_similarity, fuse_passage_lists, passage_snippet
+from src.core.verification.facts import (
+    entity_is_rejected,
+    entity_is_verified,
+    include_rejected_enabled,
+    verification_extras,
+    verified_rank_boost,
+)
 from src.utils.dates import parse_date_string, to_naive_utc
 
 PASSAGES_CHANNEL = "passages"
@@ -275,6 +282,8 @@ def _hit_from_node(
     happened = _happened_at(node)
     if happened and "happened_at" not in payload:
         payload["happened_at"] = happened
+    for key, value in verification_extras(node).items():
+        payload.setdefault(key, value)
     return GraphHit(
         id=node_id,
         channel=channel,
@@ -388,6 +397,10 @@ def collect_entity_hits(
         labels = _node_labels(node)
         if not node_id or not _keep(node_id, labels):
             return
+        if not include_rejected_enabled() and entity_is_rejected(node):
+            return
+        if entity_is_verified(node):
+            extra += verified_rank_boost()
         score = _name_match_score(_node_search_text(node), query) + extra
         _merge_hit(
             bucket,
@@ -518,18 +531,21 @@ def collect_event_hits(
     )
     scored: list[GraphHit] = []
     for hit in hits:
-        happened = None
-        if hit.extras:
-            happened = hit.extras.get("happened_at")
-        weight = recency_weight(str(happened) if happened else None)
         extras = dict(hit.extras or {})
+        if not include_rejected_enabled() and extras.get("verification_state") == "rejected":
+            continue
+        happened = extras.get("happened_at")
+        weight = recency_weight(str(happened) if happened else None)
         if happened:
             extras["recency"] = weight
+        score = float(hit.score) * weight
+        if extras.get("verification_state") == "verified":
+            score += verified_rank_boost()
         scored.append(
             GraphHit(
                 id=hit.id,
                 channel=EVENTS_CHANNEL,
-                score=float(hit.score) * weight,
+                score=score,
                 snippet=hit.snippet,
                 labels=list(hit.labels or []),
                 extras=extras or None,

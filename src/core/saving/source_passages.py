@@ -13,9 +13,18 @@ from typing import Any, Literal
 
 from src.constants.data import TextChunk
 from src.core.saving.history_intent import cosine
+from src.core.saving.validity import (
+    VALID_FROM,
+    chunk_is_valid_at,
+    format_instant,
+    parse_instant,
+    stamp_valid_from,
+    utc_now,
+)
 
 Revision = Literal["plain", "insert", "unchanged"]
 _PAGE = 100
+_LOOKUP_PAGE = 80
 _MAX_CHUNKS = 500
 
 
@@ -38,13 +47,21 @@ def visible_passage_body(
     text: str | None,
     *,
     include_history: bool,
+    as_of: datetime.datetime | None = None,
 ) -> str | None:
     body = (text or "").strip()
     if not body:
         return None
+    if as_of is not None:
+        if not chunk_is_valid_at(
+            type("Chunk", (), {"metadata": metadata, "inserted_at": None})(),
+            as_of,
+        ):
+            return None
+        return body
     superseded = None
     if isinstance(metadata, dict):
-        superseded = metadata.get("superseded_at")
+        superseded = metadata.get("superseded_at") or metadata.get("valid_to")
     if not superseded:
         return body
     if not include_history:
@@ -57,7 +74,7 @@ def visible_passage_body(
 def _stamp(source_timestamp: str | None) -> str:
     if source_timestamp and str(source_timestamp).strip():
         return str(source_timestamp).strip()
-    return datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat()
+    return format_instant(utc_now())
 
 
 def _current_chunks(adapter: Any, brain_id: str, source_key: str) -> list[TextChunk]:
@@ -90,6 +107,7 @@ def prepare_source_revision(
     source_text: str,
     meta_keys: dict | None,
     source_timestamp: str | None,
+    out_superseded: list[str] | None = None,
 ) -> Revision:
     """Mark older current chunks for this key, or report that the hash is unchanged.
 
@@ -112,19 +130,56 @@ def prepare_source_revision(
     }
     stale = [chunk for chunk in current if str(chunk.id) not in same_ids]
     same = [chunk for chunk in current if str(chunk.id) in same_ids]
+    closed_at = _stamp(source_timestamp)
     if same:
-        _mark(adapter, brain_id, stale, _stamp(source_timestamp))
+        _record_superseded(
+            out_superseded,
+            _mark(adapter, brain_id, stale, closed_at),
+        )
         return "unchanged"
-    _mark(adapter, brain_id, current, _stamp(source_timestamp))
+    _record_superseded(
+        out_superseded,
+        _mark(adapter, brain_id, current, closed_at),
+    )
     meta_keys["source_content_hash"] = digest
+    stamped = stamp_valid_from(meta_keys, source_timestamp or closed_at)
+    meta_keys[VALID_FROM] = stamped[VALID_FROM]
     return "insert"
 
 
-def _mark(adapter: Any, brain_id: str, chunks: list[TextChunk], superseded_at: str) -> None:
+def _record_superseded(out_superseded: list[str] | None, ids: list[str]) -> None:
+    if out_superseded is None:
+        return
+    out_superseded.extend(ids)
+
+
+def _mark(
+    adapter: Any,
+    brain_id: str,
+    chunks: list[TextChunk],
+    superseded_at: str,
+    superseded_by: str | None = None,
+) -> list[str]:
     ids = [str(chunk.id) for chunk in chunks if getattr(chunk, "id", None)]
     if not ids:
-        return
-    adapter.mark_text_chunks_superseded(ids, superseded_at, brain_id)
+        return []
+    valid_to = format_instant(parse_instant(superseded_at) or utc_now())
+    adapter.mark_text_chunks_superseded(
+        ids,
+        superseded_at,
+        brain_id,
+        superseded_by=superseded_by,
+        valid_to=valid_to,
+    )
+    for chunk in chunks:
+        meta = getattr(chunk, "metadata", None)
+        if not isinstance(meta, dict):
+            continue
+        meta["superseded_at"] = superseded_at
+        meta["valid_to"] = valid_to
+        if superseded_by:
+            meta["superseded_by"] = superseded_by
+    return ids
 
 
 def _inserted_time(chunk: TextChunk) -> float:
@@ -163,12 +218,32 @@ def _older_copy(adapter: Any, brain_id: str, chunk: TextChunk, cache: dict[str, 
     return str(chunk.id) not in latest
 
 
+def _chunks_from_lookup(result: Any) -> list[Any]:
+    if isinstance(result, tuple):
+        return list(result[0] or [])
+    return list(result or [])
+
+
+def _load_chunks_by_ids(adapter: Any, ids: list[str], brain_id: str) -> dict[str, Any]:
+    unique = list(dict.fromkeys(ids))
+    loaded: dict[str, Any] = {}
+    for start in range(0, len(unique), _LOOKUP_PAGE):
+        batch = unique[start : start + _LOOKUP_PAGE]
+        chunks = _chunks_from_lookup(
+            adapter.get_text_chunks_by_ids(batch, False, brain_id)
+        )
+        for chunk in chunks:
+            loaded[str(chunk.id)] = chunk
+    return loaded
+
+
 def current_fact_candidates(
     adapter: Any,
     brain_id: str,
     candidates: list[dict],
     *,
     include_history: bool,
+    as_of: datetime.datetime | None = None,
 ) -> list[dict]:
     """Drop facts whose source chunks are all older copies.
 
@@ -176,7 +251,7 @@ def current_fact_candidates(
     or missing. The newest chunk for a source key is current until an older one
     is stamped superseded.
     """
-    if include_history or not candidates:
+    if (include_history and as_of is None) or not candidates:
         return candidates
     ids: list[str] = []
     for candidate in candidates:
@@ -184,20 +259,26 @@ def current_fact_candidates(
     if not ids:
         return candidates
     try:
-        chunks, _ = adapter.get_text_chunks_by_ids(
-            list(dict.fromkeys(ids))[:80], False, brain_id
-        )
+        loaded = _load_chunks_by_ids(adapter, ids, brain_id)
     except Exception:
-        return candidates
-    loaded = {str(chunk.id): chunk for chunk in chunks}
+        return [] if as_of is not None else candidates
     cache: dict[str, set[str] | None] = {}
     kept: list[dict] = []
     for candidate in candidates:
         chunk_ids = [str(item) for item in (candidate.get("chunk_ids") or []) if item]
-        if not chunk_ids or any(chunk_id not in loaded for chunk_id in chunk_ids):
+        if not chunk_ids:
             kept.append(candidate)
             continue
-        if all(_older_copy(adapter, brain_id, loaded[chunk_id], cache) for chunk_id in chunk_ids):
+        if any(chunk_id not in loaded for chunk_id in chunk_ids):
+            if as_of is None:
+                kept.append(candidate)
+            continue
+        loaded_chunks = [loaded[chunk_id] for chunk_id in chunk_ids]
+        if as_of is not None:
+            if any(chunk_is_valid_at(chunk, as_of) for chunk in loaded_chunks):
+                kept.append(candidate)
+            continue
+        if all(_older_copy(adapter, brain_id, chunk, cache) for chunk in loaded_chunks):
             continue
         kept.append(candidate)
     return kept
@@ -209,32 +290,39 @@ def screen_passage_hits(
     hits: list[tuple[str, float, str]],
     *,
     include_history: bool,
+    as_of: datetime.datetime | None = None,
 ) -> list[tuple[str, float, str]]:
     ids = [str(chunk_id) for chunk_id, _, _ in hits if chunk_id]
     if not ids:
         return hits
     try:
-        chunks, _ = adapter.get_text_chunks_by_ids(ids, False, brain_id)
+        by_id = _load_chunks_by_ids(adapter, ids, brain_id)
     except Exception:
-        return hits
-    by_id = {str(chunk.id): chunk for chunk in chunks}
+        return [] if as_of is not None else hits
     cache: dict[str, set[str] | None] = {}
     screened: list[tuple[str, float, str]] = []
     for chunk_id, score, body in hits:
         chunk = by_id.get(str(chunk_id))
         if chunk is None:
-            screened.append((chunk_id, score, body))
+            if as_of is None:
+                screened.append((chunk_id, score, body))
+            continue
+        if as_of is not None:
+            if not chunk_is_valid_at(chunk, as_of):
+                continue
+            screened.append((chunk_id, score, body or getattr(chunk, "text", None) or ""))
             continue
         if not include_history and _older_copy(adapter, brain_id, chunk, cache):
             continue
         meta = getattr(chunk, "metadata", None) or {}
-        if not meta.get("superseded_at"):
+        if not meta.get("superseded_at") and not meta.get("valid_to"):
             screened.append((chunk_id, score, body))
             continue
         visible = visible_passage_body(
             getattr(chunk, "metadata", None),
             body or getattr(chunk, "text", None),
             include_history=include_history,
+            as_of=as_of,
         )
         if visible is None:
             continue
@@ -340,12 +428,14 @@ def screened_passage_texts(
     *,
     include_history: bool,
     limit: int,
+    as_of: datetime.datetime | None = None,
 ) -> list[str]:
     screened = screen_passage_hits(
         adapter,
         brain_id,
         passages,
         include_history=include_history,
+        as_of=as_of,
     )
     return [text for _, _, text in screened if text][: max(0, limit)]
 
@@ -357,6 +447,7 @@ def current_record_texts(
     chunks: list[TextChunk],
     *,
     include_history: bool,
+    as_of: datetime.datetime | None = None,
 ) -> list[str]:
     """JSON for structured records that are still a current passage.
 
@@ -366,7 +457,16 @@ def current_record_texts(
     cache: dict[str, set[str] | None] = {}
     older: set[str] = set()
     current: set[str] = set()
-    if not include_history:
+    if as_of is not None:
+        for chunk in chunks:
+            body = (getattr(chunk, "text", None) or "").strip()
+            if not body:
+                continue
+            if chunk_is_valid_at(chunk, as_of):
+                current.add(body)
+            else:
+                older.add(body)
+    elif not include_history:
         for chunk in chunks:
             body = (getattr(chunk, "text", None) or "").strip()
             if not body:
@@ -377,12 +477,16 @@ def current_record_texts(
                 current.add(body)
     lines: list[str] = []
     for record in records:
+        if as_of is not None:
+            inserted = parse_instant(getattr(record, "inserted_at", None))
+            if inserted is not None and inserted > as_of:
+                continue
         data = getattr(record, "data", None)
         if not isinstance(data, dict) or not data:
             continue
         body = data.get("text")
         if (
-            not include_history
+            (as_of is not None or not include_history)
             and isinstance(body, str)
             and body.strip() in older
             and body.strip() not in current
@@ -399,11 +503,17 @@ def current_chunk_body(
     *,
     include_history: bool,
     cache: dict[str, set[str] | None],
+    as_of: datetime.datetime | None = None,
 ) -> str | None:
+    if as_of is not None:
+        if not chunk_is_valid_at(chunk, as_of):
+            return None
+        return (getattr(chunk, "text", None) or "").strip() or None
     if not include_history and _older_copy(adapter, brain_id, chunk, cache):
         return None
     return visible_passage_body(
         getattr(chunk, "metadata", None),
         getattr(chunk, "text", None),
         include_history=include_history,
+        as_of=as_of,
     )

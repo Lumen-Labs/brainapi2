@@ -1,4 +1,7 @@
+import importlib.util
 import unittest
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from src.core.saving.ingest_effects import (
     ChunkSnapshot,
@@ -6,14 +9,27 @@ from src.core.saving.ingest_effects import (
     EffectTouch,
     GraphSnapshot,
     IngestEffect,
+    PurgePartial,
+    PurgeUnsafe,
     apply_actions,
+    chunks_linked_to_task,
     confirm_digest,
     handle_purge,
-    matches_screenshot_import,
+    merge_effect,
     plan_purge,
     reconstruct_effect,
-    select_screenshot_jobs,
+    reconstruct_live,
+    remember,
 )
+
+
+def _screenshot_ops():
+    path = Path(__file__).resolve().parents[1] / "scripts" / "select_screenshot_imports.py"
+    spec = importlib.util.spec_from_file_location("select_screenshot_imports", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec is not None and spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
 
 
 class _Sink:
@@ -207,20 +223,133 @@ class ReconstructTests(unittest.TestCase):
 
 class ScreenshotSelectionTests(unittest.TestCase):
     def test_only_the_named_imports_are_selected(self):
+        ops = _screenshot_ops()
         jobs = [
-            {"brain_id": "6aeae5d478a5d35c3d03a00e", "label": "Slack message", "chars": 26, "id": "a"},
-            {"brain_id": "6aeae5d478a5d35c3d03a00e", "label": "The harbor bell code is now 6612-WALRUS.", "chars": 40, "id": "b"},
-            {"brain_id": "6aeae5d478a5d35c3d03a00e", "label": "<@U0CHWHK374K> has joined the channel.", "chars": 37, "id": "c"},
-            {"brain_id": "6aeae5d478a5d35c3d03a00e", "label": "The harbor bell code is 2204-MINK.", "chars": 34, "id": "d"},
-            {"brain_id": "6aeae5d478a5d35c3d03a00e", "label": "Connect your tools", "chars": 270, "id": "e"},
-            {"brain_id": "6aeae5d478a5d35c3d03a00e", "label": "Connect your tools", "chars": 1273, "id": "f"},
-            {"brain_id": "6aeae5d478a5d35c3d03a00e", "label": "Sync probe cedar", "chars": 66, "id": "g"},
-            {"brain_id": "6aeae5d478a5d35c3d03a00e", "label": "Real customer note", "chars": 66, "id": "nope"},
+            {"brain_id": ops.TARGET_BRAIN, "label": "Slack message", "chars": 26, "id": "a"},
+            {"brain_id": ops.TARGET_BRAIN, "label": "The harbor bell code is now 6612-WALRUS.", "chars": 40, "id": "b"},
+            {"brain_id": ops.TARGET_BRAIN, "label": "<@U0CHWHK374K> has joined the channel.", "chars": 37, "id": "c"},
+            {"brain_id": ops.TARGET_BRAIN, "label": "The harbor bell code is 2204-MINK.", "chars": 34, "id": "d"},
+            {"brain_id": ops.TARGET_BRAIN, "label": "Connect your tools", "chars": 270, "id": "e"},
+            {"brain_id": ops.TARGET_BRAIN, "label": "Connect your tools", "chars": 1273, "id": "f"},
+            {"brain_id": ops.TARGET_BRAIN, "label": "Sync probe cedar", "chars": 66, "id": "g"},
+            {"brain_id": ops.TARGET_BRAIN, "label": "Real customer note", "chars": 66, "id": "nope"},
             {"brain_id": "another-brain", "label": "Sync probe cedar", "chars": 66, "id": "other"},
         ]
-        selected = [job["id"] for job in select_screenshot_jobs(jobs)]
+        selected = [job["id"] for job in ops.select_screenshot_jobs(jobs)]
         self.assertEqual(selected, ["a", "b", "c", "d", "e", "f", "g"])
-        self.assertFalse(matches_screenshot_import("Real customer note", 66))
+        self.assertFalse(ops.matches_screenshot_import("Real customer note", 66))
+
+
+class SharedSourceKeyTests(unittest.TestCase):
+    def test_unlinked_shared_source_key_chunks_cannot_be_purged(self):
+        class _Chunk:
+            def __init__(self, chunk_id, task_ids=None):
+                self.id = chunk_id
+                self.metadata = {"source_key": "src-shared", "ingest_task_ids": task_ids or []}
+
+        older = _Chunk("c-older")
+        other = _Chunk("c-other", ["task-other"])
+        with self.assertRaises(PurgeUnsafe) as raised:
+            chunks_linked_to_task([older, other], "task-old", source_key="src-shared")
+        self.assertEqual(raised.exception.preview["reason"], "unlinked_source_key")
+        self.assertEqual(raised.exception.preview["candidate_passages"], 2)
+        self.assertEqual(raised.exception.preview["matched_passages"], 0)
+
+    def test_task_id_match_keeps_only_this_import(self):
+        class _Chunk:
+            def __init__(self, chunk_id, task_ids):
+                self.id = chunk_id
+                self.metadata = {"source_key": "src-shared", "ingest_task_ids": task_ids}
+
+        ours = _Chunk("c-ours", ["task-old"])
+        theirs = _Chunk("c-theirs", ["task-other"])
+        matched = chunks_linked_to_task([ours, theirs], "task-old", source_key="src-shared")
+        self.assertEqual([chunk.id for chunk in matched], ["c-ours"])
+
+    @patch("src.core.saving.ingest_effects._structured_payload", return_value=None)
+    @patch("src.core.saving.ingest_effects._chunks_for_source")
+    def test_reconstruct_live_refuses_shared_source_key_without_task_ids(
+        self, chunks_for_source, _payload
+    ):
+        class _Chunk:
+            def __init__(self, chunk_id):
+                self.id = chunk_id
+                self.metadata = {"source_key": "src-shared"}
+
+        chunks_for_source.return_value = [_Chunk("c-old"), _Chunk("c-other")]
+        with self.assertRaises(PurgeUnsafe) as raised:
+            reconstruct_live("brain", "task-old", "src-shared")
+        self.assertEqual(raised.exception.preview["reason"], "unlinked_source_key")
+        self.assertIn("cannot be purged safely", str(raised.exception))
+
+
+class LedgerAndPartialPurgeTests(unittest.TestCase):
+    def test_remember_flags_incomplete_ledger_when_writes_fail(self):
+        store = MagicMock()
+        store.find_one.return_value = None
+        store.insert_one.side_effect = RuntimeError("mongo down")
+        store.update_one.return_value = MagicMock(modified_count=1)
+        with patch("src.core.saving.ingest_effects._effects", return_value=store):
+            remember("brain", "task-1", {"created_chunk_ids": ["c1"]})
+        flagged = False
+        for call in store.update_one.call_args_list:
+            payload = call.args[1] if len(call.args) > 1 else {}
+            if payload.get("$set", {}).get("ledger_incomplete") is True:
+                flagged = True
+                self.assertIn("mongo down", payload["$set"].get("ledger_error", ""))
+        self.assertTrue(flagged)
+
+    def test_later_remember_keeps_incomplete_ledger_flag(self):
+        current = IngestEffect(
+            task_id="task-1",
+            created_chunk_ids=["c1"],
+            ledger_incomplete=True,
+            ledger_error="mongo down",
+        )
+        merged = merge_effect(current, "task-1", {"created_chunk_ids": ["c2"]})
+        self.assertTrue(merged.ledger_incomplete)
+        self.assertEqual(merged.ledger_error, "mongo down")
+        self.assertEqual(merged.created_chunk_ids, ["c1", "c2"])
+
+    def test_preview_surfaces_incomplete_ledger(self):
+        chunks, nodes, edges = _snapshots()
+        effect = _effect()
+        effect.ledger_incomplete = True
+        effect.ledger_error = "mongo down"
+        preview = handle_purge(effect, chunks=chunks, nodes=nodes, edges=edges)
+        self.assertTrue(preview["ledger_incomplete"])
+        self.assertEqual(preview["ledger_error"], "mongo down")
+        self.assertFalse(preview["executed"])
+
+    def test_partial_purge_is_reported_and_not_marked_executed(self):
+        chunks, nodes, edges = _snapshots()
+        sink = _Sink()
+        sink.delete_nodes = MagicMock(side_effect=RuntimeError("graph down"))
+        preview = handle_purge(_effect(), chunks=chunks, nodes=nodes, edges=edges)
+        result = handle_purge(
+            _effect(),
+            chunks=chunks,
+            nodes=nodes,
+            edges=edges,
+            digest=preview["digest"],
+            sink=sink,
+        )
+        self.assertFalse(result["executed"])
+        self.assertTrue(result["partial"])
+        self.assertTrue(result["completed"])
+        self.assertIn("graph down", result["error"])
+        self.assertEqual(sink.deleted_chunks, ["c1"])
+        self.assertEqual(sink.nodes, [])
+
+    def test_apply_actions_wraps_mid_run_failure(self):
+        chunks, nodes, edges = _snapshots()
+        plan = plan_purge(_effect(), chunks=chunks, nodes=nodes, edges=edges, claimed_chunks=set())
+        sink = _Sink()
+        sink.delete_nodes = MagicMock(side_effect=RuntimeError("graph down"))
+        with self.assertRaises(PurgePartial) as raised:
+            apply_actions(plan, sink)
+        self.assertTrue(raised.exception.completed)
+        self.assertEqual(sink.deleted_chunks, ["c1"])
 
 
 if __name__ == "__main__":
