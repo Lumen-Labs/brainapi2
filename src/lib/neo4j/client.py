@@ -31,10 +31,12 @@ from src.constants.kg import (
 from src.lib.cypher_safety import (
     MAX_RAW_QUERY_ROWS,
     RAW_QUERY_TIMEOUT_SECONDS,
+    InvalidCypherIdentifier,
     clean_label,
     clean_property_key,
     create_database_query,
     optional_node_labels,
+    original_type_properties,
     quote_identifier,
     quote_rel_types_pattern,
     require_database_name,
@@ -353,15 +355,33 @@ class Neo4jClient(GraphClient):
             list[Node]: A list of Node objects representing the added nodes. Each returned Node preserves the original node fields and has its metadata set to the merge of the node's own metadata and the provided `metadata`.
         """
         results = []
+        added_nodes: list[Node] = []
+        last_invalid: InvalidCypherIdentifier | None = None
         self.ensure_database(brain_id)
 
         for node in nodes:
             if not node.uuid:
                 raise ValueError("Node uuid is required for upsert")
 
+            try:
+                clean_label_names = [clean_label(label) for label in node.labels]
+                if not clean_label_names:
+                    raise InvalidCypherIdentifier(
+                        "At least one label is required",
+                        kind="label",
+                        value=node.labels,
+                    )
+            except InvalidCypherIdentifier as exc:
+                print(
+                    f"[!] Skipping node {node.uuid} with invalid labels {node.labels}: {exc}"
+                )
+                last_invalid = exc
+                continue
+
             merged_metadata = {**(metadata or {}), **(node.metadata or {})}
             all_properties = {
                 **(node.properties or {}),
+                **original_type_properties(node.labels),
                 "metadata": merged_metadata or None,
                 "name": node.name,
             }
@@ -437,18 +457,24 @@ class Neo4jClient(GraphClient):
             except Exception as e:
                 print(f"Error adding node: {e} - {cypher_query}")
                 raise
-
-        return [
-            Node(
-                uuid=node.uuid,
-                labels=node.labels,
-                name=node.name,
-                description=node.description,
-                properties=node.properties,
-                metadata={**(node.metadata or {}), **(metadata or {})},
+            stored_properties = {
+                **(node.properties or {}),
+                **original_type_properties(node.labels),
+            }
+            added_nodes.append(
+                Node(
+                    uuid=node.uuid,
+                    labels=node.labels,
+                    name=node.name,
+                    description=node.description,
+                    properties=stored_properties,
+                    metadata={**(node.metadata or {}), **(metadata or {})},
+                )
             )
-            for node in nodes
-        ]
+
+        if not added_nodes and last_invalid is not None:
+            raise last_invalid
+        return added_nodes
 
     def add_relationship(
         self,

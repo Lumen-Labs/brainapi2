@@ -23,7 +23,13 @@ from src.constants.kg import (
     SearchRelationshipsResult,
     Triple,
 )
-from src.lib.cypher_safety import clean_label, clean_property_key, quote_property_key
+from src.lib.cypher_safety import (
+    InvalidCypherIdentifier,
+    clean_label,
+    clean_property_key,
+    original_type_properties,
+    quote_property_key,
+)
 from src.lib.postgresql.graph_store import (
     GraphDatabaseError,
     PostgreSQLGraphStore,
@@ -121,13 +127,30 @@ class NetworkXGraphClient(GraphClient):
         metadata: Optional[dict] = None,
     ) -> list[Node] | str:
         self._store.ensure_database(brain_id)
+        added_nodes: list[Node] = []
+        last_invalid: InvalidCypherIdentifier | None = None
         for node in nodes:
             if not node.uuid:
                 raise ValueError("Node uuid is required for upsert")
+            try:
+                cleaned_labels = self._clean_labels(node.labels)
+                if not cleaned_labels:
+                    raise InvalidCypherIdentifier(
+                        "At least one label is required",
+                        kind="label",
+                        value=node.labels,
+                    )
+            except InvalidCypherIdentifier as exc:
+                print(
+                    f"[!] Skipping node {node.uuid} with invalid labels {node.labels}: {exc}"
+                )
+                last_invalid = exc
+                continue
             identification_dict: dict[str, Any] = {"uuid": node.uuid, "name": node.name}
             merged_metadata = {**(metadata or {}), **(node.metadata or {})}
             all_properties: dict[str, Any] = {
                 **(node.properties or {}),
+                **original_type_properties(node.labels),
                 "metadata": merged_metadata or None,
             }
             if identification_params:
@@ -147,21 +170,26 @@ class NetworkXGraphClient(GraphClient):
             all_properties["uuid"] = node.uuid
             self._store.merge_node(
                 brain_id,
-                self._clean_labels(node.labels),
+                cleaned_labels,
                 identification_dict,
                 all_properties,
             )
-        return [
-            Node(
-                uuid=node.uuid,
-                labels=node.labels,
-                name=node.name,
-                description=node.description,
-                properties=node.properties,
-                metadata={**(node.metadata or {}), **(metadata or {})},
+            added_nodes.append(
+                Node(
+                    uuid=node.uuid,
+                    labels=node.labels,
+                    name=node.name,
+                    description=node.description,
+                    properties={
+                        **(node.properties or {}),
+                        **original_type_properties(node.labels),
+                    },
+                    metadata={**(node.metadata or {}), **(metadata or {})},
+                )
             )
-            for node in nodes
-        ]
+        if not added_nodes and last_invalid is not None:
+            raise last_invalid
+        return added_nodes
 
     def add_relationship(
         self,

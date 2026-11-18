@@ -290,8 +290,8 @@ async def search_memory(db_query: str, brain_id: str) -> Any:
     Input must be a JSON object with the following fields:
     - db_query: str: read-only graph query (Cypher on Neo4j, SQL on PostgreSQL).
       Neo4j runs this in a READ transaction on the selected brain only, with a
-      timeout and result cap. Writes, DELETE, USE, CALL dbms.*, and database
-      admin are rejected.
+      timeout and result cap. Writes, DELETE, USE, CALL dbms.*, LOAD CSV,
+      CALL apoc.*, and database admin are rejected.
     - brain_id: str: the brain to search in.
     """
     return await asyncio.to_thread(_search_memory_sync, db_query, brain_id)

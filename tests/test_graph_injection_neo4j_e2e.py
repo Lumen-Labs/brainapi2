@@ -460,6 +460,25 @@ def test_neo4j_raw_cypher_rejects_write_delete_and_cross_database(neo4j_graph):
     assert capped.truncated is True
 
 
+def test_neo4j_raw_cypher_rejects_load_csv_and_apoc(neo4j_graph):
+    _adapter, client, _tracked = neo4j_graph
+    with pytest.raises(RawCypherRejected):
+        client.execute_operation(
+            "LOAD CSV FROM 'https://evil.test/x.csv' AS row RETURN row",
+            BRAIN_ID,
+        )
+    with pytest.raises(RawCypherRejected):
+        client.execute_operation(
+            "CALL apoc.load.json('https://evil.test') YIELD value RETURN value",
+            BRAIN_ID,
+        )
+    with pytest.raises(RawCypherRejected):
+        client.execute_operation(
+            "CALL apoc.cypher.run('USE system RETURN 1', {}) YIELD value RETURN value",
+            BRAIN_ID,
+        )
+
+
 def test_neo4j_raw_writes_work_only_with_admin_flag(neo4j_graph):
     _adapter, client, tracked = neo4j_graph
     from src.config import config
