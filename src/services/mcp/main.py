@@ -453,6 +453,7 @@ def _list_source_versions_sync(
     source_key: str,
     query: str,
     limit: int,
+    skip: int,
 ) -> Any:
     result = read_source_versions(
         data_adapter,
@@ -461,6 +462,7 @@ def _list_source_versions_sync(
         source_key=source_key,
         query=query,
         limit=limit,
+        skip=skip,
         embed=_embed_query,
         search=_search_passages,
     )
@@ -475,12 +477,14 @@ async def list_source_versions(
     source_key: str = "",
     query: str = "",
     limit: int = 10,
+    skip: int = 0,
 ) -> Any:
     """
     Read the current copy and previous copies of a source.
 
     Pass source_key when it is known. Otherwise pass a query; passage search
     only discovers the source key, then every stored copy for that key is returned.
+    Use skip to page previous copies (source_key) or discovered keys (query).
     """
     return await asyncio.to_thread(
         _list_source_versions_sync,
@@ -488,6 +492,7 @@ async def list_source_versions(
         source_key,
         query,
         limit,
+        skip,
     )
 
 

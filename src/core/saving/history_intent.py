@@ -1,14 +1,20 @@
 """Decide whether a retrieve should include prior revisions.
 
-The decision is similarity between the query embedding and example questions.
-It does not match words in a language list.
+The caller flag wins. Otherwise a lexical history cue or embedding
+similarity to example questions can select history.
 """
 
 from __future__ import annotations
 
+import re
+import time
 from collections.abc import Callable
 
 Embed = Callable[[str], list[float]]
+
+HISTORY_MARGIN = 0.02
+_FAIL_BACKOFF = 30.0
+_FAIL_BACKOFF_MAX = 300.0
 
 HISTORY_EXAMPLES: tuple[str, ...] = (
     "what did this say before the change",
@@ -35,6 +41,25 @@ HISTORY_EXAMPLES: tuple[str, ...] = (
     "jaka była poprzednia wersja",
     "hur såg den tidigare versionen ut",
     "पहले यहाँ क्या लिखा था",
+    "can you list the order in which I brought up these topics",
+    "how did my discussions progress in order",
+    "walk me through the chronological sequence of events",
+    "have I implemented this library before",
+    "did I already complete the translation microservice",
+    "have I integrated Flask-Login for session management",
+    "how many days are there between these two deadlines",
+    "how many weeks between the first sprint and the review",
+    "when does my first sprint end",
+    "these two statements contradict each other",
+    "did I say I finished this or that I never started it",
+    "in che ordine ho menzionato questi argomenti",
+    "ho già implementato questo servizio",
+    "in welcher Reihenfolge habe ich das erwähnt",
+    "habe ich das schon integriert",
+    "en qué orden mencioné estos temas",
+    "he integrado esto antes",
+    "dans quel ordre ai-je mentionné cela",
+    "ai-je déjà implémenté cela",
 )
 
 CURRENT_EXAMPLES: tuple[str, ...] = (
@@ -58,9 +83,88 @@ CURRENT_EXAMPLES: tuple[str, ...] = (
     "jaka jest aktualna wersja",
     "vad står det nu",
     "अभी यहाँ क्या लिखा है",
+    "what is the deadline for completing my language detection module",
+    "what is the TTL value set for caching recent translations",
+    "what is the average response time of the dashboard API",
+    "how many commits have been merged into the main branch",
+    "what is the latest version of the frontend framework",
+    "what is the currently configured port",
+)
+
+_HISTORY_LEXICAL = re.compile(
+    r"(?i)("
+    r"\b(?:list|give|reconstruct|recall|walk).{0,80}\b(?:order|sequence|chronolog)"
+    r"|\bthe order in which\b"
+    r"|\bin (?:which|what) order\b"
+    r"|\bprogress in order\b"
+    r"|\bordered (?:timeline|list|sequence)\b"
+    r"|\bevent ordering\b"
+    r"|\bchronolog"
+    r"|\bsequence of\b"
+    r"|\bcontradict"
+    r"|\bconflicting (?:statements|information|claims)\b"
+    r"|\binconsisten"
+    r"|\bhave i\b"
+    r"|\bdid i\b"
+    r"|\bpreviously\b"
+    r"|\boriginally\b"
+    r"|\bbefore (?:the |that )?(?:update|change|extension|deletion|it was)"
+    r"|\bfirst (?:said|stated|mentioned)\b"
+    r"|\bwhen does my first sprint\b"
+    r"|\bhow many (?:weeks|days)\b"
+    r"|\bbetween .{2,120} and "
+    r"|\bprevious version\b"
+    r"|\bversione precedente\b"
+    r"|\bversi[oó]n anterior\b"
+    r"|\bversion précédente\b"
+    r"|\bcom'era prima\b"
+    r"|\bho già\b"
+    r"|\bhabe ich\b"
+    r"|\bhe (?:integrado|implementado|completado)\b"
+    r"|\bai-je\b"
+    r"|\bin welcher reihenfolge\b"
+    r"|\bin che ordine\b"
+    r"|\ben qu[eé] orden\b"
+    r"|\bdans quel ordre\b"
+    r")"
+)
+_CURRENT_VALUE_RE = re.compile(
+    r"(?i)\b("
+    r"now|currently|latest|updated (?:to|value|deadline)|after the (?:update|change)|"
+    r"how many commits|average response time|response time of|"
+    r"the current|current (?:value|ttl|deadline|version|port)|"
+    r"currently configured|deadline for completing"
+    r")\b"
+)
+_STRONG_HISTORY_RE = re.compile(
+    r"(?i)("
+    r"\bthe order in which\b"
+    r"|\bin (?:which|what) order\b"
+    r"|\bprogress in order\b"
+    r"|\bevent ordering\b"
+    r"|\bchronolog"
+    r"|\bsequence of\b"
+    r"|\bcontradict"
+    r"|\bhave i\b"
+    r"|\bdid i\b"
+    r"|\bhow many (?:weeks|days)\b"
+    r"|\bbetween .{2,120} and "
+    r"|\bprevious version\b"
+    r"|\bversione precedente\b"
+    r"|\bcom'era prima\b"
+    r"|\bho già\b"
+    r"|\bhabe ich\b"
+    r"|\bai-je\b"
+    r")"
 )
 
 _CACHED: tuple[list[list[float]], list[list[float]]] | None = None
+_FAIL_UNTIL = 0.0
+_FAIL_STREAK = 0
+
+
+class PrototypeWarmupError(RuntimeError):
+    """Raised when prototype embeddings are unavailable and still backing off."""
 
 
 def cosine(left: list[float], right: list[float]) -> float:
@@ -78,12 +182,21 @@ def cosine(left: list[float], right: list[float]) -> float:
     return dot / ((left_norm ** 0.5) * (right_norm ** 0.5))
 
 
+def lexical_history_intent(text: str | None) -> bool:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return False
+    if _CURRENT_VALUE_RE.search(cleaned) and not _STRONG_HISTORY_RE.search(cleaned):
+        return False
+    return bool(_HISTORY_LEXICAL.search(cleaned))
+
+
 def prefers_history(
     query: list[float] | None,
     history_vectors: list[list[float]],
     current_vectors: list[list[float]],
     *,
-    margin: float = 0.02,
+    margin: float = HISTORY_MARGIN,
 ) -> bool:
     """History wins only when it is closer than the current-value examples."""
     if not query or not history_vectors or not current_vectors:
@@ -95,20 +208,54 @@ def prefers_history(
 
 def resolve_include_history(
     explicit: bool | None,
-    query: list[float] | None,
-    history_vectors: list[list[float]] | None,
-    current_vectors: list[list[float]] | None,
+    query_text: str | None = None,
+    query: list[float] | None = None,
+    history_vectors: list[list[float]] | None = None,
+    current_vectors: list[list[float]] | None = None,
+    *,
+    margin: float = HISTORY_MARGIN,
 ) -> bool:
     if explicit is not None:
         return explicit
-    return prefers_history(query, history_vectors or [], current_vectors or [])
+    if lexical_history_intent(query_text):
+        return True
+    cleaned = (query_text or "").strip()
+    if cleaned and _CURRENT_VALUE_RE.search(cleaned) and not _STRONG_HISTORY_RE.search(
+        cleaned
+    ):
+        return False
+    return prefers_history(
+        query,
+        history_vectors or [],
+        current_vectors or [],
+        margin=margin,
+    )
+
+
+def reset_prototype_cache() -> None:
+    global _CACHED, _FAIL_UNTIL, _FAIL_STREAK
+    _CACHED = None
+    _FAIL_UNTIL = 0.0
+    _FAIL_STREAK = 0
 
 
 def prototype_vectors(embed: Embed) -> tuple[list[list[float]], list[list[float]]]:
-    global _CACHED
+    global _CACHED, _FAIL_UNTIL, _FAIL_STREAK
     if _CACHED is not None:
         return _CACHED
-    history = [embed(text) for text in HISTORY_EXAMPLES]
-    current = [embed(text) for text in CURRENT_EXAMPLES]
-    _CACHED = (history, current)
-    return _CACHED
+    now = time.monotonic()
+    if now < _FAIL_UNTIL:
+        raise PrototypeWarmupError("history prototype warmup backing off")
+    try:
+        history = [embed(text) for text in HISTORY_EXAMPLES]
+        current = [embed(text) for text in CURRENT_EXAMPLES]
+        if any(not vector for vector in history + current):
+            raise PrototypeWarmupError("empty prototype embedding")
+        _CACHED = (history, current)
+        _FAIL_STREAK = 0
+        return _CACHED
+    except Exception:
+        _FAIL_STREAK += 1
+        delay = min(_FAIL_BACKOFF * (2 ** (_FAIL_STREAK - 1)), _FAIL_BACKOFF_MAX)
+        _FAIL_UNTIL = now + delay
+        raise

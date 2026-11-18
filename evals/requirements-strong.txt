@@ -1,0 +1,4 @@
+-r requirements.txt
+sentence-transformers>=3.0.0,<6.0.0
+# FlagEmbedding is optional. sentence-transformers loads BAAI/bge-reranker-v2-m3;
+# FlagEmbedding is only a fallback if CrossEncoder cannot instantiate the model.

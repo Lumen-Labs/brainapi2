@@ -108,6 +108,7 @@ async def execute_mcp_tool(
                 source_key=str(params.get("source_key") or ""),
                 query=str(params.get("query") or ""),
                 limit=int(params.get("limit") or 10),
+                skip=int(params.get("skip") or 0),
             )
             return result if isinstance(result, str) else json.dumps(result, default=str)
         if tool_name == "list_conflicts":

@@ -9,6 +9,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 """
 
 import asyncio
+import io
 import logging
 import os
 from time import time
@@ -43,9 +44,45 @@ from src.workers.tasks.ingestion import set_ingestion_task_status
 
 MAX_TASK_RETRIES = 3
 RETRY_DELAY_BASE = 0.1
+DEFAULT_STAGED_UPLOAD_MAX_BYTES = 12 * 1024 * 1024
+logger = logging.getLogger(__name__)
+
+
+def staged_upload_max_bytes():
+    raw = os.getenv("STAGED_UPLOAD_MAX_BYTES")
+    if raw is None or not str(raw).strip():
+        return DEFAULT_STAGED_UPLOAD_MAX_BYTES
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        logger.warning(
+            "Invalid STAGED_UPLOAD_MAX_BYTES %r; using %s",
+            raw, DEFAULT_STAGED_UPLOAD_MAX_BYTES,
+        )
+        return DEFAULT_STAGED_UPLOAD_MAX_BYTES
+    if value <= 0:
+        logger.warning(
+            "Non-positive STAGED_UPLOAD_MAX_BYTES %r; using %s",
+            raw, DEFAULT_STAGED_UPLOAD_MAX_BYTES,
+        )
+        return DEFAULT_STAGED_UPLOAD_MAX_BYTES
+    return value
+
+
+def _read_upload_capped(upload, limit):
+    chunks = []
+    total = 0
+    while True:
+        chunk = upload.file.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > limit:
+            raise HTTPException(413, "Staged file upload is too large")
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 ingest_router = APIRouter(prefix="/ingest", tags=["ingest"])
-logger = logging.getLogger(__name__)
 
 
 def _submit_staged(
@@ -59,7 +96,7 @@ def _submit_staged(
     if context:
         message["headers"] = {"pipeline_operation": context}
     if existing_ocr:
-        unit_id = ingest_staging.register_unit(brain_id, task_id, "source", message, seal=True)
+        unit_id = ingest_staging.register_ocr_callback(brain_id, task_id, message)
         if unit_id is None:
             raise HTTPException(409, "This OCR import no longer accepts data")
     elif file_content is None:
@@ -101,9 +138,10 @@ async def ingest_data(
     context = pipeline_context(request, brain_id, task_id)
 
     if flow_task_identifier and os.getenv("STAGED_INGESTION_ENABLED") == "1":
-        from src.core.saving.ingest_staging import is_remote_ocr_run
+        from src.core.saving import ingest_staging
 
-        if is_remote_ocr_run(brain_id, task_id):
+        if ingest_staging.is_remote_ocr_run(brain_id, task_id):
+            ingest_staging.expire_remote_ocr(brain_id, task_id)
             _submit_staged(
                 brain_id, task_id, data.model_dump(mode="json"), context, existing_ocr=True,
             )
@@ -230,7 +268,7 @@ async def ingest_structured_batch(
         raise HTTPException(404, "Staged structured batches are unavailable")
     if not batches or len(batches) > 100:
         raise HTTPException(422, "Provide between 1 and 100 structured batches")
-    if len(await request.body()) > 12 * 1024 * 1024:
+    if len(await request.body()) > staged_upload_max_bytes():
         raise HTTPException(413, "Staged structured batch is too large")
     from src.core.saving.ingest_staging import create_batch_run
     from src.core.saving.ingest_manifest import pipeline_context
@@ -344,9 +382,15 @@ async def ingest_file(
 
     try:
         file.file.seek(0)
+        staged_file = (
+            os.getenv("STAGED_INGESTION_ENABLED") == "1"
+            and os.getenv("STAGED_ENRICHMENT_ENABLED") == "1"
+        )
+        content = _read_upload_capped(file, staged_upload_max_bytes()) if staged_file else None
 
         if config.ocr_mode == "docling":
-            content_b64 = base64.b64encode(file.file.read()).decode("ascii")
+            payload = file.file.read() if content is None else content
+            content_b64 = base64.b64encode(payload).decode("ascii")
             filename = file.filename or "file"
             set_ingestion_task_status(
                 task,
@@ -420,9 +464,10 @@ async def ingest_file(
             }
             if group_key:
                 parser_data["group_tracking"] = group_key
+            upload = io.BytesIO(content) if content is not None else file.file
             response = requests.post(
                 f"{config.docparser_endpoint}/ingest",
-                files={"file": (file.filename or "file", file.file, file.content_type)},
+                files={"file": (file.filename or "file", upload, file.content_type)},
                 data=parser_data,
                 headers={"Authorization": f"Bearer {config.docparser_token}"},
             )
