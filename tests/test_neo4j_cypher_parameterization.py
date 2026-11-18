@@ -129,6 +129,49 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
         self.assertEqual(dumped["properties"]["note"], "x")
         self.assertIsInstance(dumped["properties"]["last_updated"], str)
 
+    def test_event_centric_neighbors_hydrate_neo4j_datetime(self):
+        from datetime import datetime as dt
+        from neo4j.time import DateTime
+
+        neo4j_dt = DateTime(2026, 11, 18, 15, 32, 53, 3725000)
+        client = _client()
+        client._run_query = MagicMock(
+            return_value=_Result(
+                [
+                    _Record(
+                        {
+                            "n_uuid": "alice",
+                            "n_name": "Alice",
+                            "n_labels": ["PERSON"],
+                            "n_last_updated": neo4j_dt,
+                            "r_uuid": "made",
+                            "r_type": "MADE",
+                            "r_direction": "out",
+                            "r_last_updated": neo4j_dt,
+                            "m_uuid": "event",
+                            "m_name": "Meeting",
+                            "m_labels": ["EVENT"],
+                            "m_last_updated": neo4j_dt,
+                            "r2_uuid": "targeted",
+                            "r2_type": "TARGETED",
+                            "r2_direction": "out",
+                            "r2_last_updated": neo4j_dt,
+                            "b_uuid": "bob",
+                            "b_name": "Bob",
+                            "b_labels": ["PERSON"],
+                            "b_last_updated": neo4j_dt,
+                        }
+                    )
+                ]
+            )
+        )
+        triples = client.get_event_centric_neighbors(["alice"], "braina")
+        self.assertEqual(len(triples), 1)
+        for entity in triples[0]:
+            self.assertIsInstance(entity.last_updated, dt)
+            dumped = entity.model_dump(mode="json")
+            self.assertIsInstance(dumped["last_updated"], str)
+
     def test_add_relationship_returns_ok_string(self):
         client = _client()
         predicate = Predicate(uuid="rel-1", name="OWNS", description="owns")
@@ -403,6 +446,43 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
         client = _client()
         with self.assertRaises(InvalidCypherIdentifier):
             client.execute_operation("RETURN 1", "neo4j`; MATCH (n) DETACH DELETE n")
+
+    def test_fact_verification_reads_and_writes_use_params(self):
+        payload = "'; MATCH (n) DETACH DELETE n //"
+        client = _client(records=[_Record({"uuid": payload, "kind": "relationship"})])
+        client.get_fact_record(payload, "braina")
+        client.set_fact_verification(
+            payload,
+            "braina",
+            kind="relationship",
+            properties={
+                "verification_state": "verified",
+                "verified_by": payload,
+                "verified_at": "2026-11-16T00:00:00+00:00",
+                "verification_source": payload,
+                "verification_note": payload,
+                "verification_history": [payload],
+            },
+        )
+        client.list_facts_by_verification(
+            "braina",
+            state="verified",
+            include_rejected=False,
+            limit=10,
+            skip=0,
+        )
+        self.assertTrue(client.driver.calls)
+        for query, params, _db in client.driver.calls:
+            self.assertNotIn(payload, query)
+            self.assertTrue(params)
+        first_query, first_params, _db = client.driver.calls[0]
+        self.assertIn("$uuid", first_query)
+        self.assertEqual(first_params["uuid"], payload)
+        write_query = client.driver.calls[1][0]
+        write_params = client.driver.calls[1][1]
+        self.assertIn("$verified_by", write_query)
+        self.assertEqual(write_params["verified_by"], payload)
+        self.assertEqual(write_params["verification_history"], [payload])
 
 
 if __name__ == "__main__":

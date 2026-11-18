@@ -366,6 +366,18 @@ class Neo4jClient(GraphClient):
         coerced = self._python_value(value)
         return coerced if isinstance(coerced, dict) else {}
 
+    def _python_datetime(self, value: Any) -> datetime:
+        """Coerce Neo4j temporals or ISO strings into datetime for Node/Predicate."""
+        converted = self._python_value(value)
+        if isinstance(converted, datetime):
+            return converted
+        if isinstance(converted, str) and converted.strip():
+            try:
+                return datetime.fromisoformat(converted.replace("Z", "+00:00"))
+            except ValueError:
+                pass
+        return datetime.now(timezone.utc)
+
     def add_nodes(
         self,
         nodes: list[Node],
@@ -1242,9 +1254,11 @@ class Neo4jClient(GraphClient):
                         properties=subject_properties,
                     ),
                     predicate=Predicate(
+                        uuid=str(relationship_properties.get("uuid") or ""),
                         name=str(relationship_type),
                         description=relationship_description or "",
                         direction=direction,
+                        properties=relationship_properties,
                         observations=None,
                         level=None,
                         deprecated=relationship_properties.get("deprecated", False),
@@ -1902,7 +1916,7 @@ class Neo4jClient(GraphClient):
                 polarity=record.get("m_polarity", "neutral"),
                 metadata=self._python_properties(record.get("m_metadata", {})),
                 happened_at=record.get("m_happened_at", "") or "",
-                last_updated=record.get("m_last_updated", "") or "",
+                last_updated=self._python_datetime(record.get("m_last_updated")),
                 observations=record.get("m_observations", []) or [],
             )
 
@@ -1913,7 +1927,7 @@ class Neo4jClient(GraphClient):
                 properties=self._python_properties(record.get("rel_properties", {})),
                 flow_key=record.get("rel_flowkey", "") or "",
                 uuid=record.get("rel_uuid", "") or "",
-                last_updated=record.get("rel_last_updated", "") or "",
+                last_updated=self._python_datetime(record.get("rel_last_updated")),
                 observations=record.get("rel_observations", []) or [],
                 amount=record.get("rel_amount"),
             )
@@ -1975,7 +1989,7 @@ class Neo4jClient(GraphClient):
                     polarity=record.get("n_polarity", "neutral"),
                     metadata=self._python_properties(record.get("n_metadata", {})),
                     happened_at=record.get("n_happened_at", "") or "",
-                    last_updated=record.get("n_last_updated", "") or "",
+                    last_updated=self._python_datetime(record.get("n_last_updated")),
                     observations=record.get("n_observations", []) or [],
                 ),
                 Predicate(
@@ -1985,7 +1999,7 @@ class Neo4jClient(GraphClient):
                     direction=record.get("r_direction", "neutral"),
                     properties=self._python_properties(record.get("r_properties", {})),
                     flow_key=record.get("r_flow_key", "") or "",
-                    last_updated=record.get("r_last_updated", "") or "",
+                    last_updated=self._python_datetime(record.get("r_last_updated")),
                     observations=record.get("r_observations", []) or [],
                     amount=record.get("r_amount"),
                 ),
@@ -1998,7 +2012,7 @@ class Neo4jClient(GraphClient):
                     polarity=record.get("m_polarity", "neutral"),
                     metadata=self._python_properties(record.get("m_metadata", {})),
                     happened_at=record.get("m_happened_at", "") or "",
-                    last_updated=record.get("m_last_updated", "") or "",
+                    last_updated=self._python_datetime(record.get("m_last_updated")),
                     observations=record.get("m_observations", []) or [],
                 ),
                 Predicate(
@@ -2008,7 +2022,7 @@ class Neo4jClient(GraphClient):
                     direction=record.get("r2_direction", "neutral"),
                     properties=self._python_properties(record.get("r2_properties", {})),
                     flow_key=record.get("r2_flow_key", "") or "",
-                    last_updated=record.get("r2_last_updated", "") or "",
+                    last_updated=self._python_datetime(record.get("r2_last_updated")),
                     observations=record.get("r2_observations", []) or [],
                     amount=record.get("r2_amount"),
                 ),
@@ -2021,7 +2035,7 @@ class Neo4jClient(GraphClient):
                     polarity=record.get("b_polarity", "neutral"),
                     metadata=self._python_properties(record.get("b_metadata", {})),
                     happened_at=record.get("b_happened_at", "") or "",
-                    last_updated=record.get("b_last_updated", "") or "",
+                    last_updated=self._python_datetime(record.get("b_last_updated")),
                     observations=record.get("b_observations", []) or [],
                 ),
             )
@@ -2073,7 +2087,7 @@ class Neo4jClient(GraphClient):
                         polarity=record.get("m_polarity", "neutral"),
                         metadata=self._python_properties(record.get("m_metadata", {})),
                         happened_at=record.get("m_happened_at", "") or "",
-                        last_updated=record.get("m_last_updated", "") or "",
+                        last_updated=self._python_datetime(record.get("m_last_updated")),
                         observations=record.get("m_observations", []) or [],
                     ),
                     Predicate(
@@ -2083,7 +2097,7 @@ class Neo4jClient(GraphClient):
                         direction=record.get("r2_direction", "neutral"),
                         properties=self._python_properties(record.get("r2_properties", {})),
                         flow_key=record.get("r2_flow_key", "") or "",
-                        last_updated=record.get("r2_last_updated", "") or "",
+                        last_updated=self._python_datetime(record.get("r2_last_updated")),
                         observations=record.get("r2_observations", []) or [],
                         amount=record.get("r2_amount"),
                     ),
@@ -2096,7 +2110,7 @@ class Neo4jClient(GraphClient):
                         polarity=record.get("b_polarity", "neutral"),
                         metadata=self._python_properties(record.get("b_metadata", {})),
                         happened_at=record.get("b_happened_at", "") or "",
-                        last_updated=record.get("b_last_updated", "") or "",
+                        last_updated=self._python_datetime(record.get("b_last_updated")),
                         observations=record.get("b_observations", []) or [],
                     ),
                 )
@@ -2356,7 +2370,7 @@ class Neo4jClient(GraphClient):
                     polarity=record.get("n_polarity", "neutral"),
                     metadata=record.get("n_metadata", {}) or {},
                     happened_at=record.get("n_happened_at", "") or "",
-                    last_updated=record.get("n_last_updated", "") or "",
+                    last_updated=self._python_datetime(record.get("n_last_updated")),
                     observations=record.get("n_observations", []) or [],
                 ),
                 Predicate(
@@ -2366,7 +2380,7 @@ class Neo4jClient(GraphClient):
                     direction="neutral",
                     properties=self._python_properties(record.get("r_properties", {}) or {}),
                     flow_key=record.get("r_flow_key", "") or "",
-                    last_updated=record.get("r_last_updated", "") or "",
+                    last_updated=self._python_datetime(record.get("r_last_updated")),
                     observations=record.get("r_observations", []) or [],
                     amount=record.get("r_amount"),
                 ),
@@ -2379,7 +2393,7 @@ class Neo4jClient(GraphClient):
                     polarity=record.get("m_polarity", "neutral"),
                     metadata=record.get("m_metadata", {}) or {},
                     happened_at=record.get("m_happened_at", "") or "",
-                    last_updated=record.get("m_last_updated", "") or "",
+                    last_updated=self._python_datetime(record.get("m_last_updated")),
                     observations=record.get("m_observations", []) or [],
                 ),
             )
@@ -2426,7 +2440,7 @@ class Neo4jClient(GraphClient):
                     polarity=record.get("n_polarity", "neutral"),
                     metadata=self._python_properties(record.get("n_metadata", {})),
                     happened_at=record.get("n_happened_at", "") or "",
-                    last_updated=record.get("n_last_updated", "") or "",
+                    last_updated=self._python_datetime(record.get("n_last_updated")),
                     observations=record.get("n_observations", []) or [],
                 ),
                 Predicate(
@@ -2436,7 +2450,7 @@ class Neo4jClient(GraphClient):
                     direction=record.get("r_direction", "neutral"),
                     properties=self._python_properties(record.get("r_properties", {})),
                     flow_key=record.get("r_flow_key", "") or "",
-                    last_updated=record.get("r_last_updated", "") or "",
+                    last_updated=self._python_datetime(record.get("r_last_updated")),
                     observations=record.get("r_observations", []) or [],
                     amount=record.get("r_amount"),
                 ),
@@ -2449,7 +2463,7 @@ class Neo4jClient(GraphClient):
                     polarity=record.get("m_polarity", "neutral"),
                     metadata=self._python_properties(record.get("m_metadata", {})),
                     happened_at=record.get("m_happened_at", "") or "",
-                    last_updated=record.get("m_last_updated", "") or "",
+                    last_updated=self._python_datetime(record.get("m_last_updated")),
                     observations=record.get("m_observations", []) or [],
                 ),
                 Predicate(
@@ -2459,7 +2473,7 @@ class Neo4jClient(GraphClient):
                     direction=record.get("r2_direction", "neutral"),
                     properties=self._python_properties(record.get("r2_properties", {})),
                     flow_key=record.get("r2_flow_key", "") or "",
-                    last_updated=record.get("r2_last_updated", "") or "",
+                    last_updated=self._python_datetime(record.get("r2_last_updated")),
                     observations=record.get("r2_observations", []) or [],
                     amount=record.get("r2_amount"),
                 ),
@@ -2472,7 +2486,7 @@ class Neo4jClient(GraphClient):
                     polarity=record.get("b_polarity", "neutral"),
                     metadata=self._python_properties(record.get("b_metadata", {})),
                     happened_at=record.get("b_happened_at", "") or "",
-                    last_updated=record.get("b_last_updated", "") or "",
+                    last_updated=self._python_datetime(record.get("b_last_updated")),
                     observations=record.get("b_observations", []) or [],
                 ),
             )
@@ -2661,6 +2675,171 @@ class Neo4jClient(GraphClient):
                 )
             )
         return bridges
+
+    def get_fact_record(self, fact_id: str, brain_id: str) -> Optional[dict]:
+        if not fact_id:
+            return None
+        params = {"uuid": fact_id}
+        rel_query = (
+            "MATCH (a)-[r]->(b)\n"
+            "WHERE r['uuid'] = $uuid\n"
+            "RETURN 'relationship' AS kind,\n"
+            "       r['uuid'] AS uuid,\n"
+            "       type(r) AS name,\n"
+            "       coalesce(r['description'], '') AS description,\n"
+            "       properties(r) AS properties,\n"
+            "       a['uuid'] AS subject_uuid,\n"
+            "       a['name'] AS subject_name,\n"
+            "       labels(a) AS subject_labels,\n"
+            "       b['uuid'] AS object_uuid,\n"
+            "       b['name'] AS object_name,\n"
+            "       labels(b) AS object_labels,\n"
+            "       [] AS labels"
+        )
+        result = self._run_query(rel_query, brain_id, params)
+        if result.records:
+            return self._fact_row_from_record(result.records[0])
+        node_query = (
+            "MATCH (n)\n"
+            "WHERE n['uuid'] = $uuid\n"
+            "RETURN 'node' AS kind,\n"
+            "       n['uuid'] AS uuid,\n"
+            "       n['name'] AS name,\n"
+            "       coalesce(n['description'], '') AS description,\n"
+            "       properties(n) AS properties,\n"
+            "       null AS subject_uuid,\n"
+            "       null AS subject_name,\n"
+            "       [] AS subject_labels,\n"
+            "       null AS object_uuid,\n"
+            "       null AS object_name,\n"
+            "       [] AS object_labels,\n"
+            "       labels(n) AS labels"
+        )
+        result = self._run_query(node_query, brain_id, params, ensure=False)
+        if result.records:
+            return self._fact_row_from_record(result.records[0])
+        return None
+
+    def _fact_row_from_record(self, record) -> dict:
+        row = dict(record)
+        row["properties"] = self._python_properties(row.get("properties"))
+        return row
+
+    def set_fact_verification(
+        self,
+        fact_id: str,
+        brain_id: str,
+        *,
+        kind: Literal["relationship", "node"],
+        properties: dict,
+    ) -> Optional[dict]:
+        params = {
+            "uuid": fact_id,
+            "verification_state": properties.get("verification_state"),
+            "verified_by": properties.get("verified_by"),
+            "verified_at": properties.get("verified_at"),
+            "verification_source": properties.get("verification_source"),
+            "verification_note": properties.get("verification_note"),
+            "verification_history": self._bind_property_value(
+                properties.get("verification_history") or []
+            ),
+        }
+        set_clause = (
+            "SET t['verification_state'] = $verification_state,\n"
+            "    t['verified_by'] = $verified_by,\n"
+            "    t['verified_at'] = $verified_at,\n"
+            "    t['verification_source'] = $verification_source,\n"
+            "    t['verification_note'] = $verification_note,\n"
+            "    t['verification_history'] = $verification_history"
+        )
+        if kind == "relationship":
+            cypher_query = (
+                "MATCH ()-[t]->() WHERE t['uuid'] = $uuid\n"
+                + set_clause
+                + "\nRETURN t['uuid'] AS uuid"
+            )
+        else:
+            cypher_query = (
+                "MATCH (t) WHERE t['uuid'] = $uuid\n"
+                + set_clause
+                + "\nRETURN t['uuid'] AS uuid"
+            )
+        result = self._run_query(cypher_query, brain_id, params)
+        if not result.records:
+            return None
+        return self.get_fact_record(fact_id, brain_id)
+
+    def list_facts_by_verification(
+        self,
+        brain_id: str,
+        *,
+        state: Optional[str] = None,
+        include_rejected: bool = False,
+        limit: int = 50,
+        skip: int = 0,
+    ) -> tuple[list[dict], int]:
+        params = {
+            "state": state,
+            "include_rejected": bool(include_rejected),
+            "skip": require_limit(skip, name="skip"),
+            "limit": require_limit(limit),
+        }
+        inner = (
+            "MATCH (a)-[r]->(b)\n"
+            "WHERE type(r) <> 'HUB_BRIDGE'\n"
+            "AND ($state IS NULL OR coalesce(r['verification_state'], 'unverified') = $state)\n"
+            "AND ($include_rejected OR coalesce(r['verification_state'], 'unverified') <> 'rejected')\n"
+            "RETURN 'relationship' AS kind,\n"
+            "       r['uuid'] AS uuid,\n"
+            "       type(r) AS name,\n"
+            "       coalesce(r['description'], '') AS description,\n"
+            "       properties(r) AS properties,\n"
+            "       a['uuid'] AS subject_uuid,\n"
+            "       a['name'] AS subject_name,\n"
+            "       labels(a) AS subject_labels,\n"
+            "       b['uuid'] AS object_uuid,\n"
+            "       b['name'] AS object_name,\n"
+            "       labels(b) AS object_labels,\n"
+            "       [] AS labels\n"
+            "UNION ALL\n"
+            "MATCH (n)\n"
+            "WHERE 'EVENT' IN labels(n)\n"
+            "AND ($state IS NULL OR coalesce(n['verification_state'], 'unverified') = $state)\n"
+            "AND ($include_rejected OR coalesce(n['verification_state'], 'unverified') <> 'rejected')\n"
+            "RETURN 'node' AS kind,\n"
+            "       n['uuid'] AS uuid,\n"
+            "       n['name'] AS name,\n"
+            "       coalesce(n['description'], '') AS description,\n"
+            "       properties(n) AS properties,\n"
+            "       null AS subject_uuid,\n"
+            "       null AS subject_name,\n"
+            "       [] AS subject_labels,\n"
+            "       null AS object_uuid,\n"
+            "       null AS object_name,\n"
+            "       [] AS object_labels,\n"
+            "       labels(n) AS labels"
+        )
+        list_query = (
+            "CALL {\n"
+            + inner
+            + "\n}\n"
+            "RETURN kind, uuid, name, description, properties, "
+            "subject_uuid, subject_name, subject_labels, "
+            "object_uuid, object_name, object_labels, labels\n"
+            "ORDER BY uuid\n"
+            "SKIP $skip\n"
+            "LIMIT $limit"
+        )
+        count_query = "CALL {\n" + inner + "\n}\nRETURN count(*) AS total"
+        result = self._run_query(list_query, brain_id, params)
+        count_result = self._run_query(count_query, brain_id, params, ensure=False)
+        total = 0
+        if count_result and count_result.records:
+            total = count_result.records[0].get("total") or 0
+        rows = []
+        for record in result.records:
+            rows.append(self._fact_row_from_record(record))
+        return rows, int(total)
 
 
 _neo4j_client = Neo4jClient()

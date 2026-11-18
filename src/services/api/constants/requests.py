@@ -429,6 +429,10 @@ class RetrieveNeighborsWithIdentificationParamsRequestBody(BaseModel):
     look_for: Optional[str] = Field(
         None, description="Optional filter for what type of neighbors to look for."
     )
+    include_rejected: bool = Field(
+        False,
+        description="If true, include expert-rejected facts.",
+    )
 
 
 class CreateBrainRequest(BaseModel):
@@ -480,6 +484,66 @@ class UpdateRelationshipRequest(BaseModel):
     brain_id: str = "default"
     new_properties: Optional[dict] = None
     properties_to_remove: Optional[list[str]] = None
+
+
+class FactVerificationInfo(BaseModel):
+    """Expert verification provenance for a retrieved fact."""
+
+    state: Literal["unverified", "verified", "rejected"] = "unverified"
+    verified_by: Optional[str] = None
+    verified_at: Optional[str] = None
+    verification_source: Optional[str] = None
+    note: Optional[str] = None
+    fact_id: Optional[str] = None
+    kind: Optional[Literal["relationship", "node"]] = None
+
+
+class VerifyFactRequest(BaseModel):
+    """Request body for verify, reject, or reset of a fact."""
+
+    verified_by: Optional[str] = Field(
+        default=None,
+        description="User or agent identity performing the verification action.",
+    )
+    verification_source: Optional[str] = Field(
+        default=None,
+        description="Source, document, or reference id supporting the action.",
+    )
+    note: Optional[str] = Field(
+        default=None,
+        description="Optional note stored on the fact and in the audit history.",
+    )
+
+
+class FactVerificationHistoryEntry(BaseModel):
+    id: str
+    from_state: Literal["unverified", "verified", "rejected"]
+    to_state: Literal["unverified", "verified", "rejected"]
+    verified_by: Optional[str] = None
+    verified_at: str
+    verification_source: Optional[str] = None
+    note: Optional[str] = None
+
+
+class FactVerificationRecord(BaseModel):
+    kind: Literal["relationship", "node"]
+    fact_id: str
+    name: str = ""
+    description: str = ""
+    verification: FactVerificationInfo
+    history: List[FactVerificationHistoryEntry] = Field(default_factory=list)
+    subject_uuid: Optional[str] = None
+    subject_name: Optional[str] = None
+    subject_labels: List[str] = Field(default_factory=list)
+    object_uuid: Optional[str] = None
+    object_name: Optional[str] = None
+    object_labels: List[str] = Field(default_factory=list)
+    labels: List[str] = Field(default_factory=list)
+
+
+class FactVerificationListResponse(BaseModel):
+    facts: List[FactVerificationRecord]
+    total: int
 
 
 class GetEntityInfoResponse(BaseModel):
@@ -566,6 +630,10 @@ class GetContextRequestBody(BaseModel):
     sufficiency_retry: bool = False
     profile_stages: bool = False
     cross_event_bridges: int = Field(3, ge=0)
+    include_rejected: bool = Field(
+        False,
+        description="If true, include expert-rejected facts in the response.",
+    )
 
 
 class GetContextTriple(BaseModel):
@@ -575,6 +643,7 @@ class GetContextTriple(BaseModel):
     triple: Tuple[Node, Predicate, Node, Predicate, Node]
     source_chunk_ids: Optional[List[str]] = None
     source_session_ids: Optional[List[str]] = None
+    verification: Optional[FactVerificationInfo] = None
 
 
 class GetContextResponse(BaseModel):
@@ -613,6 +682,10 @@ class SearchRequestBody(BaseModel):
     profile_stages: bool = False
     extras: Optional[Dict[str, str]] = None
     target: Optional[str] = None
+    include_rejected: bool = Field(
+        False,
+        description="If true, include expert-rejected facts in search hits.",
+    )
 
     @field_validator("target", mode="before")
     @classmethod
