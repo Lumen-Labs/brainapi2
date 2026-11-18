@@ -89,7 +89,33 @@ class PurgeIngestionRequest(BaseModel):
     source_key: str | None = None
 
 
-@tasks_router.post("/{task_id}/purge")
+class PurgePassageCounts(BaseModel):
+    delete: int
+    unlink: int
+    reused: int
+
+
+class PurgeEntityNames(BaseModel):
+    delete: list[str]
+    unlink: list[str]
+
+
+class PurgeConnectionCounts(BaseModel):
+    delete: int
+    unlink: int
+
+
+class PurgeIngestionResponse(BaseModel):
+    digest: str
+    executed: bool
+    passages: PurgePassageCounts
+    records: int
+    entities: PurgeEntityNames
+    connections: PurgeConnectionCounts
+    unresolved: int
+
+
+@tasks_router.post("/{task_id}/purge", response_model=PurgeIngestionResponse)
 async def purge_ingestion(
     task_id: str,
     body: PurgeIngestionRequest,
