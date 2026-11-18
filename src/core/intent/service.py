@@ -15,11 +15,11 @@ from src.core.intent.models import (
     RememberResult,
     ResponseFormat,
 )
-from src.core.intent.parse import ParsedFact, fact_statement, lexical_score, parse_fact_text, parse_source
+from src.core.intent.parse import ParsedFact, lexical_score, parse_fact_text, parse_source
 from src.core.intent.retire import retire_outgoing_matches
 from src.core.intent.status import intent_fact_from_chunk, intent_fact_from_row
 from src.core.saving.identity import stable_node_id, stable_relationship_id
-from src.core.saving.source_passages import prepare_source_revision
+from src.core.saving.source_passages import source_content_hash
 from src.core.saving.validity import (
     SUPERSEDED_BY,
     VALID_FROM,
@@ -28,10 +28,10 @@ from src.core.saving.validity import (
     format_instant,
     is_valid_at,
     optional_instant,
+    parse_instant,
     stamp_valid_from,
     utc_now,
 )
-from src.core.saving.validity_cardinality import relationship_type_is_single_valued
 from src.core.verification.facts import (
     UNVERIFIED,
     verification_scope,
@@ -115,12 +115,24 @@ def _list_graph_facts(
     include_rejected: bool,
     as_of: datetime | None,
 ) -> list[IntentFact]:
-    rows, _total = graph.list_facts_by_verification(
-        brain_id,
-        include_rejected=include_rejected,
-        limit=500,
-        skip=0,
-    )
+    rows: list[dict[str, Any]] = []
+    skip = 0
+    page_size = 200
+    cap = 2000
+    total = 0
+    while skip < cap:
+        page, total = graph.list_facts_by_verification(
+            brain_id,
+            include_rejected=include_rejected,
+            limit=page_size,
+            skip=skip,
+        )
+        if not page:
+            break
+        rows.extend(page)
+        skip += len(page)
+        if total and skip >= int(total):
+            break
     ids = [str(row.get("uuid") or "") for row in rows]
     contradicted = _open_conflicts(
         getattr(graph, "data_adapter", None),
@@ -180,9 +192,29 @@ def _in_window(fact: IntentFact, as_of: datetime | None) -> bool:
         "invalid_at": fact.invalid_at,
         SUPERSEDED_BY: fact.superseded_by,
     }
-    if as_of is None:
-        return is_valid_at(fields, None, deprecated=fact.status == "superseded")
-    return is_valid_at(fields, as_of, deprecated=False)
+    instant = as_of if as_of is not None else utc_now()
+    return is_valid_at(fields, instant, deprecated=False)
+
+
+def _started_by(fact: IntentFact, as_of: datetime | None) -> bool:
+    if as_of is None or not fact.valid_at:
+        return True
+    start = parse_instant(fact.valid_at)
+    return start is None or start <= as_of
+
+
+def _same_triple(parsed: ParsedFact, fact: IntentFact) -> bool:
+    if not fact.subject or not parsed.subject or not fact.predicate:
+        return False
+    if fact.subject.lower() != parsed.subject.lower():
+        return False
+    return parsed.predicate == fact.predicate
+
+
+def _same_object(parsed: ParsedFact, fact: IntentFact) -> bool:
+    if not fact.object or not parsed.object:
+        return False
+    return fact.object.lower() == parsed.object.lower()
 
 
 def _rank_key(fact: IntentFact, query: str) -> tuple:
@@ -203,6 +235,30 @@ def _merge_facts(*groups: Iterable[IntentFact]) -> list[IntentFact]:
     return list(merged.values())
 
 
+def _current_source_chunks(data: Any, brain_id: str, source_key: str) -> list[Any]:
+    getter = getattr(data, "get_text_chunks", None)
+    if not callable(getter) or not source_key:
+        return []
+    try:
+        chunks, _total = getter(
+            brain_id=brain_id,
+            limit=80,
+            skip=0,
+            metadata_eq={"source_key": source_key},
+        )
+    except TypeError:
+        return []
+    except Exception:
+        return []
+    live = []
+    for chunk in chunks or []:
+        meta = getattr(chunk, "metadata", None) or {}
+        if meta.get("superseded_at") or meta.get("valid_to"):
+            continue
+        live.append(chunk)
+    return live
+
+
 def _save_passage(
     data: Any,
     *,
@@ -216,31 +272,33 @@ def _save_passage(
         return None, []
     meta_keys = dict(meta)
     meta_keys.setdefault("fact_id", fact_id)
-    superseded: list[str] = []
-    prepare_source_revision(
-        data,
-        brain_id=brain_id,
-        source_text=text,
-        meta_keys=meta_keys,
-        source_timestamp=valid_from,
-        out_superseded=superseded,
-    )
-    chunk = TextChunk(text=text, metadata=dict(meta_keys))
-    saved = data.save_text_chunk(chunk, brain_id)
-    if superseded:
+    source_key = str(meta_keys.get("source_key") or "").strip()
+    digest = source_content_hash(text)
+    meta_keys["source_content_hash"] = digest
+    if source_key:
+        current = _current_source_chunks(data, brain_id, source_key)
+        same = [
+            chunk
+            for chunk in current
+            if (getattr(chunk, "metadata", None) or {}).get("source_content_hash") == digest
+        ]
+        if same:
+            return same[0], []
+        chunk = TextChunk(text=text, metadata=dict(meta_keys))
+        saved = data.save_text_chunk(chunk, brain_id)
+        stale = [str(item.id) for item in current if getattr(item, "id", None)]
         marker = getattr(data, "mark_text_chunks_superseded", None)
-        if callable(marker):
-            try:
-                marker(
-                    superseded,
-                    valid_from,
-                    brain_id,
-                    superseded_by=getattr(saved, "id", None),
-                    valid_to=valid_from,
-                )
-            except Exception:
-                pass
-    return saved, superseded
+        if stale and callable(marker):
+            marker(
+                stale,
+                valid_from,
+                brain_id,
+                superseded_by=getattr(saved, "id", None),
+                valid_to=valid_from,
+            )
+        return saved, stale
+    chunk = TextChunk(text=text, metadata=dict(meta_keys))
+    return data.save_text_chunk(chunk, brain_id), []
 
 
 def _write_graph_fact(
@@ -279,10 +337,11 @@ def remember_fact(
     token: str | None = None,
     valid_from: str | None = None,
     source_key: str | None = None,
+    parsed: ParsedFact | None = None,
     graph: Any,
     data: Any | None = None,
 ) -> RememberResult:
-    parsed = parse_fact_text(fact)
+    parsed = parsed or parse_fact_text(fact)
     source_fields = parse_source(source, source_key)
     if not source_fields.get("doc") and not source_fields.get("url"):
         raise ValueError("source is required (document name or URL)")
@@ -332,14 +391,13 @@ def remember_fact(
             brain_id=brain_id,
             new_properties={"source_chunk_ids": chunk_ids},
         )
-    reason = "source_key rewrite" if source_fields.get("source_key") else "single-valued predicate replaced"
     closed = retire_outgoing_matches(
         graph,
         brain_id=brain_id,
         subject_uuid=subject.uuid,
         predicate_name=parsed.predicate,
         keep_uuid=predicate.uuid,
-        reason=reason,
+        reason="single-valued predicate replaced",
         closed_at=stamp,
         superseded_by=predicate.uuid,
         superseded_chunk_ids=superseded_chunks,
@@ -385,10 +443,14 @@ def recall_facts(
     instant = _as_of_instant(as_of)
     page = clamp_page(limit, response_format)
     offset = max(0, int(skip or 0))
-    with verification_scope(include_rejected=include_rejected):
-        graph_facts = _list_graph_facts(
-            graph, brain_id, include_rejected=include_rejected, as_of=instant
+    with verification_scope(include_rejected=True):
+        graph_all = _list_graph_facts(
+            graph, brain_id, include_rejected=True, as_of=instant
         )
+        graph_facts = [
+            fact for fact in graph_all if fact.status != "rejected" or include_rejected
+        ]
+        rejected_ids = {fact.fact_id for fact in graph_all if fact.status == "rejected"}
         if data is not None:
             contradicted = _open_conflicts(
                 data, brain_id, [fact.fact_id for fact in graph_facts]
@@ -408,7 +470,9 @@ def recall_facts(
     merged = [
         fact
         for fact in merged
-        if (fact.status != "rejected" or include_rejected) and _in_window(fact, instant)
+        if (fact.fact_id not in rejected_ids or include_rejected)
+        and (fact.status != "rejected" or include_rejected)
+        and _in_window(fact, instant)
     ]
     scored = [fact for fact in merged if lexical_score(question, " ".join((fact.text, fact.subject, fact.object, fact.natural_id()))) > 0 or question.lower() in fact.text.lower()]
     if not scored:
@@ -435,11 +499,7 @@ def recall_facts(
 
 def _claim_matches(claim: str, fact: IntentFact) -> bool:
     parsed = parse_fact_text(claim)
-    if fact.subject and parsed.subject and fact.subject.lower() == parsed.subject.lower():
-        if fact.predicate and parsed.predicate == fact.predicate:
-            return True
-    blob = " ".join((fact.text, fact.natural_id())).lower()
-    return lexical_score(claim, blob) >= 0.45 or claim.strip().lower() in blob
+    return _same_triple(parsed, fact)
 
 
 def check_claim(
@@ -466,15 +526,28 @@ def check_claim(
     matches = [
         fact
         for fact in facts
-        if _claim_matches(claim, fact) and (fact.status == "rejected" or _in_window(fact, instant))
+        if _same_triple(parsed, fact) and _started_by(fact, instant)
     ]
     matches.sort(key=lambda fact: _rank_key(fact, claim))
     verdict: str = "unknown"
     evidence: list[IntentFact] = []
     for fact in matches:
-        same_object = fact.object.lower() == parsed.object.lower() if fact.object and parsed.object else True
+        same_object = _same_object(parsed, fact)
+        historically_current = _in_window(fact, instant)
         if fact.status == "rejected" and same_object:
             verdict = "contradicted"
+            evidence = [fact]
+            break
+        if historically_current and fact.status != "rejected":
+            if not same_object:
+                verdict = "contradicted"
+                evidence = [fact]
+                break
+            if fact.contradicted_by and instant is None:
+                verdict = "contradicted"
+                evidence = [fact]
+                break
+            verdict = "supported"
             evidence = [fact]
             break
         if fact.status == "superseded" and same_object:
@@ -482,18 +555,6 @@ def check_claim(
                 verdict = "superseded"
                 evidence = [fact]
             continue
-        if fact.status in {"verified", "unverified"}:
-            if fact.object and parsed.object and fact.object.lower() != parsed.object.lower():
-                verdict = "contradicted"
-                evidence = [fact]
-                break
-            if fact.contradicted_by:
-                verdict = "contradicted"
-                evidence = [fact]
-                break
-            verdict = "supported"
-            evidence = [fact]
-            break
     if verdict == "superseded" and not evidence:
         evidence = matches[:3]
     if verdict == "unknown":
@@ -524,14 +585,27 @@ def _load_target(
     query = (text or "").strip()
     if not query:
         raise ValueError("pass fact_id or the fact text")
+    parsed = parse_fact_text(query)
     with verification_scope(include_rejected=True):
         facts = _list_graph_facts(graph, brain_id, include_rejected=True, as_of=None)
-    matches = [fact for fact in facts if _claim_matches(query, fact)]
-    matches.sort(key=lambda fact: _rank_key(fact, query))
+    exact = [
+        fact
+        for fact in facts
+        if fact.text.lower() == query.lower() or fact.natural_id().lower() == query.lower()
+    ]
+    structural = [
+        fact
+        for fact in facts
+        if _same_triple(parsed, fact) and _same_object(parsed, fact)
+    ]
+    matches = exact or structural
     current = [fact for fact in matches if fact.status in {"verified", "unverified"}]
-    chosen = (current or matches)[0] if (current or matches) else None
-    if chosen is None:
+    pool = current or matches
+    if not pool:
         raise FactNotFound(query)
+    if len(pool) != 1:
+        raise ValueError("multiple facts match that text; pass fact_id")
+    chosen = pool[0]
     row = graph.get_fact_record(chosen.fact_id, brain_id)
     if row is None:
         raise FactNotFound(chosen.fact_id)
@@ -557,6 +631,27 @@ def correct_fact(
     writer = writer_from_token(token, brain_id)
     stamp = format_instant(utc_now())
     correction_text = (correction or "").strip()
+    if (
+        correction_text
+        and previous.status == "superseded"
+        and previous.superseded_by
+    ):
+        existing_row = graph.get_fact_record(previous.superseded_by, brain_id)
+        if existing_row is not None:
+            existing = intent_fact_from_row(existing_row)
+            wanted = parse_fact_text(correction_text)
+            if previous.subject:
+                wanted.subject = previous.subject
+            if previous.predicate:
+                wanted.predicate = previous.predicate
+            if _same_triple(wanted, existing) and _same_object(wanted, existing):
+                return CorrectResult(
+                    text=f"Already corrected {previous.natural_id()} → {existing.natural_id()}",
+                    brain_id=brain_id,
+                    fact=existing,
+                    previous=previous,
+                    superseded=[previous.fact_id],
+                )
     if not correction_text:
         record = apply_verification_action(
             graph,
@@ -591,12 +686,12 @@ def correct_fact(
     if previous.subject and parsed.subject.lower() != previous.subject.lower():
         parsed.subject = previous.subject
         parsed.subject_type = (row.get("subject_labels") or ["ENTITY"])[0]
-    if previous.predicate and parsed.predicate != previous.predicate:
-        if not relationship_type_is_single_valued(parsed.predicate):
-            parsed.predicate = previous.predicate or parsed.predicate
+    if previous.predicate:
+        parsed.predicate = previous.predicate
     remembered = remember_fact(
-        fact=fact_statement(parsed.subject, parsed.predicate, parsed.object, correction_text),
-        source=previous.source.doc or previous.source.url or previous.source.source_key or "correction",
+        fact=correction_text,
+        parsed=parsed,
+        source=previous.source.url or previous.source.doc or previous.source.source_key or "correction",
         brain_id=brain_id,
         token=token,
         valid_from=stamp,
@@ -604,18 +699,20 @@ def correct_fact(
         graph=graph,
         data=data,
     )
+    keep_uuid = remembered.fact.fact_id if remembered.fact else None
     closed = retire_outgoing_matches(
         graph,
         brain_id=brain_id,
         subject_uuid=str(row.get("subject_uuid") or ""),
         predicate_name=previous.predicate or parsed.predicate,
-        keep_uuid=remembered.fact.fact_id,
+        keep_uuid=keep_uuid,
         reason=reason_text,
         closed_at=stamp,
-        superseded_by=remembered.fact.fact_id,
-        require_functional_or_source=False,
+        superseded_by=keep_uuid,
+        require_functional_or_source=True,
+        always_uuids=[previous.fact_id],
     )
-    if previous.fact_id not in closed and previous.fact_id != remembered.fact.fact_id:
+    if previous.fact_id not in closed and previous.fact_id != keep_uuid:
         graph.update_properties(
             previous.fact_id,
             row.get("kind") or "relationship",

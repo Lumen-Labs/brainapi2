@@ -650,7 +650,10 @@ def _invalidate_superseded_relationships(
         )
     except Exception:
         return
-    from src.core.saving.validity_cardinality import should_close_outgoing_edge
+    from src.core.saving.validity_cardinality import (
+        existing_edge_from_superseded_source,
+        should_close_outgoing_edge,
+    )
 
     pairs = (neighbors or {}).get(relationship.tail.uuid) or []
     valid_at = (relationship.properties or {}).get("valid_at") or (
@@ -684,7 +687,7 @@ def _invalidate_superseded_relationships(
             closed_at = valid_at or format_instant(utc_now())
             reason = (
                 "source revision replaced this edge"
-                if superseded_chunk_ids
+                if existing_edge_from_superseded_source(props, superseded_chunk_ids)
                 else "single-valued predicate replaced"
             )
             closed = close_validity(

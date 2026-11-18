@@ -128,9 +128,11 @@ def _graph_and_data() -> tuple[Any, Any]:
 
 
 def _resolve(brain_id: str | None) -> str:
+    _graph, data = _graph_and_data()
     return resolve_brain(
         _auth_token(),
         brain_id,
+        data_adapter=data,
         guard=guard_brainpat,
     )
 
