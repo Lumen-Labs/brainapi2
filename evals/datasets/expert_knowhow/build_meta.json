@@ -1,0 +1,14 @@
+{
+  "n_runbooks": 100,
+  "n_candidate_questions": 332,
+  "components": [
+    "alertmanager",
+    "etcd",
+    "general",
+    "kube-state-metrics",
+    "kubernetes",
+    "node",
+    "prometheus",
+    "prometheus-operator"
+  ]
+}
