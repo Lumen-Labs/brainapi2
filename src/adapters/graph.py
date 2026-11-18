@@ -918,6 +918,12 @@ class GraphAdapter:
             return 0
         return self.graph.rebuild_hub_bridge_index(brain_id)
 
+    def nodes_and_edges_citing(self, brain_id: str, chunk_ids: list, edge_uuids: list):
+        method = getattr(self.graph, "nodes_and_edges_citing", None)
+        if method is None:
+            return [], []
+        return method(brain_id, chunk_ids, edge_uuids)
+
     def refresh_hub_bridges_for_entities(
         self, entity_uuids: list, brain_id: str = "default"
     ) -> int:
