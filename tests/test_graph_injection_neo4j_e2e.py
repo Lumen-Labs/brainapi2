@@ -398,7 +398,10 @@ def test_neo4j_raw_cypher_rejects_write_delete_and_cross_database(neo4j_graph):
     assert "read" in message or "access mode" in message or "writing" in message
 
     with pytest.raises(ClientError):
-        client.execute_operation("MATCH (n) DETACH DELETE n", BRAIN_ID)
+        client.execute_operation(
+            "MATCH (n) WHERE n['uuid'] = '%s' DETACH DELETE n" % probe_uuid,
+            BRAIN_ID,
+        )
 
     after = client.execute_operation(
         "MATCH (n {uuid: '%s'}) RETURN count(n) AS c" % probe_uuid,

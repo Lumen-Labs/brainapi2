@@ -55,12 +55,16 @@ class _IterResult:
     def __init__(self, records, keys=("n",)):
         self._records = records
         self._keys = keys
+        self.consumed = False
 
     def keys(self):
         return list(self._keys)
 
     def __iter__(self):
         return iter(self._records)
+
+    def consume(self):
+        self.consumed = True
 
 
 class _Session:
@@ -77,7 +81,9 @@ class _Session:
 
     def run(self, query):
         self.driver.runs.append(query)
-        return _IterResult(self.driver.records, self.driver.keys)
+        result = _IterResult(self.driver.records, self.driver.keys)
+        self.driver.last_result = result
+        return result
 
 
 class _Driver:
@@ -86,6 +92,7 @@ class _Driver:
         self.keys = keys
         self.runs = []
         self.session_calls = []
+        self.last_result = None
 
     def session(self, database=None, default_access_mode=None):
         self.session_calls.append((database, default_access_mode))
@@ -124,6 +131,7 @@ def test_execute_operation_uses_read_session_timeout_and_brain_database():
     assert result.records == [{"n": 1}]
     assert result.keys() == ["n"]
     assert result.truncated is False
+    assert client.driver.last_result.consumed is True
     client.ensure_database.assert_not_called()
 
 
@@ -201,6 +209,7 @@ def test_execute_operation_caps_result_rows():
     result = client.execute_operation("UNWIND range(1, 200) AS n RETURN n", "braina")
     assert len(result.records) == MAX_RAW_QUERY_ROWS
     assert result.truncated is True
+    assert client.driver.last_result.consumed is True
 
 
 def test_adapter_returns_error_string_for_rejected_raw_cypher():
@@ -217,6 +226,16 @@ def test_postgres_raw_sql_stays_read_only_when_graph_raw_write_enabled():
         validate_read_only_sql("DELETE FROM kg_nodes")
     with pytest.raises(ReadQueryValidationError):
         validate_read_only_sql("DROP TABLE kg_relationships")
+
+
+def test_execute_operation_allows_call_inside_quoted_label():
+    client = _client(records=[{"n": 1}])
+    result = client.execute_operation(
+        "MATCH (n:`call dbms.metrics`) RETURN n",
+        "braina",
+    )
+    assert client.driver.session_calls == [("braina", READ_ACCESS)]
+    assert result.records == [{"n": 1}]
 
 
 def test_serializer_honors_execution_truncated_flag():
