@@ -745,6 +745,29 @@ class AsOfPassageTests(unittest.TestCase):
         self.assertEqual(len(store.calls), 2)
         self.assertEqual(kept, [])
 
+    def test_as_of_omits_undated_hits_and_live_retrieve_keeps_them(self):
+        undated = TextChunk(id="plain", text="no dates", metadata={})
+        dated = TextChunk(
+            id="dated",
+            text="dated",
+            metadata={"valid_from": "2024-01-01T00:00:00Z"},
+        )
+        store = _Store([undated, dated])
+        hits = [("plain", 0.1, undated.text), ("dated", 0.2, dated.text)]
+        as_of = datetime.datetime(2024, 6, 1, tzinfo=datetime.timezone.utc)
+        self.assertEqual(
+            [item[0] for item in screen_passage_hits(
+                store, "brain", hits, include_history=False, as_of=as_of
+            )],
+            ["dated"],
+        )
+        self.assertEqual(
+            [item[0] for item in screen_passage_hits(
+                store, "brain", hits, include_history=False
+            )],
+            ["plain", "dated"],
+        )
+
 
 class SourceRevisionStampTests(unittest.TestCase):
     def test_new_revision_reuses_one_timestamp(self):
@@ -765,8 +788,35 @@ class SourceRevisionStampTests(unittest.TestCase):
             ),
             "insert",
         )
-        self.assertEqual(store.marked[0][1], meta["valid_from"])
-        self.assertEqual(store.marked[0][3], meta["valid_from"])
+        self.assertNotIn("valid_from", meta)
+        self.assertEqual(store.marked[0][1], meta["recorded_at"])
+        self.assertEqual(store.marked[0][3], meta["recorded_at"])
+
+    def test_source_date_does_not_become_recorded_at(self):
+        previous = TextChunk(
+            id="c1",
+            text="hello",
+            metadata={"source_key": "src-1", "source_content_hash": "old"},
+        )
+        store = _Store([previous])
+        meta = {"source_key": "src-1"}
+        recorded_at = "2026-11-18T12:00:00Z"
+        self.assertEqual(
+            prepare_source_revision(
+                store,
+                brain_id="brain",
+                source_text="hello again",
+                meta_keys=meta,
+                source_timestamp="2020-01-01T00:00:00Z",
+                recorded_at=recorded_at,
+            ),
+            "insert",
+        )
+        self.assertEqual(meta["valid_from"], "2020-01-01T00:00:00Z")
+        self.assertEqual(meta["recorded_at"], recorded_at)
+        self.assertNotEqual(meta["recorded_at"], meta["valid_from"])
+        self.assertEqual(store.marked[0][1], "2020-01-01T00:00:00Z")
+        self.assertEqual(store.marked[0][3], "2020-01-01T00:00:00Z")
 
 
 if __name__ == "__main__":

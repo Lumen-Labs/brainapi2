@@ -82,6 +82,8 @@ _STATIC_PROPERTY_KEYS = frozenset(
         "valid_to",
         "valid_at",
         "invalid_at",
+        "recorded_at",
+        "inserted_at",
     }
 )
 
@@ -350,16 +352,56 @@ def require_path_depth(value: Any, *, name: str = "depth") -> int:
 
 
 def relationship_valid_at_clause(alias: str = "r", param: str = "as_of") -> str:
-    """Cypher predicate: alias is valid at $param (ISO strings, half-open)."""
+    """Cypher predicate: alias is valid at $param (ISO strings, half-open).
+
+    Fail closed: a missing start (``valid_from`` / ``valid_at``) does not match.
+    """
     rel = require_identifier(alias, kind="identifier")
     bound = require_identifier(param, kind="identifier")
     start = static_property_key("valid_from")
+    legacy_start = static_property_key("valid_at")
     end = static_property_key("valid_to")
-    return (
-        "(" + rel + "['" + start + "'] IS NULL OR " + rel + "['" + start + "'] <= $" + bound + ")"
-        " AND "
-        "(" + rel + "['" + end + "'] IS NULL OR " + rel + "['" + end + "'] > $" + bound + ")"
+    start_ok = (
+        "(("
+        + rel
+        + "['"
+        + start
+        + "'] IS NOT NULL AND "
+        + rel
+        + "['"
+        + start
+        + "'] <= $"
+        + bound
+        + ") OR ("
+        + rel
+        + "['"
+        + start
+        + "'] IS NULL AND "
+        + rel
+        + "['"
+        + legacy_start
+        + "'] IS NOT NULL AND "
+        + rel
+        + "['"
+        + legacy_start
+        + "'] <= $"
+        + bound
+        + "))"
     )
+    end_ok = (
+        "("
+        + rel
+        + "['"
+        + end
+        + "'] IS NULL OR "
+        + rel
+        + "['"
+        + end
+        + "'] > $"
+        + bound
+        + ")"
+    )
+    return start_ok + " AND " + end_ok
 
 
 def relationship_changed_in_window_clause(
@@ -377,23 +419,17 @@ def relationship_changed_in_window_clause(
     rel = require_identifier(alias, kind="identifier")
     require_identifier(since_param, kind="identifier")
     require_identifier(until_param, kind="identifier")
-    start = static_property_key("valid_from")
-    end = static_property_key("valid_to")
-    invalid = static_property_key("invalid_at")
-    return (
-        rel
-        + "['"
-        + start
-        + "'] IS NOT NULL OR "
-        + rel
-        + "['"
-        + end
-        + "'] IS NOT NULL OR "
-        + rel
-        + "['"
-        + invalid
-        + "'] IS NOT NULL"
+    keys = (
+        "valid_from",
+        "valid_to",
+        "invalid_at",
+        "recorded_at",
+        "valid_at",
+        "inserted_at",
     )
+    return "(" + " OR ".join(
+        rel + "['" + static_property_key(key) + "'] IS NOT NULL" for key in keys
+    ) + ")"
 
 
 def create_database_query(database: str) -> str:

@@ -1,12 +1,11 @@
 # Validity backfill
 
-Idempotent job that fills missing `valid_from` / `valid_to` on existing brains so as-of retrieve and since/until changelogs can use canonical ISO-8601 UTC stamps. Readers already accept legacy `inserted_at` / `superseded_at` / `valid_at` / `invalid_at` (including `DD/MM/YYYY`), so a brain keeps answering before this runs.
+Idempotent job that fills missing `valid_from` / `valid_to` on existing brains so as-of retrieve and since/until changelogs can use canonical ISO-8601 UTC stamps. Readers already accept legacy `superseded_at` / `valid_at` / `invalid_at` (including `DD/MM/YYYY`). `inserted_at` / `recorded_at` are ingest/transaction time and are not copied onto `valid_from`. As-of lookups omit copies that still have no valid-time start.
 
 ## What it writes
 
 | Store | Missing field | Source |
 | --- | --- | --- |
-| text chunks | `metadata.valid_from` | `inserted_at` |
 | text chunks | `metadata.valid_to` | `metadata.superseded_at` |
 | relationships | `valid_from` | `valid_at` or `source_timestamp` |
 | relationships | `valid_to` | `invalid_at` |
@@ -15,7 +14,8 @@ It does **not**:
 
 - overwrite an existing `valid_from`, `valid_to`, or `superseded_by`
 - close a live copy that has no `superseded_at` / `invalid_at`
-- invent a `valid_from` when `inserted_at` / `valid_at` / `source_timestamp` cannot be parsed
+- invent a `valid_from` from `inserted_at` / `recorded_at` (ingest time is not valid time)
+- invent a `valid_from` when `valid_at` / `source_timestamp` cannot be parsed
 - invent an end stamp from `deprecated` alone
 - call an LLM
 

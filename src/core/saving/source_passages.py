@@ -14,6 +14,7 @@ from typing import Any, Literal
 from src.constants.data import TextChunk
 from src.core.saving.history_intent import cosine
 from src.core.saving.validity import (
+    RECORDED_AT,
     VALID_FROM,
     chunk_is_valid_at,
     format_instant,
@@ -109,6 +110,7 @@ def prepare_source_revision(
     source_text: str,
     meta_keys: dict | None,
     source_timestamp: str | None,
+    recorded_at: str | None = None,
     out_superseded: list[str] | None = None,
 ) -> Revision:
     """Mark older current chunks for this key, or report that the hash is unchanged.
@@ -132,7 +134,8 @@ def prepare_source_revision(
     }
     stale = [chunk for chunk in current if str(chunk.id) not in same_ids]
     same = [chunk for chunk in current if str(chunk.id) in same_ids]
-    closed_at = _stamp(source_timestamp)
+    ingest_at = format_instant(parse_instant(recorded_at) or utc_now())
+    closed_at = _stamp(source_timestamp) if source_timestamp else ingest_at
     if same:
         _record_superseded(
             out_superseded,
@@ -144,8 +147,13 @@ def prepare_source_revision(
         _mark(adapter, brain_id, current, closed_at),
     )
     meta_keys["source_content_hash"] = digest
-    stamped = stamp_valid_from(meta_keys, source_timestamp or closed_at)
-    meta_keys[VALID_FROM] = stamped[VALID_FROM]
+    stamped = stamp_valid_from(
+        meta_keys, source_timestamp, recorded_at=ingest_at
+    )
+    if stamped.get(VALID_FROM):
+        meta_keys[VALID_FROM] = stamped[VALID_FROM]
+    if stamped.get(RECORDED_AT):
+        meta_keys[RECORDED_AT] = stamped[RECORDED_AT]
     return "insert"
 
 

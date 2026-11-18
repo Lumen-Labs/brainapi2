@@ -223,6 +223,87 @@ class ResolutionIdentityTests(unittest.TestCase):
 
         self.assertEqual(relationships[0].tail.uuid, "new-alice")
 
+    def test_unparseable_source_timestamp_is_not_copied_to_valid_at(self):
+        from src.constants.agents import ArchitectAgentEntity, ArchitectAgentRelationship
+        from src.workers.tasks import ingestion as ingestion_mod
+
+        relationships = [
+            ArchitectAgentRelationship(
+                tail=ArchitectAgentEntity(uuid="alice", name="Alice", type="PERSON"),
+                name="LIVES_IN",
+                tip=ArchitectAgentEntity(uuid="paris", name="Paris", type="CITY"),
+                flow_key="flow-1",
+            )
+        ]
+        with patch.object(
+            ingestion_mod.graph_adapter, "get_by_uuid", return_value=None
+        ), patch.object(
+            ingestion_mod.graph_adapter,
+            "get_by_identification_params",
+            return_value=None,
+        ), patch.object(
+            ingestion_mod.embeddings_adapter,
+            "embed_text",
+            side_effect=RuntimeError("no embed"),
+        ):
+            ingestion_mod._resolve_relationship_entities(
+                relationships,
+                "brain-a",
+                source_timestamp="0000-00-00",
+            )
+        props = relationships[0].properties or {}
+        self.assertEqual(props.get("source_timestamp"), "0000-00-00")
+        self.assertNotIn("valid_at", props)
+        self.assertNotIn("valid_from", props)
+
+    def test_parseable_source_timestamp_is_copied_to_valid_at(self):
+        from src.constants.agents import ArchitectAgentEntity, ArchitectAgentRelationship
+        from src.workers.tasks import ingestion as ingestion_mod
+
+        relationships = [
+            ArchitectAgentRelationship(
+                tail=ArchitectAgentEntity(uuid="alice", name="Alice", type="PERSON"),
+                name="LIVES_IN",
+                tip=ArchitectAgentEntity(uuid="paris", name="Paris", type="CITY"),
+                flow_key="flow-1",
+                properties={"valid_at": "2023-06-01T00:00:00Z"},
+            )
+        ]
+        stamp = "2024-01-01T00:00:00Z"
+        with patch.object(
+            ingestion_mod.graph_adapter, "get_by_uuid", return_value=None
+        ), patch.object(
+            ingestion_mod.graph_adapter,
+            "get_by_identification_params",
+            return_value=None,
+        ), patch.object(
+            ingestion_mod.embeddings_adapter,
+            "embed_text",
+            side_effect=RuntimeError("no embed"),
+        ):
+            ingestion_mod._resolve_relationship_entities(
+                relationships,
+                "brain-a",
+                source_timestamp=stamp,
+            )
+            blank = ArchitectAgentRelationship(
+                tail=ArchitectAgentEntity(uuid="alice", name="Alice", type="PERSON"),
+                name="LIVES_IN",
+                tip=ArchitectAgentEntity(uuid="paris", name="Paris", type="CITY"),
+                flow_key="flow-1",
+            )
+            ingestion_mod._resolve_relationship_entities(
+                [blank],
+                "brain-a",
+                source_timestamp=stamp,
+            )
+        self.assertEqual(
+            (relationships[0].properties or {}).get("valid_at"),
+            "2023-06-01T00:00:00Z",
+        )
+        self.assertEqual((blank.properties or {}).get("valid_at"), stamp)
+        self.assertEqual((blank.properties or {}).get("valid_from"), stamp)
+
 
 if __name__ == "__main__":
     unittest.main()

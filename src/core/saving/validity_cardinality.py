@@ -8,6 +8,8 @@ Same-type outgoing non-event edges are **not** closed by default. Only:
   superseded (source-revision-driven replacement).
 
 Multi-valued types such as ``WORKS_WITH`` and ``APPLIES_TO`` accumulate.
+``REQUIRES`` and ``LOCATED_IN`` are multi-valued by default (a rule can
+require several things; a subject can be located in several places).
 Operators may extend the allowlist with ``VALIDITY_SINGLE_VALUED_REL_TYPES``
 (comma-separated). This module does not call an LLM.
 """
@@ -27,9 +29,7 @@ SINGLE_VALUED_RELATIONSHIP_TYPES = frozenset(
         "HEADQUARTERED_IN",
         "LIVES_AT",
         "LIVES_IN",
-        "LOCATED_IN",
         "MARRIED_TO",
-        "REQUIRES",
         "WORKS_AT",
     }
 )
