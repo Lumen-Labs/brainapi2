@@ -1,0 +1,10 @@
+name: intent_memory
+version: 1.0.0
+entry_point: main.py
+description: MCP tools to remember, recall, correct, and check facts.
+author: Lumen Labs
+priority: 1
+tags:
+  - mcp
+  - official
+  - memory
