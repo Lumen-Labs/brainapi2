@@ -86,13 +86,11 @@ class HistoryModeTests(unittest.TestCase):
             _wants("Can you list the order in which I brought up aspects?")
         )
 
-    def test_first_sprint_wants_history(self):
-        self.assertTrue(_wants("When does my first sprint end?"))
+    def test_have_i_before_wants_history(self):
+        self.assertTrue(_wants("Have I implemented this library before?"))
 
-    def test_have_i_contradiction_probe_wants_history(self):
-        self.assertTrue(
-            _wants("Have I integrated Flask-Login for session management?")
-        )
+    def test_did_i_already_wants_history(self):
+        self.assertTrue(_wants("Did I already complete this?"))
 
     def test_italian_previous_version_wants_history(self):
         self.assertTrue(_wants("com'era prima il codice"))
@@ -109,6 +107,10 @@ class HistoryModeTests(unittest.TestCase):
         )
         self.assertFalse(
             _wants("What is the current session management setting?")
+        )
+        self.assertFalse(_wants("When does my first sprint end?"))
+        self.assertFalse(
+            _wants("Have I integrated Flask-Login for session management?")
         )
         self.assertTrue(
             _wants(
@@ -142,7 +144,7 @@ class HistoryModeTests(unittest.TestCase):
         )
         self.assertFalse(
             _wants(
-                "Have I integrated Flask-Login for session management?",
+                "Have I implemented this library before?",
                 explicit=False,
                 query_vector=[1.0, 0.0],
                 history_vectors=history,
@@ -198,19 +200,91 @@ class RecordedEmbeddingProbeTests(unittest.TestCase):
         self.assertTrue(lexical_history_intent(probe["text"]))
         self.assertFalse(
             prefers_history(
-                probe["vector"],
-                _FIXTURE["history_vectors"],
-                _FIXTURE["current_vectors"],
+                [0.0, 1.0],
+                [[1.0, 0.0]],
+                [[0.0, 1.0]],
             )
         )
         self.assertTrue(
             resolve_include_history(
                 None,
                 query_text=probe["text"],
-                query=probe["vector"],
-                history_vectors=_FIXTURE["history_vectors"],
-                current_vectors=_FIXTURE["current_vectors"],
+                query=[0.0, 1.0],
+                history_vectors=[[1.0, 0.0]],
+                current_vectors=[[0.0, 1.0]],
             )
+        )
+
+
+CURRENT_VALUE_NEGATIVES = (
+    "what did I set the port to",
+    "what is the difference between redis and memcached",
+    "what's the current timeout",
+    "how many workers are running",
+    "what port is the server on",
+    "what is my email address",
+    "how many days until the deadline",
+    "did I set the debug flag",
+    "have I enabled caching",
+    "what's the API base URL",
+    "what is the configured hostname",
+    "how many items are in the cart",
+    "what is the status of the job",
+    "tell me the latest count",
+    "what value is in the config now",
+    "did I use postgres or mysql",
+    "have I turned on TLS",
+    "what timezone is set",
+    "how many retries are configured",
+    "what's the database name",
+    "qual è la porta configurata",
+    "che differenza c'è tra X e Y",
+    "was ist der aktuelle Port",
+    "wie lautet der Timeout",
+    "cuál es el puerto actual",
+    "cuál es la diferencia entre X e Y",
+    "quel est le port actuel",
+    "quelle est la différence entre X et Y",
+    "qual é a porta atual",
+    "ポートは何に設定されていますか",
+    "今のタイムアウトは何ですか",
+    "当前端口是多少",
+)
+
+HISTORY_POSITIVES = (
+    "what did this say before the change",
+    "show the previous version of this",
+    "what was deleted from this",
+    "have I implemented this library before",
+    "did I already complete this",
+    "did I say I finished this or that I never started it",
+    "how many days are there between these two deadlines",
+    "can you list the order in which I brought up these topics",
+    "walk me through the chronological sequence of events",
+    "these two statements contradict each other",
+    "com'era prima questo testo",
+    "qual era la versione precedente",
+    "ho già implementato questo servizio",
+    "habe ich das schon integriert",
+    "ai-je déjà implémenté cela",
+    "he integrado esto antes",
+)
+
+
+class EverydayHistoryIntentTests(unittest.TestCase):
+    def test_current_value_questions_do_not_trigger_history(self):
+        self.assertGreaterEqual(len(CURRENT_VALUE_NEGATIVES), 25)
+        misses = [text for text in CURRENT_VALUE_NEGATIVES if _wants(text)]
+        self.assertEqual(misses, [])
+
+    def test_history_questions_still_trigger(self):
+        misses = [text for text in HISTORY_POSITIVES if not _wants(text)]
+        self.assertEqual(misses, [])
+
+    def test_include_history_flag_still_wins(self):
+        self.assertTrue(_wants("what did I set the port to", explicit=True))
+        self.assertFalse(
+            _wants("what did this say before the change", explicit=False)
         )
 
 
