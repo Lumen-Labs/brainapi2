@@ -1283,12 +1283,14 @@ def _wants_historical_facts(
     history_vectors: list[list[float]] | None = None,
     current_vectors: list[list[float]] | None = None,
 ) -> bool:
-    """History follows the caller flag or embedding similarity, never a word list."""
-    del query
     from src.core.saving.history_intent import resolve_include_history
 
     return resolve_include_history(
-        explicit, query_vector, history_vectors, current_vectors
+        explicit,
+        query_text=query,
+        query=query_vector,
+        history_vectors=history_vectors,
+        current_vectors=current_vectors,
     )
 
 
@@ -1808,7 +1810,11 @@ async def _build_context(
     candidates: list[dict[str, Any]] = []
     seed_hits: list[tuple[str, float, str]] = []
     passage_hits: list[tuple[str, float, str]] = []
-    from src.core.saving.history_intent import prefers_history, prototype_vectors
+    from src.core.saving.history_intent import (
+        lexical_history_intent,
+        prototype_vectors,
+        resolve_include_history,
+    )
 
     shared_vectors: dict[str, list[float]] = {}
 
@@ -1819,16 +1825,21 @@ async def _build_context(
             shared_vectors[text] = cached
         return cached
 
+    query_vector: list[float] | None = None
     explicit_history = request.include_history
     if explicit_history is None:
         try:
             query_vector = _embed_query(request.text)
             history_vectors, current_vectors = prototype_vectors(_embed_query)
-            include_history = prefers_history(
-                query_vector, history_vectors, current_vectors
+            include_history = resolve_include_history(
+                None,
+                query_text=request.text,
+                query=query_vector,
+                history_vectors=history_vectors,
+                current_vectors=current_vectors,
             )
         except Exception:
-            include_history = False
+            include_history = lexical_history_intent(request.text)
     else:
         include_history = explicit_history
 
@@ -1952,6 +1963,9 @@ async def _build_context(
                 request.brain_id,
                 hits,
                 limit=request.historical_limit,
+                query_text=request.text,
+                query_vector=query_vector or shared_vectors.get(request.text),
+                embed=_embed_query,
             )
             merged = list(texts)
             for text in extra:

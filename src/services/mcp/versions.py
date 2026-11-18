@@ -113,7 +113,13 @@ def read_changelog(
         return f"Error reading changelog: {exc}"
 
 
-def _versions_for_key(adapter: Any, brain_id: str, source_key: str, limit: int) -> dict[str, Any]:
+def _versions_for_key(
+    adapter: Any,
+    brain_id: str,
+    source_key: str,
+    limit: int,
+    skip: int = 0,
+) -> dict[str, Any]:
     stored, _ = adapter.get_text_chunks(
         brain_id=brain_id,
         limit=_SOURCE_FETCH,
@@ -130,10 +136,14 @@ def _versions_for_key(adapter: Any, brain_id: str, source_key: str, limit: int) 
         else:
             current.append(item)
     previous.sort(key=lambda item: str(item.get("superseded_at") or ""), reverse=True)
+    offset = max(0, skip)
     return {
         "source_key": source_key,
         "current": current[:limit],
-        "previous": previous[:limit],
+        "previous": previous[offset : offset + limit],
+        "previous_total": len(previous),
+        "skip": offset,
+        "limit": limit,
     }
 
 
@@ -164,15 +174,27 @@ def list_source_versions(
     source_key: str = "",
     query: str = "",
     limit: Any = 10,
+    skip: Any = 0,
     embed: Callable[[str], Any] | None = None,
     search: Callable[[Any, str], list[Any]] | None = None,
 ) -> dict[str, Any] | str:
     bounded = clamp_page(limit, 10, SOURCE_VERSION_LIMIT)
+    try:
+        offset = max(0, int(skip or 0))
+    except (TypeError, ValueError):
+        offset = 0
     key = str(source_key or "").strip()
     text = str(query or "").strip()
     if key:
         try:
-            return {"sources": [_versions_for_key(adapter, brain_id, key, bounded)]}
+            return {
+                "sources": [
+                    _versions_for_key(adapter, brain_id, key, bounded, skip=offset)
+                ],
+                "count": 1,
+                "skip": offset,
+                "limit": bounded,
+            }
         except Exception:
             return "Error: could not load source versions"
     if not text:
@@ -190,9 +212,17 @@ def list_source_versions(
     except Exception:
         return "Error: embedding search failed"
     try:
-        keys = _keys_from_hits(adapter, brain_id, hits)[:bounded]
+        keys = _keys_from_hits(adapter, brain_id, hits)
+        page = keys[offset : offset + bounded]
         return {
-            "sources": [_versions_for_key(adapter, brain_id, item, bounded) for item in keys]
+            "sources": [
+                _versions_for_key(adapter, brain_id, item, bounded, skip=0)
+                for item in page
+            ],
+            "count": len(page),
+            "skip": offset,
+            "limit": bounded,
+            "total": len(keys),
         }
     except Exception:
         return "Error: could not load source versions"
@@ -206,6 +236,7 @@ def read_source_versions(
     source_key: str = "",
     query: str = "",
     limit: Any = 10,
+    skip: Any = 0,
     embed: Callable[[str], Any] | None = None,
     search: Callable[[Any, str], list[Any]] | None = None,
 ) -> dict[str, Any] | str:
@@ -217,6 +248,7 @@ def read_source_versions(
         source_key=source_key,
         query=query,
         limit=limit,
+        skip=skip,
         embed=embed,
         search=search,
     )
