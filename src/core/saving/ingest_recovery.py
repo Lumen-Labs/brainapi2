@@ -41,9 +41,11 @@ def reconcile_run(brain_id, root_id, dispatch, publish, rollback=None):
         except ingest_access_gate.BrainPublicationBusy:
             raise
         except Exception:
+            current = ingest_cancellation._runs(brain_id).find_one({"_id": root_id})
+            if current is None or current["status"] != "publishing":
+                raise
             if not ingest_staging.record_settlement_failure(brain_id, root_id, "publishing"):
                 raise
-            ingest_access_gate.release_publication(brain_id, root_id)
             log.exception(
                 "Staged ingestion %s for brain %s failed permanently while publishing",
                 root_id, brain_id,
@@ -51,6 +53,8 @@ def reconcile_run(brain_id, root_id, dispatch, publish, rollback=None):
             run = ingest_cancellation._runs(brain_id).find_one({"_id": root_id})
             if run is None:
                 return
+            if run["status"] != "publish_partial":
+                ingest_access_gate.release_publication(brain_id, root_id)
 
     if run["status"] == "publish_partial":
         with ingest_access_gate.publication_gate(brain_id, root_id):

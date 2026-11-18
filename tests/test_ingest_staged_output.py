@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -132,16 +133,20 @@ def test_run_publisher_holds_gate_through_completion(monkeypatch):
         lambda client, brain, operation: events.append(("replay", brain, operation)),
     )
     monkeypatch.setattr(
-        publisher, "finish_publication",
-        lambda brain, root: events.append(("finish", brain, root)),
+        publisher.ingest_cancellation, "_runs",
+        lambda brain: SimpleNamespace(find_one=lambda query: {"status": "publishing"}),
     )
-
+    monkeypatch.setattr(
+        publisher, "finish_publication",
+        lambda brain, root: events.append(("finish", brain, root)) or {"status": "completed"},
+    )
     monkeypatch.setattr(
         publisher, "discard_outputs",
         lambda brain, root: events.append(("cleanup", brain, root)),
     )
+    monkeypatch.setattr(publisher.ingest_staging, "mark_cleanup_complete", lambda brain, root: None)
     publisher.publish_staged_run("brain", "root", gate, Mock(), Mock())
-    assert [event[0] for event in events] == ["enter", "replay", "cleanup", "finish", "exit"]
+    assert [event[0] for event in events] == ["enter", "replay", "finish", "cleanup", "exit"]
 
 
 def test_http_gate_spans_response_and_allows_task_polling(monkeypatch):

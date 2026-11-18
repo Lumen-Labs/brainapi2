@@ -309,6 +309,7 @@ def finish_publication(brain_id, root_id):
         return {
             "status": "cancelled" if run.get("mode") else "completed",
             "units": _terminal_units(run),
+            "pending_cleanup": True,
         }
 
     return ingest_cancellation._change(brain_id, root_id, transition)
@@ -327,6 +328,8 @@ def finish_discard(brain_id, root_id):
 
 def _terminal_settlement_status(run):
     if run["status"] == "publishing":
+        if run.get("publication_cursor", 0) >= len(_completed_units(run)):
+            return "cancelled" if run.get("mode") else "completed"
         return "publish_partial"
     if run["status"] == "publish_partial":
         return "rollback_failed"

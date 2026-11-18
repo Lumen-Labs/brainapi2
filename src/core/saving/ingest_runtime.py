@@ -23,9 +23,12 @@ def recover_brain(brain_id, data_client, vector_client, graph_client):
     indexer = getattr(runs, "create_index", None)
     if callable(indexer):
         try:
-            indexer("pending_cleanup", partialFilterExpression={"pending_cleanup": True})
-        except TypeError:
-            indexer("pending_cleanup")
+            try:
+                indexer("pending_cleanup", partialFilterExpression={"pending_cleanup": True})
+            except TypeError:
+                indexer("pending_cleanup")
+        except Exception:
+            log.exception("Could not create pending_cleanup index on ingest_runs for brain %s", brain_id)
     active = {"staging", "publishing", "discarding", "publish_partial"}
     gate = ingest_access_gate._gates(brain_id).find_one({"_id": "publication"})
     owner = gate.get("publication") if gate else None

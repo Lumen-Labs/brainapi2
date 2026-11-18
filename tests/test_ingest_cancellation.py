@@ -482,6 +482,34 @@ class _MemoryCollection:
         return SimpleNamespace(deleted_count=1)
 
 
+class _MemoryOutputs:
+    def __init__(self):
+        self.documents = {}
+
+    def update_one(self, query, update, upsert=False):
+        identity = query["_id"]
+        if upsert and identity not in self.documents:
+            self.documents[identity] = {"_id": identity, **update.get("$setOnInsert", {})}
+        return SimpleNamespace(modified_count=0)
+
+    def find_one(self, query):
+        row = self.documents.get(query["_id"])
+        if row is None:
+            return None
+        if any(row.get(key) != value for key, value in query.items()):
+            return None
+        return row
+
+    def delete_many(self, query):
+        kept = {
+            key: row for key, row in self.documents.items()
+            if any(row.get(field) != value for field, value in query.items())
+        }
+        deleted = len(self.documents) - len(kept)
+        self.documents = kept
+        return SimpleNamespace(deleted_count=deleted)
+
+
 def _memory_data_client():
     collections = {}
 
@@ -533,6 +561,8 @@ def test_publish_budget_exhaustion_rolls_back_applied_units(run, monkeypatch, tm
         ingest_publication.publish_staged_run(brain, root, gate.publication_gate, data, Mock(), None)
 
     def rollback(brain, root):
+        held = cancellation._runs("brain").find_one({"_id": "publication"})
+        assert held and held.get("publication") == root
         ingest_publication.rollback_published_run(brain, root, data, Mock(), None)
 
     for _ in range(staging.MAX_SETTLEMENT_FAILURES - 1):
@@ -556,18 +586,28 @@ def test_publish_budget_exhaustion_rolls_back_applied_units(run, monkeypatch, tm
 
 def test_publish_rollback_failure_keeps_staged_data(run, monkeypatch, tmp_path):
     from src.constants.data import TextChunk
-    from src.core.saving import ingest_access_gate as gate, ingest_publication, ingest_recovery, ingest_runtime, ingest_staging as staging
+    from src.core.saving import (
+        ingest_access_gate as gate,
+        ingest_publication,
+        ingest_recovery,
+        ingest_runtime,
+        ingest_staged_input,
+        ingest_staged_output,
+        ingest_staging as staging,
+    )
 
     monkeypatch.setenv("INGEST_PUBLICATION_LOCK_DIR", str(tmp_path))
     monkeypatch.setattr(gate, "_gates", cancellation._runs)
 
     data, collections = _memory_data_client()
     applied = TextChunk(id="applied", text="live from unit 0")
-    outputs = {
-        "first": [{"adapter": "data", "method": "save_text_chunk", "args": {"text_chunk": applied.model_dump(mode="json")}}],
-        "second": [{"adapter": "data", "method": "save_text_chunk", "args": {"text_chunk": TextChunk(id="failed", text="no").model_dump(mode="json")}}],
-    }
-    monkeypatch.setattr(ingest_publication, "load_output", lambda brain, root, ref: outputs[ref])
+    first_ops = [{"adapter": "data", "method": "save_text_chunk", "args": {"text_chunk": applied.model_dump(mode="json")}}]
+    second_ops = [{"adapter": "data", "method": "save_text_chunk", "args": {"text_chunk": TextChunk(id="failed", text="no").model_dump(mode="json")}}]
+    outputs = _MemoryOutputs()
+    outputs.update_one({"_id": "first"}, {"$setOnInsert": {"import_id": "staged", "operations": first_ops}}, upsert=True)
+    outputs.update_one({"_id": "second"}, {"$setOnInsert": {"import_id": "staged", "operations": second_ops}}, upsert=True)
+    monkeypatch.setattr(ingest_staged_output, "collection", lambda brain, name: outputs)
+    monkeypatch.setattr(ingest_staged_input, "discard_inputs", lambda *args: None)
     real_replay = ingest_publication.replay_data_operation
 
     def replay(client, brain, operation):
@@ -576,8 +616,6 @@ def test_publish_rollback_failure_keeps_staged_data(run, monkeypatch, tmp_path):
         return real_replay(client, brain, operation)
 
     monkeypatch.setattr(ingest_publication, "replay_data_operation", replay)
-    discard = Mock()
-    monkeypatch.setattr(ingest_recovery, "discard_outputs", discard)
     _complete_publishing_run(staging, "staged", ["first", "second"])
 
     def publish(brain, root):
@@ -613,10 +651,9 @@ def test_publish_rollback_failure_keeps_staged_data(run, monkeypatch, tmp_path):
     assert stored["publication_cursor"] == 1
     assert all(unit.get("output_ref") for unit in stored["units"].values())
     assert "applied" in collections["text_chunks"]
-    discard.assert_not_called()
     ingest_runtime.recover_brain("brain", data, Mock(), Mock())
-    discard.assert_not_called()
-    assert ingest_publication.load_output("brain", "staged", "first") == outputs["first"]
+    assert ingest_publication.load_output("brain", "staged", "first") == first_ops
+    assert outputs.find_one({"_id": "first", "import_id": "staged"})["operations"] == first_ops
     with gate.brain_access("brain"):
         pass
 
@@ -731,6 +768,191 @@ def test_rollback_failed_cleanup_is_retryable_and_idempotent(run, monkeypatch, t
     assert cancellation._runs("brain").find_one({"_id": "staged"})["pending_cleanup"] is False
     ingest_runtime.recover_brain("brain", Mock(), Mock(), Mock())
     assert attempts == ["staged", "staged"]
+
+
+def test_publisher_does_not_discard_outputs_after_status_changes(run, monkeypatch, tmp_path):
+    from src.core.saving import ingest_access_gate as gate, ingest_publication, ingest_staging as staging
+
+    monkeypatch.setenv("INGEST_PUBLICATION_LOCK_DIR", str(tmp_path))
+    monkeypatch.setattr(gate, "_gates", cancellation._runs)
+    discard = Mock()
+    monkeypatch.setattr(ingest_publication, "discard_outputs", discard)
+    _complete_publishing_run(staging, "staged", ["first"])
+    cancellation._runs("brain").update_one(
+        {"_id": "staged"},
+        {"$set": {"status": "publish_partial", "publication_cursor": 1}},
+    )
+    ingest_publication.publish_staged_run("brain", "staged", gate.publication_gate, Mock(), Mock(), None)
+    discard.assert_not_called()
+    stored = cancellation._runs("brain").find_one({"_id": "staged"})
+    assert stored["status"] == "publish_partial"
+
+
+def test_successful_publish_keeps_live_data_if_output_cleanup_fails(run, monkeypatch, tmp_path):
+    from src.constants.data import TextChunk
+    from src.core.saving import ingest_access_gate as gate, ingest_publication, ingest_recovery, ingest_staging as staging
+
+    monkeypatch.setenv("INGEST_PUBLICATION_LOCK_DIR", str(tmp_path))
+    monkeypatch.setattr(gate, "_gates", cancellation._runs)
+    data, collections = _memory_data_client()
+    applied = TextChunk(id="applied", text="live")
+    monkeypatch.setattr(
+        ingest_publication, "load_output",
+        lambda brain, root, ref: [{"adapter": "data", "method": "save_text_chunk", "args": {"text_chunk": applied.model_dump(mode="json")}}],
+    )
+    monkeypatch.setattr(ingest_publication, "discard_outputs", Mock(side_effect=RuntimeError("cleanup failed")))
+    _complete_publishing_run(staging, "staged", ["first"])
+    rollback = Mock()
+
+    def publish(brain, root):
+        ingest_publication.publish_staged_run(brain, root, gate.publication_gate, data, Mock(), None)
+
+    with pytest.raises(RuntimeError, match="cleanup failed"):
+        ingest_recovery.reconcile_run("brain", "staged", Mock(), publish, rollback)
+    stored = cancellation._runs("brain").find_one({"_id": "staged"})
+    assert stored["status"] == "completed"
+    assert stored["pending_cleanup"] is True
+    assert "applied" in collections["text_chunks"]
+    rollback.assert_not_called()
+
+
+def test_rollback_data_raises_without_inverse():
+    from src.constants.data import TextChunk
+    from src.core.saving.ingest_publication import rollback_data_operation
+
+    with pytest.raises(ValueError, match="collection or SQL"):
+        rollback_data_operation(SimpleNamespace(), "brain", {
+            "method": "save_text_chunk",
+            "args": {"text_chunk": TextChunk(id="x", text="t").model_dump(mode="json")},
+        })
+
+
+def test_rollback_data_deletes_matching_postgres_row():
+    from src.constants.data import TextChunk
+    from src.core.saving.ingest_publication import rollback_data_operation
+
+    chunk = TextChunk(id="applied", text="live")
+    rows = {"applied": chunk.model_dump(mode="json")}
+
+    class Cursor:
+        def __init__(self, conn):
+            self.conn = conn
+            self.row = None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def execute(self, sql, params):
+            if sql.strip().startswith("SELECT"):
+                self.row = self.conn.rows.get(params[0])
+            elif sql.strip().startswith("DELETE"):
+                self.conn.rows.pop(params[0], None)
+
+        def fetchone(self):
+            return None if self.row is None else (self.row,)
+
+    class Conn:
+        def __init__(self, documents):
+            self.rows = documents
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def cursor(self):
+            return Cursor(self)
+
+        def commit(self):
+            return None
+
+    class Client:
+        def _brain_connection(self, brain_id):
+            assert brain_id == "brain"
+            return Conn(rows)
+
+    rollback_data_operation(Client(), "brain", {
+        "method": "save_text_chunk",
+        "args": {"text_chunk": chunk.model_dump(mode="json")},
+    })
+    assert "applied" not in rows
+    rows["conflict"] = {**chunk.model_dump(mode="json"), "id": "conflict", "text": "already present"}
+    rollback_data_operation(Client(), "brain", {
+        "method": "save_text_chunk",
+        "args": {"text_chunk": {**chunk.model_dump(mode="json"), "id": "conflict"}},
+    })
+    assert rows["conflict"]["text"] == "already present"
+
+
+def test_rollback_graph_uses_public_remove_methods():
+    from src.core.saving.ingest_publication import rollback_graph_operation
+
+    client = Mock()
+    rollback_graph_operation(client, "brain", {
+        "method": "add_nodes",
+        "args": {"nodes": [{"uuid": "n1", "name": "A"}]},
+    })
+    client.remove_nodes.assert_called_once_with(["n1"], "brain")
+    rollback_graph_operation(client, "brain", {
+        "method": "add_relationship",
+        "args": {
+            "subject": {"uuid": "n1"},
+            "predicate": {"uuid": "r1", "name": "rel"},
+            "to_object": {"uuid": "n2"},
+        },
+    })
+    client.remove_relationships.assert_called_once_with(
+        [({"uuid": "n1"}, {"uuid": "r1", "name": "rel"}, {"uuid": "n2"})],
+        "brain",
+    )
+
+
+def test_rollback_graph_raises_when_undo_is_unavailable():
+    from src.core.saving.ingest_publication import rollback_graph_operation
+
+    with pytest.raises(ValueError, match="remove_nodes"):
+        rollback_graph_operation(SimpleNamespace(), "brain", {
+            "method": "add_nodes",
+            "args": {"nodes": [{"uuid": "n1"}]},
+        })
+    with pytest.raises(ValueError, match="Unsupported staged graph rollback"):
+        rollback_graph_operation(Mock(), "brain", {
+            "method": "update_properties",
+            "args": {"uuid": "n1", "updating": "node", "new_properties": {}, "properties_to_remove": []},
+        })
+    with pytest.raises(ValueError, match="Unsupported staged graph rollback"):
+        rollback_graph_operation(Mock(), "brain", {
+            "method": "deprecate_relationship",
+            "args": {"subject": {}, "predicate": {}, "to_object": {}},
+        })
+
+
+def test_recover_brain_continues_when_cleanup_index_fails(run, monkeypatch, tmp_path):
+    from src.core.saving import ingest_access_gate as gate, ingest_recovery, ingest_runtime, ingest_staging as staging
+
+    monkeypatch.setenv("INGEST_PUBLICATION_LOCK_DIR", str(tmp_path))
+    monkeypatch.setattr(gate, "_gates", cancellation._runs)
+    discard = Mock()
+    monkeypatch.setattr(ingest_recovery, "discard_outputs", discard)
+    inner = cancellation._runs
+
+    def runs(brain_id):
+        store = inner(brain_id)
+        store.create_index = Mock(side_effect=RuntimeError("not authorized"))
+        return store
+
+    monkeypatch.setattr(cancellation, "_runs", runs)
+    staging.create_run("brain", "dirty")
+    cancellation._runs("brain").update_one(
+        {"_id": "dirty"},
+        {"$set": {"status": "failed", "pending_cleanup": True}},
+    )
+    ingest_runtime.recover_brain("brain", Mock(), Mock(), Mock())
+    discard.assert_called_once_with("brain", "dirty")
 
 
 def test_register_ocr_callback_rejects_expired_deadline_and_duplicates(run):
