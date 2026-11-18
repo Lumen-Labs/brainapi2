@@ -343,18 +343,47 @@ def apply_verified_boost(score: float, entity: Any) -> float:
     return float(score)
 
 
+def _relationship_parts(item: Any) -> tuple[Any, Any, Any]:
+    subject = getattr(item, "subject", None)
+    predicate = getattr(item, "predicate", None)
+    obj = getattr(item, "object", None)
+    if predicate is None and isinstance(item, (tuple, list)) and len(item) >= 2:
+        subject = item[0] if len(item) >= 1 else None
+        predicate = item[1]
+        obj = item[2] if len(item) >= 3 else None
+    return subject, predicate, obj
+
+
 def filter_relationship_results(results: Iterable[Any]) -> list[Any]:
     if include_rejected_enabled():
         return list(results)
     kept: list[Any] = []
     for item in results:
-        predicate = getattr(item, "predicate", None)
-        if predicate is None and isinstance(item, (tuple, list)) and len(item) >= 2:
-            predicate = item[1]
-        if predicate is not None and entity_is_rejected(predicate):
+        if fact_tuple_is_rejected(*_relationship_parts(item)):
             continue
         kept.append(item)
     return kept
+
+
+def _iter_relationship_values(value: Any) -> Iterable[Any]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return value
+    return [value]
+
+
+def neighborhood_row_is_rejected(row: Any) -> bool:
+    if include_rejected_enabled():
+        return False
+    if not isinstance(row, dict):
+        return entity_is_rejected(row)
+    if entity_is_rejected(row.get("node")) or entity_is_rejected(row.get("related_nodes")):
+        return True
+    return any(
+        entity_is_rejected(rel)
+        for rel in _iter_relationship_values(row.get("relationships"))
+    )
 
 
 def record_from_graph_row(row: dict[str, Any]) -> FactRecord:

@@ -2503,7 +2503,7 @@ class Neo4jClient(GraphClient):
                     weight=float(record.get("weight") or 1.0),
                 )
             )
-            return bridges
+        return bridges
 
     def get_fact_record(self, fact_id: str, brain_id: str) -> Optional[dict]:
         if not fact_id:

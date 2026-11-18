@@ -773,12 +773,12 @@ class PostgreSQLGraphStore:
             return None
         if entity_uuid not in brain.graph:
             return None
-        data = brain.node_data(entity_uuid)
+        data = brain.graph.nodes[entity_uuid]
         for prop, value in new_properties.items():
             data[prop] = value
         for prop in properties_to_remove:
             data.pop(prop, None)
-        self._persist_node(brain_id, entity_uuid, data)
+        self._persist_node(brain_id, entity_uuid, dict(data))
         return self.node_to_record(brain, entity_uuid)
 
     def delete_nodes_by_uuids(self, brain_id: str, uuids: list[str]) -> list[dict]:

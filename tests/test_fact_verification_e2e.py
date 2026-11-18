@@ -259,6 +259,29 @@ def test_verify_reject_reset_and_retrieval_respect_state():
         assert ids["made"] in hop_rel_ids
         assert ids["targeted"] not in hop_rel_ids
 
+        rejected_event = api.post(
+            f"/model/facts/{ids['event']}/reject",
+            json={"verified_by": "analyst-1", "note": "bad event"},
+        )
+        assert rejected_event.status_code == 200, rejected_event.text
+        after_event = api.get("/retrieve/relationships")
+        assert after_event.status_code == 200
+        after_ids = {
+            (item.get("predicate") or {}).get("uuid")
+            for item in after_event.json().get("relationships") or []
+        }
+        assert ids["made"] not in after_ids
+        assert ids["targeted"] not in after_ids
+        after_traverse = adapter.traverse_graph(
+            brain_id=BRAIN_ID,
+            start_uuid=ids["alice"],
+            depth=2,
+            limit=20,
+        )
+        after_hop_ids = {hop["predicate"]["uuid"] for hop in after_traverse["hops"]}
+        assert ids["made"] not in after_hop_ids
+        assert ids["targeted"] not in after_hop_ids
+
         unverified_pred = Predicate(uuid="rel-live", name="LIVES_IN", description="lives")
         verified_candidate = {
             "triple": (
