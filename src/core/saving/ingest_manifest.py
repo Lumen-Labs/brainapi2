@@ -117,7 +117,7 @@ def manifest_snapshot(brain_id, import_id, offset=0, limit=50, internal=False):
                 unit = units.get(row["task_id"])
                 if unit and unit["state"] == "complete":
                     row.update(status="completed", stage="completed")
-                elif staged_state in {"cancelled", "failed", "rollback_failed"}:
+                elif staged_state in {"cancelled", "failed", "rollback_failed", "publish_partial"}:
                     row.update(status=staged_state, stage=staged_state)
                 elif row["status"] in TERMINAL:
                     row.update(status="started", stage="persisting")

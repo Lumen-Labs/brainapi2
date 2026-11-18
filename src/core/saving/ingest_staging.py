@@ -280,6 +280,18 @@ def advance_publication(brain_id, root_id, cursor):
     return ingest_cancellation._change(brain_id, root_id, transition)
 
 
+def units_to_unpublish(brain_id, root_id):
+    """Units that reached live stores, including the partially applied cursor unit."""
+    run = ingest_cancellation._runs(brain_id).find_one({"_id": root_id})
+    if not run or run["status"] != "publish_partial":
+        return []
+    units = _completed_units(run)
+    if not units:
+        return []
+    cursor = run.get("publication_cursor", 0)
+    return units[: min(len(units), cursor + 1)]
+
+
 def _terminal_units(run):
     return {
         unit_id: {"state": unit["state"], "ordinal": unit["ordinal"]}
@@ -297,6 +309,7 @@ def finish_publication(brain_id, root_id):
         return {
             "status": "cancelled" if run.get("mode") else "completed",
             "units": _terminal_units(run),
+            "pending_cleanup": True,
         }
 
     return ingest_cancellation._change(brain_id, root_id, transition)
@@ -314,6 +327,12 @@ def finish_discard(brain_id, root_id):
 
 
 def _terminal_settlement_status(run):
+    if run["status"] == "publishing":
+        if run.get("publication_cursor", 0) >= len(_completed_units(run)):
+            return "cancelled" if run.get("mode") else "completed"
+        return "publish_partial"
+    if run["status"] == "publish_partial":
+        return "rollback_failed"
     if run["status"] == "discarding" and run.get("mode") == "rollback":
         return "rollback_failed"
     if run["status"] == "discarding":
@@ -324,20 +343,35 @@ def _terminal_settlement_status(run):
 def record_settlement_failure(brain_id, root_id, phase):
     """Bound discard and publish retries, then fail without holding the brain gate."""
     def transition(run):
-        if run["status"] != phase or phase not in {"discarding", "publishing"}:
+        if run["status"] != phase or phase not in {"discarding", "publishing", "publish_partial"}:
             return None
         failures = run.get("settlement_failures", 0) + 1
         changes = {"settlement_failures": failures}
         if failures >= MAX_SETTLEMENT_FAILURES:
-            changes.update(
-                status=_terminal_settlement_status(run),
-                units=_terminal_units(run),
-                pending_cleanup=True,
-            )
+            status = _terminal_settlement_status(run)
+            changes["status"] = status
+            if status == "publish_partial":
+                changes["settlement_failures"] = 0
+            elif status == "rollback_failed" and run["status"] == "publish_partial":
+                changes["pending_cleanup"] = False
+            else:
+                changes.update(units=_terminal_units(run), pending_cleanup=True)
         return changes
 
     run = ingest_cancellation._change(brain_id, root_id, transition)
-    return bool(run and run.get("pending_cleanup"))
+    return bool(run and run["status"] != phase)
+
+
+def finish_publish_rollback(brain_id, root_id):
+    """Mark a partial publish failed only after live writes have been undone."""
+    return ingest_cancellation._change(
+        brain_id, root_id,
+        lambda run: {
+            "status": "failed",
+            "units": _terminal_units(run),
+            "pending_cleanup": True,
+        } if run["status"] == "publish_partial" else None,
+    )
 
 
 def record_rollback_failure(brain_id, root_id):
@@ -346,11 +380,7 @@ def record_rollback_failure(brain_id, root_id):
 
 
 def needs_abandoned_cleanup(run):
-    if not run.get("staged"):
-        return False
-    if run.get("pending_cleanup") is True:
-        return True
-    return run.get("status") == "rollback_failed" and run.get("pending_cleanup") is not False
+    return bool(run.get("staged") and run.get("pending_cleanup") is True)
 
 
 def mark_cleanup_complete(brain_id, root_id):
