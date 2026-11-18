@@ -522,6 +522,32 @@ class SourceRevisionStampTests(unittest.TestCase):
         self.assertEqual(store.marked[0][1], meta["recorded_at"])
         self.assertEqual(store.marked[0][3], meta["recorded_at"])
 
+    def test_source_date_does_not_become_recorded_at(self):
+        previous = TextChunk(
+            id="c1",
+            text="hello",
+            metadata={"source_key": "src-1", "source_content_hash": "old"},
+        )
+        store = _Store([previous])
+        meta = {"source_key": "src-1"}
+        recorded_at = "2026-11-18T12:00:00Z"
+        self.assertEqual(
+            prepare_source_revision(
+                store,
+                brain_id="brain",
+                source_text="hello again",
+                meta_keys=meta,
+                source_timestamp="2020-01-01T00:00:00Z",
+                recorded_at=recorded_at,
+            ),
+            "insert",
+        )
+        self.assertEqual(meta["valid_from"], "2020-01-01T00:00:00Z")
+        self.assertEqual(meta["recorded_at"], recorded_at)
+        self.assertNotEqual(meta["recorded_at"], meta["valid_from"])
+        self.assertEqual(store.marked[0][1], "2020-01-01T00:00:00Z")
+        self.assertEqual(store.marked[0][3], "2020-01-01T00:00:00Z")
+
 
 if __name__ == "__main__":
     unittest.main()

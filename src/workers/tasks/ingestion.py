@@ -605,7 +605,7 @@ def _assign_relationship_interval(
         relationship, brain_id=brain_id, neighbors=neighbors
     )
     open_match = None
-    closed_match = None
+    closed_ids: list[str] = []
     rel_flow = _relationship_flow_key(relationship)
     for predicate, neighbor in (neighbors or {}).get(relationship.tail.uuid) or []:
         if not predicate or not neighbor:
@@ -623,7 +623,9 @@ def _assign_relationship_interval(
         if is_valid_at(props, None, deprecated=bool(getattr(predicate, "deprecated", False))):
             open_match = predicate
             break
-        closed_match = predicate
+        uuid = getattr(predicate, "uuid", None)
+        if uuid:
+            closed_ids.append(str(uuid))
     if open_match is not None:
         relationship.uuid = open_match.uuid or base
         existing = getattr(open_match, "properties", None) or {}
@@ -633,11 +635,18 @@ def _assign_relationship_interval(
                 VALID_FROM: existing[VALID_FROM],
             }
         return
-    if closed_match is not None:
+    if closed_ids:
         start = (relationship.properties or {}).get(VALID_FROM) or (
             relationship.properties or {}
         ).get("source_timestamp")
-        relationship.uuid = stable_uuid("rel-interval", base, str(start or ""))
+        token = str(start or "") or "|".join(sorted(closed_ids))
+        candidate = stable_uuid("rel-interval", base, token)
+        existing = set(closed_ids)
+        n = 0
+        while candidate in existing:
+            n += 1
+            candidate = stable_uuid("rel-interval", base, token, str(n))
+        relationship.uuid = candidate
         return
     relationship.uuid = base
 
@@ -858,6 +867,7 @@ def _ingest_data(self, args, *, staged=False):
             source_text=source_text,
             meta_keys=payload.meta_keys,
             source_timestamp=payload.source_timestamp,
+            recorded_at=recorded_at,
             out_superseded=superseded_ids,
         )
         if revision == "unchanged":

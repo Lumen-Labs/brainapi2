@@ -358,6 +358,59 @@ class EventHubInvalidationTests(unittest.TestCase):
         self.assertEqual(graph.predicate(closed_id).properties["valid_from"], "2020-01-01T00:00:00Z")
         self.assertEqual(graph.predicate(closed_id).properties["valid_to"], "2023-01-01T00:00:00Z")
 
+    def test_undated_reopening_does_not_reuse_closed_interval_id(self):
+        from src.core.saving.identity import stable_relationship_id
+        from src.workers.tasks import ingestion as ingestion_mod
+
+        graph = _FakeGraphAdapter()
+        graph.add_node("alice", "Alice", "PERSON")
+        graph.add_node("paris", "Paris", "CITY")
+        closed_id = stable_relationship_id("alice", "LIVES_IN", "paris")
+        graph.add_edge(
+            closed_id,
+            "alice",
+            "LIVES_IN",
+            "paris",
+            properties={"valid_to": "2023-01-01T00:00:00Z"},
+        )
+        relationship = _relationship(
+            closed_id,
+            _entity("alice", "Alice", "PERSON"),
+            "LIVES_IN",
+            _entity("paris", "Paris", "CITY"),
+        )
+        with patch.object(ingestion_mod, "graph_adapter", graph):
+            ingestion_mod._assign_relationship_interval(
+                relationship, brain_id="brain-a"
+            )
+            retry = _relationship(
+                closed_id,
+                _entity("alice", "Alice", "PERSON"),
+                "LIVES_IN",
+                _entity("paris", "Paris", "CITY"),
+            )
+            ingestion_mod._assign_relationship_interval(retry, brain_id="brain-a")
+        self.assertNotEqual(relationship.uuid, closed_id)
+        self.assertEqual(retry.uuid, relationship.uuid)
+
+        graph.add_edge(
+            relationship.uuid,
+            "alice",
+            "LIVES_IN",
+            "paris",
+            properties={"valid_to": "2024-01-01T00:00:00Z"},
+        )
+        later = _relationship(
+            closed_id,
+            _entity("alice", "Alice", "PERSON"),
+            "LIVES_IN",
+            _entity("paris", "Paris", "CITY"),
+        )
+        with patch.object(ingestion_mod, "graph_adapter", graph):
+            ingestion_mod._assign_relationship_interval(later, brain_id="brain-a")
+        self.assertNotEqual(later.uuid, closed_id)
+        self.assertNotEqual(later.uuid, relationship.uuid)
+
     def test_open_same_endpoint_edge_keeps_original_valid_from(self):
         from src.core.saving.identity import stable_relationship_id
         from src.workers.tasks import ingestion as ingestion_mod
