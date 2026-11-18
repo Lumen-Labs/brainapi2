@@ -194,6 +194,12 @@ def _node_parts(node: Any) -> dict[str, Any]:
     }
 
 
+def _has_pair_collection(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    return any(isinstance(payload.get(key), (list, tuple)) for key in ("pairs", "conflicts", "items"))
+
+
 def remap_conflict_pairs(
     pairs: list[tuple[str, str]],
     id_map: dict[str, str],
@@ -272,6 +278,7 @@ class BrainAPIAdapter:
         self._id_candidates: dict[str, set[str]] = {}
         self._conflict_outcomes: list[str] = []
         self._pending_conflict_jobs: list[dict[str, Any]] = []
+        self._retrieve_payloads: list[dict[str, Any]] = []
 
     def _ensure_client(self) -> BrainAPIClient:
         if self.client is None:
@@ -357,15 +364,21 @@ class BrainAPIAdapter:
             row.get("source_chunk_id"),
             *(row.get("source_chunk_ids") or []),
         ]
-        if canonical:
+        if not canonical:
             for alias in aliases:
-                self._remember(str(alias) if alias is not None else None, canonical)
+                canonical = self._canonical(str(alias) if alias is not None else None)
+                if canonical:
+                    break
         parsed = self._remember_text(str(row.get("text") or row.get("body") or row.get("content") or ""))
         if not canonical:
             canonical = self._canonical(parsed.get("statement_id")) or self._canonical(parsed.get("doc_id"))
-            if canonical:
-                for alias in aliases:
-                    self._remember(str(alias) if alias is not None else None, canonical)
+        if canonical:
+            for alias in aliases:
+                self._remember(str(alias) if alias is not None else None, canonical)
+            for item in candidates:
+                text = str(item or "").strip()
+                if text:
+                    self._remember(text, canonical)
         return canonical
 
     def probe(self) -> dict[str, Any]:
@@ -527,6 +540,8 @@ class BrainAPIAdapter:
             max_passages=int(PROMPT_BUDGET["max_passages"]),
         )
         payload = retrieve.data if isinstance(retrieve.data, dict) else {}
+        if isinstance(payload, dict):
+            self._retrieve_payloads.append(payload)
         self._index_retrieve_payload(payload)
         passages = self._passages_from_context(payload, question=question)
         pairs: list[tuple[str, str]] = []
@@ -546,23 +561,30 @@ class BrainAPIAdapter:
             dedicated_ok = False
             sidecar_ok = "temporal_conflicts" in payload
             if path:
-                conflict_res = client.request_path(
-                    "POST",
-                    path,
-                    json={
-                        "brain_id": self.brain_id,
-                        "text": question.get("question"),
-                    },
-                )
                 http_calls += 1
-                if conflict_res.status_code < 400 and isinstance(conflict_res.data, dict):
-                    dedicated_ok = True
-                    raw_pairs = self._pairs_from_payload(conflict_res.data)
-                    notes.append("conflict_endpoint")
-                    if raw_pairs:
-                        pair_source = "dedicated_endpoint"
+                try:
+                    conflict_res = client.request_path(
+                        "POST",
+                        path,
+                        json={
+                            "brain_id": self.brain_id,
+                            "text": question.get("question"),
+                        },
+                    )
+                except Exception:
+                    notes.append("conflict_endpoint_error")
                 else:
-                    notes.append(f"conflict_endpoint_http_{conflict_res.status_code}")
+                    data = conflict_res.data if isinstance(conflict_res.data, dict) else {}
+                    if conflict_res.status_code < 400 and _has_pair_collection(data):
+                        dedicated_ok = True
+                        raw_pairs = self._pairs_from_payload(data)
+                        notes.append("conflict_endpoint")
+                        if raw_pairs:
+                            pair_source = "dedicated_endpoint"
+                    elif conflict_res.status_code < 400:
+                        notes.append("conflict_endpoint_unrecognized")
+                    else:
+                        notes.append(f"conflict_endpoint_http_{conflict_res.status_code}")
             if not raw_pairs and sidecar_ok:
                 raw_pairs = self._conflict_plugin(payload, question)
                 if raw_pairs:
@@ -738,31 +760,51 @@ class BrainAPIAdapter:
         }
 
     def finalize_conflict_mappings(self) -> None:
+        self._reindex_retrieve_payloads()
         if not self._pending_conflict_jobs:
             return
         self._conflict_outcomes = []
-        last_mode = str(self.capabilities.get("conflict_mode") or "n/a")
         for job in self._pending_conflict_jobs:
-            decided = self._decide_conflict_outcome(job)
-            last_mode = decided["conflict_mode"]
-        self._refresh_conflict_capability(last_mode)
+            self._decide_conflict_outcome(job)
+        self._refresh_conflict_capability()
 
-    def _refresh_conflict_capability(self, last_mode: str) -> None:
+    def _reindex_retrieve_payloads(self) -> None:
+        previous: tuple[int, int] | None = None
+        for _ in range(8):
+            snapshot = (len(self._id_map), len(self._ambiguous))
+            if snapshot == previous:
+                break
+            previous = snapshot
+            for payload in self._retrieve_payloads:
+                self._index_retrieve_payload(payload)
+
+    def _supported_conflict_mode(self) -> str:
+        modes: list[str] = []
+        for job in self._pending_conflict_jobs:
+            if job.get("outcome") not in {"mapped", "empty"}:
+                continue
+            mode = str(job.get("conflict_mode") or "")
+            if mode and mode not in modes:
+                modes.append(mode)
+        if len(modes) > 1:
+            return "mixed"
+        if modes:
+            return modes[0]
+        return "pending_product"
+
+    def _refresh_conflict_capability(self, last_mode: str | None = None) -> None:
         outcomes = set(self._conflict_outcomes)
+        supported_mode = self._supported_conflict_mode()
         if "unmapped" in outcomes:
             self.capabilities["conflict_pairs"] = False
             self.capabilities["conflict_mode"] = "id_mapping_unsupported"
             return
-        if "mapped" in outcomes:
+        if "mapped" in outcomes or "empty" in outcomes:
             self.capabilities["conflict_pairs"] = True
-            self.capabilities["conflict_mode"] = last_mode
-            return
-        if "empty" in outcomes:
-            self.capabilities["conflict_pairs"] = True
-            self.capabilities["conflict_mode"] = last_mode or "temporal_conflicts_sidecar"
+            self.capabilities["conflict_mode"] = supported_mode
             return
         self.capabilities["conflict_pairs"] = False
-        self.capabilities["conflict_mode"] = last_mode or "pending_product"
+        self.capabilities["conflict_mode"] = last_mode or supported_mode or "pending_product"
 
     def _passages_from_context(
         self,

@@ -213,7 +213,6 @@ class CompareSystemsTests(unittest.TestCase):
                 "system": "brainapi",
                 "question_id": "q2",
                 "correct": False,
-                "error": "timeout",
             },
         ]
         result = compare_systems(
@@ -241,7 +240,46 @@ class CompareSystemsTests(unittest.TestCase):
             use_case="expert_knowhow",
             records=records,
         )
-        self.assertNotEqual(result["verdict"], "incomplete")
+        self.assertEqual(result["verdict"], "undecided")
+
+    def test_include_history_is_not_a_versioned_rules_win(self) -> None:
+        result = compare_systems(
+            {
+                "hybrid_baseline": {
+                    "metrics": {
+                        "n": 150,
+                        "accuracy": 0.9,
+                        "wilson_lo": 0.84,
+                        "wilson_hi": 0.94,
+                    }
+                },
+                "brainapi": {
+                    "capabilities": {"as_of": True, "as_of_mode": "include_history"},
+                    "metrics": {
+                        "n": 150,
+                        "accuracy": 0.2,
+                        "wilson_lo": 0.14,
+                        "wilson_hi": 0.27,
+                    },
+                },
+            },
+            use_case="versioned_rules",
+        )
+        self.assertEqual(result["verdict"], "capability_pending")
+        self.assertEqual(result["missing_capability"], "as_of")
+
+    def test_score_one_marks_unsupported_changelog(self) -> None:
+        result = QueryResult(
+            answer="something",
+            notes=["as_of_mode=unsupported"],
+            raw={"as_of_mode": "unsupported"},
+        )
+        scored = _score_one(
+            {"task": "changelog", "date_from": "2019-01-01", "date_to": "2024-01-01"},
+            result,
+        )
+        self.assertTrue(scored["unsupported"])
+        self.assertEqual(scored["scoring"], "as_of_unsupported")
 
     def test_headline_uses_producer_unavailable_reason(self) -> None:
         records = [

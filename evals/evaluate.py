@@ -82,6 +82,19 @@ def _score_one(
     settings: Settings | None = None,
     use_judge: bool = False,
 ) -> dict[str, Any]:
+    as_of_mode = (result.raw or {}).get("as_of_mode")
+    if as_of_mode == "unsupported" and (
+        str(question.get("task") or "") == "changelog" or question.get("date_to")
+    ):
+        return {
+            "unsupported": True,
+            "exact_match": False,
+            "must_include": False,
+            "token_f1": None,
+            "correct": None,
+            "scoring": "as_of_unsupported",
+            "reason": "BrainAPI changelog retrieval has no supported range or history mode",
+        }
     if question.get("task") == "conflict_audit":
         notes = result.notes or []
         mapping_unsupported = (
@@ -188,14 +201,17 @@ def _query_records(
         if exc is not None or result is None:
             records.append(_error_record(use_case, adapter.name, question, exc or RuntimeError("query failed")))
             continue
-        score = _score_one(
-            question,
-            result,
-            gold_pairs=gold_pairs if question.get("task") == "conflict_audit" else None,
-            settings=settings,
-            use_judge=use_judge,
-        )
-        records.append(_record(use_case, adapter.name, question, result, score))
+        try:
+            score = _score_one(
+                question,
+                result,
+                gold_pairs=gold_pairs if question.get("task") == "conflict_audit" else None,
+                settings=settings,
+                use_judge=use_judge,
+            )
+            records.append(_record(use_case, adapter.name, question, result, score))
+        except Exception as score_exc:
+            records.append(_error_record(use_case, adapter.name, question, score_exc))
     return records
 
 
@@ -517,6 +533,33 @@ def compare_systems(
                     "not scored as a loss."
                 ),
                 "missing_capability": cap,
+            }
+    if use_case == "versioned_rules":
+        mode = str(caps.get("as_of_mode") or "")
+        if mode not in {"api_field", "api_schema"}:
+            return {
+                "verdict": "capability_pending",
+                "reason": (
+                    "BrainAPI native as-of is not available on this run; "
+                    "include_history is not a date filter and is not scored as a win."
+                ),
+                "missing_capability": "as_of",
+            }
+        if records is not None and any(
+            row.get("system") == "brainapi"
+            and (
+                row.get("as_of_mode") == "unsupported"
+                or row.get("scoring") == "as_of_unsupported"
+            )
+            for row in records
+        ):
+            return {
+                "verdict": "capability_pending",
+                "reason": (
+                    "BrainAPI changelog retrieval had no supported range mode; "
+                    "not scored as a win."
+                ),
+                "missing_capability": "as_of",
             }
     if records is not None:
         hybrid_ids = _system_question_ids(records, "hybrid_baseline")
