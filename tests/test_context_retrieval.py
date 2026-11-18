@@ -64,6 +64,25 @@ def _pred(uuid: str, name: str):
 
 
 class CollectQueryVariantsTests(unittest.TestCase):
+    def test_opinion_question_stays_one_search(self):
+        from src.services.api.controllers import retrieve as retrieve_mod
+
+        question = "What is EP Signal's view on business strategy?"
+        elements = ExtractElementsResponse(
+            tokens=[
+                {"text": "EP"},
+                {"text": "Signal"},
+                {"text": "view"},
+                {"text": "business"},
+                {"text": "strategy"},
+            ],
+            noun_chunks=["EP Signal", "business strategy", "EP Signal's view"],
+        )
+        self.assertEqual(
+            retrieve_mod._collect_query_variants(question, elements),
+            [question],
+        )
+
     def test_includes_noun_chunks_deduped_and_capped(self):
         from src.services.api.controllers import retrieve as retrieve_mod
 

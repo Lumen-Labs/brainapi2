@@ -2,7 +2,7 @@ import ast
 import os
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -33,6 +33,9 @@ ENV_DEFAULTS = {
 }
 for _k, _v in ENV_DEFAULTS.items():
     os.environ.setdefault(_k, _v)
+
+
+import src.utils.nlp.spacy as spacy_mod
 
 
 class TestDockerfileSpacyModels(unittest.TestCase):
@@ -117,37 +120,24 @@ class TestFastAPIRedirectSlashes(unittest.TestCase):
 
 
 class TestSpacyManagerDownloadBehavior(unittest.TestCase):
-    @patch("src.utils.nlp.spacy.subprocess.run")
-    @patch("src.utils.nlp.spacy.spacy.load")
-    def test_failed_download_raises_oserror_not_sysexit(
-        self, mock_load, mock_run
-    ):
-        mock_load.side_effect = OSError("missing")
-        mock_run.return_value = MagicMock(returncode=1, stderr="nope", stdout="")
-
-        from src.utils.nlp.spacy import SpacyManager
-
-        mgr = SpacyManager()
-        with self.assertRaises(OSError) as ctx:
-            mgr.get_model("it")
+    def test_missing_model_raises_without_downloading(self):
+        with patch.object(spacy_mod.spacy, "load", side_effect=OSError("missing")) as mock_load:
+            mgr = spacy_mod.SpacyManager()
+            with self.assertRaises(OSError) as ctx:
+                mgr.get_model("it")
         self.assertIn("it_core_news_sm", str(ctx.exception))
-        mock_run.assert_called_once()
+        mock_load.assert_called_once()
 
-    @patch("src.utils.nlp.spacy.subprocess.run")
-    @patch("src.utils.nlp.spacy.spacy.load")
-    def test_successful_download_then_load(
-        self, mock_load, mock_run
-    ):
+    def test_loaded_model_is_reused(self):
         nlp = object()
-        mock_load.side_effect = [OSError("missing"), nlp]
-        mock_run.return_value = MagicMock(returncode=0, stderr="", stdout="")
-
-        from src.utils.nlp.spacy import SpacyManager
-
-        mgr = SpacyManager()
-        out = mgr.get_model("en")
-        self.assertIs(out, nlp)
-        self.assertEqual(mock_load.call_count, 2)
+        with patch.object(spacy_mod.spacy, "load", return_value=nlp) as mock_load:
+            mgr = spacy_mod.SpacyManager()
+            mgr.keep_models_in_memory = True
+            first = mgr.get_model("en")
+            second = mgr.get_model("en")
+        self.assertIs(first, nlp)
+        self.assertIs(second, nlp)
+        mock_load.assert_called_once()
 
 
 if __name__ == "__main__":

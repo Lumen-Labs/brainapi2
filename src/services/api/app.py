@@ -100,6 +100,7 @@ async def lifespan(app: FastAPI):
 
     _log_plugin_banner(loader, results)
     _enforce_plugin_results(results)
+    await _warm_english_model()
 
     for event_name, handlers in ctx._event_handlers.items():
         if event_name == "startup":
@@ -115,6 +116,20 @@ async def lifespan(app: FastAPI):
         if event_name == "shutdown":
             for handler in handlers:
                 await handler() if _is_coroutine(handler) else handler()
+
+
+async def _warm_english_model() -> None:
+    import asyncio
+    import logging
+
+    from src.utils.nlp.spacy import _spacy_manager
+
+    try:
+        await asyncio.to_thread(_spacy_manager.get_model, "en")
+    except Exception:
+        logging.getLogger("brainapi.plugins").warning(
+            "English language model is not installed; entity extraction will be skipped"
+        )
 
 
 def _is_coroutine(fn):

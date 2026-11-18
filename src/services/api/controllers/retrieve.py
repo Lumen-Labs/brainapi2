@@ -1303,6 +1303,17 @@ def _fact_predicates_allowed(
     return _is_currently_valid(r) and _is_currently_valid(r2)
 
 
+_OPINION_QUESTION_RE = re.compile(
+    r"\b(?:views?|opinions?|positions?|stances?|perspectives?)\b"
+    r".{0,80}\b(?:on|about|regarding)\b",
+    re.IGNORECASE,
+)
+
+
+def _opinion_question(text: str) -> bool:
+    return bool(_OPINION_QUESTION_RE.search(text or ""))
+
+
 def _collect_query_variants(text: str, elements) -> list[str]:
     seen: set[str] = set()
     variants: list[str] = []
@@ -1320,6 +1331,8 @@ def _collect_query_variants(text: str, elements) -> list[str]:
         variants.append(cleaned)
 
     _add(text)
+    if _opinion_question(text):
+        return variants
     for token in getattr(elements, "tokens", None) or []:
         if isinstance(token, dict):
             _add(token.get("text"))
