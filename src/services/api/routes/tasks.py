@@ -89,13 +89,54 @@ class PurgeIngestionRequest(BaseModel):
     source_key: str | None = None
 
 
-@tasks_router.post("/{task_id}/purge")
+class PurgePassageCounts(BaseModel):
+    delete: int
+    unlink: int
+    reused: int
+
+
+class PurgeEntityNames(BaseModel):
+    delete: list[str]
+    unlink: list[str]
+
+
+class PurgeConnectionCounts(BaseModel):
+    delete: int
+    unlink: int
+
+
+class PurgeCompletedAction(BaseModel):
+    kind: str
+    id: str
+
+
+class PurgeIngestionResponse(BaseModel):
+    digest: str
+    executed: bool
+    passages: PurgePassageCounts
+    records: int
+    entities: PurgeEntityNames
+    connections: PurgeConnectionCounts
+    unresolved: int
+    ledger_incomplete: bool = False
+    ledger_error: str | None = None
+    partial: bool = False
+    completed: list[PurgeCompletedAction] | None = None
+    error: str | None = None
+
+
+@tasks_router.post("/{task_id}/purge", response_model=PurgeIngestionResponse)
 async def purge_ingestion(
     task_id: str,
     body: PurgeIngestionRequest,
     brain_id: str = Depends(get_brain_id),
 ):
-    from src.core.saving.ingest_effects import DigestMismatch, PurgeNotFound, purge_task
+    from src.core.saving.ingest_effects import (
+        DigestMismatch,
+        PurgeNotFound,
+        PurgeUnsafe,
+        purge_task,
+    )
 
     try:
         return purge_task(
@@ -106,6 +147,8 @@ async def purge_ingestion(
         )
     except PurgeNotFound as exc:
         raise HTTPException(404, "This import has no recorded additions") from exc
+    except PurgeUnsafe as exc:
+        raise HTTPException(409, exc.preview or str(exc)) from exc
     except DigestMismatch as exc:
         raise HTTPException(409, "This import changed since it was previewed. Preview it again.") from exc
 
