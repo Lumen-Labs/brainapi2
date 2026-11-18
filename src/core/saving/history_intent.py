@@ -45,11 +45,7 @@ HISTORY_EXAMPLES: tuple[str, ...] = (
     "how did my discussions progress in order",
     "walk me through the chronological sequence of events",
     "have I implemented this library before",
-    "did I already complete the translation microservice",
-    "have I integrated Flask-Login for session management",
     "how many days are there between these two deadlines",
-    "how many weeks between the first sprint and the review",
-    "when does my first sprint end",
     "these two statements contradict each other",
     "did I say I finished this or that I never started it",
     "in che ordine ho menzionato questi argomenti",
@@ -83,12 +79,6 @@ CURRENT_EXAMPLES: tuple[str, ...] = (
     "jaka jest aktualna wersja",
     "vad står det nu",
     "अभी यहाँ क्या लिखा है",
-    "what is the deadline for completing my language detection module",
-    "what is the TTL value set for caching recent translations",
-    "what is the average response time of the dashboard API",
-    "how many commits have been merged into the main branch",
-    "what is the latest version of the frontend framework",
-    "what is the currently configured port",
 )
 
 _HISTORY_LEXICAL = re.compile(
@@ -104,24 +94,24 @@ _HISTORY_LEXICAL = re.compile(
     r"|\bcontradict"
     r"|\bconflicting (?:statements|information|claims)\b"
     r"|\binconsisten"
-    r"|\bhave i\b"
-    r"|\bdid i\b"
+    r"|\bhave i\b.{0,80}\b(?:already|before|previously|earlier|originally|ever|once|(?:last|this) (?:year|month|week))"
+    r"|\bdid i\b.{0,80}\b(?:already|before|previously|earlier|originally|ever|once|say|claim|mention|(?:last|this) (?:year|month|week))"
     r"|\bpreviously\b"
     r"|\boriginally\b"
     r"|\bbefore (?:the |that )?(?:update|change|extension|deletion|it was)"
+    r"|\b(?:was|were) (?:deleted|removed|changed)\b"
+    r"|\b(?:deleted|removed) from\b"
     r"|\bfirst (?:said|stated|mentioned)\b"
-    r"|\bwhen does my first sprint\b"
-    r"|\bhow many (?:weeks|days)\b"
-    r"|\bbetween .{2,120} and "
+    r"|\bhow many (?:days|weeks|months).{0,80}\bbetween\b"
     r"|\bprevious version\b"
     r"|\bversione precedente\b"
     r"|\bversi[oó]n anterior\b"
     r"|\bversion précédente\b"
     r"|\bcom'era prima\b"
     r"|\bho già\b"
-    r"|\bhabe ich\b"
-    r"|\bhe (?:integrado|implementado|completado)\b"
-    r"|\bai-je\b"
+    r"|\bhabe ich\b.{0,80}\b(?:schon|bereits|vorher|früher)"
+    r"|\bhe (?:integrado|implementado|completado)\b.{0,40}\b(?:antes|ya)"
+    r"|\bai-je\b.{0,40}\bd[eé]j[aà]"
     r"|\bin welcher reihenfolge\b"
     r"|\bin che ordine\b"
     r"|\ben qu[eé] orden\b"
@@ -132,8 +122,11 @@ _CURRENT_VALUE_RE = re.compile(
     r"(?i)\b("
     r"now|currently|latest|updated (?:to|value|deadline)|after the (?:update|change)|"
     r"how many commits|average response time|response time of|"
-    r"the current|current (?:value|ttl|deadline|version|port)|"
-    r"currently configured|deadline for completing"
+    r"the current|current (?:value|deadline|version|port|setting|text|ttl)|"
+    r"currently configured|deadline for completing|"
+    r"what did i set|difference between|"
+    r"how many (?:days|weeks|months) until|when does|"
+    r"have i|did i|ttl"
     r")\b"
 )
 _STRONG_HISTORY_RE = re.compile(
@@ -145,16 +138,16 @@ _STRONG_HISTORY_RE = re.compile(
     r"|\bchronolog"
     r"|\bsequence of\b"
     r"|\bcontradict"
-    r"|\bhave i\b"
-    r"|\bdid i\b"
-    r"|\bhow many (?:weeks|days)\b"
-    r"|\bbetween .{2,120} and "
+    r"|\bhave i\b.{0,80}\b(?:already|before|previously|earlier|originally|ever|once|(?:last|this) (?:year|month|week))"
+    r"|\bdid i\b.{0,80}\b(?:already|before|previously|earlier|originally|ever|once|say|claim|mention|(?:last|this) (?:year|month|week))"
+    r"|\bbefore (?:the |that )?(?:update|change|extension|deletion|it was)"
+    r"|\bhow many (?:days|weeks|months).{0,80}\bbetween\b"
     r"|\bprevious version\b"
     r"|\bversione precedente\b"
     r"|\bcom'era prima\b"
     r"|\bho già\b"
-    r"|\bhabe ich\b"
-    r"|\bai-je\b"
+    r"|\bhabe ich\b.{0,80}\b(?:schon|bereits|vorher|früher)"
+    r"|\bai-je\b.{0,40}\bd[eé]j[aà]"
     r")"
 )
 

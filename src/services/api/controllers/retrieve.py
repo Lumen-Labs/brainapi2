@@ -49,6 +49,13 @@ from src.utils.dates import parse_date_string, to_naive_utc
 from src.utils.similarity.vectors import cosine_similarity
 from src.utils.nlp.ner import _entity_extractor
 from src.config import config
+from src.core.verification.facts import (
+    combined_verification,
+    fact_pair_allowed,
+    fact_tuple_is_verified,
+    verification_scope,
+)
+from src.services.api.constants.requests import FactVerificationInfo
 
 vector_search = VectorSearchFacade(vector_store_adapter)
 
@@ -397,6 +404,7 @@ async def retrieve_data(
     limit: int,
     preferred_entities: str,
     brain_id: str = "default",
+    include_rejected: bool = False,
     as_of: Optional[str] = None,
 ) -> RetrieveRequestResponse:
     """
@@ -462,9 +470,10 @@ async def retrieve_data(
         )
         return ts_text_chunks, ts_observations, v_text_chunks, v_observations, nodes
 
-    ts_text_chunks, ts_observations, v_text_chunks, v_observations, nodes = (
-        await asyncio.to_thread(_get_data)
-    )
+    with verification_scope(include_rejected=include_rejected):
+        ts_text_chunks, ts_observations, v_text_chunks, v_observations, nodes = (
+            await asyncio.to_thread(_get_data)
+        )
     if as_of_dt is not None:
         excluded_chunk_ids = {
             chunk.id
@@ -506,6 +515,7 @@ async def retrieve_neighbors(
     identification_params: Optional[IdentificationParams] = None,
     limit: int = 10,
     brain_id: str = "default",
+    include_rejected: bool = False,
 ) -> RetrieveNeighborsRequestResponse:
     """
     Retrieve neighboring nodes related to a specified main node.
@@ -655,7 +665,8 @@ async def retrieve_neighbors(
             neighbors=unique_neighbors[:limit],
         )
 
-    return await _get_neighbors()
+    with verification_scope(include_rejected=include_rejected):
+        return await _get_neighbors()
 
 
 async def retrieve_neighbors_ai_mode(
@@ -701,6 +712,7 @@ async def get_relationships(
     query_text: Optional[str] = None,
     query_search_target: Optional[str] = "all",
     brain_id: str = "default",
+    include_rejected: bool = False,
 ):
     """
     Retrieve relationships from the knowledge graph with optional filtering and pagination.
@@ -721,17 +733,18 @@ async def get_relationships(
             - relationships: List of serialized relationship objects.
             - total: Total number of matching relationships.
     """
-    relationships = await asyncio.to_thread(
-        search_relationships,
-        limit,
-        skip,
-        relationship_types,
-        from_node_labels,
-        to_node_labels,
-        query_text,
-        query_search_target,
-        brain_id,
-    )
+    with verification_scope(include_rejected=include_rejected):
+        relationships = await asyncio.to_thread(
+            search_relationships,
+            limit,
+            skip,
+            relationship_types,
+            from_node_labels,
+            to_node_labels,
+            query_text,
+            query_search_target,
+            brain_id,
+        )
 
     return JSONResponse(
         content={
@@ -748,6 +761,7 @@ async def get_entities(
     node_labels: Optional[list[str]] = None,
     query_text: Optional[str] = None,
     brain_id: str = "default",
+    include_rejected: bool = False,
 ):
     """
     Retrieve entities from the knowledge graph with optional label and text filters.
@@ -765,9 +779,10 @@ async def get_entities(
             - entities (list): Serialized entity objects.
             - total (int): Total number of matching entities.
     """
-    entities = await asyncio.to_thread(
-        search_entities, limit, skip, node_labels, query_text, brain_id
-    )
+    with verification_scope(include_rejected=include_rejected):
+        entities = await asyncio.to_thread(
+            search_entities, limit, skip, node_labels, query_text, brain_id
+        )
 
     return JSONResponse(
         content={
@@ -918,12 +933,19 @@ def _relevance_score(
     completeness = _hub_completeness_score(candidate) / 3.8
     recency = _fact_recency_score(candidate, now=now)
     topic_boost = 0.08 if candidate.get("topic_preferred") else 0.0
+    triple = candidate.get("triple") or ()
+    verified_boost = 0.0
+    if fact_tuple_is_verified(*triple[:5] if len(triple) >= 5 else triple):
+        from src.core.verification.facts import verified_rank_boost
+
+        verified_boost = verified_rank_boost()
     return (
         0.45 * distance_term
         + 0.25 * ppr_term
         + 0.20 * completeness
         + 0.10 * recency
         + topic_boost
+        + verified_boost
     )
 
 
@@ -1391,6 +1413,8 @@ def _fact_predicates_allowed(
     include_history: bool,
     as_of: datetime | None = None,
 ) -> bool:
+    if not fact_pair_allowed(r, r2):
+        return False
     if as_of is not None:
         return _is_currently_valid(r, as_of) and _is_currently_valid(r2, as_of)
     if include_history:
@@ -1759,6 +1783,51 @@ def _session_ids_for_chunks(
     return found
 
 
+def _fact_ids_from_context_triple(triple: Any) -> list[str]:
+    ids: list[str] = []
+    if not triple or len(triple) < 5:
+        return ids
+    for predicate in (triple[1], triple[3]):
+        props = getattr(predicate, "properties", None) or {}
+        uid = getattr(predicate, "uuid", None) or props.get("uuid")
+        if uid:
+            ids.append(str(uid))
+    return ids
+
+
+def _annotate_open_conflicts(
+    adapter: Any,
+    brain_id: str,
+    triples: list[GetContextTriple],
+    text_lines: list[str],
+) -> tuple[list[GetContextTriple], list[str]]:
+    from src.core.saving.conflicts import annotation_payload, open_conflicts_by_fact_ids
+
+    fact_ids: list[str] = []
+    for item in triples:
+        fact_ids.extend(_fact_ids_from_context_triple(item.triple))
+    mapping = open_conflicts_by_fact_ids(adapter, brain_id, fact_ids)
+    annotated_lines: list[str] = []
+    for index, item in enumerate(triples):
+        payloads: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for fact_id in _fact_ids_from_context_triple(item.triple):
+            for conflict in mapping.get(fact_id) or []:
+                if conflict.id in seen:
+                    continue
+                seen.add(conflict.id)
+                payloads.append(annotation_payload(conflict, fact_id))
+        if payloads:
+            item.open_conflicts = payloads
+            line = text_lines[index] if index < len(text_lines) else ""
+            if line and not line.startswith("[open conflict]"):
+                line = f"[open conflict] {line}"
+            annotated_lines.append(line)
+        else:
+            annotated_lines.append(text_lines[index] if index < len(text_lines) else "")
+    return triples, annotated_lines
+
+
 def _build_fact_channel(
     curated: list[dict[str, Any]],
     chunk_sessions: dict[str, list[str]],
@@ -1777,12 +1846,14 @@ def _build_fact_channel(
         if session_ids:
             line = f"{line} ({', '.join(session_ids)})"
         text_lines.append(line)
+        verification = combined_verification(r, r2, m)
         triples.append(
             GetContextTriple(
                 identified_entity=candidate["identified_entity"],
                 triple=(n, r, m, r2, b),
                 source_chunk_ids=chunk_ids or None,
                 source_session_ids=session_ids or None,
+                verification=FactVerificationInfo(**verification.model_dump()),
             )
         )
         for sid in session_ids:
@@ -1882,10 +1953,11 @@ async def get_context(
     and publishes it as a latency trace event; it is off unless the caller asks
     for it or `TRACE_STAGE_PROFILER_ENABLED` is set.
     """
-    with profile_request(
-        "retrieve.context", enabled=request.profile_stages
-    ) as profiler:
-        response = await _build_context(request, fact_filter_adapter)
+    with verification_scope(include_rejected=bool(request.include_rejected)):
+        with profile_request(
+            "retrieve.context", enabled=request.profile_stages
+        ) as profiler:
+            response = await _build_context(request, fact_filter_adapter)
     if profiler is not None:
         response.stage_timings = profiler.last_report
     return response
@@ -1926,6 +1998,29 @@ async def _build_context(
             cached = embeddings_adapter.embed_text(text).embeddings
             shared_vectors[text] = cached
         return cached
+
+    def _embed_queries(texts: list[str]) -> list[list[float]]:
+        vectors: list[list[float] | None] = [shared_vectors.get(text) for text in texts]
+        missing = [
+            (index, text)
+            for index, text in enumerate(texts)
+            if vectors[index] is None
+        ]
+        if not missing:
+            return [item or [] for item in vectors]
+        batch = getattr(embeddings_adapter, "embed_texts", None)
+        if callable(batch):
+            raw = batch([text for _index, text in missing])
+            for (index, text), item in zip(missing, raw):
+                vector = getattr(item, "embeddings", None)
+                if vector is None:
+                    vector = item
+                shared_vectors[text] = vector
+                vectors[index] = vector
+        else:
+            for index, text in missing:
+                vectors[index] = _embed_query(text)
+        return [item or [] for item in vectors]
 
     query_vector: list[float] | None = None
     explicit_history = request.include_history
@@ -2070,12 +2165,29 @@ async def _build_context(
                 query_text=request.text,
                 query_vector=query_vector or shared_vectors.get(request.text),
                 embed=_embed_query,
+                embed_many=_embed_queries,
             )
             merged = list(texts)
             for text in extra:
                 if text not in merged:
                     merged.append(text)
             return merged[: request.historical_limit]
+
+        def _history_from_hits(
+            hits: list[tuple[str, float, str]],
+            extra: list[str] | None = None,
+        ) -> list[str]:
+            texts = screened_passage_texts(
+                data_adapter,
+                request.brain_id,
+                hits,
+                include_history=include_history,
+                limit=request.historical_limit,
+                as_of=as_of,
+            )
+            if extra:
+                texts = texts + extra
+            return _merge_prior(texts, hits)
 
         with profile_stage("historical.context", blocking=False):
             passages = await asyncio.to_thread(
@@ -2085,16 +2197,8 @@ async def _build_context(
                 limit=max(request.historical_limit, _PASSAGE_K),
             )
             if passages:
-                historical_context = _merge_prior(
-                    screened_passage_texts(
-                        data_adapter,
-                        request.brain_id,
-                        passages,
-                        include_history=include_history,
-                        limit=request.historical_limit,
-                        as_of=as_of,
-                    ),
-                    passages,
+                historical_context = await asyncio.to_thread(
+                    _history_from_hits, passages
                 )
                 return historical_context
             with profile_stage("historical.fallback", blocking=False):
@@ -2114,25 +2218,19 @@ async def _build_context(
                 (str(getattr(text_chunk, "id", "") or ""), 0.0, text_chunk.text or "")
                 for text_chunk in text_chunks
             ]
-            historical_context = _merge_prior(
-                screened_passage_texts(
-                    data_adapter,
-                    request.brain_id,
-                    chunk_hits,
-                    include_history=include_history,
-                    limit=request.historical_limit,
-                    as_of=as_of,
-                )
-                + current_record_texts(
+
+            def _fallback_history() -> list[str]:
+                extra = current_record_texts(
                     data_adapter,
                     request.brain_id,
                     structured_data,
                     text_chunks,
                     include_history=include_history,
                     as_of=as_of,
-                ),
-                chunk_hits,
-            )
+                )
+                return _history_from_hits(chunk_hits, extra)
+
+            historical_context = await asyncio.to_thread(_fallback_history)
             return historical_context
 
     with profile_stage(
@@ -2451,6 +2549,10 @@ async def _build_context(
     response_paths = _paths_for_curated(bridge_paths, curated)
 
     with profile_stage("context.render", passages=len(source_passages)):
+        if getattr(request, "annotate_conflicts", False):
+            triples, text_lines = _annotate_open_conflicts(
+                data_adapter, request.brain_id, triples, text_lines
+            )
         topic_block = [
             f"[topic] {t.get('label')}"
             for t in response_topics
