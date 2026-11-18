@@ -167,7 +167,8 @@ class SourceRevisionTests(unittest.TestCase):
             ),
             "insert",
         )
-        self.assertEqual(store.marked[0][0], ["c1", "c2"])
+        self.assertEqual(len(store.marked), 1)
+        self.assertEqual(set(store.marked[0][0]), {"c1", "c2"})
         self.assertEqual(store.marked[0][1], "16/11/2026")
         self.assertIsNotNone(store.marked[0][3])
 
