@@ -187,8 +187,6 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
         self.assertEqual(params["object_uuid"], "b")
         self.assertEqual(params["predicate_uuid"], "rel-1")
         extra = params["extra_props"]
-        self.assertIsInstance(extra.get("properties"), str)
-        self.assertIn("v1", extra["properties"])
         self.assertNotIsInstance(extra.get("properties"), dict)
         self.assertEqual(extra.get("v_id"), "v1")
         self.assertEqual(extra.get("valid_from"), "2026-01-01T00:00:00Z")

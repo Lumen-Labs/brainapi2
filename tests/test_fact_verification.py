@@ -91,6 +91,22 @@ class VerificationHelpersTests(unittest.TestCase):
         with verification_scope(include_rejected=True):
             self.assertTrue(fact_pair_allowed(pred, None))
 
+    def test_extract_verification_accepts_json_bound_properties(self):
+        payload = (
+            '{"verification_state":"verified","verified_by":"analyst-1",'
+            '"v_id":"v1"}'
+        )
+        info = extract_verification(
+            {
+                "uuid": "rel-1",
+                "properties": payload,
+                "last_updated": "2026-11-18T16:08:16Z",
+            }
+        )
+        self.assertEqual(info.state, VERIFIED)
+        self.assertEqual(info.verified_by, "analyst-1")
+        self.assertEqual(info.fact_id, "rel-1")
+
     def test_history_round_trips_json_strings(self):
         raw = [
             '{"id":"1","from_state":"unverified","to_state":"verified",'

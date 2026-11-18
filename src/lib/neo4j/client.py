@@ -544,6 +544,8 @@ class Neo4jClient(GraphClient):
                 value = getattr(obj, attr, None)
                 if value is None or value == "":
                     continue
+                if attr == "properties":
+                    continue
                 extra_props[static_property_key(attr)] = self._neo4j_property_value(
                     value
                 )
