@@ -2184,6 +2184,27 @@ class Neo4jClient(GraphClient):
             m['uuid'] AS m_uuid, m['name'] AS m_name, labels(m) AS m_labels, m['description'] AS m_description, properties(m) AS m_properties
         """
         return_list = "n_uuid, n_name, n_labels, n_description, n_properties, r_uuid, r_type, r_description, r_properties, m_uuid, m_name, m_labels, m_description, m_properties"
+        planned: list[tuple[str, dict[str, Any]]] = []
+        for index, (tail, pred, head) in enumerate(by_tip_tail):
+            params: dict[str, Any] = {}
+            tail_match = self._node_match_cypher("n", tail, params, "tail" + str(index))
+            head_match = self._node_match_cypher("m", head, params, "head" + str(index))
+            rel_type = pred.get("name")
+            if rel_type:
+                rel_part = "[r:" + self._quoted_rel_type(rel_type) + "]"
+            else:
+                rel_part = "[r]"
+            planned.append(
+                (
+                    "MATCH " + tail_match + "\n"
+                    "MATCH " + head_match + "\n"
+                    "MATCH (n)-" + rel_part + "-(m)\n"
+                    "WITH n, r, m, " + with_fields.strip() + "\n"
+                    "DELETE r\n"
+                    "RETURN " + return_list,
+                    params,
+                )
+            )
         if by_rel_uuid:
             cypher = (
                 "MATCH (n)-[r]-(m) WHERE r['uuid'] IN $uuids\n"
@@ -2196,23 +2217,7 @@ class Neo4jClient(GraphClient):
             )
             for record in result.records:
                 deleted.append(self._record_to_triple(record))
-        for index, (tail, pred, head) in enumerate(by_tip_tail):
-            params: dict[str, Any] = {}
-            tail_match = self._node_match_cypher("n", tail, params, "tail" + str(index))
-            head_match = self._node_match_cypher("m", head, params, "head" + str(index))
-            rel_type = pred.get("name")
-            if rel_type:
-                rel_part = "[r:" + self._quoted_rel_type(rel_type) + "]"
-            else:
-                rel_part = "[r]"
-            cypher = (
-                "MATCH " + tail_match + "\n"
-                "MATCH " + head_match + "\n"
-                "MATCH (n)-" + rel_part + "-(m)\n"
-                "WITH n, r, m, " + with_fields.strip() + "\n"
-                "DELETE r\n"
-                "RETURN " + return_list
-            )
+        for cypher, params in planned:
             result = self._run_query(cypher, brain_id, params, ensure=False)
             for record in result.records:
                 deleted.append(self._record_to_triple(record))

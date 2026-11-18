@@ -463,6 +463,18 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
                 "braina",
             )
 
+    def test_remove_relationships_rejects_mixed_batch_before_uuid_deletes(self):
+        client = _client(records=[_Record({"n_uuid": "a"})])
+        with self.assertRaises(InvalidCypherIdentifier):
+            client.remove_relationships(
+                [
+                    ({"uuid": "a"}, {"uuid": "rel-1"}, {"uuid": "b"}),
+                    ({}, {"name": "KNOWS"}, {"uuid": "b"}),
+                ],
+                "braina",
+            )
+        self.assertEqual(client.driver.calls, [])
+
     def test_get_neighbors_applies_zero_limit(self):
         client = _client()
         client.get_neighbors(["u-1"], "braina", limit=0)
