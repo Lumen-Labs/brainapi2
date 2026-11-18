@@ -226,6 +226,44 @@ class SourceVersionToolTests(unittest.TestCase):
             "Unauthorized",
         )
 
+    def test_source_key_pages_previous_copies(self):
+        first = _Chunk(
+            "old-1",
+            "code 4410",
+            {"source_key": "src-1", "superseded_at": "2026-11-16T07:11:00"},
+        )
+        second = _Chunk(
+            "old-2",
+            "code 5500",
+            {"source_key": "src-1", "superseded_at": "2026-11-16T08:00:00"},
+        )
+        current = _Chunk("new", "code 7720", {"source_key": "src-1"})
+        store = _VersionStore(
+            {"src-1": [first, second, current]},
+            {"new": current, "old-1": first, "old-2": second},
+        )
+        page = read_source_versions(
+            store,
+            "brain",
+            authorized=True,
+            source_key="src-1",
+            limit=1,
+            skip=0,
+        )
+        self.assertEqual(page["skip"], 0)
+        self.assertEqual(page["limit"], 1)
+        self.assertEqual(page["sources"][0]["previous_total"], 2)
+        self.assertEqual(page["sources"][0]["previous"][0]["id"], "old-2")
+        next_page = read_source_versions(
+            store,
+            "brain",
+            authorized=True,
+            source_key="src-1",
+            limit=1,
+            skip=1,
+        )
+        self.assertEqual(next_page["sources"][0]["previous"][0]["id"], "old-1")
+
 
 if __name__ == "__main__":
     unittest.main()

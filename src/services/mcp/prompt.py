@@ -63,6 +63,7 @@ MCP_TOOL_SPECS: list[dict[str, object]] = [
             "source_key": "str (optional if query is set)",
             "query": "str (optional if source_key is set)",
             "limit": "int 1-20, default 10",
+            "skip": "int, default 0",
         },
     },
     {
