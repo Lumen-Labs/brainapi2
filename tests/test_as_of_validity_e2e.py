@@ -416,7 +416,7 @@ def test_validity_backfill_mixed_legacy_dates_on_live_postgres_brain():
         stored, _ = data.get_text_chunks_by_ids(["reg-v1", "reg-v2"], False, brain_id)
         by_id = {chunk.id: chunk for chunk in stored}
         assert by_id["reg-v1"].text == REG_V1
-        assert by_id["reg-v1"].metadata["valid_from"] == "2024-01-01T08:00:00Z"
+        assert not by_id["reg-v1"].metadata.get("valid_from")
         assert by_id["reg-v1"].metadata["valid_to"] == "2025-01-15T00:00:00Z"
         assert by_id["reg-v1"].metadata["superseded_at"] == "15/01/2025"
         assert by_id["reg-v2"].metadata["valid_from"] == "2025-01-15T00:00:00Z"

@@ -39,7 +39,7 @@ class KGAgentExecuteGraphOperationTool(BaseTool):
         """
         description: str = (
             "Use this tool to execute a read-only graph query. "
-            "Writes, DELETE, USE, CALL dbms.*, and database admin are rejected; "
+            "Writes, DELETE, USE, CALL dbms.*, LOAD CSV, CALL apoc.*, and database admin are rejected; "
             "use structured graph tools to mutate the graph. "
             "The query should be a valid graph read depending on the graph database type. "
             "The query should be a valid JSON object with a 'query' key. "

@@ -96,7 +96,12 @@ def render_markdown(report: dict[str, Any]) -> str:
             extra = metrics.get("conflict_pairs")
             acc = _pct(metrics.get("accuracy"))
             if extra:
-                acc = f"{acc} (pair F1 {extra.get('f1', 0):.2f})"
+                if extra.get("unsupported"):
+                    acc = f"{acc} (pair F1 unsupported)"
+                elif extra.get("f1") is None:
+                    acc = f"{acc} (pair F1 n/a)"
+                else:
+                    acc = f"{acc} (pair F1 {extra.get('f1', 0):.2f})"
             rows.append(
                 [
                     sys_name,

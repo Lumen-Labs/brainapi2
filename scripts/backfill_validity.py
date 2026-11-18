@@ -2,7 +2,8 @@
 """Fill missing valid_from / valid_to on an existing brain.
 
 Safe to run twice on a live brain: existing stamps are not rewritten, live
-copies are not closed, and a second pass reports zero writes.
+copies are not closed, ingest time is not copied onto valid_from, and a
+second pass reports zero writes.
 
     poetry run python scripts/backfill_validity.py --brain-id BRAIN --dry-run
     poetry run python scripts/backfill_validity.py --brain-id BRAIN

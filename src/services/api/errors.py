@@ -153,6 +153,30 @@ def error_response(
     )
 
 
+def _cypher_identifier_detail(exc: InvalidCypherIdentifier) -> str:
+    if exc.kind in {"limit", "path_depth", "integer"}:
+        return str(exc)
+    if exc.kind == "endpoint":
+        return "Relationship endpoint is invalid"
+    return f"Invalid {exc.kind}"
+
+
+def _cypher_identifier_resolution(exc: InvalidCypherIdentifier) -> str:
+    if exc.kind in {"limit", "path_depth", "integer"}:
+        return "Use an integer within the documented range."
+    if exc.kind == "database":
+        return (
+            "Use a Neo4j database name of 3-63 characters starting with a letter, "
+            "containing only letters, digits, dots, and dashes."
+        )
+    if exc.kind == "endpoint":
+        return "Identify each relationship endpoint by uuid or by name."
+    return (
+        "Use labels, relationship types, and property keys made of letters, "
+        "digits, and underscore. Pass values as data, not as query syntax."
+    )
+
+
 def install_error_handlers(app: FastAPI) -> None:
     """Install handlers for framework, validation, and unexpected exceptions."""
 
@@ -191,8 +215,9 @@ def install_error_handlers(app: FastAPI) -> None:
             code="CYPHER_QUERY_REJECTED",
             message="The graph query is not allowed.",
             resolution=(
-                "Send a single read-only query against this brain. Writes, DELETE, "
-                "USE, CALL dbms.*, and database administration are blocked."
+                "Send a single read-only query against this brain. USE, CALL dbms.*, "
+                "and database administration are always blocked. Writes and DELETE "
+                "need GRAPH_RAW_WRITE_ENABLED."
             ),
         )
 
@@ -208,13 +233,10 @@ def install_error_handlers(app: FastAPI) -> None:
         return error_response(
             request,
             status_code=400,
-            detail=str(exc),
+            detail=_cypher_identifier_detail(exc),
             code="CYPHER_IDENTIFIER_INVALID",
             message="A graph identifier in the request is invalid.",
-            resolution=(
-                "Use labels, relationship types, and brain IDs made of letters, "
-                "digits, and underscore. Pass values as data, not as query syntax."
-            ),
+            resolution=_cypher_identifier_resolution(exc),
             extra=extra,
         )
 

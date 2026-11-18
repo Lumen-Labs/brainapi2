@@ -238,6 +238,29 @@ class EventHubInvalidationTests(unittest.TestCase):
             )
         self.assertEqual(graph.updates, [])
 
+    def test_requires_many_clauses_is_not_superseded(self):
+        from src.workers.tasks import ingestion as ingestion_mod
+
+        graph = _FakeGraphAdapter()
+        graph.add_node("rule", "Rule 12", "RULE")
+        graph.add_node("id-check", "Identity check", "CLAUSE")
+        graph.add_node("retention", "Retention period", "CLAUSE")
+        graph.add_edge("rel-1", "rule", "REQUIRES", "id-check")
+        graph.add_edge("rel-2", "rule", "REQUIRES", "retention")
+
+        relationship = _relationship(
+            "rel-2",
+            _entity("rule", "Rule 12", "RULE"),
+            "REQUIRES",
+            _entity("retention", "Retention period", "CLAUSE"),
+            valid_at="2025-01-01T00:00:00Z",
+        )
+        with patch.object(ingestion_mod, "graph_adapter", graph):
+            ingestion_mod._invalidate_superseded_relationships(
+                relationship, brain_id="brain-a"
+            )
+        self.assertEqual(graph.updates, [])
+
     def test_applies_to_many_plans_is_not_superseded(self):
         from src.workers.tasks import ingestion as ingestion_mod
 
@@ -334,6 +357,59 @@ class EventHubInvalidationTests(unittest.TestCase):
         self.assertNotEqual(relationship.uuid, closed_id)
         self.assertEqual(graph.predicate(closed_id).properties["valid_from"], "2020-01-01T00:00:00Z")
         self.assertEqual(graph.predicate(closed_id).properties["valid_to"], "2023-01-01T00:00:00Z")
+
+    def test_undated_reopening_does_not_reuse_closed_interval_id(self):
+        from src.core.saving.identity import stable_relationship_id
+        from src.workers.tasks import ingestion as ingestion_mod
+
+        graph = _FakeGraphAdapter()
+        graph.add_node("alice", "Alice", "PERSON")
+        graph.add_node("paris", "Paris", "CITY")
+        closed_id = stable_relationship_id("alice", "LIVES_IN", "paris")
+        graph.add_edge(
+            closed_id,
+            "alice",
+            "LIVES_IN",
+            "paris",
+            properties={"valid_to": "2023-01-01T00:00:00Z"},
+        )
+        relationship = _relationship(
+            closed_id,
+            _entity("alice", "Alice", "PERSON"),
+            "LIVES_IN",
+            _entity("paris", "Paris", "CITY"),
+        )
+        with patch.object(ingestion_mod, "graph_adapter", graph):
+            ingestion_mod._assign_relationship_interval(
+                relationship, brain_id="brain-a"
+            )
+            retry = _relationship(
+                closed_id,
+                _entity("alice", "Alice", "PERSON"),
+                "LIVES_IN",
+                _entity("paris", "Paris", "CITY"),
+            )
+            ingestion_mod._assign_relationship_interval(retry, brain_id="brain-a")
+        self.assertNotEqual(relationship.uuid, closed_id)
+        self.assertEqual(retry.uuid, relationship.uuid)
+
+        graph.add_edge(
+            relationship.uuid,
+            "alice",
+            "LIVES_IN",
+            "paris",
+            properties={"valid_to": "2024-01-01T00:00:00Z"},
+        )
+        later = _relationship(
+            closed_id,
+            _entity("alice", "Alice", "PERSON"),
+            "LIVES_IN",
+            _entity("paris", "Paris", "CITY"),
+        )
+        with patch.object(ingestion_mod, "graph_adapter", graph):
+            ingestion_mod._assign_relationship_interval(later, brain_id="brain-a")
+        self.assertNotEqual(later.uuid, closed_id)
+        self.assertNotEqual(later.uuid, relationship.uuid)
 
     def test_open_same_endpoint_edge_keeps_original_valid_from(self):
         from src.core.saving.identity import stable_relationship_id
@@ -452,6 +528,46 @@ class EventHubInvalidationTests(unittest.TestCase):
                 ingestion_mod._assign_relationship_interval(
                     relationship, brain_id="brain-a"
                 )
+            with self.assertRaises(RuntimeError):
+                ingestion_mod._invalidate_superseded_relationships(
+                    relationship, brain_id="brain-a"
+                )
+
+    def test_assign_and_invalidate_reuse_one_neighbor_fetch(self):
+        from src.workers.tasks import ingestion as ingestion_mod
+
+        graph = _FakeGraphAdapter()
+        graph.add_node("alice", "Alice", "PERSON")
+        graph.add_node("paris", "Paris", "CITY")
+        graph.add_node("lyon", "Lyon", "CITY")
+        graph.add_edge("rel-old", "alice", "LIVES_IN", "lyon")
+        calls = {"n": 0}
+        real_get = graph.get_neighbors
+
+        def counting_get(*args, **kwargs):
+            calls["n"] += 1
+            return real_get(*args, **kwargs)
+
+        graph.get_neighbors = counting_get
+        relationship = _relationship(
+            "rel-new",
+            _entity("alice", "Alice", "PERSON"),
+            "LIVES_IN",
+            _entity("paris", "Paris", "CITY"),
+            valid_at="2024-06-01T00:00:00Z",
+        )
+        with patch.object(ingestion_mod, "graph_adapter", graph):
+            neighbors = ingestion_mod._relationship_neighbor_map(
+                relationship, brain_id="brain-a"
+            )
+            ingestion_mod._assign_relationship_interval(
+                relationship, brain_id="brain-a", neighbors=neighbors
+            )
+            ingestion_mod._invalidate_superseded_relationships(
+                relationship, brain_id="brain-a", neighbors=neighbors
+            )
+        self.assertEqual(calls["n"], 1)
+        self.assertEqual(graph.updates[0][0], "rel-old")
 
 
 if __name__ == "__main__":

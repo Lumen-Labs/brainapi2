@@ -14,6 +14,9 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 from src.services.api.dependencies import get_brain_id
 from src.services.api.constants.requests import (
+    ConflictDismissRequest,
+    ConflictResolveRequest,
+    ConflictScanRequest,
     GetEntityContextResponse,
     GetEntityInfoResponse,
     GetEntitySibilingsResponse,
@@ -32,6 +35,10 @@ from src.services.api.constants.requests import (
 from src.services.api.constants.responses import (
     ChangelogItemResponse,
     ChangelogListResponse,
+    ConflictItemResponse,
+    ConflictListResponse,
+    ConflictReportResponse,
+    ConflictScanAcceptedResponse,
     EntityListResponse,
     HopListResponse,
     LabelListResponse,
@@ -72,6 +79,14 @@ from src.services.api.controllers.changelogs import (
     get_changelog_by_id as get_changelog_by_id_controller,
     get_changelogs_list as get_changelogs_list_controller,
     get_changelog_types as get_changelog_types_controller,
+)
+from src.services.api.controllers.conflicts import (
+    dismiss_conflict_by_id as dismiss_conflict_by_id_controller,
+    get_conflict_by_id as get_conflict_by_id_controller,
+    get_conflict_report as get_conflict_report_controller,
+    get_conflicts_list as get_conflicts_list_controller,
+    resolve_conflict_by_id as resolve_conflict_by_id_controller,
+    start_conflict_scan as start_conflict_scan_controller,
 )
 from src.services.api.controllers.entities import (
     get_entity_info as get_entity_info_controller,
@@ -458,6 +473,75 @@ async def get_changelog_types(
         list[str]: List of unique changelog type names.
     """
     return await get_changelog_types_controller(brain_id)
+
+
+@retrieve_router.get(path="/conflicts", response_model=ConflictListResponse)
+async def get_conflicts_list(
+    limit: int = 10,
+    skip: int = 0,
+    status: Optional[str] = Query(None, description="open, resolved, or dismissed"),
+    source: Optional[str] = Query(None, description="Filter by source_key"),
+    subject: Optional[str] = Query(None, description="Filter by subject name"),
+    since: Optional[str] = Query(None, description="ISO-8601 detected_at start"),
+    until: Optional[str] = Query(None, description="ISO-8601 detected_at end"),
+    brain_id: str = Depends(get_brain_id),
+):
+    return await get_conflicts_list_controller(
+        limit, skip, status, source, subject, since, until, brain_id
+    )
+
+
+@retrieve_router.get(path="/conflicts/report", response_model=ConflictReportResponse)
+async def get_conflict_report(
+    status: Optional[str] = None,
+    source: Optional[str] = None,
+    subject: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    format: str = Query("json", description="json or markdown"),
+    limit: int = 200,
+    skip: int = 0,
+    brain_id: str = Depends(get_brain_id),
+):
+    return await get_conflict_report_controller(
+        brain_id, status, source, subject, since, until, format, limit, skip
+    )
+
+
+@retrieve_router.post(path="/conflicts/scan", response_model=ConflictScanAcceptedResponse)
+async def start_conflict_scan(
+    request: ConflictScanRequest = Body(default_factory=ConflictScanRequest),
+    brain_id: str = Depends(get_brain_id),
+):
+    return await start_conflict_scan_controller(brain_id, request.use_llm)
+
+
+@retrieve_router.get(path="/conflicts/{id}", response_model=ConflictItemResponse)
+async def get_conflict_by_id(
+    id: str,
+    brain_id: str = Depends(get_brain_id),
+):
+    return await get_conflict_by_id_controller(id, brain_id)
+
+
+@retrieve_router.post(path="/conflicts/{id}/resolve", response_model=ConflictItemResponse)
+async def resolve_conflict_by_id(
+    id: str,
+    request: ConflictResolveRequest = Body(default_factory=ConflictResolveRequest),
+    brain_id: str = Depends(get_brain_id),
+):
+    return await resolve_conflict_by_id_controller(
+        id, brain_id, request.winning_fact_id, request.notes, request.method or "manual"
+    )
+
+
+@retrieve_router.post(path="/conflicts/{id}/dismiss", response_model=ConflictItemResponse)
+async def dismiss_conflict_by_id(
+    id: str,
+    request: ConflictDismissRequest = Body(default_factory=ConflictDismissRequest),
+    brain_id: str = Depends(get_brain_id),
+):
+    return await dismiss_conflict_by_id_controller(id, brain_id, request.notes)
 
 
 @retrieve_router.get(path="/changelogs/{id}", response_model=ChangelogItemResponse)

@@ -6,6 +6,7 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, JsonValue, RootModel
 
+from src.constants.conflicts import FactConflict
 from src.constants.data import KGChanges, Observation, StructuredData, TextChunk
 from src.constants.embeddings import Vector
 from src.constants.kg import Node, Predicate, Triple
@@ -131,6 +132,30 @@ class ValidityChange(BaseModel):
     changelog: Optional[dict[str, JsonValue]] = None
 
 
+class ConflictItemResponse(BaseModel):
+    message: str
+    conflict: FactConflict
+
+
+class ConflictListResponse(BaseModel):
+    message: str
+    conflicts: list[FactConflict]
+    count: int
+    total: int
+
+
+class ConflictScanAcceptedResponse(BaseModel):
+    message: str
+    task_id: str
+
+
+class ConflictReportResponse(BaseModel):
+    message: str
+    summary: dict[str, JsonValue]
+    conflicts: list[FactConflict]
+    markdown: Optional[str] = None
+
+
 class ChangelogListResponse(BaseModel):
     message: str
     changelogs: list[KGChanges]
@@ -227,6 +252,11 @@ class PurgeConnectionsSummary(BaseModel):
     unlink: int
 
 
+class PurgeCompletedAction(BaseModel):
+    kind: str
+    id: str
+
+
 class PurgeIngestionResponse(BaseModel):
     digest: str
     executed: bool
@@ -235,3 +265,8 @@ class PurgeIngestionResponse(BaseModel):
     entities: PurgeNamedItems
     connections: PurgeConnectionsSummary
     unresolved: int
+    ledger_incomplete: bool = False
+    ledger_error: Optional[str] = None
+    partial: bool = False
+    completed: Optional[list[PurgeCompletedAction]] = None
+    error: Optional[str] = None

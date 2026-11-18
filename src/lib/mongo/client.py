@@ -16,6 +16,7 @@ from pymongo.collection import Collection
 from pymongo.errors import DuplicateKeyError
 from src.adapters.interfaces.data import DataClient, SearchResult
 from src.config import config
+from src.constants.conflicts import FactConflict, conflict_from_document, conflict_to_document
 from src.constants.data import Brain, KGChanges, Observation, StructuredData, TextChunk
 
 
@@ -26,6 +27,7 @@ class MongoClient(DataClient):
 
     def __init__(self):
         self._ingest_group_ready: set[str] = set()
+        self._conflicts_ready: set[str] = set()
         if (
             hasattr(config.mongo, "connection_string")
             and config.mongo.connection_string
@@ -683,6 +685,109 @@ class MongoClient(DataClient):
         meters.replace_one({"_id": group_tracking}, updated, upsert=True)
         return True
 
+
+    def _ensure_conflict_indexes(self, brain_id: str) -> None:
+        if brain_id in self._conflicts_ready:
+            return
+        collection = self.get_collection("conflicts", database=brain_id)
+        collection.create_index("id", unique=True, name="uniq_conflict_id")
+        collection.create_index("pair_key", unique=True, name="uniq_conflict_pair")
+        collection.create_index("status", name="conflict_status")
+        collection.create_index("claim_key", name="conflict_claim")
+        collection.create_index("subject.name", name="conflict_subject")
+        collection.create_index("detected_at", name="conflict_detected")
+        collection.create_index("sides.fact_id", name="conflict_fact_ids")
+        collection.create_index("sides.source.source_key", name="conflict_source_keys")
+        self._conflicts_ready.add(brain_id)
+
+    def _conflict_document(self, conflict: FactConflict) -> dict[str, Any]:
+        document = conflict_to_document(conflict)
+        document["id"] = conflict.id
+        document["pair_key"] = conflict.pair_key
+        document["claim_key"] = conflict.claim_key
+        document["status"] = conflict.status
+        document["detected_at"] = conflict.detected_at
+        return document
+
+    def save_conflict(self, conflict: FactConflict, brain_id: str) -> FactConflict:
+        self._ensure_conflict_indexes(brain_id)
+        collection = self.get_collection("conflicts", database=brain_id)
+        document = self._conflict_document(conflict)
+        collection.update_one({"id": conflict.id}, {"$set": document}, upsert=True)
+        return conflict
+
+    def update_conflict(self, conflict: FactConflict, brain_id: str) -> FactConflict:
+        return self.save_conflict(conflict, brain_id)
+
+    def get_conflict_by_id(self, id: str, brain_id: str) -> Optional[FactConflict]:
+        collection = self.get_collection("conflicts", database=brain_id)
+        row = collection.find_one({"id": id})
+        return conflict_from_document(row)
+
+    def get_conflict_by_pair_key(
+        self, pair_key: str, brain_id: str
+    ) -> Optional[FactConflict]:
+        collection = self.get_collection("conflicts", database=brain_id)
+        row = collection.find_one({"pair_key": pair_key})
+        return conflict_from_document(row)
+
+    def get_conflicts_list(
+        self,
+        brain_id: str,
+        limit: int = 10,
+        skip: int = 0,
+        status: str | None = None,
+        source: str | None = None,
+        subject: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> Tuple[list[FactConflict], int]:
+        collection = self.get_collection("conflicts", database=brain_id)
+        query: dict[str, Any] = {}
+        if status:
+            query["status"] = status
+        if source:
+            query["sides.source.source_key"] = source
+        if subject:
+            query["subject.name"] = {"$regex": subject, "$options": "i"}
+        if since is not None or until is not None:
+            from src.core.saving.validity import format_instant
+
+            window: dict[str, Any] = {}
+            if since is not None:
+                window["$gte"] = format_instant(since)
+            if until is not None:
+                window["$lt"] = format_instant(until)
+            query["detected_at"] = window
+        total = collection.count_documents(query)
+        rows = (
+            collection.find(query)
+            .sort("detected_at", -1)
+            .skip(int(skip))
+            .limit(int(limit))
+        )
+        conflicts: list[FactConflict] = []
+        for row in rows:
+            parsed = conflict_from_document(row)
+            if parsed is not None:
+                conflicts.append(parsed)
+        return conflicts, int(total)
+
+    def get_open_conflicts_for_facts(
+        self, fact_ids: list[str], brain_id: str
+    ) -> list[FactConflict]:
+        if not fact_ids:
+            return []
+        collection = self.get_collection("conflicts", database=brain_id)
+        rows = collection.find(
+            {"status": "open", "sides.fact_id": {"$in": list(fact_ids)}}
+        )
+        conflicts: list[FactConflict] = []
+        for row in rows:
+            parsed = conflict_from_document(row)
+            if parsed is not None:
+                conflicts.append(parsed)
+        return conflicts
 
     def get_ingest_group(
         self, brain_id: str, group_tracking: str

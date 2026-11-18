@@ -11,9 +11,37 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 from datetime import datetime
 from typing import List, Literal, Optional, Tuple, TypedDict, Union
 import uuid
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from src.constants.data import Observation
+
+
+def _coerce_datetime(value):
+    if value in (None, ""):
+        return datetime.now()
+    if isinstance(value, datetime):
+        return value
+    to_native = getattr(value, "to_native", None)
+    if callable(to_native):
+        try:
+            native = to_native()
+            if isinstance(native, datetime):
+                return native
+        except Exception:
+            pass
+    iso = getattr(value, "isoformat", None)
+    if callable(iso) and not isinstance(value, str):
+        try:
+            value = iso()
+        except TypeError:
+            return datetime.now()
+    if isinstance(value, str):
+        text = value.replace("Z", "+00:00")
+        try:
+            return datetime.fromisoformat(text)
+        except ValueError:
+            return datetime.now()
+    return datetime.now()
 
 
 class Node(BaseModel):
@@ -45,6 +73,11 @@ class Node(BaseModel):
         default_factory=datetime.now,
         description="The date and time the node was last updated.",
     )
+
+    @field_validator("last_updated", mode="before")
+    @classmethod
+    def _coerce_node_last_updated(cls, value):
+        return _coerce_datetime(value)
 
     observations: Optional[List[Observation]] = Field(
         default=None, description="The observations of the node."
@@ -97,6 +130,11 @@ class Predicate(BaseModel):
         default_factory=datetime.now,
         description="The date and time the predicate was last updated.",
     )
+
+    @field_validator("last_updated", mode="before")
+    @classmethod
+    def _coerce_predicate_last_updated(cls, value):
+        return _coerce_datetime(value)
     deprecated: bool = Field(
         default=False, description="Whether the predicate is deprecated."
     )

@@ -136,6 +136,9 @@ class ChangelogToolTests(unittest.TestCase):
         self.assertIn('tool_name == "list_changelogs"', executor)
         self.assertIn('tool_name == "get_changelog"', executor)
         self.assertIn('tool_name == "list_source_versions"', executor)
+        self.assertIn('tool_name == "list_conflicts"', executor)
+        self.assertIn('tool_name == "get_conflict"', executor)
+        self.assertIn('tool_name == "conflict_report"', executor)
         instructions = (root / "src/services/mcp/main.py").read_text(encoding="utf-8")
         self.assertIn("HISTORY_NAVIGATION_GUIDE", instructions)
 

@@ -30,8 +30,9 @@ ENV_DEFAULTS = {
 for key, value in ENV_DEFAULTS.items():
     os.environ.setdefault(key, value)
 
+from src.constants.data import Observation
 from src.constants.kg import IdentificationParams, Node, Predicate
-from src.lib.cypher_safety import InvalidCypherIdentifier
+from src.lib.cypher_safety import InvalidCypherIdentifier, clean_label
 from src.lib.neo4j.client import Neo4jClient
 
 INJECTION_VALUES = [
@@ -129,6 +130,18 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
         self.assertEqual(dumped["properties"]["note"], "x")
         self.assertIsInstance(dumped["properties"]["last_updated"], str)
 
+    def test_node_accepts_neo4j_datetime_last_updated(self):
+        from datetime import datetime as dt
+        from neo4j.time import DateTime
+
+        node = Node(
+            uuid="n1",
+            name="Ada",
+            labels=["PERSON"],
+            last_updated=DateTime(2026, 11, 16, 20, 17, 39),
+        )
+        self.assertIsInstance(node.last_updated, dt)
+
     def test_event_centric_neighbors_hydrate_neo4j_datetime(self):
         from datetime import datetime as dt
         from neo4j.time import DateTime
@@ -173,7 +186,7 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
             self.assertIsInstance(dumped["last_updated"], str)
 
     def test_add_relationship_returns_ok_string(self):
-        client = _client()
+        client = _client(records=[_Record({"a": 1})])
         predicate = Predicate(uuid="rel-1", name="OWNS", description="owns")
         result = client.add_relationship(
             _person("a"), predicate, _person("b", "Widget"), "braina"
@@ -208,13 +221,53 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
             self.assertEqual(params["description"], payload)
             self.assertEqual(params["props"]["note"], payload)
 
-    def test_add_relationship_parameterizes_endpoint_and_predicate_uuids(self):
+    def test_add_nodes_keeps_ingest_task_ids_as_list_property(self):
         client = _client()
+        node = _person()
+        node.properties = {"ingest_task_ids": ["task-1", "task-2"]}
+        client.add_nodes([node], "braina")
+        _query, params, _db = client.driver.calls[0]
+        self.assertEqual(params["ingest_task_ids"], ["task-1", "task-2"])
+        self.assertNotIn("ingest_task_ids", params["props"])
+
+    def test_add_nodes_maps_non_ascii_labels_and_skips_invalid(self):
+        client = _client()
+        added = client.add_nodes(
+            [
+                Node(uuid="n-city", name="Roma", labels=["CITTÀ"]),
+                Node(uuid="n-name", name="Hanako", labels=["名前"]),
+                Node(uuid="n-person", name="Ada", labels=["PERSON"]),
+                Node(uuid="n-bad", name="Skip", labels=["PERSON`x"]),
+            ],
+            "braina",
+        )
+        self.assertEqual([node.uuid for node in added], ["n-city", "n-name", "n-person"])
+        queries = [call[0] for call in client.driver.calls]
+        self.assertEqual(len(queries), 3)
+        self.assertIn("MERGE (n:`CITTA` {uuid: $uuid})", queries[0])
+        self.assertIn(f"MERGE (n:`{clean_label('名前')}` {{uuid: $uuid}})", queries[1])
+        self.assertIn("MERGE (n:`PERSON` {uuid: $uuid})", queries[2])
+        city_params = client.driver.calls[0][1]
+        self.assertEqual(city_params["props"]["original_type"], "CITTÀ")
+        name_params = client.driver.calls[1][1]
+        self.assertEqual(name_params["props"]["original_type"], "名前")
+        with self.assertRaises(InvalidCypherIdentifier):
+            client.add_nodes(
+                [Node(uuid="only-bad", name="Skip", labels=["PERSON`x"])],
+                "braina",
+            )
+
+    def test_add_relationship_parameterizes_endpoint_and_predicate_uuids(self):
+        client = _client(records=[_Record({"a": 1})])
         predicate = Predicate(
             uuid="rel-1",
             name="OWNS",
             description="owns",
-            properties={"v_id": "v1"},
+            properties={
+                "v_id": "v1",
+                "valid_from": "2026-01-01T00:00:00Z",
+                "source": "structured_deterministic",
+            },
             flow_key="flow-1",
         )
         client.add_relationship(_person("a"), predicate, _person("b", "Widget"), "braina")
@@ -225,8 +278,31 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
         self.assertEqual(params["subject_uuid"], "a")
         self.assertEqual(params["object_uuid"], "b")
         self.assertEqual(params["predicate_uuid"], "rel-1")
-        self.assertIsInstance(params["extra_props"]["properties"], str)
-        self.assertIn("v1", params["extra_props"]["properties"])
+        extra = params["extra_props"]
+        self.assertNotIsInstance(extra.get("properties"), dict)
+        self.assertEqual(extra.get("v_id"), "v1")
+        self.assertEqual(extra.get("valid_from"), "2026-01-01T00:00:00Z")
+        self.assertEqual(extra.get("source"), "structured_deterministic")
+        self.assertIsInstance(extra.get("last_updated"), str)
+
+    def test_add_relationship_keeps_zero_amount_and_omits_endpoint_uuid(self):
+        client = _client(records=[_Record({"a": 1})])
+        subject = _person("a")
+        subject.properties = {"uuid": "node-a", "note": "subject"}
+        obj = _person("b", "Widget")
+        obj.properties = {"uuid": "node-b"}
+        predicate = Predicate(
+            uuid="rel-1",
+            name="OWNS",
+            description="owns",
+            amount=0.0,
+            properties={"uuid": "should-not-win", "v_id": "v1"},
+        )
+        client.add_relationship(subject, predicate, obj, "braina")
+        extra = client.driver.calls[0][1]["extra_props"]
+        self.assertEqual(extra.get("amount"), 0.0)
+        self.assertNotIn("uuid", extra)
+        self.assertEqual(extra.get("v_id"), "v1")
 
     def test_deprecate_relationship_does_not_interpolate_names(self):
         client = _client()
@@ -303,6 +379,27 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
             self.assertNotIn(payload, query)
             flattened = str(params)
             self.assertIn(payload, flattened)
+
+    def test_search_entities_json_serializes_datetime_properties(self):
+        from datetime import datetime, timezone
+
+        stamp = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        client = _client(
+            records=[
+                {
+                    "uuid": "n1",
+                    "name": "Alice",
+                    "labels": ["PERSON"],
+                    "description": "",
+                    "properties": {"last_updated": stamp, "name": "Alice"},
+                }
+            ]
+        )
+        result = client.search_entities("braina", limit=1)
+        entity = result.results[0]
+        self.assertIsInstance(entity.properties["last_updated"], str)
+        dumped = entity.model_dump(mode="json")
+        self.assertIsInstance(dumped["properties"]["last_updated"], str)
 
     def test_search_entities_and_relationships_parameterize_query_text(self):
         client = _client()
@@ -388,11 +485,12 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
         params_model = IdentificationParams(name="O'Brien")
         client.get_by_identification_params(params_model, "braina", entity_types=["PERSON"])
         query, params, _db = client.driver.calls[0]
-        self.assertIn("MATCH (n)", query)
-        self.assertIn("any(lbl IN labels(n) WHERE lbl IN $entity_labels)", query)
-        self.assertEqual(params["entity_labels"], ["PERSON"])
+        self.assertIn("MATCH (n) ", query)
+        self.assertNotIn("MATCH (n:`PERSON`)", query)
+        self.assertIn("ANY(lbl IN labels(n) WHERE lbl IN $entity_types)", query)
+        self.assertEqual(params["entity_types"], ["PERSON"])
         self.assertIn("n[$key_0] = $param_0", query)
-        self.assertEqual(params["param_0"], "O'Brien")
+        self.assertIn("O'Brien", params.values())
         self.assertNotIn("O'Brien", query)
 
     def test_event_centric_triples_removes_and_lists_use_params(self):
@@ -442,10 +540,100 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
         with self.assertRaises(InvalidCypherIdentifier):
             client.ensure_database("brain-a; MATCH (n) DETACH DELETE n")
 
+    def test_list_validity_relationships_parameterizes_subject_uuids(self):
+        client = _client()
+        payload = "'; MATCH (n) DETACH DELETE n //"
+        client.list_validity_relationships(
+            "braina",
+            skip=2,
+            limit=5,
+            subject_uuids=[payload],
+        )
+        query, params, _db = client.driver.calls[0]
+        self.assertIn("n['uuid'] IN $subject_uuids", query)
+        self.assertIn("SKIP $skip LIMIT $limit", query)
+        self.assertEqual(params["subject_uuids"], [payload])
+        self.assertEqual(params["skip"], 2)
+        self.assertEqual(params["limit"], 5)
+        self.assertNotIn(payload, query)
+
     def test_execute_operation_rejects_injected_database_name(self):
         client = _client()
         with self.assertRaises(InvalidCypherIdentifier):
             client.execute_operation("RETURN 1", "neo4j`; MATCH (n) DETACH DELETE n")
+
+    def test_add_relationship_requires_matched_endpoints(self):
+        subject = _person()
+        obj = _person(uuid="bob-1", name="Bob")
+        pred = Predicate(uuid="rel-1", name="KNOWS", description="")
+        ok_client = _client(records=[_Record({"a": 1})])
+        self.assertEqual(
+            ok_client.add_relationship(subject, pred, obj, "braina"),
+            "ok",
+        )
+        missing = _client(records=[])
+        with self.assertRaises(ValueError):
+            missing.add_relationship(subject, pred, obj, "braina")
+
+    def test_add_nodes_skips_uuid_property_and_encodes_observations(self):
+        client = _client(records=[_Record({"n": 1})])
+        obs = Observation(text="seen", resource_id="res-1")
+        node = Node(
+            uuid="node-1",
+            name="Alice",
+            labels=["PERSON"],
+            properties={"uuid": "attacker", "note": "ok"},
+            observations=[obs],
+        )
+        client.add_nodes([node], "braina")
+        _query, params, _db = client.driver.calls[0]
+        self.assertEqual(params["uuid"], "node-1")
+        self.assertNotIn("uuid", params["props"])
+        self.assertEqual(params["props"]["note"], "ok")
+        self.assertIsInstance(params["props"]["observations"], str)
+        decoded = client._decode_observations(params["props"]["observations"])
+        self.assertEqual(decoded[0]["text"], "seen")
+        self.assertEqual(client._decode_observations("[]"), [])
+        self.assertEqual(client._decode_observations(""), [])
+        self.assertIsNone(client._decode_observations(None))
+
+    def test_remove_relationships_requires_endpoint_identity(self):
+        client = _client()
+        with self.assertRaises(InvalidCypherIdentifier):
+            client.remove_relationships(
+                [({}, {"name": "KNOWS"}, {"uuid": "b"})],
+                "braina",
+            )
+        with self.assertRaises(InvalidCypherIdentifier):
+            client.remove_relationships(
+                [
+                    (
+                        {"labels": ["PERSON"]},
+                        {"name": "KNOWS"},
+                        {"name": "Bob"},
+                    )
+                ],
+                "braina",
+            )
+
+    def test_remove_relationships_rejects_mixed_batch_before_uuid_deletes(self):
+        client = _client(records=[_Record({"n_uuid": "a"})])
+        with self.assertRaises(InvalidCypherIdentifier):
+            client.remove_relationships(
+                [
+                    ({"uuid": "a"}, {"uuid": "rel-1"}, {"uuid": "b"}),
+                    ({}, {"name": "KNOWS"}, {"uuid": "b"}),
+                ],
+                "braina",
+            )
+        self.assertEqual(client.driver.calls, [])
+
+    def test_get_neighbors_applies_zero_limit(self):
+        client = _client()
+        client.get_neighbors(["u-1"], "braina", limit=0)
+        query, params, _db = client.driver.calls[0]
+        self.assertIn("LIMIT $limit", query)
+        self.assertEqual(params["limit"], 0)
 
     def test_fact_verification_reads_and_writes_use_params(self):
         payload = "'; MATCH (n) DETACH DELETE n //"

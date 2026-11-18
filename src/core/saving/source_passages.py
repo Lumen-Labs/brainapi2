@@ -14,6 +14,7 @@ from typing import Any, Literal
 from src.constants.data import TextChunk
 from src.core.saving.history_intent import cosine
 from src.core.saving.validity import (
+    RECORDED_AT,
     VALID_FROM,
     chunk_is_valid_at,
     format_instant,
@@ -26,6 +27,8 @@ Revision = Literal["plain", "insert", "unchanged"]
 _PAGE = 100
 _LOOKUP_PAGE = 80
 _MAX_CHUNKS = 500
+_EMBED_CANDIDATE_FACTOR = 3
+_FETCH_BUFFER = 16
 
 
 def source_content_hash(text: str) -> str:
@@ -107,6 +110,7 @@ def prepare_source_revision(
     source_text: str,
     meta_keys: dict | None,
     source_timestamp: str | None,
+    recorded_at: str | None = None,
     out_superseded: list[str] | None = None,
 ) -> Revision:
     """Mark older current chunks for this key, or report that the hash is unchanged.
@@ -130,7 +134,8 @@ def prepare_source_revision(
     }
     stale = [chunk for chunk in current if str(chunk.id) not in same_ids]
     same = [chunk for chunk in current if str(chunk.id) in same_ids]
-    closed_at = _stamp(source_timestamp)
+    ingest_at = format_instant(parse_instant(recorded_at) or utc_now())
+    closed_at = _stamp(source_timestamp) if source_timestamp else ingest_at
     if same:
         _record_superseded(
             out_superseded,
@@ -142,8 +147,13 @@ def prepare_source_revision(
         _mark(adapter, brain_id, current, closed_at),
     )
     meta_keys["source_content_hash"] = digest
-    stamped = stamp_valid_from(meta_keys, source_timestamp or closed_at)
-    meta_keys[VALID_FROM] = stamped[VALID_FROM]
+    stamped = stamp_valid_from(
+        meta_keys, source_timestamp, recorded_at=ingest_at
+    )
+    if stamped.get(VALID_FROM):
+        meta_keys[VALID_FROM] = stamped[VALID_FROM]
+    if stamped.get(RECORDED_AT):
+        meta_keys[RECORDED_AT] = stamped[RECORDED_AT]
     return "insert"
 
 
@@ -330,26 +340,155 @@ def screen_passage_hits(
     return screened
 
 
-def _revision_rank(
-    body: str,
-    meta: dict | None,
-    *,
-    query_text: str | None,
-    query_vector: list[float] | None,
+def embed_candidate_cap(limit: int) -> int:
+    return min(_MAX_CHUNKS, max(0, limit) * _EMBED_CANDIDATE_FACTOR)
+
+
+def _as_vector(value: Any) -> list[float] | None:
+    if value is None:
+        return None
+    embeddings = getattr(value, "embeddings", None)
+    if embeddings is not None:
+        value = embeddings
+    if not isinstance(value, (list, tuple)) or not value:
+        return None
+    try:
+        return [float(item) for item in value]
+    except (TypeError, ValueError):
+        return None
+
+
+def _stored_embedding(chunk: Any) -> list[float] | None:
+    for attr in ("embeddings", "embedding", "vector"):
+        found = _as_vector(getattr(chunk, attr, None))
+        if found:
+            return found
+    meta = getattr(chunk, "metadata", None) or {}
+    if not isinstance(meta, dict):
+        return None
+    for key in ("embeddings", "embedding", "vector"):
+        found = _as_vector(meta.get(key))
+        if found:
+            return found
+    return None
+
+
+def _compatible_vector(
+    value: list[float] | None, query_vector: list[float] | None
+) -> list[float] | None:
+    if not value or not query_vector or len(value) != len(query_vector):
+        return None
+    return value
+
+
+def _recency_sort_key(value: str) -> tuple[float, str]:
+    parsed = parse_instant(value)
+    if parsed is not None:
+        return (parsed.timestamp(), value)
+    return (float("-inf"), value)
+
+
+def _lexical_overlap(query_text: str | None, body: str) -> float:
+    if not query_text:
+        return 0.0
+    query_terms = set(query_text.lower().split())
+    if not query_terms:
+        return 0.0
+    return float(len(query_terms & set(body.lower().split())))
+
+
+def _batch_embed(
+    texts: list[str],
     embed: Callable[[str], list[float]] | None,
-) -> tuple[float, str]:
-    recency = str((meta or {}).get("superseded_at") or "")
-    if query_vector and embed:
+    embed_many: Callable[[list[str]], list[list[float]]] | None,
+) -> tuple[list[list[float] | None] | None, bool]:
+    if not texts:
+        return [], False
+    batchers = [
+        batch
+        for batch in (embed_many, getattr(embed, "embed_texts", None))
+        if callable(batch)
+    ]
+    if not batchers:
+        return None, False
+    for batch in batchers:
         try:
-            vector = embed(body)
-            return (cosine(query_vector, vector), recency)
+            vectors = batch(texts)
         except Exception:
-            pass
-    if query_text:
-        query_terms = set(query_text.lower().split())
-        overlap = float(len(query_terms & set(body.lower().split())))
-        return (overlap, recency)
-    return (0.0, recency)
+            continue
+        if not isinstance(vectors, list) or len(vectors) != len(texts):
+            continue
+        return [_as_vector(item) for item in vectors], True
+    return [None] * len(texts), True
+
+
+def _candidate_vectors(
+    bodies: list[str],
+    stored: list[list[float] | None],
+    embed: Callable[[str], list[float]] | None,
+    embed_many: Callable[[list[str]], list[list[float]]] | None,
+    query_vector: list[float] | None,
+) -> list[list[float] | None]:
+    if not query_vector:
+        return [None] * len(bodies)
+    vectors = [_compatible_vector(item, query_vector) for item in stored]
+    missing = [index for index, item in enumerate(vectors) if not item]
+    if not missing:
+        return vectors
+    batched, attempted = _batch_embed(
+        [bodies[index] for index in missing], embed, embed_many
+    )
+    if batched is not None:
+        for index, vector in zip(missing, batched):
+            compatible = _compatible_vector(vector, query_vector)
+            if compatible:
+                vectors[index] = compatible
+        if attempted:
+            return vectors
+    missing = [index for index, item in enumerate(vectors) if not item]
+    if missing and callable(embed):
+        for index in missing:
+            try:
+                vectors[index] = _compatible_vector(
+                    _as_vector(embed(bodies[index])), query_vector
+                )
+            except Exception:
+                vectors[index] = None
+    return vectors
+
+
+def _superseded_chunks_for_key(adapter: Any, brain_id: str, key: str, needed: int) -> list:
+    collected: list = []
+    skip = 0
+    page = min(_PAGE, max(needed + _FETCH_BUFFER, needed, 1))
+    while len(collected) < needed and skip < _MAX_CHUNKS:
+        limit = min(page, _MAX_CHUNKS - skip)
+        kwargs = {
+            "brain_id": brain_id,
+            "limit": limit,
+            "skip": skip,
+            "metadata_eq": {"source_key": key},
+        }
+        try:
+            stored, total = adapter.get_text_chunks(**kwargs, order="desc")
+        except TypeError:
+            try:
+                stored, total = adapter.get_text_chunks(**kwargs)
+            except Exception:
+                break
+        except Exception:
+            break
+        if not stored:
+            break
+        skip += len(stored)
+        for chunk in stored:
+            if (getattr(chunk, "metadata", None) or {}).get("superseded_at"):
+                collected.append(chunk)
+                if len(collected) >= needed:
+                    break
+        if skip >= int(total or 0):
+            break
+    return collected
 
 
 def prior_revision_texts(
@@ -361,11 +500,13 @@ def prior_revision_texts(
     query_text: str | None = None,
     query_vector: list[float] | None = None,
     embed: Callable[[str], list[float]] | None = None,
+    embed_many: Callable[[list[str]], list[list[float]]] | None = None,
 ) -> list[str]:
     """Load superseded copies for the source keys already in these hits.
 
     Search does not have to rank the older copy. The key on a current hit is enough.
     When a query is provided, older copies are ordered by relevance, then recency.
+    Embedding is capped to the newest copies and prefers stored vectors.
     """
     cap = max(0, limit)
     if cap == 0:
@@ -382,23 +523,10 @@ def prior_revision_texts(
         key = source_key_from_meta(getattr(chunk, "metadata", None))
         if key and key not in keys:
             keys.append(key)
-    ranked: list[tuple[float, str, str]] = []
-    seen: set[str] = set()
+    embed_cap = embed_candidate_cap(cap)
+    collected: list[tuple[tuple[float, str], str, str, list[float] | None]] = []
     for key in keys:
-        try:
-            stored, _ = adapter.get_text_chunks(
-                brain_id=brain_id,
-                limit=_MAX_CHUNKS,
-                skip=0,
-                metadata_eq={"source_key": key},
-            )
-        except Exception:
-            continue
-        older = [
-            chunk
-            for chunk in stored
-            if (getattr(chunk, "metadata", None) or {}).get("superseded_at")
-        ]
+        older = _superseded_chunks_for_key(adapter, brain_id, key, embed_cap)
         for chunk in older:
             meta = getattr(chunk, "metadata", None) or {}
             body = visible_passage_body(
@@ -406,18 +534,45 @@ def prior_revision_texts(
                 getattr(chunk, "text", None),
                 include_history=True,
             )
-            if not body or body in seen:
+            if not body:
                 continue
-            seen.add(body)
-            score, recency = _revision_rank(
-                body,
-                meta if isinstance(meta, dict) else None,
-                query_text=query_text,
-                query_vector=query_vector,
-                embed=embed,
+            recency = str(meta.get("superseded_at") or "") if isinstance(meta, dict) else ""
+            collected.append(
+                (_recency_sort_key(recency), recency, body, _stored_embedding(chunk))
             )
-            ranked.append((score, recency, body))
-    ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    collected.sort(key=lambda item: item[0], reverse=True)
+    unique: list[tuple[tuple[float, str], str, str, list[float] | None]] = []
+    seen: set[str] = set()
+    for item in collected:
+        body = item[2]
+        if body in seen:
+            continue
+        seen.add(body)
+        unique.append(item)
+    candidates = unique[:embed_cap]
+    bodies = [body for _key, _recency, body, _vector in candidates]
+    vectors = _candidate_vectors(
+        bodies,
+        [vector for _key, _recency, _body, vector in candidates],
+        embed,
+        embed_many,
+        query_vector,
+    )
+    use_cosine = bool(query_vector) and all(
+        _compatible_vector(vector, query_vector) for vector in vectors
+    )
+    ranked = [
+        (
+            cosine(query_vector, vector)
+            if use_cosine and query_vector and vector
+            else _lexical_overlap(query_text, body),
+            recency,
+            body,
+        )
+        for (_key, recency, body, _stored), vector in zip(candidates, vectors)
+    ]
+    ranked.sort(key=lambda item: _recency_sort_key(item[1]), reverse=True)
+    ranked.sort(key=lambda item: item[0], reverse=True)
     return [body for _score, _recency, body in ranked[:cap]]
 
 

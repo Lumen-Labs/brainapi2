@@ -489,21 +489,26 @@ def _resolve_relationship_entities(
 
     _apply_resolutions()
 
+    from src.core.saving.validity import format_instant, parse_instant, stamp_valid_from, utc_now
+
     for relationship in relationships:
         relationship.properties = stamp_provenance(
             relationship.properties,
             source_chunk_id=source_chunk_id,
             source_timestamp=source_timestamp,
         )
-        if source_timestamp and not (relationship.properties or {}).get("valid_at"):
+        if (
+            parse_instant(source_timestamp) is not None
+            and not (relationship.properties or {}).get("valid_at")
+        ):
             relationship.properties = {
                 **(relationship.properties or {}),
                 "valid_at": source_timestamp,
             }
-        from src.core.saving.validity import stamp_valid_from
-
         relationship.properties = stamp_valid_from(
-            relationship.properties, source_timestamp
+            relationship.properties,
+            source_timestamp,
+            recorded_at=format_instant(utc_now()),
         )
         for entity in (relationship.tail, relationship.tip):
             entity.properties = stamp_provenance(
@@ -561,10 +566,24 @@ def _relationship_flow_key(obj) -> str:
     return str(getattr(obj, "flow_key", None) or props.get("flow_key") or "").strip()
 
 
+def _relationship_neighbor_map(
+    relationship: ArchitectAgentRelationship,
+    *,
+    brain_id: str,
+    neighbors=None,
+):
+    if neighbors is not None:
+        return neighbors
+    return graph_adapter.get_neighbors(
+        [relationship.tail.uuid], brain_id=brain_id
+    )
+
+
 def _assign_relationship_interval(
     relationship: ArchitectAgentRelationship,
     *,
     brain_id: str,
+    neighbors=None,
 ) -> None:
     """Keep a closed interval intact when the same fact is observed again.
 
@@ -585,11 +604,11 @@ def _assign_relationship_interval(
         relationship.tip.uuid,
         relationship.flow_key,
     )
-    neighbors = graph_adapter.get_neighbors(
-        [relationship.tail.uuid], brain_id=brain_id
+    neighbors = _relationship_neighbor_map(
+        relationship, brain_id=brain_id, neighbors=neighbors
     )
     open_match = None
-    closed_match = None
+    closed_ids: list[str] = []
     rel_flow = _relationship_flow_key(relationship)
     for predicate, neighbor in (neighbors or {}).get(relationship.tail.uuid) or []:
         if not predicate or not neighbor:
@@ -607,7 +626,9 @@ def _assign_relationship_interval(
         if is_valid_at(props, None, deprecated=bool(getattr(predicate, "deprecated", False))):
             open_match = predicate
             break
-        closed_match = predicate
+        uuid = getattr(predicate, "uuid", None)
+        if uuid:
+            closed_ids.append(str(uuid))
     if open_match is not None:
         relationship.uuid = open_match.uuid or base
         existing = getattr(open_match, "properties", None) or {}
@@ -617,11 +638,18 @@ def _assign_relationship_interval(
                 VALID_FROM: existing[VALID_FROM],
             }
         return
-    if closed_match is not None:
+    if closed_ids:
         start = (relationship.properties or {}).get(VALID_FROM) or (
             relationship.properties or {}
         ).get("source_timestamp")
-        relationship.uuid = stable_uuid("rel-interval", base, str(start or ""))
+        token = str(start or "") or "|".join(sorted(closed_ids))
+        candidate = stable_uuid("rel-interval", base, token)
+        existing = set(closed_ids)
+        n = 0
+        while candidate in existing:
+            n += 1
+            candidate = stable_uuid("rel-interval", base, token, str(n))
+        relationship.uuid = candidate
         return
     relationship.uuid = base
 
@@ -631,6 +659,7 @@ def _invalidate_superseded_relationships(
     *,
     brain_id: str,
     superseded_chunk_ids: list[str] | tuple[str, ...] | None = None,
+    neighbors=None,
 ) -> None:
     """Close an older outgoing edge only when it is single-valued or source-revision-driven.
 
@@ -644,12 +673,9 @@ def _invalidate_superseded_relationships(
         relationship.tip.type or ""
     ).strip():
         return
-    try:
-        neighbors = graph_adapter.get_neighbors(
-            [relationship.tail.uuid], brain_id=brain_id
-        )
-    except Exception:
-        return
+    neighbors = _relationship_neighbor_map(
+        relationship, brain_id=brain_id, neighbors=neighbors
+    )
     from src.core.saving.validity_cardinality import should_close_outgoing_edge
 
     pairs = (neighbors or {}).get(relationship.tail.uuid) or []
@@ -720,6 +746,32 @@ def source_text_from_payload(payload: IngestionTaskArgs) -> str:
     if payload.data.data_type == IngestionTaskDataType.TEXT.value:
         return payload.data.text_data
     return json.dumps(payload.data.json_data)
+
+
+def add_graph_nodes(graph_adapter, nodes: List[Node], brain_id: str):
+    from src.lib.cypher_safety import InvalidCypherIdentifier, clean_label, original_type_properties
+
+    if not nodes:
+        return []
+    safe: List[Node] = []
+    for node in nodes:
+        try:
+            if not node.labels:
+                raise InvalidCypherIdentifier(
+                    "At least one label is required",
+                    kind="label",
+                    value=node.labels,
+                )
+            for label in node.labels:
+                clean_label(label)
+        except InvalidCypherIdentifier as exc:
+            print(f"[!] Skipping node {node.uuid} with invalid labels {node.labels}: {exc}")
+            continue
+        properties = {**(node.properties or {}), **original_type_properties(node.labels)}
+        safe.append(node.model_copy(update={"properties": properties}))
+    if not safe:
+        return []
+    return graph_adapter.add_nodes(safe, brain_id=brain_id)
 
 
 def _save_source(payload, source_text, task_id=None):
@@ -834,16 +886,17 @@ def _ingest_data(self, args, *, staged=False):
         from src.core.saving.validity import format_instant, parse_instant, stamp_valid_from, utc_now
 
         superseded_ids: list[str] = []
-        revision_at = format_instant(
-            parse_instant(payload.source_timestamp) or utc_now()
-        )
-        payload.source_timestamp = revision_at
+        recorded_at = format_instant(utc_now())
+        source_instant = parse_instant(payload.source_timestamp)
+        if source_instant is not None:
+            payload.source_timestamp = format_instant(source_instant)
         revision = prepare_source_revision(
             data_adapter,
             brain_id=payload.brain_id,
             source_text=source_text,
             meta_keys=payload.meta_keys,
-            source_timestamp=revision_at,
+            source_timestamp=payload.source_timestamp,
+            recorded_at=recorded_at,
             out_superseded=superseded_ids,
         )
         if revision == "unchanged":
@@ -861,17 +914,20 @@ def _ingest_data(self, args, *, staged=False):
 
         if payload.meta_keys is None:
             payload.meta_keys = {}
-        payload.meta_keys = stamp_valid_from(payload.meta_keys, revision_at)
+        payload.meta_keys = stamp_valid_from(
+            payload.meta_keys, payload.source_timestamp, recorded_at=recorded_at
+        )
 
         checkpoint()
         text_chunk = _save_source(payload, source_text, self.request.id)
         if superseded_ids:
+            close_at = payload.source_timestamp or recorded_at
             data_adapter.mark_text_chunks_superseded(
                 superseded_ids,
-                revision_at,
+                close_at,
                 payload.brain_id,
                 superseded_by=str(text_chunk.id),
-                valid_to=format_instant(parse_instant(revision_at) or utc_now()),
+                valid_to=format_instant(parse_instant(close_at) or utc_now()),
             )
 
         if config.pipeline_mode == "lightweight":
@@ -1301,9 +1357,14 @@ def process_architect_relationships(self, args: dict):
                             )
                             continue
 
-                    graph_adapter.add_nodes(graph_nodes, brain_id=brain_id)
-                    print(f"> Added {len(graph_nodes)} nodes")
-                    _assign_relationship_interval(relationship, brain_id=brain_id)
+                    added = add_graph_nodes(graph_adapter, graph_nodes, brain_id)
+                    print(f"> Added {len(added or [])} nodes")
+                    neighbors = _relationship_neighbor_map(
+                        relationship, brain_id=brain_id
+                    )
+                    _assign_relationship_interval(
+                        relationship, brain_id=brain_id, neighbors=neighbors
+                    )
                     try:
                         edge_created = not graph_adapter.get_triples_by_uuid(
                             [relationship.uuid], brain_id=brain_id
@@ -1407,6 +1468,7 @@ def process_architect_relationships(self, args: dict):
                         relationship,
                         brain_id=brain_id,
                         superseded_chunk_ids=args.get("superseded_chunk_ids") or [],
+                        neighbors=neighbors,
                     )
                 except FutureTimeoutError:
                     rel_name = getattr(relationship, "name", "unknown")
@@ -1488,6 +1550,20 @@ def process_architect_relationships(self, args: dict):
             print(
                 f"[DEBUG (process_architect_relationships)]: Session {session_id} has {remaining} remaining tasks"
             )
+
+        try:
+            from src.core.saving.conflicts import maybe_detect_after_ingest
+
+            maybe_detect_after_ingest(
+                brain_id,
+                [
+                    str(getattr(rel, "uuid", "") or "")
+                    for rel in relationships
+                    if getattr(rel, "uuid", None)
+                ],
+            )
+        except Exception as exc:
+            print(f"[!] Incremental conflict detection skipped: {exc}")
 
         return self.request.id
 
@@ -1670,7 +1746,8 @@ def _ingest_structured_data(self, args, *, staged=False):
                     ingestion_manager.process_node_vectors(
                         anchor_entity, payload.brain_id
                     )
-                    added_nodes = graph_adapter.add_nodes(
+                    added_nodes = add_graph_nodes(
+                        graph_adapter,
                         [
                             Node(
                                 uuid=anchor_entity.uuid,
@@ -1680,8 +1757,16 @@ def _ingest_structured_data(self, args, *, staged=False):
                                 properties=anchor_entity.properties,
                             )
                         ],
-                        brain_id=payload.brain_id,
+                        payload.brain_id,
                     )
+                    if not added_nodes:
+                        from src.lib.cypher_safety import InvalidCypherIdentifier
+
+                        raise InvalidCypherIdentifier(
+                            "Anchor entity type is not a valid graph label",
+                            kind="label",
+                            value=payload.anchor.type,
+                        )
                     anchor = added_nodes[0]
                     anchor_created = True
 

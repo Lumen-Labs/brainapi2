@@ -422,10 +422,15 @@ class MilvusClient(VectorStoreClient):
             return
         client = self._get_client(brain_id)
         self._ensure_store(store, brain_id)
+        int_ids = [
+            item if isinstance(item, int) else string_to_int64(str(item))
+            for item in ids
+        ]
         try:
-            client.delete(store, ids=ids)
+            client.delete(store, ids=int_ids)
         except Exception as e:
             print(f"[Milvus] Failed to remove vectors from {store}: {e}")
+            raise
 
     def list_vectors(
         self,

@@ -64,6 +64,19 @@ async def mutate_fact_verification(
         )
     except FactNotFound:
         raise HTTPException(status_code=404, detail="Fact not found") from None
+    if action == "verify":
+        from src.core.saving.conflict_verification import (
+            close_open_conflicts_for_verified_fact,
+        )
+        from src.services.data.main import data_adapter
+
+        close_open_conflicts_for_verified_fact(
+            data_adapter,
+            brain_id,
+            record.fact_id,
+            graph=graph_adapter,
+            notes=request.note,
+        )
     return _to_response(record)
 
 

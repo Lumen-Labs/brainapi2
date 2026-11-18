@@ -713,6 +713,13 @@ class Config:
             "AGENTIC_ARCHITECTURE", "custom"
         )
         self.search_enabled = os.getenv("SEARCH_ENABLED", "false") == "true"
+        self.conflict_detect_on_ingest = (
+            os.getenv("CONFLICT_DETECT_ON_INGEST", "false") == "true"
+        )
+        self.conflict_detect_llm = os.getenv("CONFLICT_DETECT_LLM", "false") == "true"
+        self.conflict_detect_llm_max_pairs = int(
+            os.getenv("CONFLICT_DETECT_LLM_MAX_PAIRS", "20")
+        )
         self.graph_raw_write_enabled = (
             os.getenv("GRAPH_RAW_WRITE_ENABLED", "false") == "true"
         )
