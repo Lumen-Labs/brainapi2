@@ -550,8 +550,8 @@ class AdapterTests(unittest.TestCase):
             field="as_of",
             schema_fields={"as_of", "include_history", "text"},
         )
-        self.assertEqual(mode, "api_field")
-        self.assertEqual(body["as_of"], "2019-01-01")
+        self.assertEqual(mode, "include_history")
+        self.assertNotIn("as_of", body)
         self.assertTrue(body["include_history"])
         body, mode = default_as_of_plugin(
             {},
@@ -559,8 +559,9 @@ class AdapterTests(unittest.TestCase):
             field="as_of",
             schema_fields={"as_of", "date_to", "text"},
         )
-        self.assertEqual(mode, "api_field")
+        self.assertEqual(mode, "api_schema")
         self.assertEqual(body["date_to"], "2024-01-01")
+        self.assertNotIn("as_of", body)
         self.assertNotIn("include_history", body)
 
     def test_empty_conflict_producer_is_scoreable(self) -> None:

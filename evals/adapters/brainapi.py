@@ -85,6 +85,12 @@ def _needs_as_of(question: dict[str, Any]) -> bool:
     return str(question.get("task") or "") in AS_OF_TASKS
 
 
+def _is_range_question(question: dict[str, Any]) -> bool:
+    if question.get("date_to"):
+        return True
+    return str(question.get("task") or "") == "changelog"
+
+
 def _apply_range_bounds(
     body: dict[str, Any],
     question: dict[str, Any],
@@ -92,11 +98,13 @@ def _apply_range_bounds(
 ) -> dict[str, Any]:
     date_to = question.get("date_to")
     if not date_to:
+        if "include_history" in schema_fields:
+            body["include_history"] = True
         return body
     for candidate in RANGE_END_FIELDS:
         if candidate in schema_fields:
             body[candidate] = date_to
-            return body
+            break
     if "include_history" in schema_fields:
         body["include_history"] = True
     return body
@@ -112,16 +120,24 @@ def default_as_of_plugin(
     as_of = question.get("as_of") or question.get("date_from")
     if not _needs_as_of(question):
         return body, "n/a"
+    if _is_range_question(question):
+        body = dict(body)
+        ranged = _apply_range_bounds(body, question, schema_fields)
+        if any(candidate in ranged for candidate in RANGE_END_FIELDS):
+            return ranged, "api_schema"
+        if ranged.get("include_history"):
+            return ranged, "include_history"
+        return ranged, "unsupported"
     if field and field in schema_fields and as_of:
         body = dict(body)
         body[field] = as_of
-        return _apply_range_bounds(body, question, schema_fields), "api_field"
+        return body, "api_field"
     if as_of:
         for candidate in AS_OF_FIELDS:
             if candidate in schema_fields:
                 body = dict(body)
                 body[candidate] = as_of
-                return _apply_range_bounds(body, question, schema_fields), "api_schema"
+                return body, "api_schema"
     if "include_history" in schema_fields:
         body = dict(body)
         body["include_history"] = True
