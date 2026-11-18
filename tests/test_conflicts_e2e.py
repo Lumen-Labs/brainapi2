@@ -455,7 +455,9 @@ def test_help_center_conflict_precision_recall_and_api():
         )
         if conflicts_mod is not None:
             async def _api():
-                with patch.object(conflicts_mod, "data_adapter", data):
+                with patch.object(conflicts_mod, "data_adapter", data), patch.object(
+                    conflicts_mod, "graph_adapter", graph
+                ):
                     listed = await conflicts_mod.get_conflicts_list(
                         limit=50, skip=0, status="open", brain_id=brain_id
                     )

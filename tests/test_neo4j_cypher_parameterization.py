@@ -129,6 +129,18 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
         self.assertEqual(dumped["properties"]["note"], "x")
         self.assertIsInstance(dumped["properties"]["last_updated"], str)
 
+    def test_node_accepts_neo4j_datetime_last_updated(self):
+        from datetime import datetime as dt
+        from neo4j.time import DateTime
+
+        node = Node(
+            uuid="n1",
+            name="Ada",
+            labels=["PERSON"],
+            last_updated=DateTime(2026, 11, 16, 20, 17, 39),
+        )
+        self.assertIsInstance(node.last_updated, dt)
+
     def test_add_relationship_returns_ok_string(self):
         client = _client()
         predicate = Predicate(uuid="rel-1", name="OWNS", description="owns")
