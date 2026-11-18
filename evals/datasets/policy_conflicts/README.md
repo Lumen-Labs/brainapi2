@@ -25,4 +25,4 @@ Gold pairs are mostly **seeded** (one documented numeric or required/optional mu
 
 ## BrainAPI note
 
-Current main may return `temporal_conflicts` on `/retrieve/context`, which is **not** statement-pair conflict detection. The adapter treats a future `EVAL_CONFLICT_PATH` as the real plugin. Until that lands, BrainAPI pair P/R is reported as capability-pending if no pairs are produced.
+Current main may return `temporal_conflicts` on `/retrieve/context` as graph hub/entity UUIDs, which are not statement-pair gold. The adapter maps those ids back to ingested `statement_id` / document ids (headers at ingest, `meta_keys`, retrieve metadata) before scoring. If mapping is impossible, pair F1 is marked **unsupported** rather than 0. A future `EVAL_CONFLICT_PATH` is still used when present.

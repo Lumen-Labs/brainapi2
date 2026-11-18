@@ -1,10 +1,18 @@
 """Replay a staged unit after the caller has acquired the brain publication gate."""
 
+import json
+
 from src.constants.data import Observation, StructuredData, TextChunk
 from src.constants.embeddings import Vector
 from src.constants.kg import Node, Predicate
+from src.core.saving import ingest_cancellation, ingest_staging
 from src.core.saving.ingest_staged_output import discard_outputs, load_output
-from src.core.saving.ingest_staging import advance_publication, finish_publication, next_publication_unit
+from src.core.saving.ingest_staging import (
+    advance_publication,
+    finish_publication,
+    next_publication_unit,
+    units_to_unpublish,
+)
 
 
 _DATA_OPERATIONS = {
@@ -12,11 +20,31 @@ _DATA_OPERATIONS = {
     "save_observations": ("observations", "observations", Observation),
     "save_structured_data": ("structured_data", "structured_data", StructuredData),
 }
+_DATA_TABLES = {
+    "text_chunks": "data_text_chunks",
+    "observations": "data_observations",
+    "structured_data": "data_structured_data",
+}
+_GRAPH_INDEX_METHODS = {
+    "refresh_hub_bridges_for_entities",
+    "rebuild_hub_bridge_index",
+    "rebuild_topic_index",
+}
 
 
 def replay_data_operation(client, brain_id, operation):
     """Replay supported data writes using stable document identities."""
     method = operation["method"]
+    if method == "mark_text_chunks_superseded":
+        args = operation["args"]
+        client.mark_text_chunks_superseded(
+            args["ids"],
+            args["superseded_at"],
+            brain_id,
+            superseded_by=args.get("superseded_by"),
+            valid_to=args.get("valid_to"),
+        )
+        return
     name, argument, model = _DATA_OPERATIONS[method]
     value = operation["args"][argument]
     records = (
@@ -42,6 +70,53 @@ def replay_data_operation(client, brain_id, operation):
     )
 
 
+def _record_matches(stored, document):
+    return stored is not None and all(stored.get(key) == value for key, value in document.items())
+
+
+def _rollback_postgres_data(client, brain_id, table, records):
+    with client._brain_connection(brain_id) as conn:
+        with conn.cursor() as cur:
+            for record in records:
+                document = record.model_dump(mode="json")
+                cur.execute(f"SELECT document FROM {table} WHERE id = %s", (record.id,))
+                row = cur.fetchone()
+                stored = None if row is None else row[0]
+                if isinstance(stored, str):
+                    stored = json.loads(stored)
+                if not _record_matches(stored, document):
+                    continue
+                cur.execute(f"DELETE FROM {table} WHERE id = %s", (record.id,))
+        conn.commit()
+
+
+def rollback_data_operation(client, brain_id, operation):
+    method = operation["method"]
+    if method == "mark_text_chunks_superseded":
+        raise ValueError("Staged supersession has no safe inverse")
+    name, argument, model = _DATA_OPERATIONS[method]
+    value = operation["args"][argument]
+    records = (
+        [model.model_validate(item) for item in value]
+        if method == "save_observations"
+        else [model.model_validate(value)]
+    )
+    mongo_collection = getattr(client, "get_collection", None)
+    if callable(mongo_collection):
+        collection = mongo_collection(name, database=brain_id)
+        for record in records:
+            document = record.model_dump(mode="json")
+            stored = collection.find_one({"_id": record.id})
+            if not _record_matches(stored, document):
+                continue
+            collection.delete_one({"_id": record.id})
+        return
+    if callable(getattr(client, "_brain_connection", None)) and name in _DATA_TABLES:
+        _rollback_postgres_data(client, brain_id, _DATA_TABLES[name], records)
+        return
+    raise ValueError("Staged data rollback requires a collection or SQL data client")
+
+
 def replay_vector_operation(client, brain_id, operation):
     args = operation["args"]
     if operation["method"] == "remove_vectors":
@@ -52,6 +127,20 @@ def replay_vector_operation(client, brain_id, operation):
     vectors = [Vector.model_validate(item) for item in args["vectors"]]
     upsert = getattr(client, "upsert_staged_vectors", client.add_vectors)
     upsert(vectors, args["store"], brain_id)
+
+
+def rollback_vector_operation(client, brain_id, operation):
+    if operation["method"] != "add_vectors":
+        raise ValueError("Unsupported staged vector rollback")
+    from src.lib.postgresql.vectors import string_to_int64
+
+    args = operation["args"]
+    ids = []
+    for vector in args["vectors"]:
+        vector_id = vector["id"]
+        ids.append(vector_id if isinstance(vector_id, int) else string_to_int64(str(vector_id)))
+    if ids:
+        client.remove_vectors(ids, args["store"], brain_id)
 
 
 def replay_graph_operation(client, brain_id, operation):
@@ -74,6 +163,13 @@ def replay_graph_operation(client, brain_id, operation):
             args["uuid"], args["updating"], brain_id,
             args["new_properties"], args["properties_to_remove"],
         )
+    elif method == "set_fact_verification":
+        client.set_fact_verification(
+            args["fact_id"],
+            brain_id,
+            kind=args["kind"],
+            properties=args["properties"],
+        )
     elif method == "refresh_hub_bridges_for_entities":
         refresh = getattr(client, method, None)
         if refresh is None:
@@ -86,6 +182,34 @@ def replay_graph_operation(client, brain_id, operation):
             rebuild(brain_id)
     else:
         raise ValueError("Unsupported staged graph operation")
+
+
+def rollback_graph_operation(client, brain_id, operation):
+    method = operation["method"]
+    args = operation["args"]
+    if method in _GRAPH_INDEX_METHODS:
+        return
+    if method == "add_nodes":
+        remove_nodes = getattr(client, "remove_nodes", None)
+        if not callable(remove_nodes):
+            raise ValueError("Staged graph node rollback requires remove_nodes")
+        nodes = args.get("nodes") or []
+        uuids = [node["uuid"] for node in nodes if node.get("uuid")]
+        if len(uuids) != len(nodes):
+            raise ValueError("Staged graph nodes cannot be rolled back without uuids")
+        if uuids:
+            remove_nodes(uuids, brain_id)
+        return
+    if method == "add_relationship":
+        remove_relationships = getattr(client, "remove_relationships", None)
+        if not callable(remove_relationships):
+            raise ValueError("Staged graph relationship rollback requires remove_relationships")
+        remove_relationships(
+            [(args["subject"], args["predicate"], args["to_object"])],
+            brain_id,
+        )
+        return
+    raise ValueError(f"Unsupported staged graph rollback {method}")
 
 
 def publish_next_unit(brain_id, root_id, replay_operation):
@@ -117,5 +241,30 @@ def publish_staged_run(brain_id, root_id, acquire_gate, data_client, vector_clie
     with acquire_gate(brain_id, root_id):
         while publish_next_unit(brain_id, root_id, replay):
             pass
+        run = ingest_cancellation._runs(brain_id).find_one({"_id": root_id})
+        if not run or run["status"] != "publishing":
+            return
+        finished = finish_publication(brain_id, root_id)
+        if finished is None:
+            return
         discard_outputs(brain_id, root_id)
-        return finish_publication(brain_id, root_id)
+        ingest_staging.mark_cleanup_complete(brain_id, root_id)
+        return finished
+
+
+def rollback_published_run(brain_id, root_id, data_client, vector_client, graph_client=None):
+    def undo(operation):
+        adapter = operation["adapter"]
+        if adapter == "data":
+            rollback_data_operation(data_client, brain_id, operation)
+        elif adapter == "vector" and vector_client is not None:
+            rollback_vector_operation(vector_client, brain_id, operation)
+        elif adapter == "graph" and graph_client is not None:
+            rollback_graph_operation(graph_client, brain_id, operation)
+        else:
+            raise ValueError(f"Unsupported staged rollback {adapter}")
+
+    for unit in reversed(units_to_unpublish(brain_id, root_id)):
+        operations = load_output(brain_id, root_id, unit["output_ref"])
+        for operation in reversed(operations):
+            undo(operation)
