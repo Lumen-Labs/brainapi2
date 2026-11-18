@@ -16,12 +16,20 @@ from src.services.api.constants.requests import (
     UpdateEntityRequest,
     AddRelationshipRequest,
     UpdateRelationshipRequest,
+    VerifyFactRequest,
+    FactVerificationRecord,
+    FactVerificationListResponse,
 )
 from src.services.api.controllers.model import (
     add_nodes as add_nodes_controller,
     update_node as update_node_controller,
     add_relationship as add_relationship_controller,
     update_relationship as update_relationship_controller,
+)
+from src.services.api.controllers.verification import (
+    mutate_fact_verification,
+    get_fact_verification,
+    list_fact_verifications,
 )
 from src.constants.kg import Node, Predicate
 
@@ -118,3 +126,52 @@ async def update_relationship(
         new_properties=request.new_properties or {},
         properties_to_remove=request.properties_to_remove or [],
     )
+
+
+@model_router.get(path="/facts", response_model=FactVerificationListResponse)
+async def list_facts(
+    state: str | None = None,
+    include_rejected: bool = False,
+    limit: int = 50,
+    skip: int = 0,
+    brain_id: str = Depends(get_brain_id),
+):
+    return await list_fact_verifications(
+        brain_id,
+        state=state,
+        include_rejected=include_rejected,
+        limit=limit,
+        skip=skip,
+    )
+
+
+@model_router.get(path="/facts/{fact_id}", response_model=FactVerificationRecord)
+async def get_fact(fact_id: str, brain_id: str = Depends(get_brain_id)):
+    return await get_fact_verification(fact_id, brain_id)
+
+
+@model_router.post(path="/facts/{fact_id}/verify", response_model=FactVerificationRecord)
+async def verify_fact(
+    fact_id: str,
+    request: VerifyFactRequest,
+    brain_id: str = Depends(get_brain_id),
+):
+    return await mutate_fact_verification(fact_id, brain_id, "verify", request)
+
+
+@model_router.post(path="/facts/{fact_id}/reject", response_model=FactVerificationRecord)
+async def reject_fact(
+    fact_id: str,
+    request: VerifyFactRequest,
+    brain_id: str = Depends(get_brain_id),
+):
+    return await mutate_fact_verification(fact_id, brain_id, "reject", request)
+
+
+@model_router.post(path="/facts/{fact_id}/reset", response_model=FactVerificationRecord)
+async def reset_fact(
+    fact_id: str,
+    request: VerifyFactRequest,
+    brain_id: str = Depends(get_brain_id),
+):
+    return await mutate_fact_verification(fact_id, brain_id, "reset", request)

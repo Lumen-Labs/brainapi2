@@ -35,6 +35,16 @@ _GRAPH_INDEX_METHODS = {
 def replay_data_operation(client, brain_id, operation):
     """Replay supported data writes using stable document identities."""
     method = operation["method"]
+    if method == "mark_text_chunks_superseded":
+        args = operation["args"]
+        client.mark_text_chunks_superseded(
+            args["ids"],
+            args["superseded_at"],
+            brain_id,
+            superseded_by=args.get("superseded_by"),
+            valid_to=args.get("valid_to"),
+        )
+        return
     name, argument, model = _DATA_OPERATIONS[method]
     value = operation["args"][argument]
     records = (
@@ -145,6 +155,13 @@ def replay_graph_operation(client, brain_id, operation):
         client.update_properties(
             args["uuid"], args["updating"], brain_id,
             args["new_properties"], args["properties_to_remove"],
+        )
+    elif method == "set_fact_verification":
+        client.set_fact_verification(
+            args["fact_id"],
+            brain_id,
+            kind=args["kind"],
+            properties=args["properties"],
         )
     elif method == "refresh_hub_bridges_for_entities":
         refresh = getattr(client, method, None)
