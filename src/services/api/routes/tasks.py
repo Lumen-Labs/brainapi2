@@ -100,7 +100,12 @@ async def purge_ingestion(
     body: PurgeIngestionRequest,
     brain_id: str = Depends(get_brain_id),
 ):
-    from src.core.saving.ingest_effects import DigestMismatch, PurgeNotFound, purge_task
+    from src.core.saving.ingest_effects import (
+        DigestMismatch,
+        PurgeNotFound,
+        PurgeUnsafe,
+        purge_task,
+    )
 
     try:
         return purge_task(
@@ -111,6 +116,8 @@ async def purge_ingestion(
         )
     except PurgeNotFound as exc:
         raise HTTPException(404, "This import has no recorded additions") from exc
+    except PurgeUnsafe as exc:
+        raise HTTPException(409, exc.preview or str(exc)) from exc
     except DigestMismatch as exc:
         raise HTTPException(409, "This import changed since it was previewed. Preview it again.") from exc
 

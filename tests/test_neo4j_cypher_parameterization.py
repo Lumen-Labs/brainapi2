@@ -31,7 +31,7 @@ for key, value in ENV_DEFAULTS.items():
     os.environ.setdefault(key, value)
 
 from src.constants.kg import IdentificationParams, Node, Predicate
-from src.lib.cypher_safety import InvalidCypherIdentifier
+from src.lib.cypher_safety import InvalidCypherIdentifier, clean_label
 from src.lib.neo4j.client import Neo4jClient
 
 INJECTION_VALUES = [
@@ -219,6 +219,33 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
             self.assertEqual(params["props"]["name"], payload)
             self.assertEqual(params["description"], payload)
             self.assertEqual(params["props"]["note"], payload)
+
+    def test_add_nodes_maps_non_ascii_labels_and_skips_invalid(self):
+        client = _client()
+        added = client.add_nodes(
+            [
+                Node(uuid="n-city", name="Roma", labels=["CITTÀ"]),
+                Node(uuid="n-name", name="Hanako", labels=["名前"]),
+                Node(uuid="n-person", name="Ada", labels=["PERSON"]),
+                Node(uuid="n-bad", name="Skip", labels=["PERSON`x"]),
+            ],
+            "braina",
+        )
+        self.assertEqual([node.uuid for node in added], ["n-city", "n-name", "n-person"])
+        queries = [call[0] for call in client.driver.calls]
+        self.assertEqual(len(queries), 3)
+        self.assertIn("MERGE (n:`CITTA` {uuid: $uuid})", queries[0])
+        self.assertIn(f"MERGE (n:`{clean_label('名前')}` {{uuid: $uuid}})", queries[1])
+        self.assertIn("MERGE (n:`PERSON` {uuid: $uuid})", queries[2])
+        city_params = client.driver.calls[0][1]
+        self.assertEqual(city_params["props"]["original_type"], "CITTÀ")
+        name_params = client.driver.calls[1][1]
+        self.assertEqual(name_params["props"]["original_type"], "名前")
+        with self.assertRaises(InvalidCypherIdentifier):
+            client.add_nodes(
+                [Node(uuid="only-bad", name="Skip", labels=["PERSON`x"])],
+                "braina",
+            )
 
     def test_add_relationship_parameterizes_endpoint_and_predicate_uuids(self):
         client = _client()

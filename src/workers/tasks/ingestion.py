@@ -722,6 +722,32 @@ def source_text_from_payload(payload: IngestionTaskArgs) -> str:
     return json.dumps(payload.data.json_data)
 
 
+def add_graph_nodes(graph_adapter, nodes: List[Node], brain_id: str):
+    from src.lib.cypher_safety import InvalidCypherIdentifier, clean_label, original_type_properties
+
+    if not nodes:
+        return []
+    safe: List[Node] = []
+    for node in nodes:
+        try:
+            if not node.labels:
+                raise InvalidCypherIdentifier(
+                    "At least one label is required",
+                    kind="label",
+                    value=node.labels,
+                )
+            for label in node.labels:
+                clean_label(label)
+        except InvalidCypherIdentifier as exc:
+            print(f"[!] Skipping node {node.uuid} with invalid labels {node.labels}: {exc}")
+            continue
+        properties = {**(node.properties or {}), **original_type_properties(node.labels)}
+        safe.append(node.model_copy(update={"properties": properties}))
+    if not safe:
+        return []
+    return graph_adapter.add_nodes(safe, brain_id=brain_id)
+
+
 def _save_source(payload, source_text, task_id=None):
     from src.core.saving.ingest_effects import remember, stamp_task_ids
 
@@ -1301,8 +1327,8 @@ def process_architect_relationships(self, args: dict):
                             )
                             continue
 
-                    graph_adapter.add_nodes(graph_nodes, brain_id=brain_id)
-                    print(f"> Added {len(graph_nodes)} nodes")
+                    added = add_graph_nodes(graph_adapter, graph_nodes, brain_id)
+                    print(f"> Added {len(added or [])} nodes")
                     _assign_relationship_interval(relationship, brain_id=brain_id)
                     try:
                         edge_created = not graph_adapter.get_triples_by_uuid(
@@ -1684,7 +1710,8 @@ def _ingest_structured_data(self, args, *, staged=False):
                     ingestion_manager.process_node_vectors(
                         anchor_entity, payload.brain_id
                     )
-                    added_nodes = graph_adapter.add_nodes(
+                    added_nodes = add_graph_nodes(
+                        graph_adapter,
                         [
                             Node(
                                 uuid=anchor_entity.uuid,
@@ -1694,8 +1721,16 @@ def _ingest_structured_data(self, args, *, staged=False):
                                 properties=anchor_entity.properties,
                             )
                         ],
-                        brain_id=payload.brain_id,
+                        payload.brain_id,
                     )
+                    if not added_nodes:
+                        from src.lib.cypher_safety import InvalidCypherIdentifier
+
+                        raise InvalidCypherIdentifier(
+                            "Anchor entity type is not a valid graph label",
+                            kind="label",
+                            value=payload.anchor.type,
+                        )
                     anchor = added_nodes[0]
                     anchor_created = True
 

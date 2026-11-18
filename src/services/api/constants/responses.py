@@ -252,6 +252,11 @@ class PurgeConnectionsSummary(BaseModel):
     unlink: int
 
 
+class PurgeCompletedAction(BaseModel):
+    kind: str
+    id: str
+
+
 class PurgeIngestionResponse(BaseModel):
     digest: str
     executed: bool
@@ -260,3 +265,8 @@ class PurgeIngestionResponse(BaseModel):
     entities: PurgeNamedItems
     connections: PurgeConnectionsSummary
     unresolved: int
+    ledger_incomplete: bool = False
+    ledger_error: Optional[str] = None
+    partial: bool = False
+    completed: Optional[list[PurgeCompletedAction]] = None
+    error: Optional[str] = None
