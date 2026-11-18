@@ -37,6 +37,7 @@ from src.lib.cypher_safety import (
     clean_property_key,
     create_database_if_not_exists_query,
     create_database_query,
+    original_type_properties,
     quote_database_name,
     quote_identifier,
     quote_label,
@@ -70,11 +71,25 @@ class CypherSafetyHelperTests(unittest.TestCase):
             quote_rel_types_pattern(["knows", "likes"]), "`KNOWS`|`LIKES`"
         )
 
+    def test_clean_label_transliterates_non_ascii_types(self):
+        self.assertEqual(clean_label("CITTÀ"), "CITTA")
+        self.assertEqual(clean_label("città"), "CITTA")
+        self.assertEqual(clean_label("naïve"), "NAIVE")
+        mapped = clean_label("名前")
+        self.assertRegex(mapped, r"^U[a-f0-9]{16}$")
+        self.assertEqual(clean_label("名前"), mapped)
+        self.assertNotEqual(clean_label("名前"), clean_label("都市"))
+        self.assertEqual(quote_label("CITTÀ"), "`CITTA`")
+        self.assertEqual(
+            original_type_properties(["CITTÀ", "PERSON"]),
+            {"original_type": "CITTÀ"},
+        )
+        self.assertEqual(original_type_properties(["PERSON"]), {})
+
     def test_rejects_injection_shaped_identifiers(self):
         payloads = [
             "x`y",
             "a//b",
-            "名前",
             "'; MATCH (n) DETACH DELETE n //",
             "foo@DETACH DELETE n",
         ]
@@ -190,6 +205,29 @@ class CypherSafetyHelperTests(unittest.TestCase):
             with self.subTest(query=query):
                 with self.assertRaises(RawCypherRejected):
                     validate_raw_cypher(query)
+
+    def test_validate_raw_cypher_rejects_load_csv_and_apoc(self):
+        rejected = [
+            "LOAD CSV FROM 'https://evil.test/x.csv' AS row RETURN row",
+            "LOAD CSV WITH HEADERS FROM 'file:///tmp/x.csv' AS row RETURN row",
+            "MATCH (n) LOAD /*x*/ CSV FROM 'https://evil.test/x.csv' AS row RETURN n",
+            "CALL apoc.load.json('https://evil.test') YIELD value RETURN value",
+            "CALL apoc.cypher.run('USE system RETURN 1', {}) YIELD value RETURN value",
+            "CALL `apoc`.load.json('https://evil.test') YIELD value RETURN value",
+            "CALL apoc/*x*/.load.json('https://evil.test') YIELD value RETURN value",
+        ]
+        for query in rejected:
+            with self.subTest(query=query):
+                with self.assertRaises(RawCypherRejected):
+                    validate_raw_cypher(query)
+        self.assertEqual(
+            validate_raw_cypher("RETURN 'LOAD CSV FROM https://evil.test' AS note"),
+            "RETURN 'LOAD CSV FROM https://evil.test' AS note",
+        )
+        self.assertEqual(
+            validate_raw_cypher("RETURN 'CALL apoc.load.json' AS note"),
+            "RETURN 'CALL apoc.load.json' AS note",
+        )
 
     def test_validate_raw_cypher_allows_empty_strings_and_db_labels(self):
         self.assertEqual(validate_raw_cypher("RETURN '' AS s"), "RETURN '' AS s")

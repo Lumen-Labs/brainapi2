@@ -11,7 +11,9 @@ helpers with static Cypher text.
 
 from __future__ import annotations
 
+import hashlib
 import re
+import unicodedata
 from typing import Any, Sequence
 
 IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,254}$")
@@ -34,6 +36,9 @@ _CROSS_DATABASE_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+_LOAD_CSV_RE = re.compile(r"\bLOAD\s+CSV\b", re.IGNORECASE)
+_APOC_PROCEDURE_RE = re.compile(r"\bCALL\s+`?apoc`?", re.IGNORECASE)
+_APOC_COMPACT_RE = re.compile(r"callapoc")
 _ADMIN_PROCEDURE_RE = re.compile(
     r"\bCALL\s+(?:`?dbms`?\.|`?db`?\.`?admin)",
     re.IGNORECASE,
@@ -131,6 +136,49 @@ def quote_identifier(name: str, *, kind: str = "identifier") -> str:
     return "`" + ident.replace("`", "``") + "`"
 
 
+def _ascii_label(translated: str, *, original: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", translated)
+    ascii_chars: list[str] = []
+    leftover_non_ascii = False
+    leftover_special = False
+    for ch in decomposed:
+        if unicodedata.combining(ch):
+            continue
+        if ch.isascii() and (ch.isalnum() or ch == "_"):
+            ascii_chars.append(ch)
+        elif not ch.isascii():
+            leftover_non_ascii = True
+        else:
+            leftover_special = True
+    stem = "".join(ascii_chars)
+    if leftover_special:
+        raise InvalidCypherIdentifier(
+            f"Invalid Cypher label: {original!r}. "
+            "Use letters, digits, and underscore only, starting with a letter or underscore.",
+            kind="label",
+            value=original,
+        )
+    if leftover_non_ascii:
+        digest = hashlib.sha256(
+            unicodedata.normalize("NFKC", original.strip()).encode("utf-8")
+        ).hexdigest()[:16]
+        if stem:
+            suffix = "_" + digest
+            stem = stem[: max(1, MAX_IDENTIFIER_LEN - len(suffix))]
+            return stem + suffix
+        return "U" + digest
+    if not stem:
+        raise InvalidCypherIdentifier(
+            f"Invalid Cypher label: {original!r}. "
+            "Use letters, digits, and underscore only, starting with a letter or underscore.",
+            kind="label",
+            value=original,
+        )
+    if stem[0].isdigit():
+        stem = "L_" + stem
+    return stem[:MAX_IDENTIFIER_LEN]
+
+
 def clean_label(label: str) -> str:
     if not isinstance(label, str) or not label.strip():
         raise InvalidCypherIdentifier(
@@ -139,7 +187,21 @@ def clean_label(label: str) -> str:
             value=label,
         )
     cleaned = label.translate(_LABEL_TRANSLATION).upper()
-    return require_identifier(cleaned, kind="label")
+    return require_identifier(_ascii_label(cleaned, original=label), kind="label")
+
+
+def original_type_properties(labels: Sequence[str]) -> dict[str, Any]:
+    originals = [
+        label
+        for label in labels
+        if isinstance(label, str) and any(ord(ch) > 127 for ch in label)
+    ]
+    if not originals:
+        return {}
+    properties: dict[str, Any] = {"original_type": originals[0]}
+    if len(originals) > 1:
+        properties["original_types"] = list(originals)
+    return properties
 
 
 def clean_labels(labels: Sequence[str]) -> list[str]:
@@ -509,4 +571,12 @@ def validate_raw_cypher(query: str) -> str:
         raise RawCypherRejected(
             "Raw Cypher cannot call dbms.* or db.admin procedures"
         )
+    if _LOAD_CSV_RE.search(structural):
+        raise RawCypherRejected("Raw Cypher cannot LOAD CSV")
+    apoc_structural = _structural_cypher(normalized, blank_identifiers=False)
+    apoc_compact = re.sub(r"[`\s]+", "", apoc_structural).lower()
+    if _APOC_PROCEDURE_RE.search(apoc_structural) or _APOC_COMPACT_RE.search(
+        apoc_compact
+    ):
+        raise RawCypherRejected("Raw Cypher cannot call apoc.* procedures")
     return normalized
