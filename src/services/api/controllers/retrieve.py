@@ -59,25 +59,6 @@ _PPR_DAMPING = 0.85
 _PPR_ITERS = 20
 _SESSION_RE = re.compile(r"session_(\d+)", re.IGNORECASE)
 _BATCH_TURN_RE = re.compile(r"\bb(\d+)_t(\d+)\b", re.IGNORECASE)
-_HISTORY_MODE_RE = re.compile(
-    r"\b("
-    r"order(?:ing|ed)?|chronolog|sequence|walk me through|"
-    r"contradict|conflict(?:ing)?|inconsisten|"
-    r"previously|originally|before (?:the |that )?(?:update|change|extension)|"
-    r"first (?:said|stated|mentioned|sprint|deadline)|"
-    r"how many (?:weeks|days)|"
-    r"between .+ and |"
-    r"have i|did i"
-    r")\b",
-    re.I,
-)
-_CURRENT_TRUTH_RE = re.compile(
-    r"\b("
-    r"now|currently|latest|updated (?:to|value)|after the (?:update|change)|"
-    r"how many commits|average response time|response time of"
-    r")\b",
-    re.I,
-)
 _SPINE_ACTOR = ("MADE", "INITIATED", "PERFORMED", "EXPERIENCED", "COVERED")
 _SPINE_TARGET = ("TARGETED", "AFFECTED", "RESULTED")
 _CONTEXT_REL = ("OCCURRED", "WITHIN")
@@ -1294,13 +1275,23 @@ def _is_currently_valid(predicate: Predicate) -> bool:
     return True
 
 
-def _wants_historical_facts(query: str) -> bool:
-    text = (query or "").strip()
-    if not text:
-        return False
-    if _CURRENT_TRUTH_RE.search(text) and not _HISTORY_MODE_RE.search(text):
-        return False
-    return bool(_HISTORY_MODE_RE.search(text))
+def _wants_historical_facts(
+    query: str,
+    *,
+    explicit: bool | None = None,
+    query_vector: list[float] | None = None,
+    history_vectors: list[list[float]] | None = None,
+    current_vectors: list[list[float]] | None = None,
+) -> bool:
+    from src.core.saving.history_intent import resolve_include_history
+
+    return resolve_include_history(
+        explicit,
+        query_text=query,
+        query=query_vector,
+        history_vectors=history_vectors,
+        current_vectors=current_vectors,
+    )
 
 
 def _fact_predicates_allowed(
@@ -1577,11 +1568,16 @@ def _stabilize_seed_hits(
     )
 
 
-def _seed_nodes_for_text(text: str, brain_id: str) -> list[tuple[str, float, str]]:
+def _seed_nodes_for_text(
+    text: str,
+    brain_id: str,
+    embeddings: list[float] | None = None,
+) -> list[tuple[str, float, str]]:
     """Return (node_uuid, distance, entity_name) seeds from nodes + relationships."""
-    with profile_stage("embed.query"):
-        text_embeddings = embeddings_adapter.embed_text(text)
-    embeddings = text_embeddings.embeddings
+    if embeddings is None:
+        with profile_stage("embed.query"):
+            text_embeddings = embeddings_adapter.embed_text(text)
+        embeddings = text_embeddings.embeddings
     seeds: list[tuple[str, float, str]] = []
 
     with profile_stage("vector.search_nodes", k=_SEED_K):
@@ -1814,14 +1810,47 @@ async def _build_context(
     candidates: list[dict[str, Any]] = []
     seed_hits: list[tuple[str, float, str]] = []
     passage_hits: list[tuple[str, float, str]] = []
-    include_history = _wants_historical_facts(request.text)
+    from src.core.saving.history_intent import (
+        lexical_history_intent,
+        prototype_vectors,
+        resolve_include_history,
+    )
+
+    shared_vectors: dict[str, list[float]] = {}
+
+    def _embed_query(text: str) -> list[float]:
+        cached = shared_vectors.get(text)
+        if cached is None:
+            cached = embeddings_adapter.embed_text(text).embeddings
+            shared_vectors[text] = cached
+        return cached
+
+    query_vector: list[float] | None = None
+    explicit_history = request.include_history
+    if explicit_history is None:
+        try:
+            query_vector = _embed_query(request.text)
+            history_vectors, current_vectors = prototype_vectors(_embed_query)
+            include_history = resolve_include_history(
+                None,
+                query_text=request.text,
+                query=query_vector,
+                history_vectors=history_vectors,
+                current_vectors=current_vectors,
+            )
+        except Exception:
+            include_history = lexical_history_intent(request.text)
+    else:
+        include_history = explicit_history
 
     def _collect_facts_for_variant(
         text: str,
     ) -> tuple[list[tuple[str, float, str]], list[dict[str, Any]]]:
         with profile_stage("facts.variant") as detail:
             with profile_stage("facts.seed_search"):
-                seeds = _seed_nodes_for_text(text, request.brain_id)
+                seeds = _seed_nodes_for_text(
+                    text, request.brain_id, embeddings=shared_vectors.get(text)
+                )
             detail["seeds"] = len(seeds)
             if not seeds:
                 return [], []
@@ -1922,8 +1951,27 @@ async def _build_context(
         nonlocal historical_context
         from src.core.saving.source_passages import (
             current_record_texts,
+            prior_revision_texts,
             screened_passage_texts,
         )
+
+        def _merge_prior(texts: list[str], hits: list[tuple[str, float, str]]) -> list[str]:
+            if not include_history:
+                return texts[: request.historical_limit]
+            extra = prior_revision_texts(
+                data_adapter,
+                request.brain_id,
+                hits,
+                limit=request.historical_limit,
+                query_text=request.text,
+                query_vector=query_vector or shared_vectors.get(request.text),
+                embed=_embed_query,
+            )
+            merged = list(texts)
+            for text in extra:
+                if text not in merged:
+                    merged.append(text)
+            return merged[: request.historical_limit]
 
         with profile_stage("historical.context", blocking=False):
             passages = await asyncio.to_thread(
@@ -1933,12 +1981,15 @@ async def _build_context(
                 limit=max(request.historical_limit, _PASSAGE_K),
             )
             if passages:
-                historical_context = screened_passage_texts(
-                    data_adapter,
-                    request.brain_id,
+                historical_context = _merge_prior(
+                    screened_passage_texts(
+                        data_adapter,
+                        request.brain_id,
+                        passages,
+                        include_history=include_history,
+                        limit=request.historical_limit,
+                    ),
                     passages,
-                    include_history=include_history,
-                    limit=request.historical_limit,
                 )
                 return historical_context
             with profile_stage("historical.fallback", blocking=False):
@@ -1954,21 +2005,26 @@ async def _build_context(
                         limit=request.historical_limit,
                     ),
                 )
-            historical_context = screened_passage_texts(
-                data_adapter,
-                request.brain_id,
-                [
-                    (str(getattr(text_chunk, "id", "") or ""), 0.0, text_chunk.text or "")
-                    for text_chunk in text_chunks
-                ],
-                include_history=include_history,
-                limit=request.historical_limit,
-            ) + current_record_texts(
-                data_adapter,
-                request.brain_id,
-                structured_data,
-                text_chunks,
-                include_history=include_history,
+            chunk_hits = [
+                (str(getattr(text_chunk, "id", "") or ""), 0.0, text_chunk.text or "")
+                for text_chunk in text_chunks
+            ]
+            historical_context = _merge_prior(
+                screened_passage_texts(
+                    data_adapter,
+                    request.brain_id,
+                    chunk_hits,
+                    include_history=include_history,
+                    limit=request.historical_limit,
+                )
+                + current_record_texts(
+                    data_adapter,
+                    request.brain_id,
+                    structured_data,
+                    text_chunks,
+                    include_history=include_history,
+                ),
+                chunk_hits,
             )
             return historical_context
 

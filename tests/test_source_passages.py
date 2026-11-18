@@ -6,6 +6,7 @@ from src.core.saving.source_passages import (
     current_fact_candidates,
     current_record_texts,
     prepare_source_revision,
+    prior_revision_texts,
     screen_passage_hits,
     screened_passage_texts,
     source_content_hash,
@@ -250,6 +251,61 @@ class CurrentFactTests(unittest.TestCase):
             include_history=False,
         )
         self.assertEqual([item[0] for item in multiline], ["new"])
+
+    def test_history_loads_a_prior_revision_that_search_missed(self):
+        older = TextChunk(
+            id="old",
+            text="The cedar signal code is 4410-OTTER.",
+            metadata={"source_key": "src-1", "superseded_at": "2026-11-16T07:11:00"},
+        )
+        newest = TextChunk(
+            id="new",
+            text="Sync probe cedar was removed.",
+            metadata={"source_key": "src-1", "operation": "tombstone"},
+        )
+        store = _Store([older, newest])
+        loaded = prior_revision_texts(
+            store,
+            "brain",
+            [("new", 0.2, newest.text)],
+            limit=4,
+        )
+        self.assertEqual(loaded, ["[superseded] The cedar signal code is 4410-OTTER."])
+
+    def test_prior_revisions_rank_by_query_relevance_not_only_recency(self):
+        older = TextChunk(
+            id="old-code",
+            text="The cedar signal code is 4410-OTTER.",
+            metadata={"source_key": "src-1", "superseded_at": "2026-11-16T07:11:00"},
+        )
+        newest_old = TextChunk(
+            id="old-snack",
+            text="The office snack list was pretzels.",
+            metadata={"source_key": "src-1", "superseded_at": "2026-11-16T08:00:00"},
+        )
+        live = TextChunk(
+            id="new",
+            text="Sync probe cedar was removed.",
+            metadata={"source_key": "src-1"},
+        )
+        store = _Store([older, newest_old, live])
+        loaded = prior_revision_texts(
+            store,
+            "brain",
+            [("new", 0.2, live.text)],
+            limit=1,
+            query_text="what was the cedar signal code",
+        )
+        self.assertEqual(loaded, ["[superseded] The cedar signal code is 4410-OTTER."])
+        by_vector = prior_revision_texts(
+            store,
+            "brain",
+            [("new", 0.2, live.text)],
+            limit=1,
+            query_vector=[1.0, 0.0],
+            embed=lambda text: [1.0, 0.0] if "4410-OTTER" in text else [0.0, 1.0],
+        )
+        self.assertEqual(by_vector, ["[superseded] The cedar signal code is 4410-OTTER."])
 
 
 class _Record:

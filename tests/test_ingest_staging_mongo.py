@@ -125,6 +125,7 @@ def test_large_docling_file_uses_durable_input_and_discards_it_on_cancel(monkeyp
     monkeypatch.setenv("INGEST_PUBLICATION_LOCK_DIR", str(tmp_path))
     monkeypatch.setenv("STAGED_INGESTION_ENABLED", "1")
     monkeypatch.setenv("STAGED_ENRICHMENT_ENABLED", "1")
+    monkeypatch.setenv("STAGED_UPLOAD_MAX_BYTES", str(32 * 1024 * 1024))
     monkeypatch.setattr(ingest.config, "ocr_mode", "docling")
     monkeypatch.setattr(ingest, "set_ingestion_task_status", Mock())
     monkeypatch.setattr(ingest_cancellation, "_runs", lambda _: database.ingest_runs)

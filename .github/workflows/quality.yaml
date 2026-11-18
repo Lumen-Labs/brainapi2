@@ -73,6 +73,21 @@ jobs:
       - run: benchmarks/.venv/bin/pip install -r benchmarks/requirements.txt pytest
       - run: benchmarks/.venv/bin/pytest -q benchmarks/locomo/test_sota_helpers.py benchmarks/beam/test_beam_helpers.py
 
+  eval-harness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m venv evals/.venv
+      - run: evals/.venv/bin/pip install -r evals/requirements.txt pytest
+      - run: evals/.venv/bin/pytest -q evals/tests
+        env:
+          PYTHONPATH: .
+          EVAL_EMBEDDING_PROVIDER: hash
+          EVAL_RERANKER: lexical
+
   frontend:
     runs-on: ubuntu-latest
     strategy:
