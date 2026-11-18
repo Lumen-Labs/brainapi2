@@ -401,6 +401,19 @@ class MilvusClient(VectorStoreClient):
 
         return out
 
+    def remove_vectors_by_resource_id(
+        self, resource_ids: list[str], store: str, brain_id: str
+    ) -> None:
+        if not resource_ids:
+            return
+        client = self._get_client(brain_id)
+        self._ensure_store(store, brain_id)
+        quoted = ",".join(f'"{str(item).replace(chr(34), "")}"' for item in resource_ids)
+        try:
+            client.delete(store, filter=f"resource_id in [{quoted}]")
+        except Exception as exc:
+            print(f"[Milvus] Failed to remove passage vectors from {store}: {exc}")
+
     def remove_vectors(self, ids: list[str], store: str, brain_id: str) -> None:
         """
         Remove vectors from the vector store.

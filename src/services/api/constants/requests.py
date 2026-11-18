@@ -617,6 +617,10 @@ class GetContextRequestBody(BaseModel):
 
     text: str
     brain_id: str = "default"
+    as_of: Optional[str] = Field(
+        default=None,
+        description="ISO-8601 datetime. When set, return the knowledge state valid at that instant.",
+    )
     include_history: Optional[bool] = None
     historical_limit: int = 10
     max_facts: int = Field(40, ge=0)
@@ -659,6 +663,10 @@ class GetContextResponse(BaseModel):
 class SearchRequestBody(BaseModel):
     query: str
     brain_id: str = "default"
+    as_of: Optional[str] = Field(
+        default=None,
+        description="ISO-8601 datetime. When set, search the knowledge state valid at that instant.",
+    )
     k: int = Field(10, ge=1, le=200)
     channels: List[str] = Field(default_factory=lambda: ["passages"])
     node_labels: Optional[List[str]] = None

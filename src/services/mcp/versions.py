@@ -47,19 +47,74 @@ def changelog_page(
     types: list[str] | None = None,
     limit: Any = 10,
     skip: Any = 0,
+    since: Any = None,
+    until: Any = None,
+    graph: Any | None = None,
 ) -> dict[str, Any]:
+    from src.core.saving.validity import InvalidAsOf, optional_instant, utc_now
+    from src.core.saving.validity_changes import collect_validity_changes
+    from datetime import datetime, timezone
+
     bounded = clamp_page(limit, 10, CHANGELOG_LIMIT)
     try:
         offset = max(0, int(skip or 0))
     except (TypeError, ValueError):
         offset = 0
-    rows = adapter.get_changelogs_list(
-        brain_id,
-        bounded,
-        offset,
-        types or None,
-        query_text or None,
-    )
+    try:
+        since_dt = optional_instant(since, name="since")
+        until_dt = optional_instant(until, name="until")
+    except InvalidAsOf as exc:
+        return f"Error: {exc}"
+    if since_dt is not None or until_dt is not None:
+        window_start = since_dt or datetime(1970, 1, 1, tzinfo=timezone.utc)
+        window_end = until_dt or utc_now()
+        payload = collect_validity_changes(
+            adapter,
+            graph,
+            brain_id,
+            since=window_start,
+            until=window_end,
+            limit=bounded,
+            skip=offset,
+            query_text=query_text,
+            types=types,
+        )
+        try:
+            rows = adapter.get_changelogs_list(
+                brain_id,
+                bounded,
+                offset,
+                types or None,
+                query_text or None,
+                window_start,
+                window_end,
+            )
+        except TypeError:
+            rows = adapter.get_changelogs_list(
+                brain_id,
+                bounded,
+                offset,
+                types or None,
+                query_text or None,
+            )
+        payload["changelogs"] = [_dump(row) for row in rows or []]
+        return payload
+    try:
+        rows = adapter.get_changelogs_list(
+            brain_id,
+            bounded,
+            offset,
+            types or None,
+            query_text or None,
+        )
+    except TypeError:
+        rows = adapter.get_changelogs_list(
+            brain_id,
+            bounded,
+            offset,
+            types or None,
+            query_text or None,
+        )
     changelogs = [_dump(row) for row in rows or []]
     return {"changelogs": changelogs, "count": len(changelogs)}
 
@@ -82,6 +137,9 @@ def read_changelogs(
     types: list[str] | None = None,
     limit: Any = 10,
     skip: Any = 0,
+    since: Any = None,
+    until: Any = None,
+    graph: Any | None = None,
 ) -> dict[str, Any] | str:
     if not authorized:
         return "Unauthorized"
@@ -93,6 +151,9 @@ def read_changelogs(
             types=types,
             limit=limit,
             skip=skip,
+            since=since,
+            until=until,
+            graph=graph,
         )
     except Exception as exc:
         return f"Error listing changelogs: {exc}"

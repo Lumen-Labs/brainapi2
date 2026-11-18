@@ -104,13 +104,22 @@ async def retrieve(
         False,
         description="If true, include expert-rejected facts.",
     ),
+    as_of: Optional[str] = Query(
+        None,
+        description="ISO-8601 datetime. When set, return the knowledge state valid at that instant.",
+    ),
     brain_id: str = Depends(get_brain_id),
 ):
     """
     Retrieve data from the knowledge graph and data store.
     """
     return await retrieve_data_controller(
-        text, limit, preferred_entities, brain_id, include_rejected
+        text,
+        limit,
+        preferred_entities,
+        brain_id,
+        include_rejected=include_rejected,
+        as_of=as_of,
     )
 
 
@@ -475,6 +484,14 @@ async def get_changelogs_list(
     skip: int = 0,
     types: Optional[str] = None,
     query_text: Optional[str] = None,
+    since: Optional[str] = Query(
+        None,
+        description="ISO-8601 datetime. Inclusive start of the change window.",
+    ),
+    until: Optional[str] = Query(
+        None,
+        description="ISO-8601 datetime. Exclusive end of the change window.",
+    ),
     brain_id: str = Depends(get_brain_id),
 ):
     """
@@ -483,6 +500,8 @@ async def get_changelogs_list(
     Parameters:
         types (Optional[str]): Optional comma-separated changelog types to filter by; each type will be applied as a filter.
         query_text (Optional[str]): Optional text used to filter changelogs by content or metadata.
+        since (Optional[str]): Inclusive start of a change window. Combined with until, returns added, superseded, and invalidated facts.
+        until (Optional[str]): Exclusive end of a change window.
 
     Returns:
         list: Changelog records matching the provided filters, constrained by `limit` and `skip`.
@@ -490,7 +509,7 @@ async def get_changelogs_list(
     if types:
         types = types.split(",")
     return await get_changelogs_list_controller(
-        limit, skip, types, query_text, brain_id
+        limit, skip, types, query_text, brain_id, since, until
     )
 
 
@@ -667,6 +686,10 @@ async def post_recommend(
 async def get_search(
     query: str = Query(..., description="The search query."),
     k: int = Query(10, ge=1, le=200, description="Number of hits to return."),
+    as_of: Optional[str] = Query(
+        None,
+        description="ISO-8601 datetime. When set, search the knowledge state valid at that instant.",
+    ),
     channels: Optional[str] = Query(
         "passages",
         description=(
@@ -718,6 +741,7 @@ async def get_search(
     request = SearchRequestBody(
         query=query,
         k=k,
+        as_of=as_of,
         channels=channel_list,
         node_labels=node_label_list,
         community_labels=community_label_list,

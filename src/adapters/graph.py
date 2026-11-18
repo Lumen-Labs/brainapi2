@@ -433,6 +433,26 @@ class GraphAdapter:
         )
         return SearchRelationshipsResult(results=kept, total=total)
 
+    def list_validity_relationships(
+        self,
+        brain_id: str = "default",
+        skip: int = 0,
+        limit: int = 100,
+        since: str | None = None,
+        until: str | None = None,
+    ):
+        method = getattr(self.graph, "list_validity_relationships", None)
+        if method is None:
+            result = self.graph.search_relationships(brain_id, limit, skip)
+            triples = [
+                (item.subject, item.predicate, item.object)
+                for item in (getattr(result, "results", None) or [])
+            ]
+            return triples, int(getattr(result, "total", len(triples)) or 0)
+        return method(
+            brain_id, skip=skip, limit=limit, since=since, until=until
+        )
+
     def search_entities(
         self,
         brain_id: str = "default",
@@ -1058,6 +1078,12 @@ class GraphAdapter:
         }):
             return 0
         return self.graph.rebuild_hub_bridge_index(brain_id)
+
+    def nodes_and_edges_citing(self, brain_id: str, chunk_ids: list, edge_uuids: list):
+        method = getattr(self.graph, "nodes_and_edges_citing", None)
+        if method is None:
+            return [], []
+        return method(brain_id, chunk_ids, edge_uuids)
 
     def refresh_hub_bridges_for_entities(
         self, entity_uuids: list, brain_id: str = "default"

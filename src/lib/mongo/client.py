@@ -1,4 +1,3 @@
-from typing import Any, Optional
 """
 File: /client.py
 Created Date: Saturday October 25th 2025
@@ -9,7 +8,8 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
-from typing import List, Tuple
+from datetime import datetime
+from typing import Any, List, Optional, Tuple
 from pymongo import MongoClient as PyMongoClient
 from pymongo.database import Database
 from pymongo.collection import Collection
@@ -52,14 +52,71 @@ class MongoClient(DataClient):
         return text_chunk
 
     def mark_text_chunks_superseded(
-        self, ids: List[str], superseded_at: str, brain_id: str
+        self,
+        ids: List[str],
+        superseded_at: str,
+        brain_id: str,
+        superseded_by: str | None = None,
+        valid_to: str | None = None,
     ) -> None:
         if not ids:
             return
+        patch: dict[str, Any] = {"metadata.superseded_at": superseded_at}
+        if valid_to:
+            patch["metadata.valid_to"] = valid_to
+        if superseded_by:
+            patch["metadata.superseded_by"] = superseded_by
         collection = self.get_collection("text_chunks", database=brain_id)
         collection.update_many(
             {"id": {"$in": list(ids)}},
-            {"$set": {"metadata.superseded_at": superseded_at}},
+            {"$set": patch},
+        )
+
+    def fill_text_chunk_validity(
+        self, chunk_id: str, brain_id: str, patch: dict[str, Any]
+    ) -> None:
+        if not chunk_id or not patch:
+            return
+        set_expr: dict[str, Any] = {}
+        for key, value in patch.items():
+            set_expr[f"metadata.{key}"] = {"$ifNull": [f"$metadata.{key}", value]}
+        collection = self.get_collection("text_chunks", database=brain_id)
+        collection.update_one({"id": chunk_id}, [{"$set": set_expr}])
+
+    def delete_text_chunks(self, ids: List[str], brain_id: str) -> None:
+        if not ids:
+            return
+        self.get_collection("text_chunks", database=brain_id).delete_many(
+            {"id": {"$in": list(ids)}}
+        )
+
+    def set_text_chunk_task_ids(
+        self, chunk_id: str, task_ids: List[str], brain_id: str
+    ) -> None:
+        self.get_collection("text_chunks", database=brain_id).update_one(
+            {"id": chunk_id},
+            {"$set": {"metadata.ingest_task_ids": list(task_ids)}},
+        )
+
+    def delete_observations(
+        self, ids: List[str], brain_id: str, resource_ids: Optional[List[str]] = None
+    ) -> None:
+        clauses: list[dict] = []
+        if ids:
+            clauses.append({"id": {"$in": list(ids)}})
+        if resource_ids:
+            clauses.append({"resource_id": {"$in": list(resource_ids)}})
+        if not clauses:
+            return
+        self.get_collection("observations", database=brain_id).delete_many(
+            {"$or": clauses}
+        )
+
+    def delete_structured_data(self, structured_id: str, brain_id: str) -> None:
+        if not structured_id:
+            return
+        self.get_collection("structured_data", database=brain_id).delete_one(
+            {"id": structured_id}
         )
 
     def save_observations(
@@ -408,6 +465,8 @@ class MongoClient(DataClient):
         skip: int = 0,
         types: list[str] = None,
         query_text: str = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
     ) -> list[KGChanges]:
         """
         Retrieve changelog entries for a brain with optional type filtering and text search.
@@ -437,6 +496,27 @@ class MongoClient(DataClient):
                 {"change.node.name": {"$regex": query_text, "$options": "i"}},
                 {"type": {"$regex": query_text, "$options": "i"}},
             ]
+        if since is not None or until is not None:
+            from src.core.saving.validity import format_instant
+
+            string_bounds: dict[str, Any] = {}
+            dt_bounds: dict[str, Any] = {}
+            if since is not None:
+                string_bounds["$gte"] = format_instant(since).rstrip("Z")
+                dt_bounds["$gte"] = since
+            if until is not None:
+                string_bounds["$lt"] = format_instant(until).rstrip("Z")
+                dt_bounds["$lt"] = until
+            window = {
+                "$or": [
+                    {"timestamp": string_bounds},
+                    {"timestamp": dt_bounds},
+                ]
+            }
+            if query:
+                query = {"$and": [query, window]}
+            else:
+                query = window
 
         results = collection.find(query).skip(skip).limit(limit).sort("timestamp", -1)
         changelogs = []

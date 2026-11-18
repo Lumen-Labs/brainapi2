@@ -10,6 +10,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import json
 import threading
+from datetime import datetime
 from typing import Any, Iterator, List, Literal, Optional, Tuple
 
 import psycopg2
@@ -371,32 +372,118 @@ class PostgreSQLDataClient(DataClient):
             conn.commit()
         return text_chunk
 
-    def mark_text_chunks_superseded(
-        self, ids: List[str], superseded_at: str, brain_id: str
-    ) -> None:
+    def delete_text_chunks(self, ids: List[str], brain_id: str) -> None:
         if not ids:
             return
         with self._brain_connection(brain_id) as conn:
             with conn.cursor() as cur:
                 cur.execute(
+                    "DELETE FROM data_text_chunks WHERE id = ANY(%s)",
+                    (list(ids),),
+                )
+            conn.commit()
+
+    def set_text_chunk_task_ids(
+        self, chunk_id: str, task_ids: List[str], brain_id: str
+    ) -> None:
+        payload = json.dumps(list(task_ids))
+        with self._brain_connection(brain_id) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
                     """
                     UPDATE data_text_chunks
-                    SET metadata = jsonb_set(
-                            COALESCE(metadata, '{}'::jsonb),
-                            '{superseded_at}',
-                            to_jsonb(%s::text),
-                            true
-                        ),
+                    SET metadata = jsonb_set(coalesce(metadata, '{}'::jsonb), '{ingest_task_ids}', %s::jsonb, true),
+                        document = jsonb_set(document, '{metadata,ingest_task_ids}', %s::jsonb, true)
+                    WHERE id = %s
+                    """,
+                    (payload, payload, chunk_id),
+                )
+            conn.commit()
+
+    def delete_observations(
+        self, ids: List[str], brain_id: str, resource_ids: Optional[List[str]] = None
+    ) -> None:
+        if not ids and not resource_ids:
+            return
+        with self._brain_connection(brain_id) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    DELETE FROM data_observations
+                    WHERE id = ANY(%s) OR resource_id = ANY(%s)
+                    """,
+                    (list(ids or []), list(resource_ids or [])),
+                )
+            conn.commit()
+
+    def delete_structured_data(self, structured_id: str, brain_id: str) -> None:
+        if not structured_id:
+            return
+        with self._brain_connection(brain_id) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM data_structured_data WHERE id = %s",
+                    (structured_id,),
+                )
+            conn.commit()
+
+    def mark_text_chunks_superseded(
+        self,
+        ids: List[str],
+        superseded_at: str,
+        brain_id: str,
+        superseded_by: str | None = None,
+        valid_to: str | None = None,
+    ) -> None:
+        if not ids:
+            return
+        patch = {"superseded_at": superseded_at}
+        if valid_to:
+            patch["valid_to"] = valid_to
+        if superseded_by:
+            patch["superseded_by"] = superseded_by
+        payload = json.dumps(patch)
+        with self._brain_connection(brain_id) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE data_text_chunks
+                    SET metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb,
                         document = jsonb_set(
                             COALESCE(document, '{}'::jsonb),
                             '{metadata}',
-                            COALESCE(document->'metadata', '{}'::jsonb)
-                                || jsonb_build_object('superseded_at', %s::text),
+                            (CASE WHEN jsonb_typeof(document->'metadata') = 'object'
+                                  THEN document->'metadata' ELSE '{}'::jsonb END) || %s::jsonb,
                             true
                         )
                     WHERE id = ANY(%s)
                     """,
-                    (superseded_at, superseded_at, list(ids)),
+                    (payload, payload, list(ids)),
+                )
+            conn.commit()
+
+    def fill_text_chunk_validity(
+        self, chunk_id: str, brain_id: str, patch: dict[str, Any]
+    ) -> None:
+        if not chunk_id or not patch:
+            return
+        payload = json.dumps(patch)
+        with self._brain_connection(brain_id) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE data_text_chunks
+                    SET metadata = %s::jsonb || COALESCE(metadata, '{}'::jsonb),
+                        document = jsonb_set(
+                            COALESCE(document, '{}'::jsonb),
+                            '{metadata}',
+                            %s::jsonb || CASE WHEN jsonb_typeof(document->'metadata') = 'object'
+                                              THEN document->'metadata' ELSE '{}'::jsonb END,
+                            true
+                        )
+                    WHERE id = %s
+                    """,
+                    (payload, payload, chunk_id),
                 )
             conn.commit()
 
@@ -895,6 +982,8 @@ class PostgreSQLDataClient(DataClient):
         skip: int = 0,
         types: list[str] = None,
         query_text: str = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
     ) -> list[KGChanges]:
         clauses: list[str] = []
         params: list[Any] = []
@@ -905,6 +994,12 @@ class PostgreSQLDataClient(DataClient):
             pattern = _ilike_pattern(query_text)
             clauses.append("(change::text ILIKE %s OR type ILIKE %s)")
             params.extend([pattern, pattern])
+        if since is not None:
+            clauses.append("timestamp >= %s")
+            params.append(since)
+        if until is not None:
+            clauses.append("timestamp < %s")
+            params.append(until)
         where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         with self._brain_connection(brain_id) as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
