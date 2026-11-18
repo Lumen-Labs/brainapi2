@@ -127,15 +127,16 @@ def intent_fact_from_chunk(
     retired = _optional(meta.get("retired_reason"))
     if status in {"verified", "unverified"}:
         retired = None
+    inserted = getattr(chunk, "inserted_at", None)
     return IntentFact(
-        fact_id=str(getattr(chunk, "id", "") or meta.get("fact_id") or ""),
+        fact_id=str(meta.get("fact_id") or getattr(chunk, "id", "") or ""),
         text=str(getattr(chunk, "text", "") or ""),
         status=status,
         subject=str(meta.get("subject") or ""),
         predicate=str(meta.get("predicate") or ""),
         object=str(meta.get("object") or ""),
         contradicted_by=[],
-        valid_at=_optional(meta.get(VALID_FROM) or meta.get("valid_at")),
+        valid_at=_optional(meta.get(VALID_FROM) or meta.get("valid_at") or inserted),
         invalid_at=_optional(meta.get(VALID_TO) or meta.get("invalid_at") or meta.get("superseded_at")),
         superseded_by=_optional(meta.get(SUPERSEDED_BY)),
         source=source_from_fields(meta, writer),

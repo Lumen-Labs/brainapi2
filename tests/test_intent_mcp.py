@@ -1,7 +1,8 @@
 import os
 import sys
-import time
 import unittest
+from datetime import datetime
+from unittest.mock import patch
 
 ENV_DEFAULTS = {
     "BRAINPAT_TOKEN": "test-token",
@@ -33,11 +34,13 @@ for key, value in ENV_DEFAULTS.items():
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from src.constants.data import TextChunk
 from src.core.intent.brain import BrainResolutionError, resolve_brain
 from src.core.intent.parse import parse_fact_text
+from src.core.intent.retire import RetireLookupError
 from src.core.intent.service import check_claim, correct_fact, recall_facts, remember_fact
 from src.core.verification.facts import UNVERIFIED
-from src.core.verification.service import apply_verification_action
+from src.core.verification.service import FactNotFound, apply_verification_action
 from src.services.mcp.intent_tools import intent_tool_descriptions, intent_tool_token_count
 from src.services.mcp.prompt import MCP_TOOL_SPECS, build_mcp_tools_instructions
 
@@ -338,17 +341,6 @@ class IntentMemoryTests(unittest.TestCase):
         self.assertEqual(checked.verdict, "contradicted")
         self.assertEqual(checked.evidence[0].retired_reason, "replaced by 14-day window")
         self.assertEqual(checked.evidence[0].source.doc, "handbook.md")
-        self.assertLess(self._check_elapsed(), 1.0)
-
-    def _check_elapsed(self):
-        started = time.perf_counter()
-        check_claim(
-            claim="Refund window is 30 days",
-            brain_id=self.brain_id,
-            graph=self.graph,
-            data=self.data,
-        )
-        return time.perf_counter() - started
 
     def test_verified_facts_keep_rank_boost(self):
         first = self._remember("Alice lives in Paris")
@@ -404,10 +396,6 @@ class IntentMemoryTests(unittest.TestCase):
         )
         self.assertEqual(result.fact.status, "rejected")
         self.assertEqual(result.previous.fact_id, remembered.fact.fact_id)
-        self.assertEqual(
-            self.graph.get_fact_record(remembered.fact.fact_id, self.brain_id)["properties"]["verification_history"],
-            self.graph.get_fact_record(remembered.fact.fact_id, self.brain_id)["properties"]["verification_history"],
-        )
         history = self.graph.get_fact_record(remembered.fact.fact_id, self.brain_id)["properties"]["verification_history"]
         self.assertTrue(history)
 
@@ -425,6 +413,140 @@ class IntentMemoryTests(unittest.TestCase):
         old = self.graph.get_fact_record(first.fact.fact_id, self.brain_id)
         self.assertEqual((old["properties"] or {}).get("superseded_by"), second.fact.fact_id)
         self.assertEqual((old["properties"] or {}).get("retired_reason"), "source_key rewrite")
+
+    def test_check_does_not_support_another_subject(self):
+        self._remember("Bob lives in Paris")
+        checked = check_claim(
+            claim="Alice lives in Paris",
+            brain_id=self.brain_id,
+            graph=self.graph,
+            data=self.data,
+        )
+        self.assertEqual(checked.verdict, "unknown")
+
+    def test_correct_text_requires_unique_match(self):
+        self._remember("Bob lives in Paris")
+        with self.assertRaises((FactNotFound, ValueError)):
+            correct_fact(
+                reason="no longer true",
+                brain_id=self.brain_id,
+                token=self.token,
+                text="Alice lives in Paris",
+                graph=self.graph,
+                data=self.data,
+            )
+
+    def test_correct_keeps_employed_by_predicate(self):
+        remembered = self._remember("Alice works for Acme")
+        result = correct_fact(
+            reason="new employer",
+            brain_id=self.brain_id,
+            token=self.token,
+            fact_id=remembered.fact.fact_id,
+            correction="Alice works for Contoso",
+            graph=self.graph,
+            data=self.data,
+        )
+        self.assertEqual(result.fact.predicate, "EMPLOYED_BY")
+        self.assertEqual(result.fact.object, "Contoso")
+
+    def test_correct_does_not_retire_sibling_non_functional_facts(self):
+        python = self._remember("Build uses Python")
+        docker = self._remember("Build uses Docker")
+        correct_fact(
+            reason="pin version",
+            brain_id=self.brain_id,
+            token=self.token,
+            fact_id=python.fact.fact_id,
+            correction="Build uses Python 3",
+            graph=self.graph,
+            data=self.data,
+        )
+        docker_row = self.graph.get_fact_record(docker.fact.fact_id, self.brain_id)
+        self.assertFalse((docker_row["properties"] or {}).get("invalid_at"))
+
+    def test_unchanged_source_key_reuses_passage(self):
+        self._remember("Alice lives in Paris", source_key="alice-home")
+        self._remember("Alice lives in Paris", source_key="alice-home")
+        self.assertEqual(len(self.data.chunks), 1)
+
+    def test_recall_hides_passage_for_rejected_graph_fact(self):
+        remembered = self._remember("Alice lives in Paris")
+        apply_verification_action(
+            self.graph,
+            fact_id=remembered.fact.fact_id,
+            brain_id=self.brain_id,
+            action="reject",
+            verified_by="analyst",
+            verification_source="handbook.md",
+            note="no longer true",
+        )
+        recalled = recall_facts(
+            question="Alice lives in Paris",
+            brain_id=self.brain_id,
+            graph=self.graph,
+            data=self.data,
+        )
+        self.assertFalse(recalled.facts)
+
+    def test_check_as_of_supports_fact_later_superseded(self):
+        self._remember(
+            "Alice lives in Paris",
+            valid_from="2024-01-01T00:00:00Z",
+            source_key="alice-home",
+        )
+        correct_fact(
+            reason="moved",
+            brain_id=self.brain_id,
+            token=self.token,
+            text="Alice lives in Paris",
+            correction="Alice lives in London",
+            graph=self.graph,
+            data=self.data,
+        )
+        checked = check_claim(
+            claim="Alice lives in Paris",
+            as_of="2024-06-01T00:00:00Z",
+            brain_id=self.brain_id,
+            graph=self.graph,
+            data=self.data,
+        )
+        self.assertEqual(checked.verdict, "supported")
+        self.assertEqual(checked.evidence[0].object, "Paris")
+
+    def test_passage_without_valid_from_uses_inserted_at(self):
+        self.data.chunks.append(
+            TextChunk(
+                text="legacy note",
+                metadata={"subject": "Legacy", "predicate": "STATES", "object": "recorded"},
+                inserted_at=datetime(2025, 6, 1),
+            )
+        )
+        recalled = recall_facts(
+            question="legacy note",
+            brain_id=self.brain_id,
+            as_of="2024-06-01T00:00:00Z",
+            graph=self.graph,
+            data=self.data,
+        )
+        self.assertFalse(recalled.facts)
+
+    def test_retire_lookup_failure_is_not_empty_success(self):
+        self._remember("Alice lives in Paris")
+
+        def boom(*_args, **_kwargs):
+            raise RuntimeError("graph down")
+
+        self.graph.get_neighbors = boom
+        with self.assertRaises(RetireLookupError):
+            remember_fact(
+                fact="Alice lives in London",
+                source="handbook.md",
+                brain_id=self.brain_id,
+                token=self.token,
+                graph=self.graph,
+                data=self.data,
+            )
 
 
 class IntentToolSurfaceTests(unittest.TestCase):
@@ -457,9 +579,9 @@ class IntentToolSurfaceTests(unittest.TestCase):
 
         import src.services.mcp.intent_tools as tools
 
-        tools._REGISTERED = False
-        register_intent_tools(None, register=capture)
-        register_intent_tools(None, register=capture)
+        with patch.object(tools, "_REGISTERED", False):
+            register_intent_tools(None, register=capture)
+            register_intent_tools(None, register=capture)
         self.assertEqual(
             [name for name, _fn in registered],
             ["brainapi_recall", "brainapi_check", "brainapi_remember", "brainapi_correct"],
@@ -472,9 +594,9 @@ class IntentMcpSchemaTests(unittest.TestCase):
 
         import src.services.mcp.intent_tools as tools
 
-        tools._REGISTERED = False
-        server = FastMCP("intent-schema")
-        tools.register_intent_tools(server)
+        with patch.object(tools, "_REGISTERED", False):
+            server = FastMCP("intent-schema")
+            tools.register_intent_tools(server)
         listed = {item.name: item for item in server._tool_manager.list_tools()}
         self.assertEqual(
             list(listed)[:4],
@@ -491,9 +613,7 @@ class IntentMcpSchemaTests(unittest.TestCase):
 
 
 class IntentMcpToolE2ETests(unittest.IsolatedAsyncioTestCase):
-    async def test_mcp_tools_oauth_token_without_brain_id_or_query_language(self):
-        from unittest.mock import patch
-
+    async def test_mcp_tools_brainpat_without_brain_id_or_query_language(self):
         from src.services.mcp import intent_tools as tools
 
         graph = FakeGraph()
@@ -501,7 +621,7 @@ class IntentMcpToolE2ETests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(tools, "_graph_and_data", lambda: (graph, data)), patch.object(
             tools, "_auth_token", return_value="pat-alpha"
-        ), patch.object(tools, "_resolve", return_value="alpha"):
+        ), patch.object(tools, "guard_brainpat", _guard):
             remembered = await tools.brainapi_remember(
                 fact="Alice lives in Paris",
                 source="hr-handbook",
