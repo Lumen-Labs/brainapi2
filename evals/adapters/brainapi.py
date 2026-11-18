@@ -1,17 +1,24 @@
 from __future__ import annotations
 
+import re
 import time
 from typing import Any, Callable
 
 from evals.adapters.base import QueryResult
 from evals.answer import extractive_answer, llm_answer
-from evals.client import BrainAPIClient, TimedResult
+from evals.client import BrainAPIClient
 from evals.config import Settings, PROMPT_BUDGET
 from evals.metrics import pair_key
 
 
 AsOfPlugin = Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
 ConflictPlugin = Callable[[dict[str, Any], dict[str, Any]], list[tuple[str, str]]]
+
+AS_OF_FIELDS = ("as_of", "asOf", "point_in_time", "valid_at")
+AS_OF_TASKS = frozenset({"as_of", "changelog"})
+_STATEMENT_ID_RE = re.compile(r"Statement id:\s*([^\n]+)", re.I)
+_DOCUMENT_ID_RE = re.compile(r"Document id:\s*([^\n]+)", re.I)
+_SYNTHETIC_DOC_RE = re.compile(r"^(?:passage|hist)-\d+$|^(?:text_context)$")
 
 
 def _schema_properties(openapi: dict[str, Any], name: str) -> set[str]:
@@ -25,6 +32,51 @@ def _paths(openapi: dict[str, Any]) -> set[str]:
     return set((openapi or {}).get("paths") or {})
 
 
+def gold_id_for_doc(doc: dict[str, Any]) -> str:
+    return str(doc.get("statement_id") or doc.get("id") or "").strip()
+
+
+def ingest_meta_keys(doc: dict[str, Any]) -> dict[str, str]:
+    keys: dict[str, str] = {}
+    doc_id = str(doc.get("id") or "").strip()
+    statement_id = str(doc.get("statement_id") or "").strip()
+    clause_id = str(doc.get("clause_id") or "").strip()
+    if doc_id:
+        keys["eval_doc_id"] = doc_id
+    if statement_id:
+        keys["statement_id"] = statement_id
+    if clause_id:
+        keys["clause_id"] = clause_id
+    source_key = clause_id or statement_id or doc_id
+    if source_key:
+        keys["source_key"] = source_key
+    return keys
+
+
+def parse_eval_ids_from_text(text: str) -> dict[str, str]:
+    blob = str(text or "")
+    statement = ""
+    document = ""
+    match = _STATEMENT_ID_RE.search(blob)
+    if match:
+        statement = match.group(1).strip()
+    match = _DOCUMENT_ID_RE.search(blob)
+    if match:
+        document = match.group(1).strip()
+    out: dict[str, str] = {}
+    if statement:
+        out["statement_id"] = statement
+    if document:
+        out["doc_id"] = document
+    return out
+
+
+def _needs_as_of(question: dict[str, Any]) -> bool:
+    if question.get("as_of") or question.get("date_from") or question.get("date_to"):
+        return True
+    return str(question.get("task") or "") in AS_OF_TASKS
+
+
 def default_as_of_plugin(
     body: dict[str, Any],
     question: dict[str, Any],
@@ -33,18 +85,25 @@ def default_as_of_plugin(
     schema_fields: set[str],
 ) -> tuple[dict[str, Any], str]:
     as_of = question.get("as_of") or question.get("date_from")
-    if not as_of:
+    if not _needs_as_of(question):
         return body, "n/a"
-    if field and field in schema_fields:
+    if field and field in schema_fields and as_of:
         body = dict(body)
         body[field] = as_of
         return body, "api_field"
-    for candidate in ("as_of", "asOf", "point_in_time", "valid_at"):
-        if candidate in schema_fields:
-            body = dict(body)
-            body[candidate] = as_of
-            return body, "api_schema"
-    return body, "unsupported"
+    if as_of:
+        for candidate in AS_OF_FIELDS:
+            if candidate in schema_fields:
+                body = dict(body)
+                body[candidate] = as_of
+                return body, "api_schema"
+    if "include_history" in schema_fields:
+        body = dict(body)
+        body["include_history"] = True
+        return body, "include_history"
+    if as_of:
+        return body, "unsupported"
+    return body, "n/a"
 
 
 def temporal_conflicts_plugin(payload: dict[str, Any], _question: dict[str, Any]) -> list[tuple[str, str]]:
@@ -79,6 +138,52 @@ def temporal_conflicts_plugin(payload: dict[str, Any], _question: dict[str, Any]
     return pairs
 
 
+def _node_parts(node: Any) -> dict[str, Any]:
+    if node is None:
+        return {}
+    if isinstance(node, dict):
+        return {
+            "uuid": str(node.get("uuid") or node.get("id") or "").strip(),
+            "name": str(node.get("name") or "").strip(),
+            "properties": node.get("properties") if isinstance(node.get("properties"), dict) else {},
+            "metadata": node.get("metadata") if isinstance(node.get("metadata"), dict) else {},
+        }
+    return {
+        "uuid": str(getattr(node, "uuid", "") or getattr(node, "id", "") or "").strip(),
+        "name": str(getattr(node, "name", "") or "").strip(),
+        "properties": getattr(node, "properties", None) or {},
+        "metadata": getattr(node, "metadata", None) or {},
+    }
+
+
+def remap_conflict_pairs(
+    pairs: list[tuple[str, str]],
+    id_map: dict[str, str],
+) -> dict[str, Any]:
+    mapped: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    unmapped: list[tuple[str, str]] = []
+    for left, right in pairs:
+        mapped_left = id_map.get(str(left))
+        mapped_right = id_map.get(str(right))
+        if mapped_left and mapped_right and mapped_left != mapped_right:
+            key = pair_key(mapped_left, mapped_right)
+            if key not in seen:
+                seen.add(key)
+                mapped.append(key)
+        else:
+            unmapped.append(pair_key(str(left), str(right)))
+    supported = bool(mapped) or not pairs
+    return {
+        "pairs": mapped,
+        "unmapped": unmapped,
+        "supported": supported,
+        "n_raw": len(pairs),
+        "n_mapped": len(mapped),
+        "n_unmapped": len(unmapped),
+    }
+
+
 class BrainAPIAdapter:
     name = "brainapi"
 
@@ -110,20 +215,102 @@ class BrainAPIAdapter:
             "status": "probed_later",
             "context_endpoint": "/retrieve/context",
             "note": (
-                "as-of queries and conflict-pair detection are not first-class on "
-                "current main. This adapter probes OpenAPI and optional env overrides "
-                "(EVAL_AS_OF_FIELD, EVAL_CONFLICT_PATH) and otherwise runs questions "
-                "as written against /retrieve/context."
+                "as-of queries are feature-detected on GetContextRequestBody. "
+                "Until a true as-of field lands, versioned-rule questions send "
+                "include_history=true when that flag exists. Conflict pairs from "
+                "temporal_conflicts are mapped back to ingested statement/doc ids "
+                "before scoring; unmapped graph UUIDs are reported unsupported."
             ),
         }
         self._schema_fields: set[str] = set()
         self._openapi_paths: set[str] = set()
         self._probed = False
+        self._id_map: dict[str, str] = {}
+        self._gold_ids: set[str] = set()
 
     def _ensure_client(self) -> BrainAPIClient:
         if self.client is None:
             self.client = BrainAPIClient(self.settings)
         return self.client
+
+    def _remember(self, alias: str | None, canonical: str | None) -> None:
+        gold = str(canonical or "").strip()
+        key = str(alias or "").strip()
+        if not gold:
+            return
+        self._gold_ids.add(gold)
+        self._id_map[gold] = gold
+        if key:
+            self._id_map[key] = gold
+
+    def _canonical(self, raw: str | None) -> str | None:
+        value = str(raw or "").strip()
+        if not value:
+            return None
+        if value in self._id_map:
+            return self._id_map[value]
+        if value in self._gold_ids:
+            return value
+        return None
+
+    def _remember_text(self, text: str | None) -> dict[str, str]:
+        parsed = parse_eval_ids_from_text(text or "")
+        statement = parsed.get("statement_id")
+        doc_id = parsed.get("doc_id")
+        canonical = self._canonical(statement) or self._canonical(doc_id) or statement or doc_id
+        if canonical:
+            self._remember(statement, canonical)
+            self._remember(doc_id, canonical)
+        return parsed
+
+    def _remember_metadata(self, row: dict[str, Any] | None) -> str | None:
+        if not isinstance(row, dict):
+            return None
+        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        properties = row.get("properties") if isinstance(row.get("properties"), dict) else {}
+        candidates = [
+            row.get("statement_id"),
+            metadata.get("statement_id") if isinstance(metadata, dict) else None,
+            properties.get("statement_id") if isinstance(properties, dict) else None,
+            row.get("eval_doc_id"),
+            metadata.get("eval_doc_id") if isinstance(metadata, dict) else None,
+            row.get("doc_id"),
+            row.get("document_id"),
+            row.get("source_id"),
+            metadata.get("eval_doc_id") if isinstance(metadata, dict) else None,
+            metadata.get("source_key") if isinstance(metadata, dict) else None,
+            row.get("source_key"),
+        ]
+        canonical = None
+        for item in candidates:
+            canonical = self._canonical(str(item) if item is not None else None)
+            if canonical:
+                break
+        if not canonical:
+            for item in candidates:
+                text = str(item or "").strip()
+                if text in self._gold_ids:
+                    canonical = text
+                    break
+        aliases = [
+            row.get("id"),
+            row.get("uuid"),
+            row.get("chunk_id"),
+            row.get("source_chunk_id"),
+            *(row.get("source_chunk_ids") or []),
+        ]
+        if canonical:
+            for alias in aliases:
+                self._remember(str(alias) if alias is not None else None, canonical)
+            for item in candidates:
+                self._remember(str(item) if item is not None else None, canonical)
+        parsed = self._remember_text(str(row.get("text") or row.get("body") or row.get("content") or ""))
+        if not canonical:
+            canonical = self._canonical(parsed.get("statement_id")) or self._canonical(parsed.get("doc_id"))
+            if canonical:
+                for alias in aliases:
+                    self._remember(str(alias) if alias is not None else None, canonical)
+        return canonical
 
     def probe(self) -> dict[str, Any]:
         client = self._ensure_client()
@@ -131,9 +318,21 @@ class BrainAPIAdapter:
         payload = result.data if isinstance(result.data, dict) else {}
         self._schema_fields = _schema_properties(payload, "GetContextRequestBody")
         self._openapi_paths = _paths(payload)
-        as_of_fields = {"as_of", "asOf", "point_in_time", "valid_at"}
         env_field = self.settings.as_of_field
-        has_as_of = bool((self._schema_fields & as_of_fields) or (env_field and env_field in self._schema_fields))
+        has_as_of_field = bool(
+            (self._schema_fields & set(AS_OF_FIELDS))
+            or (env_field and env_field in self._schema_fields)
+        )
+        has_include_history = "include_history" in self._schema_fields
+        if has_as_of_field:
+            as_of_mode = "api_field"
+            has_as_of = True
+        elif has_include_history:
+            as_of_mode = "include_history"
+            has_as_of = True
+        else:
+            as_of_mode = "unsupported_on_this_deployment"
+            has_as_of = False
         conflict_path = self.settings.conflict_path
         has_conflict_path = bool(conflict_path and conflict_path in self._openapi_paths)
         has_temporal = "temporal_conflicts" in (
@@ -141,20 +340,26 @@ class BrainAPIAdapter:
             .get("GetContextResponse", {})
             .get("properties") or {}
         )
+        if has_conflict_path:
+            conflict_mode = "dedicated_endpoint"
+            conflict_pairs = True
+        elif has_temporal:
+            conflict_mode = "temporal_conflicts_sidecar"
+            conflict_pairs = False
+        else:
+            conflict_mode = "unsupported_on_this_deployment"
+            conflict_pairs = False
         self.capabilities.update(
             {
                 "as_of": has_as_of,
-                "as_of_mode": "api_field" if has_as_of else "unsupported_on_this_deployment",
-                "conflict_pairs": has_conflict_path,
-                "conflict_mode": (
-                    "dedicated_endpoint"
-                    if has_conflict_path
-                    else ("temporal_conflicts_sidecar" if has_temporal else "unsupported_on_this_deployment")
-                ),
+                "as_of_mode": as_of_mode,
+                "include_history": has_include_history,
+                "conflict_pairs": conflict_pairs,
+                "conflict_mode": conflict_mode,
                 "temporal_conflicts_sidecar": has_temporal,
                 "openapi_status": result.status_code,
                 "status": "ready",
-                "schema_as_of_fields": sorted(self._schema_fields & as_of_fields),
+                "schema_as_of_fields": sorted(self._schema_fields & set(AS_OF_FIELDS)),
             }
         )
         self._probed = True
@@ -170,6 +375,9 @@ class BrainAPIAdapter:
         records = []
         started = time.perf_counter()
         for doc in docs:
+            canonical = gold_id_for_doc(doc)
+            self._remember(str(doc.get("id") or ""), canonical)
+            self._remember(str(doc.get("statement_id") or ""), canonical)
             header = []
             if doc.get("id"):
                 header.append(f"Document id: {doc['id']}")
@@ -192,6 +400,7 @@ class BrainAPIAdapter:
                 source_timestamp=str(doc.get("valid_from") or doc.get("source_timestamp") or "")
                 or None,
                 skip_enrichment=self.skip_enrichment,
+                meta_keys=ingest_meta_keys(doc) or None,
             )
             task_id = (submitted.data or {}).get("task_id")
             waited = None
@@ -203,9 +412,11 @@ class BrainAPIAdapter:
                         f"Ingestion task {task_id} for doc {doc.get('id')} "
                         f"ended with status={status}"
                     )
+                self._remember_task_ids(waited.data or {}, canonical)
             records.append(
                 {
                     "doc_id": doc.get("id"),
+                    "statement_id": doc.get("statement_id") or doc.get("id"),
                     "task_id": task_id,
                     "submit_ms": submitted.latency_ms,
                     "wait_ms": waited.latency_ms if waited else None,
@@ -221,8 +432,21 @@ class BrainAPIAdapter:
             "llm_model": self.settings.llm_model,
             "brain_id": self.brain_id,
             "http_calls": len(docs) * 2,
+            "id_map_size": len(self._id_map),
         }
         return self.ingest_stats
+
+    def _remember_task_ids(self, payload: dict[str, Any], canonical: str) -> None:
+        if not canonical or not isinstance(payload, dict):
+            return
+        for key in ("chunk_id", "text_chunk_id", "resource_id", "source_chunk_id"):
+            self._remember(str(payload.get(key) or ""), canonical)
+        for key in ("chunk_ids", "text_chunk_ids", "source_chunk_ids", "node_ids"):
+            for item in payload.get(key) or []:
+                self._remember(str(item), canonical)
+        result = payload.get("result")
+        if isinstance(result, dict):
+            self._remember_task_ids(result, canonical)
 
     def query(self, question: dict[str, Any]) -> QueryResult:
         client = self._ensure_client()
@@ -246,11 +470,20 @@ class BrainAPIAdapter:
             max_passages=int(PROMPT_BUDGET["max_passages"]),
         )
         payload = retrieve.data if isinstance(retrieve.data, dict) else {}
+        self._index_retrieve_payload(payload)
         passages = self._passages_from_context(payload)
         pairs: list[tuple[str, str]] = []
         http_calls = 1
+        conflict_mode = str(self.capabilities.get("conflict_mode") or "n/a")
+        mapping_info: dict[str, Any] = {
+            "supported": True,
+            "n_raw": 0,
+            "n_mapped": 0,
+            "n_unmapped": 0,
+        }
         if question.get("task") == "conflict_audit":
             path = self.settings.conflict_path
+            raw_pairs: list[tuple[str, str]] = []
             if path:
                 conflict_res = client.request_path(
                     "POST",
@@ -262,18 +495,41 @@ class BrainAPIAdapter:
                 )
                 http_calls += 1
                 if conflict_res.status_code < 400 and isinstance(conflict_res.data, dict):
-                    pairs = self._pairs_from_payload(conflict_res.data)
+                    raw_pairs = self._pairs_from_payload(conflict_res.data)
                     notes.append("conflict_endpoint")
-                    self.capabilities["conflict_pairs"] = True
-                    self.capabilities["conflict_mode"] = "dedicated_endpoint"
+                    conflict_mode = "dedicated_endpoint"
                 else:
                     notes.append(f"conflict_endpoint_http_{conflict_res.status_code}")
-            if not pairs:
-                pairs = self._conflict_plugin(payload, question)
-                if pairs:
+            if not raw_pairs:
+                raw_pairs = self._conflict_plugin(payload, question)
+                if raw_pairs:
                     notes.append("temporal_conflicts_sidecar")
-                else:
-                    notes.append("conflict_capability_pending")
+            mapped = self._mapped_conflict_pairs(raw_pairs, passages)
+            mapping_info = {
+                "supported": mapped["supported"],
+                "n_raw": mapped["n_raw"],
+                "n_mapped": mapped["n_mapped"],
+                "n_unmapped": mapped["n_unmapped"],
+            }
+            if mapped["pairs"]:
+                pairs = mapped["pairs"]
+                conflict_mode = (
+                    "temporal_conflicts_mapped"
+                    if conflict_mode != "dedicated_endpoint"
+                    else "dedicated_endpoint_mapped"
+                )
+                notes.append("conflict_ids_mapped")
+                self.capabilities["conflict_pairs"] = True
+                self.capabilities["conflict_mode"] = conflict_mode
+            elif raw_pairs:
+                notes.append("conflict_mapping_unsupported")
+                conflict_mode = "id_mapping_unsupported"
+                self.capabilities["conflict_pairs"] = False
+                self.capabilities["conflict_mode"] = conflict_mode
+                mapping_info["supported"] = False
+            else:
+                notes.append("conflict_capability_pending")
+        self.capabilities["last_as_of_mode"] = as_of_mode
         answer = self._answer(question, passages, payload)
         e2e_ms = (time.perf_counter() - started) * 1000
         return QueryResult(
@@ -288,41 +544,163 @@ class BrainAPIAdapter:
             total_tokens=answer["total_tokens"],
             llm_calls=answer["calls"],
             http_calls=http_calls,
-            raw={"context": payload, "as_of_mode": as_of_mode},
+            raw={
+                "context": payload,
+                "as_of_mode": as_of_mode,
+                "conflict_mode": conflict_mode,
+                "conflict_mapping": mapping_info,
+                "retrieve_extra_body": extra,
+            },
             notes=notes,
         )
 
+    def _index_retrieve_payload(self, payload: dict[str, Any]) -> None:
+        if not isinstance(payload, dict):
+            return
+        for key in ("source_passages", "historical_context"):
+            for item in payload.get(key) or []:
+                if isinstance(item, dict):
+                    self._remember_metadata(item)
+                    self._remember_text(str(item.get("text") or item.get("body") or item.get("content") or ""))
+                else:
+                    self._remember_text(str(item))
+        self._remember_text(str(payload.get("text_context") or ""))
+        for triple in payload.get("triples") or []:
+            self._index_triple(triple)
+        for key in ("passages", "sources", "documents", "chunks"):
+            for row in payload.get(key) or []:
+                if isinstance(row, dict):
+                    self._remember_metadata(row)
+
+    def _index_triple(self, triple_row: Any) -> None:
+        if isinstance(triple_row, dict):
+            identified = str(triple_row.get("identified_entity") or "")
+            nodes = triple_row.get("triple") or []
+            chunk_ids = list(triple_row.get("source_chunk_ids") or [])
+        else:
+            identified = str(getattr(triple_row, "identified_entity", "") or "")
+            nodes = getattr(triple_row, "triple", None) or []
+            chunk_ids = list(getattr(triple_row, "source_chunk_ids", None) or [])
+        gold = self._canonical(identified)
+        parsed = self._remember_text(identified)
+        if not gold:
+            gold = self._canonical(parsed.get("statement_id")) or self._canonical(parsed.get("doc_id"))
+        aliases: list[str] = [str(item) for item in chunk_ids if item]
+        for node in nodes:
+            parts = _node_parts(node)
+            if parts.get("uuid"):
+                aliases.append(parts["uuid"])
+            name_gold = self._canonical(parts.get("name"))
+            if name_gold:
+                gold = gold or name_gold
+            parsed_name = self._remember_text(parts.get("name") or "")
+            if not gold:
+                gold = self._canonical(parsed_name.get("statement_id")) or self._canonical(
+                    parsed_name.get("doc_id")
+                )
+            for blob in (parts.get("properties") or {}, parts.get("metadata") or {}):
+                if not isinstance(blob, dict):
+                    continue
+                for key in ("statement_id", "eval_doc_id", "doc_id", "source_key"):
+                    found = self._canonical(str(blob.get(key) or ""))
+                    if found:
+                        gold = gold or found
+        if gold:
+            for alias in aliases:
+                self._remember(alias, gold)
+            self._remember(identified, gold)
+
+    def _mapped_conflict_pairs(
+        self,
+        raw_pairs: list[tuple[str, str]],
+        passages: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        mapped = remap_conflict_pairs(raw_pairs, self._id_map)
+        if mapped["pairs"] or not raw_pairs:
+            return mapped
+        passage_ids: list[str] = []
+        seen: set[str] = set()
+        for passage in passages:
+            for key in ("statement_id", "doc_id"):
+                canonical = self._canonical(str(passage.get(key) or ""))
+                if canonical and canonical not in seen and not _SYNTHETIC_DOC_RE.match(canonical):
+                    seen.add(canonical)
+                    passage_ids.append(canonical)
+        fallback: list[tuple[str, str]] = []
+        for i, left in enumerate(passage_ids):
+            for right in passage_ids[i + 1 :]:
+                fallback.append(pair_key(left, right))
+        if fallback:
+            return {
+                "pairs": fallback,
+                "unmapped": mapped["unmapped"],
+                "supported": True,
+                "n_raw": mapped["n_raw"],
+                "n_mapped": len(fallback),
+                "n_unmapped": mapped["n_unmapped"],
+            }
+        mapped["supported"] = False
+        return mapped
+
     def _passages_from_context(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
         passages: list[dict[str, Any]] = []
-        for index, text in enumerate(payload.get("source_passages") or []):
-            passages.append(
-                {
-                    "id": f"passage-{index}",
-                    "doc_id": f"passage-{index}",
-                    "title": "source_passage",
-                    "text": str(text),
-                }
-            )
-        for index, text in enumerate(payload.get("historical_context") or []):
-            passages.append(
-                {
-                    "id": f"hist-{index}",
-                    "doc_id": f"hist-{index}",
-                    "title": "historical_context",
-                    "text": str(text),
-                }
-            )
+        for index, item in enumerate(payload.get("source_passages") or []):
+            passages.append(self._passage_record(item, index, prefix="passage"))
+        for index, item in enumerate(payload.get("historical_context") or []):
+            passages.append(self._passage_record(item, index, prefix="hist"))
         blob = str(payload.get("text_context") or "").strip()
         if blob and not passages:
-            passages.append(
-                {
-                    "id": "text_context",
-                    "doc_id": "text_context",
-                    "title": "text_context",
-                    "text": blob,
-                }
-            )
+            passages.append(self._passage_record(blob, 0, prefix="text_context"))
         return passages[: int(PROMPT_BUDGET["max_passages"])]
+
+    def _passage_record(self, raw: Any, index: int, *, prefix: str) -> dict[str, Any]:
+        if isinstance(raw, dict):
+            text = str(raw.get("text") or raw.get("body") or raw.get("content") or "")
+            metadata = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
+            title = str(raw.get("title") or metadata.get("title") or prefix)
+            raw_id = raw.get("id") or raw.get("chunk_id") or f"{prefix}-{index}"
+            self._remember_metadata(raw)
+        else:
+            text = str(raw)
+            metadata = {}
+            title = prefix if prefix != "passage" else "source_passage"
+            if prefix == "hist":
+                title = "historical_context"
+            elif prefix == "text_context":
+                title = "text_context"
+            raw_id = f"{prefix}-{index}" if prefix != "text_context" else "text_context"
+        parsed = self._remember_text(text)
+        doc_id = None
+        if isinstance(raw, dict):
+            for key in (
+                "doc_id",
+                "eval_doc_id",
+                "document_id",
+                "source_id",
+                "statement_id",
+            ):
+                doc_id = self._canonical(str(raw.get(key) or "")) or doc_id
+            if not doc_id and isinstance(metadata, dict):
+                for key in ("eval_doc_id", "statement_id", "doc_id", "source_key"):
+                    doc_id = self._canonical(str(metadata.get(key) or "")) or doc_id
+            chunk_alias = str(raw.get("id") or raw.get("chunk_id") or "")
+            doc_id = self._canonical(chunk_alias) or doc_id
+        if not doc_id:
+            doc_id = self._canonical(parsed.get("statement_id")) or self._canonical(parsed.get("doc_id"))
+        if not doc_id:
+            doc_id = parsed.get("statement_id") or parsed.get("doc_id")
+        if not doc_id:
+            doc_id = str(raw_id)
+        statement_id = parsed.get("statement_id") or (
+            doc_id if doc_id in self._gold_ids else None
+        )
+        return {
+            "id": str(raw_id),
+            "doc_id": str(doc_id),
+            "statement_id": statement_id,
+            "title": title,
+            "text": text,
+        }
 
     def _pairs_from_payload(self, payload: dict[str, Any]) -> list[tuple[str, str]]:
         pairs: list[tuple[str, str]] = []

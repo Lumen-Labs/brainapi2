@@ -59,6 +59,9 @@ def _record(
         "prediction": result.answer,
         "conflict_pairs": [list(pair) for pair in result.conflict_pairs],
         "notes": result.notes,
+        "as_of_mode": (result.raw or {}).get("as_of_mode"),
+        "conflict_mode": (result.raw or {}).get("conflict_mode"),
+        "conflict_mapping": (result.raw or {}).get("conflict_mapping"),
         "retrieve_ms": result.retrieve_ms,
         "answer_ms": result.answer_ms,
         "e2e_ms": result.e2e_ms,
@@ -80,11 +83,26 @@ def _score_one(
     use_judge: bool = False,
 ) -> dict[str, Any]:
     if question.get("task") == "conflict_audit":
+        notes = result.notes or []
+        mapping_unsupported = "conflict_mapping_unsupported" in notes and not result.conflict_pairs
         gold = question.get("gold_pairs")
         if gold is None and gold_pairs is not None:
             gold = gold_pairs
         gold_t = [pair_key(str(a), str(b)) for a, b in (gold or [])]
         pred_t = [pair_key(str(a), str(b)) for a, b in result.conflict_pairs]
+        if mapping_unsupported:
+            return {
+                "unsupported": True,
+                "exact_match": False,
+                "must_include": False,
+                "token_f1": None,
+                "correct": None,
+                "scoring": "conflict_pairs_unsupported",
+                "non_pair_leaks": 0,
+                "n_gold": len(gold_t),
+                "n_predicted": 0,
+                "reason": "BrainAPI conflict identifiers could not be mapped to statement/doc gold ids",
+            }
         prf = conflict_prf(pred_t, gold_t)
         non_pairs = [pair_key(str(a), str(b)) for a, b in (question.get("non_pairs") or [])]
         leaked = [pair for pair in pred_t if pair in set(non_pairs)]
@@ -169,16 +187,26 @@ def _query_records(
 def _aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
     n = len(records)
     scored = [row for row in records if row.get("error") is None]
-    successes = sum(1 for row in records if row.get("correct") and row.get("error") is None)
-    lo, hi = wilson_ci(successes, n)
+    n_unsupported = sum(1 for row in records if row.get("unsupported") and row.get("error") is None)
+    denom = n - n_unsupported
+    successes = sum(
+        1
+        for row in records
+        if row.get("correct") and row.get("error") is None and not row.get("unsupported")
+    )
+    lo, hi = wilson_ci(successes, denom)
+    f1_rows = [row for row in scored if row.get("token_f1") is not None]
     return {
         "n": n,
         "n_errors": sum(1 for row in records if row.get("error")),
-        "accuracy": (successes / n) if n else None,
+        "n_unsupported": n_unsupported,
+        "accuracy": (successes / denom) if denom else None,
         "wilson_lo": lo,
         "wilson_hi": hi,
         "mean_token_f1": (
-            sum(float(row.get("token_f1") or 0.0) for row in scored) / n if n else None
+            sum(float(row.get("token_f1") or 0.0) for row in f1_rows) / len(f1_rows)
+            if f1_rows
+            else None
         ),
         "latency": latency_summary(float(row["e2e_ms"]) for row in scored if row.get("e2e_ms") is not None),
         "retrieve_latency": latency_summary(
@@ -192,7 +220,31 @@ def _aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _conflict_headline_unsupported(records: list[dict[str, Any]]) -> bool:
+    has_pairs = any(row.get("conflict_pairs") for row in records)
+    notes_hit = any(
+        "conflict_mapping_unsupported" in (row.get("notes") or [])
+        or row.get("scoring") == "conflict_pairs_unsupported"
+        or row.get("unsupported")
+        for row in records
+    )
+    return bool(notes_hit and not has_pairs)
+
+
 def _conflict_headline(records: list[dict[str, Any]], gold_pairs: list[tuple[str, str]]) -> dict[str, Any]:
+    if _conflict_headline_unsupported(records):
+        return {
+            "unsupported": True,
+            "reason": "BrainAPI conflict identifiers could not be mapped to statement/doc gold ids",
+            "f1": None,
+            "precision": None,
+            "recall": None,
+            "tp": 0,
+            "fp": 0,
+            "fn": 0,
+            "n_predicted": 0,
+            "n_gold": len(gold_pairs),
+        }
     pred: list[tuple[str, str]] = []
     for row in records:
         for pair in row.get("conflict_pairs") or []:

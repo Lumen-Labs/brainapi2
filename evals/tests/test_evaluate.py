@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import unittest
 
-from evals.evaluate import _aggregate, compare_systems
+from evals.adapters.base import QueryResult
+from evals.evaluate import (
+    _aggregate,
+    _conflict_headline,
+    _score_one,
+    compare_systems,
+)
 from evals.judge import _parse_bool_payload
 
 
@@ -63,6 +69,38 @@ class CompareSystemsTests(unittest.TestCase):
         self.assertEqual(headline["n"], 2)
         self.assertEqual(headline["n_errors"], 1)
         self.assertEqual(headline["accuracy"], 0.5)
+
+    def test_unsupported_conflict_metric_is_not_zero(self) -> None:
+        records = [
+            {
+                "notes": ["conflict_mapping_unsupported"],
+                "conflict_pairs": [],
+                "unsupported": True,
+                "scoring": "conflict_pairs_unsupported",
+                "correct": None,
+            }
+        ]
+        headline = _conflict_headline(records, [("stmt-a", "stmt-b")])
+        self.assertTrue(headline["unsupported"])
+        self.assertIsNone(headline["f1"])
+        agg = _aggregate(records)
+        self.assertEqual(agg["n_unsupported"], 1)
+        self.assertIsNone(agg["accuracy"])
+
+    def test_score_one_marks_unmapped_conflicts_unsupported(self) -> None:
+        result = QueryResult(
+            answer="",
+            conflict_pairs=[],
+            notes=["conflict_mapping_unsupported"],
+        )
+        scored = _score_one(
+            {"task": "conflict_audit"},
+            result,
+            gold_pairs=[("stmt-a", "stmt-b")],
+        )
+        self.assertTrue(scored["unsupported"])
+        self.assertIsNone(scored["correct"])
+        self.assertEqual(scored["scoring"], "conflict_pairs_unsupported")
 
 
 class JudgeParseTests(unittest.TestCase):
