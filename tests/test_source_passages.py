@@ -5,6 +5,7 @@ from src.constants.data import TextChunk
 from src.core.saving.source_passages import (
     current_fact_candidates,
     current_record_texts,
+    embed_candidate_cap,
     prepare_source_revision,
     prior_revision_texts,
     screen_passage_hits,
@@ -18,14 +19,22 @@ class _Store:
     def __init__(self, chunks: list[TextChunk] | None = None):
         self.chunks = list(chunks or [])
         self.marked: list[tuple[list[str], str, str | None, str | None]] = []
+        self.limits: list[int] = []
 
     def get_text_chunks(self, brain_id, limit=10, skip=0, query_text=None, metadata_eq=None, order="desc"):
+        self.limits.append(limit)
         matched = []
         for chunk in self.chunks:
             meta = chunk.metadata or {}
             if metadata_eq and any(meta.get(key) != value for key, value in metadata_eq.items()):
                 continue
             matched.append(chunk)
+        reverse = str(order).lower() != "asc"
+        matched.sort(
+            key=lambda chunk: getattr(chunk, "inserted_at", None)
+            or datetime.datetime.min,
+            reverse=reverse,
+        )
         return matched[skip : skip + limit], len(matched)
 
     def mark_text_chunks_superseded(
@@ -158,7 +167,8 @@ class SourceRevisionTests(unittest.TestCase):
             ),
             "insert",
         )
-        self.assertEqual(store.marked[0][0], ["c1", "c2"])
+        self.assertEqual(len(store.marked), 1)
+        self.assertEqual(set(store.marked[0][0]), {"c1", "c2"})
         self.assertEqual(store.marked[0][1], "16/11/2026")
         self.assertIsNotNone(store.marked[0][3])
 
@@ -317,6 +327,266 @@ class CurrentFactTests(unittest.TestCase):
             embed=lambda text: [1.0, 0.0] if "4410-OTTER" in text else [0.0, 1.0],
         )
         self.assertEqual(by_vector, ["[superseded] The cedar signal code is 4410-OTTER."])
+
+    def test_prior_revision_embed_calls_are_capped_newest_first(self):
+        older = []
+        for index in range(40):
+            older.append(
+                TextChunk(
+                    id=f"old-{index}",
+                    text=f"revision body {index} unique snack" if index < 34 else f"cedar signal {index}",
+                    metadata={
+                        "source_key": "src-1",
+                        "superseded_at": f"2026-11-16T12:{index:02d}:00",
+                    },
+                    inserted_at=datetime.datetime(2026, 11, 16, 12, index, 0),
+                )
+            )
+        live = TextChunk(
+            id="new",
+            text="live copy",
+            metadata={"source_key": "src-1"},
+            inserted_at=datetime.datetime(2026, 11, 17, 0, 0, 0),
+        )
+        store = _Store(older + [live])
+        calls: list[str] = []
+
+        def embed(text: str) -> list[float]:
+            calls.append(text)
+            return [1.0, 0.0] if "cedar" in text else [0.0, 1.0]
+
+        limit = 2
+        loaded = prior_revision_texts(
+            store,
+            "brain",
+            [("new", 0.2, live.text)],
+            limit=limit,
+            query_vector=[1.0, 0.0],
+            embed=embed,
+        )
+        cap = embed_candidate_cap(limit)
+        newest = {
+            f"[superseded] cedar signal {index}" for index in range(34, 40)
+        }
+        self.assertEqual(cap, 6)
+        self.assertEqual(embed_candidate_cap(200), 500)
+        self.assertLessEqual(len(calls), cap)
+        self.assertGreater(len(calls), 0)
+        self.assertEqual(set(calls), newest)
+        self.assertEqual(len(loaded), limit)
+        self.assertTrue(all("cedar" in body for body in loaded))
+        self.assertTrue(store.limits)
+        self.assertLess(store.limits[-1], 500)
+        self.assertLessEqual(store.limits[-1], cap + 16)
+
+    def test_prior_revision_pages_past_current_chunks(self):
+        currents = [
+            TextChunk(
+                id=f"live-{index}",
+                text=f"live copy {index}",
+                metadata={"source_key": "src-1"},
+                inserted_at=datetime.datetime(2026, 11, 17, 0, index, 0),
+            )
+            for index in range(50)
+        ]
+        older = [
+            TextChunk(
+                id=f"old-{index}",
+                text=f"cedar signal {index}",
+                metadata={
+                    "source_key": "src-1",
+                    "superseded_at": f"2026-11-16T12:{index:02d}:00",
+                },
+                inserted_at=datetime.datetime(2026, 11, 16, 12, index, 0),
+            )
+            for index in range(5)
+        ]
+        live = currents[-1]
+        store = _Store(currents + older)
+        loaded = prior_revision_texts(
+            store,
+            "brain",
+            [("live-49", 0.2, live.text)],
+            limit=2,
+            query_text="cedar signal",
+        )
+        self.assertEqual(len(loaded), 2)
+        self.assertTrue(all("cedar signal" in body for body in loaded))
+
+    def test_prior_revision_uses_stored_embeddings_without_embed(self):
+        older = TextChunk(
+            id="old",
+            text="The cedar signal code is 4410-OTTER.",
+            metadata={
+                "source_key": "src-1",
+                "superseded_at": "2026-11-16T07:11:00",
+                "embeddings": [1.0, 0.0],
+            },
+        )
+        snack = TextChunk(
+            id="snack",
+            text="The office snack list was pretzels.",
+            metadata={
+                "source_key": "src-1",
+                "superseded_at": "2026-11-16T08:00:00",
+                "embeddings": [0.0, 1.0],
+            },
+        )
+        live = TextChunk(id="new", text="live", metadata={"source_key": "src-1"})
+        store = _Store([older, snack, live])
+        calls: list[str] = []
+
+        def embed(text: str) -> list[float]:
+            calls.append(text)
+            raise AssertionError("stored embeddings should skip embed_text")
+
+        loaded = prior_revision_texts(
+            store,
+            "brain",
+            [("new", 0.2, live.text)],
+            limit=1,
+            query_vector=[1.0, 0.0],
+            embed=embed,
+        )
+        self.assertEqual(calls, [])
+        self.assertEqual(loaded, ["[superseded] The cedar signal code is 4410-OTTER."])
+
+    def test_prior_revision_batches_embed_texts_once(self):
+        older = [
+            TextChunk(
+                id=f"old-{index}",
+                text=f"revision {index} body",
+                metadata={
+                    "source_key": "src-1",
+                    "superseded_at": f"2026-11-16T12:{index:02d}:00",
+                },
+                inserted_at=datetime.datetime(2026, 11, 16, 12, index, 0),
+            )
+            for index in range(20)
+        ]
+        live = TextChunk(
+            id="new",
+            text="live",
+            metadata={"source_key": "src-1"},
+            inserted_at=datetime.datetime(2026, 11, 17, 0, 0, 0),
+        )
+        store = _Store(older + [live])
+
+        class _Batch:
+            def __init__(self):
+                self.calls = 0
+                self.sizes: list[int] = []
+                self.singles: list[str] = []
+
+            def embed_texts(self, texts: list[str]) -> list[list[float]]:
+                self.calls += 1
+                self.sizes.append(len(texts))
+                return [[0.0, 1.0] for _ in texts]
+
+            def __call__(self, text: str) -> list[float]:
+                self.singles.append(text)
+                return [0.0, 1.0]
+
+        batch = _Batch()
+        limit = 3
+        loaded = prior_revision_texts(
+            store,
+            "brain",
+            [("new", 0.2, live.text)],
+            limit=limit,
+            query_vector=[0.0, 1.0],
+            embed=batch,
+        )
+        cap = embed_candidate_cap(limit)
+        self.assertEqual(batch.calls, 1)
+        self.assertEqual(batch.sizes, [cap])
+        self.assertEqual(batch.singles, [])
+        self.assertEqual(len(loaded), limit)
+
+    def test_prior_revision_skips_embed_without_query_vector(self):
+        older = TextChunk(
+            id="old",
+            text="The cedar signal code is 4410-OTTER.",
+            metadata={
+                "source_key": "src-1",
+                "superseded_at": "2026-11-16T07:11:00",
+            },
+        )
+        live = TextChunk(id="new", text="live", metadata={"source_key": "src-1"})
+        store = _Store([older, live])
+        calls: list[str] = []
+
+        def embed(text: str) -> list[float]:
+            calls.append(text)
+            return [1.0, 0.0]
+
+        loaded = prior_revision_texts(
+            store,
+            "brain",
+            [("new", 0.2, live.text)],
+            limit=1,
+            query_text="cedar signal",
+            embed=embed,
+        )
+        self.assertEqual(calls, [])
+        self.assertEqual(loaded, ["[superseded] The cedar signal code is 4410-OTTER."])
+
+    def test_prior_revision_does_not_mix_cosine_and_lexical(self):
+        snack = TextChunk(
+            id="snack",
+            text="office pretzels",
+            metadata={
+                "source_key": "src-1",
+                "superseded_at": "2026-11-16T07:00:00",
+                "embeddings": [1.0, 0.0],
+            },
+        )
+        cedar = TextChunk(
+            id="cedar",
+            text="cedar signal",
+            metadata={
+                "source_key": "src-1",
+                "superseded_at": "2026-11-16T08:00:00",
+            },
+        )
+        live = TextChunk(id="new", text="live", metadata={"source_key": "src-1"})
+        store = _Store([snack, cedar, live])
+        loaded = prior_revision_texts(
+            store,
+            "brain",
+            [("new", 0.2, live.text)],
+            limit=1,
+            query_text="",
+            query_vector=[1.0, 0.0],
+        )
+        self.assertEqual(loaded, ["[superseded] cedar signal"])
+
+    def test_prior_revision_keeps_newest_duplicate_body(self):
+        older = TextChunk(
+            id="old",
+            text="same body",
+            metadata={
+                "source_key": "src-1",
+                "superseded_at": "2026-11-16T10:00:00",
+            },
+        )
+        newer = TextChunk(
+            id="newer",
+            text="same body",
+            metadata={
+                "source_key": "src-1",
+                "superseded_at": "2026-11-16T12:00:00",
+            },
+        )
+        live = TextChunk(id="new", text="live", metadata={"source_key": "src-1"})
+        store = _Store([older, newer, live])
+        loaded = prior_revision_texts(
+            store,
+            "brain",
+            [("new", 0.2, live.text)],
+            limit=1,
+        )
+        self.assertEqual(loaded, ["[superseded] same body"])
 
 
 class _Record:

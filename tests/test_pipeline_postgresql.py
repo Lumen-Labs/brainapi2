@@ -18,6 +18,13 @@ def test_pipeline_query_operators_are_parameterized():
         predicate({'status': {'$unsupported': 1}})
 
 
+def test_pending_cleanup_index_matches_find_predicate():
+    clause, args = predicate({'pending_cleanup': True})
+    assert clause == 'document @> %s::jsonb'
+    assert args == ['{"pending_cleanup": true}']
+    assert "document @> '{\"pending_cleanup\": true}'::jsonb" in DDL
+
+
 @pytest.fixture
 def store():
     uri = os.getenv('PROGRESSIVE_POSTGRES_TEST_URI')
@@ -68,6 +75,25 @@ def test_atomic_claims_manifest_replay_order_and_task_uniqueness(store):
     assert sections.find_one_and_update({'_id':'1','status':'started'}, {'$set':{'status':'failed'}}) is None
     sections.update_one({'_id':'1'}, {'$unset':{'task_id':''}})
     assert 'task_id' not in sections.find_one({'_id':'1'})
+
+
+def test_pending_cleanup_partial_index_is_eligible(store):
+    runs = store('ingest_runs')
+    runs.update_one(
+        {'_id': 'dirty'},
+        {'$setOnInsert': {'pending_cleanup': True, 'status': 'failed'}},
+        upsert=True,
+    )
+    sql, args = predicate({'pending_cleanup': True})
+    with runs.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute('SET enable_seqscan = off')
+            cur.execute(
+                'EXPLAIN SELECT document FROM pipeline_documents WHERE namespace = %s AND (' + sql + ')',
+                ['ingest_runs', *args],
+            )
+            plan = '\n'.join(row[0] for row in cur.fetchall())
+    assert 'pipeline_documents_pending_cleanup' in plan
 
 
 def test_usage_export_ack_and_dispatch_lease(store):

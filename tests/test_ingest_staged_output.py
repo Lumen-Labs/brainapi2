@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -92,6 +93,27 @@ def test_staged_vector_write_uses_replayable_identity():
     client.upsert_staged_vectors.assert_called_with([vector], "data", "brain")
 
 
+def test_rollback_vector_operation_deletes_int64_primary_keys():
+    from src.core.saving.ingest_publication import rollback_vector_operation
+    from src.lib.postgresql.vectors import string_to_int64
+
+    client = Mock()
+    rollback_vector_operation(
+        client,
+        "brain",
+        {
+            "method": "add_vectors",
+            "args": {
+                "store": "data",
+                "vectors": [{"id": "stable", "embeddings": [1.0]}],
+            },
+        },
+    )
+    client.remove_vectors.assert_called_once_with(
+        [string_to_int64("stable")], "data", "brain"
+    )
+
+
 def test_worker_commits_only_while_claim_is_current(monkeypatch):
     from src.core.saving import ingest_worker
 
@@ -132,16 +154,20 @@ def test_run_publisher_holds_gate_through_completion(monkeypatch):
         lambda client, brain, operation: events.append(("replay", brain, operation)),
     )
     monkeypatch.setattr(
-        publisher, "finish_publication",
-        lambda brain, root: events.append(("finish", brain, root)),
+        publisher.ingest_cancellation, "_runs",
+        lambda brain: SimpleNamespace(find_one=lambda query: {"status": "publishing"}),
     )
-
+    monkeypatch.setattr(
+        publisher, "finish_publication",
+        lambda brain, root: events.append(("finish", brain, root)) or {"status": "completed"},
+    )
     monkeypatch.setattr(
         publisher, "discard_outputs",
         lambda brain, root: events.append(("cleanup", brain, root)),
     )
+    monkeypatch.setattr(publisher.ingest_staging, "mark_cleanup_complete", lambda brain, root: None)
     publisher.publish_staged_run("brain", "root", gate, Mock(), Mock())
-    assert [event[0] for event in events] == ["enter", "replay", "cleanup", "finish", "exit"]
+    assert [event[0] for event in events] == ["enter", "replay", "finish", "cleanup", "exit"]
 
 
 def test_http_gate_spans_response_and_allows_task_polling(monkeypatch):

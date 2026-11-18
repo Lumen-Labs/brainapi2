@@ -1999,6 +1999,29 @@ async def _build_context(
             shared_vectors[text] = cached
         return cached
 
+    def _embed_queries(texts: list[str]) -> list[list[float]]:
+        vectors: list[list[float] | None] = [shared_vectors.get(text) for text in texts]
+        missing = [
+            (index, text)
+            for index, text in enumerate(texts)
+            if vectors[index] is None
+        ]
+        if not missing:
+            return [item or [] for item in vectors]
+        batch = getattr(embeddings_adapter, "embed_texts", None)
+        if callable(batch):
+            raw = batch([text for _index, text in missing])
+            for (index, text), item in zip(missing, raw):
+                vector = getattr(item, "embeddings", None)
+                if vector is None:
+                    vector = item
+                shared_vectors[text] = vector
+                vectors[index] = vector
+        else:
+            for index, text in missing:
+                vectors[index] = _embed_query(text)
+        return [item or [] for item in vectors]
+
     query_vector: list[float] | None = None
     explicit_history = request.include_history
     if as_of is not None:
@@ -2142,12 +2165,29 @@ async def _build_context(
                 query_text=request.text,
                 query_vector=query_vector or shared_vectors.get(request.text),
                 embed=_embed_query,
+                embed_many=_embed_queries,
             )
             merged = list(texts)
             for text in extra:
                 if text not in merged:
                     merged.append(text)
             return merged[: request.historical_limit]
+
+        def _history_from_hits(
+            hits: list[tuple[str, float, str]],
+            extra: list[str] | None = None,
+        ) -> list[str]:
+            texts = screened_passage_texts(
+                data_adapter,
+                request.brain_id,
+                hits,
+                include_history=include_history,
+                limit=request.historical_limit,
+                as_of=as_of,
+            )
+            if extra:
+                texts = texts + extra
+            return _merge_prior(texts, hits)
 
         with profile_stage("historical.context", blocking=False):
             passages = await asyncio.to_thread(
@@ -2157,16 +2197,8 @@ async def _build_context(
                 limit=max(request.historical_limit, _PASSAGE_K),
             )
             if passages:
-                historical_context = _merge_prior(
-                    screened_passage_texts(
-                        data_adapter,
-                        request.brain_id,
-                        passages,
-                        include_history=include_history,
-                        limit=request.historical_limit,
-                        as_of=as_of,
-                    ),
-                    passages,
+                historical_context = await asyncio.to_thread(
+                    _history_from_hits, passages
                 )
                 return historical_context
             with profile_stage("historical.fallback", blocking=False):
@@ -2186,25 +2218,19 @@ async def _build_context(
                 (str(getattr(text_chunk, "id", "") or ""), 0.0, text_chunk.text or "")
                 for text_chunk in text_chunks
             ]
-            historical_context = _merge_prior(
-                screened_passage_texts(
-                    data_adapter,
-                    request.brain_id,
-                    chunk_hits,
-                    include_history=include_history,
-                    limit=request.historical_limit,
-                    as_of=as_of,
-                )
-                + current_record_texts(
+
+            def _fallback_history() -> list[str]:
+                extra = current_record_texts(
                     data_adapter,
                     request.brain_id,
                     structured_data,
                     text_chunks,
                     include_history=include_history,
                     as_of=as_of,
-                ),
-                chunk_hits,
-            )
+                )
+                return _history_from_hits(chunk_hits, extra)
+
+            historical_context = await asyncio.to_thread(_fallback_history)
             return historical_context
 
     with profile_stage(
