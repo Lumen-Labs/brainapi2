@@ -88,9 +88,28 @@ class HistoryModeTests(unittest.TestCase):
 
     def test_have_i_before_wants_history(self):
         self.assertTrue(_wants("Have I implemented this library before?"))
+        self.assertTrue(_wants("Have I ever used this library?"))
+        self.assertTrue(_wants("Did I use this library last year?"))
 
     def test_did_i_already_wants_history(self):
         self.assertTrue(_wants("Did I already complete this?"))
+
+    def test_ttl_current_lookup_stays_current(self):
+        self.assertFalse(
+            _wants("What is the TTL for the cache that was changed?")
+        )
+        self.assertTrue(_wants("What was the TTL before the change?"))
+
+    def test_difference_between_before_change_wants_history(self):
+        self.assertTrue(
+            _wants(
+                "What is the difference between the timeout before the change "
+                "and the one we use today?"
+            )
+        )
+        self.assertFalse(
+            _wants("what is the difference between redis and memcached")
+        )
 
     def test_italian_previous_version_wants_history(self):
         self.assertTrue(_wants("com'era prima il codice"))
@@ -219,6 +238,7 @@ class RecordedEmbeddingProbeTests(unittest.TestCase):
 CURRENT_VALUE_NEGATIVES = (
     "what did I set the port to",
     "what is the difference between redis and memcached",
+    "What is the TTL for the cache that was changed?",
     "what's the current timeout",
     "how many workers are running",
     "what port is the server on",
@@ -256,6 +276,10 @@ HISTORY_POSITIVES = (
     "show the previous version of this",
     "what was deleted from this",
     "have I implemented this library before",
+    "Have I ever used this library?",
+    "Did I use this library last year?",
+    "What is the difference between the timeout before the change and the one we use today?",
+    "What was the TTL before the change?",
     "did I already complete this",
     "did I say I finished this or that I never started it",
     "how many days are there between these two deadlines",
