@@ -38,8 +38,10 @@ class KGAgentExecuteGraphOperationTool(BaseTool):
             brain_id (str): Identifier for the brain context to use, defaults to "default".
         """
         description: str = (
-            "Use this tool to execute any type of graph operation search/edit/query/delete/etc. "
-            "The query should be a valid graph operation depending on the graph database type."
+            "Use this tool to execute a read-only graph query. "
+            "Writes, DELETE, USE, CALL dbms.*, and database admin are rejected; "
+            "use structured graph tools to mutate the graph. "
+            "The query should be a valid graph read depending on the graph database type. "
             "The query should be a valid JSON object with a 'query' key. "
             "{database_desc}."
             "If you get an error, try again after fixing your query and don't give up."
