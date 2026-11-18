@@ -333,6 +333,18 @@ class Neo4jClient(GraphClient):
         coerced = self._python_value(value)
         return coerced if isinstance(coerced, dict) else {}
 
+    def _python_datetime(self, value: Any) -> datetime:
+        """Coerce Neo4j temporals or ISO strings into datetime for Node/Predicate."""
+        converted = self._python_value(value)
+        if isinstance(converted, datetime):
+            return converted
+        if isinstance(converted, str) and converted.strip():
+            try:
+                return datetime.fromisoformat(converted.replace("Z", "+00:00"))
+            except ValueError:
+                pass
+        return datetime.now(timezone.utc)
+
     def add_nodes(
         self,
         nodes: list[Node],
@@ -1788,7 +1800,7 @@ class Neo4jClient(GraphClient):
                 polarity=record.get("m_polarity", "neutral"),
                 metadata=self._python_properties(record.get("m_metadata", {})),
                 happened_at=record.get("m_happened_at", "") or "",
-                last_updated=record.get("m_last_updated", "") or "",
+                last_updated=self._python_datetime(record.get("m_last_updated")),
                 observations=record.get("m_observations", []) or [],
             )
 
@@ -1799,7 +1811,7 @@ class Neo4jClient(GraphClient):
                 properties=self._python_properties(record.get("rel_properties", {})),
                 flow_key=record.get("rel_flowkey", "") or "",
                 uuid=record.get("rel_uuid", "") or "",
-                last_updated=record.get("rel_last_updated", "") or "",
+                last_updated=self._python_datetime(record.get("rel_last_updated")),
                 observations=record.get("rel_observations", []) or [],
                 amount=record.get("rel_amount"),
             )
@@ -1861,7 +1873,7 @@ class Neo4jClient(GraphClient):
                     polarity=record.get("n_polarity", "neutral"),
                     metadata=self._python_properties(record.get("n_metadata", {})),
                     happened_at=record.get("n_happened_at", "") or "",
-                    last_updated=record.get("n_last_updated", "") or "",
+                    last_updated=self._python_datetime(record.get("n_last_updated")),
                     observations=record.get("n_observations", []) or [],
                 ),
                 Predicate(
@@ -1871,7 +1883,7 @@ class Neo4jClient(GraphClient):
                     direction=record.get("r_direction", "neutral"),
                     properties=self._python_properties(record.get("r_properties", {})),
                     flow_key=record.get("r_flow_key", "") or "",
-                    last_updated=record.get("r_last_updated", "") or "",
+                    last_updated=self._python_datetime(record.get("r_last_updated")),
                     observations=record.get("r_observations", []) or [],
                     amount=record.get("r_amount"),
                 ),
@@ -1884,7 +1896,7 @@ class Neo4jClient(GraphClient):
                     polarity=record.get("m_polarity", "neutral"),
                     metadata=self._python_properties(record.get("m_metadata", {})),
                     happened_at=record.get("m_happened_at", "") or "",
-                    last_updated=record.get("m_last_updated", "") or "",
+                    last_updated=self._python_datetime(record.get("m_last_updated")),
                     observations=record.get("m_observations", []) or [],
                 ),
                 Predicate(
@@ -1894,7 +1906,7 @@ class Neo4jClient(GraphClient):
                     direction=record.get("r2_direction", "neutral"),
                     properties=self._python_properties(record.get("r2_properties", {})),
                     flow_key=record.get("r2_flow_key", "") or "",
-                    last_updated=record.get("r2_last_updated", "") or "",
+                    last_updated=self._python_datetime(record.get("r2_last_updated")),
                     observations=record.get("r2_observations", []) or [],
                     amount=record.get("r2_amount"),
                 ),
@@ -1907,7 +1919,7 @@ class Neo4jClient(GraphClient):
                     polarity=record.get("b_polarity", "neutral"),
                     metadata=self._python_properties(record.get("b_metadata", {})),
                     happened_at=record.get("b_happened_at", "") or "",
-                    last_updated=record.get("b_last_updated", "") or "",
+                    last_updated=self._python_datetime(record.get("b_last_updated")),
                     observations=record.get("b_observations", []) or [],
                 ),
             )
@@ -1959,7 +1971,7 @@ class Neo4jClient(GraphClient):
                         polarity=record.get("m_polarity", "neutral"),
                         metadata=self._python_properties(record.get("m_metadata", {})),
                         happened_at=record.get("m_happened_at", "") or "",
-                        last_updated=record.get("m_last_updated", "") or "",
+                        last_updated=self._python_datetime(record.get("m_last_updated")),
                         observations=record.get("m_observations", []) or [],
                     ),
                     Predicate(
@@ -1969,7 +1981,7 @@ class Neo4jClient(GraphClient):
                         direction=record.get("r2_direction", "neutral"),
                         properties=self._python_properties(record.get("r2_properties", {})),
                         flow_key=record.get("r2_flow_key", "") or "",
-                        last_updated=record.get("r2_last_updated", "") or "",
+                        last_updated=self._python_datetime(record.get("r2_last_updated")),
                         observations=record.get("r2_observations", []) or [],
                         amount=record.get("r2_amount"),
                     ),
@@ -1982,7 +1994,7 @@ class Neo4jClient(GraphClient):
                         polarity=record.get("b_polarity", "neutral"),
                         metadata=self._python_properties(record.get("b_metadata", {})),
                         happened_at=record.get("b_happened_at", "") or "",
-                        last_updated=record.get("b_last_updated", "") or "",
+                        last_updated=self._python_datetime(record.get("b_last_updated")),
                         observations=record.get("b_observations", []) or [],
                     ),
                 )
@@ -2187,7 +2199,7 @@ class Neo4jClient(GraphClient):
                     polarity=record.get("n_polarity", "neutral"),
                     metadata=record.get("n_metadata", {}) or {},
                     happened_at=record.get("n_happened_at", "") or "",
-                    last_updated=record.get("n_last_updated", "") or "",
+                    last_updated=self._python_datetime(record.get("n_last_updated")),
                     observations=record.get("n_observations", []) or [],
                 ),
                 Predicate(
@@ -2197,7 +2209,7 @@ class Neo4jClient(GraphClient):
                     direction="neutral",
                     properties=self._python_properties(record.get("r_properties", {}) or {}),
                     flow_key=record.get("r_flow_key", "") or "",
-                    last_updated=record.get("r_last_updated", "") or "",
+                    last_updated=self._python_datetime(record.get("r_last_updated")),
                     observations=record.get("r_observations", []) or [],
                     amount=record.get("r_amount"),
                 ),
@@ -2210,7 +2222,7 @@ class Neo4jClient(GraphClient):
                     polarity=record.get("m_polarity", "neutral"),
                     metadata=record.get("m_metadata", {}) or {},
                     happened_at=record.get("m_happened_at", "") or "",
-                    last_updated=record.get("m_last_updated", "") or "",
+                    last_updated=self._python_datetime(record.get("m_last_updated")),
                     observations=record.get("m_observations", []) or [],
                 ),
             )
@@ -2257,7 +2269,7 @@ class Neo4jClient(GraphClient):
                     polarity=record.get("n_polarity", "neutral"),
                     metadata=self._python_properties(record.get("n_metadata", {})),
                     happened_at=record.get("n_happened_at", "") or "",
-                    last_updated=record.get("n_last_updated", "") or "",
+                    last_updated=self._python_datetime(record.get("n_last_updated")),
                     observations=record.get("n_observations", []) or [],
                 ),
                 Predicate(
@@ -2267,7 +2279,7 @@ class Neo4jClient(GraphClient):
                     direction=record.get("r_direction", "neutral"),
                     properties=self._python_properties(record.get("r_properties", {})),
                     flow_key=record.get("r_flow_key", "") or "",
-                    last_updated=record.get("r_last_updated", "") or "",
+                    last_updated=self._python_datetime(record.get("r_last_updated")),
                     observations=record.get("r_observations", []) or [],
                     amount=record.get("r_amount"),
                 ),
@@ -2280,7 +2292,7 @@ class Neo4jClient(GraphClient):
                     polarity=record.get("m_polarity", "neutral"),
                     metadata=self._python_properties(record.get("m_metadata", {})),
                     happened_at=record.get("m_happened_at", "") or "",
-                    last_updated=record.get("m_last_updated", "") or "",
+                    last_updated=self._python_datetime(record.get("m_last_updated")),
                     observations=record.get("m_observations", []) or [],
                 ),
                 Predicate(
@@ -2290,7 +2302,7 @@ class Neo4jClient(GraphClient):
                     direction=record.get("r2_direction", "neutral"),
                     properties=self._python_properties(record.get("r2_properties", {})),
                     flow_key=record.get("r2_flow_key", "") or "",
-                    last_updated=record.get("r2_last_updated", "") or "",
+                    last_updated=self._python_datetime(record.get("r2_last_updated")),
                     observations=record.get("r2_observations", []) or [],
                     amount=record.get("r2_amount"),
                 ),
@@ -2303,7 +2315,7 @@ class Neo4jClient(GraphClient):
                     polarity=record.get("b_polarity", "neutral"),
                     metadata=self._python_properties(record.get("b_metadata", {})),
                     happened_at=record.get("b_happened_at", "") or "",
-                    last_updated=record.get("b_last_updated", "") or "",
+                    last_updated=self._python_datetime(record.get("b_last_updated")),
                     observations=record.get("b_observations", []) or [],
                 ),
             )
