@@ -9,6 +9,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 """
 
 from abc import ABC, abstractmethod
+from datetime import datetime
 from typing import Any, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel
@@ -39,9 +40,19 @@ class DataClient(ABC):
 
     @abstractmethod
     def mark_text_chunks_superseded(
-        self, ids: List[str], superseded_at: str, brain_id: str
+        self,
+        ids: List[str],
+        superseded_at: str,
+        brain_id: str,
+        superseded_by: str | None = None,
+        valid_to: str | None = None,
     ) -> None:
         raise NotImplementedError("mark_text_chunks_superseded method not implemented")
+
+    def fill_text_chunk_validity(
+        self, chunk_id: str, brain_id: str, patch: dict[str, Any]
+    ) -> None:
+        raise NotImplementedError("fill_text_chunk_validity method not implemented")
 
     @abstractmethod
     def save_observations(
@@ -240,6 +251,8 @@ class DataClient(ABC):
         skip: int = 0,
         types: list[str] = None,
         query_text: str = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
     ) -> list[KGChanges]:
         """
         Retrieve a paginated list of knowledge-graph changelogs for a brain.

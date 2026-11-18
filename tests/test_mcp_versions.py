@@ -23,12 +23,16 @@ class _ChangelogAdapter:
         self.entry = entry
         self.limit = None
 
-    def get_changelogs_list(self, brain_id, limit, skip, types, query_text):
+    def get_changelogs_list(
+        self, brain_id, limit, skip, types, query_text, since=None, until=None
+    ):
         self.limit = limit
         self.brain_id = brain_id
         self.types = types
         self.query_text = query_text
         self.skip = skip
+        self.since = since
+        self.until = until
         return self.rows
 
     def get_changelog_by_id(self, changelog_id, brain_id):
@@ -81,6 +85,32 @@ class ChangelogToolTests(unittest.TestCase):
         self.assertEqual(adapter.query_text, "cedar")
         self.assertEqual(result["count"], 1)
         self.assertEqual(result["changelogs"][0]["id"], "c1")
+
+    def test_since_until_returns_changes_window(self):
+        from src.constants.data import TextChunk
+
+        class Store(_ChangelogAdapter):
+            def get_text_chunks(self, brain_id, limit=10, skip=0, order="desc"):
+                if skip:
+                    return [], 1
+                chunk = TextChunk(
+                    id="v2",
+                    text="seven years",
+                    metadata={"valid_from": "2025-01-01T00:00:00Z", "source_key": "reg"},
+                )
+                return [chunk], 1
+
+        adapter = Store()
+        result = read_changelogs(
+            adapter,
+            "brain",
+            authorized=True,
+            since="2024-12-01T00:00:00Z",
+            until="2025-02-01T00:00:00Z",
+        )
+        self.assertEqual(result["since"], "2024-12-01T00:00:00Z")
+        self.assertEqual(result["changes"][0]["id"], "v2")
+        self.assertEqual(result["changes"][0]["kind"], "added")
 
     def test_unauthorized_list_does_not_read_the_store(self):
         adapter = _ChangelogAdapter(rows=[_Change({"id": "c1"})])

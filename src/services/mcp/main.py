@@ -366,6 +366,8 @@ def _list_changelogs_sync(
     types: Any,
     limit: int,
     skip: int,
+    since: str,
+    until: str,
 ) -> Any:
     result = read_changelogs(
         data_adapter,
@@ -375,6 +377,9 @@ def _list_changelogs_sync(
         types=_string_list(types),
         limit=limit,
         skip=skip,
+        since=since or None,
+        until=until or None,
+        graph=graph_adapter,
     )
     if isinstance(result, str):
         return result
@@ -388,13 +393,16 @@ async def list_changelogs(
     types: list[str] | None = None,
     limit: int = 10,
     skip: int = 0,
+    since: str = "",
+    until: str = "",
 ) -> Any:
     """
     List graph changelog entries for a brain, newest first.
 
     Optional query_text matches the stored change. Optional types restrict the page
     to relationship_created, relationship_deprecated, node_properties_updated,
-    or relationship_properties_updated.
+    or relationship_properties_updated. Optional since/until ISO-8601 datetimes
+    return added, superseded, and invalidated facts in that window.
     """
     return await asyncio.to_thread(
         _list_changelogs_sync,
@@ -403,6 +411,8 @@ async def list_changelogs(
         types,
         limit,
         skip,
+        since,
+        until,
     )
 
 

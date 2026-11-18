@@ -87,6 +87,8 @@ async def execute_mcp_tool(
                 types=params.get("types"),
                 limit=int(params.get("limit") or 10),
                 skip=int(params.get("skip") or 0),
+                since=str(params.get("since") or ""),
+                until=str(params.get("until") or ""),
             )
             return result if isinstance(result, str) else json.dumps(result, default=str)
         if tool_name == "get_changelog":

@@ -37,6 +37,7 @@ from src.lib.cypher_safety import (
     optional_node_labels,
     quote_identifier,
     quote_rel_types_pattern,
+    relationship_changed_in_window_clause,
     require_database_name,
     require_limit,
     require_path_depth,
@@ -299,6 +300,38 @@ class Neo4jClient(GraphClient):
         except TypeError:
             return str(value)
 
+    def _neo4j_property_value(self, value: Any) -> Any:
+        """Bind a property, storing datetimes as canonical ISO UTC strings."""
+        if isinstance(value, datetime):
+            from src.core.saving.validity import format_instant
+
+            return format_instant(value)
+        return self._bind_property_value(value)
+
+    def _relationship_property_primitives(
+        self, properties: Optional[dict]
+    ) -> dict[str, Any]:
+        from src.core.saving.validity import validity_props_from_mapping
+
+        props = dict(properties or {})
+        extra: dict[str, Any] = {}
+        extra.update(validity_props_from_mapping(props))
+        for key in (
+            "valid_at",
+            "invalid_at",
+            "source_timestamp",
+            "source_chunk_ids",
+            "v_id",
+            "deprecated",
+        ):
+            if props.get(key) not in (None, "", []) and key not in extra:
+                extra[key] = self._neo4j_property_value(props[key])
+        for key, value in props.items():
+            if key in extra or value in (None, "", {}, []):
+                continue
+            extra[self._clean_property_key(key)] = self._neo4j_property_value(value)
+        return extra
+
     def _python_value(self, value: Any) -> Any:
         """Convert Neo4j driver values (temporals, maps) into Python objects."""
         if value is None or isinstance(value, (bool, int, float, str, bytes)):
@@ -366,11 +399,13 @@ class Neo4jClient(GraphClient):
                 "name": node.name,
             }
 
+            identification_keys: set[str] = set()
             if identification_params:
                 for key, value in identification_params.items():
                     normalized_key = self._clean_property_key(key)
                     if normalized_key not in {"uuid", "name"}:
                         all_properties[normalized_key] = value
+                        identification_keys.add(normalized_key)
 
             attributes = [
                 "description",
@@ -391,7 +426,9 @@ class Neo4jClient(GraphClient):
             description_value = None
             list_props: dict[str, Any] = {}
             for key, value in all_properties.items():
-                cleaned_key = self._clean_property_key(key)
+                cleaned_key = (
+                    key if key in identification_keys else self._clean_property_key(key)
+                )
                 if key == "description":
                     description_value = value
                 elif key in {"source_chunk_ids", "aliases", "ingest_task_ids"}:
@@ -489,10 +526,11 @@ class Neo4jClient(GraphClient):
         for obj in objects:
             for attr in attributes:
                 value = getattr(obj, attr, None)
-                if value:
+                if value not in (None, "", {}, []):
                     extra_props[static_property_key(attr)] = self._bind_property_value(
                         value
                     )
+        extra_props.update(self._relationship_property_primitives(predicate.properties))
 
         rel_type = self._quoted_rel_type(predicate.name)
         params = {
@@ -804,7 +842,12 @@ class Neo4jClient(GraphClient):
             query_params[key_name] = self._clean_property_key(key)
             query_params[value_name] = value
 
-        labels_str = optional_node_labels(entity_types) if entity_types else ""
+        labels_str = ""
+        if entity_types:
+            query_params["entity_labels"] = self._clean_labels(entity_types)
+            where_clauses.append(
+                "any(lbl IN labels(n) WHERE lbl IN $entity_labels)"
+            )
         where_str = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
 
         cypher_query = (
@@ -1125,7 +1168,7 @@ class Neo4jClient(GraphClient):
         )
         cypher_query = "MATCH (n)-[r]->(m)\n" + where_str + "\n" + return_clause
         cypher_count = (
-            "MATCH (n)-[r]-(m)\n" + where_str + "\nRETURN count(r) AS total"
+            "MATCH (n)-[r]->(m)\n" + where_str + "\nRETURN count(r) AS total"
         )
         result = self._run_query(cypher_query, brain_id, params)
         count_result = self._run_query(cypher_count, brain_id, params, ensure=False)
@@ -1216,6 +1259,71 @@ class Neo4jClient(GraphClient):
                 )
             )
         return SearchRelationshipsResult(results=triples, total=total)
+
+    def list_validity_relationships(
+        self,
+        brain_id: str,
+        skip: int = 0,
+        limit: int = 100,
+        since: str | None = None,
+        until: str | None = None,
+    ) -> tuple[list[tuple[Node, Predicate, Node]], int]:
+        params: dict[str, Any] = {
+            "skip": require_limit(skip, name="skip"),
+            "limit": require_limit(limit),
+        }
+        where_str = ""
+        if since and until:
+            where_str = "WHERE " + relationship_changed_in_window_clause("r") + "\n"
+        cypher_query = (
+            "MATCH (n)-[r]->(m)\n"
+            + where_str
+            + "RETURN n['uuid'] AS n_uuid, n['name'] AS n_name, labels(n) AS n_labels,\n"
+            "    n['description'] AS n_description, properties(n) AS n_properties,\n"
+            "    type(r) AS rel_type, r['description'] AS rel_description,\n"
+            "    properties(r) AS rel_properties, r['uuid'] AS rel_uuid,\n"
+            "    m['uuid'] AS m_uuid, m['name'] AS m_name, labels(m) AS m_labels,\n"
+            "    m['description'] AS m_description, properties(m) AS m_properties\n"
+            "ORDER BY r['uuid'], elementId(r)\n"
+            "SKIP $skip LIMIT $limit"
+        )
+        count_query = (
+            "MATCH (n)-[r]->(m)\n" + where_str + "RETURN count(r) AS total"
+        )
+        result = self._run_query(cypher_query, brain_id, params)
+        count_result = self._run_query(count_query, brain_id, params, ensure=False)
+        total = 0
+        if count_result and count_result.records:
+            total = count_result.records[0].get("total") or 0
+        triples: list[tuple[Node, Predicate, Node]] = []
+        for record in result.records:
+            rel_props = self._python_properties(record.get("rel_properties"))
+            triples.append(
+                (
+                    Node(
+                        uuid=str(record.get("n_uuid") or ""),
+                        name=str(record.get("n_name") or ""),
+                        labels=list(record.get("n_labels") or []),
+                        description=record.get("n_description") or "",
+                        properties=self._python_properties(record.get("n_properties")),
+                    ),
+                    Predicate(
+                        uuid=str(record.get("rel_uuid") or rel_props.get("uuid") or ""),
+                        name=str(record.get("rel_type") or ""),
+                        description=record.get("rel_description") or "",
+                        properties=rel_props,
+                        deprecated=rel_props.get("deprecated", False),
+                    ),
+                    Node(
+                        uuid=str(record.get("m_uuid") or ""),
+                        name=str(record.get("m_name") or ""),
+                        labels=list(record.get("m_labels") or []),
+                        description=record.get("m_description") or "",
+                        properties=self._python_properties(record.get("m_properties")),
+                    ),
+                )
+            )
+        return triples, int(total)
 
     def search_entities(
         self,
@@ -1312,7 +1420,9 @@ class Neo4jClient(GraphClient):
             "MATCH (a:" + subject_labels + ") WHERE a['name'] = $subject_name\n"
             "MATCH (b:" + object_labels + ") WHERE b['name'] = $object_name\n"
             "MATCH (a)-[r:" + rel_type + "]->(b)\n"
-            "SET r['deprecated'] = true\n"
+            "SET r['deprecated'] = true,\n"
+            "    r['valid_to'] = coalesce(r['valid_to'], $closed_at),\n"
+            "    r['invalid_at'] = coalesce(r['invalid_at'], $closed_at)\n"
             "RETURN a['uuid'] as a_uuid, a['name'] as a_name, labels(a) as a_labels, "
             "a['description'] as a_description, properties(a) as a_properties,\n"
             "    b['uuid'] as b_uuid, b['name'] as b_name, labels(b) as b_labels, "
@@ -1320,10 +1430,16 @@ class Neo4jClient(GraphClient):
             "    r['uuid'] as r_uuid, type(r) as r_type, r['description'] as r_description, "
             "properties(r) as r_properties"
         )
+        from src.core.saving.validity import format_instant, utc_now
+
         result = self._run_query(
             cypher_query,
             brain_id,
-            {"subject_name": subject.name, "object_name": object.name},
+            {
+                "subject_name": subject.name,
+                "object_name": object.name,
+                "closed_at": format_instant(utc_now()),
+            },
         )
         if result.records:
             return (

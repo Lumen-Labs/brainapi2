@@ -170,12 +170,15 @@ class NetworkXGraphClient(GraphClient):
         to_object: Node,
         brain_id: str,
     ) -> str:
+        from src.core.saving.validity import validity_props_from_mapping
+
         rel_props: dict[str, Any] = {
             "description": predicate.description,
             "uuid": predicate.uuid,
             "v_id": (predicate.properties or {}).get("v_id"),
             "flow_key": predicate.flow_key,
         }
+        rel_props.update(validity_props_from_mapping(predicate.properties))
         for attr in ("properties", "happened_at", "last_updated", "amount"):
             value = getattr(predicate, attr, None)
             if value:
@@ -639,6 +642,53 @@ class NetworkXGraphClient(GraphClient):
             )
         return SearchRelationshipsResult(results=triples, total=total)
 
+    def list_validity_relationships(
+        self,
+        brain_id: str,
+        skip: int = 0,
+        limit: int = 100,
+        since: str | None = None,
+        until: str | None = None,
+    ) -> tuple[list[tuple[Node, Predicate, Node]], int]:
+        from src.core.saving.validity import change_kind, parse_instant
+
+        self._store.ensure_database(brain_id)
+        brain = self._store.get_brain(brain_id)
+        since_dt = parse_instant(since) if since else None
+        until_dt = parse_instant(until) if until else None
+        matched: list[tuple[Node, Predicate, Node]] = []
+        for source, target, key, edge_data in brain.graph.edges(keys=True, data=True):
+            props = dict(edge_data)
+            if since_dt is not None and until_dt is not None:
+                if not change_kind(props, since_dt, until_dt):
+                    continue
+            matched.append(
+                (
+                    Node(
+                        uuid=source,
+                        name=str(brain.node_data(source).get("name") or source),
+                        labels=list(brain.labels(source)),
+                        description=brain.node_data(source).get("description"),
+                        properties=brain.node_data(source),
+                    ),
+                    Predicate(
+                        uuid=str(edge_data.get("uuid") or key or ""),
+                        name=str(edge_data.get("rel_type") or ""),
+                        description=edge_data.get("description") or "",
+                        properties=props,
+                        deprecated=edge_data.get("deprecated", False),
+                    ),
+                    Node(
+                        uuid=target,
+                        name=str(brain.node_data(target).get("name") or target),
+                        labels=list(brain.labels(target)),
+                        description=brain.node_data(target).get("description"),
+                        properties=brain.node_data(target),
+                    ),
+                )
+            )
+        total = len(matched)
+        return matched[skip : skip + limit], total
 
     def search_entities(
         self,
@@ -746,7 +796,12 @@ class NetworkXGraphClient(GraphClient):
                 continue
             if data.get("rel_type") != rel_type:
                 continue
+            from src.core.saving.validity import format_instant, utc_now
+
+            closed_at = format_instant(utc_now())
             data["deprecated"] = True
+            data.setdefault("valid_to", closed_at)
+            data.setdefault("invalid_at", closed_at)
             self._store._persist_relationship(
                 brain_id, key, rel_type, source, target, data
             )

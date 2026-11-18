@@ -115,10 +115,30 @@ class ChangelogItemResponse(BaseModel):
     changelog: KGChanges
 
 
+class ValidityChange(BaseModel):
+    kind: Literal["added", "superseded", "invalidated"]
+    target: Literal["chunk", "relationship", "changelog"]
+    id: str
+    timestamp: str
+    valid_from: Optional[str] = None
+    valid_to: Optional[str] = None
+    superseded_by: Optional[str] = None
+    source: Optional[dict[str, JsonValue]] = None
+    subject: Optional[JsonValue] = None
+    predicate: Optional[JsonValue] = None
+    object: Optional[JsonValue] = None
+    text: Optional[str] = None
+    changelog: Optional[dict[str, JsonValue]] = None
+
+
 class ChangelogListResponse(BaseModel):
     message: str
     changelogs: list[KGChanges]
     count: int
+    changes: Optional[list[ValidityChange]] = None
+    total: Optional[int] = None
+    since: Optional[str] = None
+    until: Optional[str] = None
 
 
 class VectorStoreInfo(BaseModel):
@@ -189,3 +209,29 @@ class IngestionCapabilitiesResponse(BaseModel):
 
 class IngestionActivityResponse(RootModel[dict[str, JsonValue]]):
     pass
+
+
+class PurgePassagesSummary(BaseModel):
+    delete: int
+    unlink: int
+    reused: int
+
+
+class PurgeNamedItems(BaseModel):
+    delete: list[str]
+    unlink: list[str]
+
+
+class PurgeConnectionsSummary(BaseModel):
+    delete: int
+    unlink: int
+
+
+class PurgeIngestionResponse(BaseModel):
+    digest: str
+    executed: bool
+    passages: PurgePassagesSummary
+    records: int
+    entities: PurgeNamedItems
+    connections: PurgeConnectionsSummary
+    unresolved: int
