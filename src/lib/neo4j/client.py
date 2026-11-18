@@ -394,7 +394,7 @@ class Neo4jClient(GraphClient):
                 cleaned_key = self._clean_property_key(key)
                 if key == "description":
                     description_value = value
-                elif key in {"source_chunk_ids", "aliases"}:
+                elif key in {"source_chunk_ids", "aliases", "ingest_task_ids"}:
                     list_props[static_property_key(key)] = self._bind_property_value(
                         value
                     )
@@ -2027,6 +2027,61 @@ class Neo4jClient(GraphClient):
             )
             for record in result.records
         ]
+
+    def nodes_and_edges_citing(self, brain_id: str, chunk_ids: list[str], edge_uuids: list[str]):
+        self.ensure_database(brain_id)
+        wanted = [str(item) for item in chunk_ids if item]
+        known = [str(item) for item in edge_uuids if item]
+        node_rows = self.driver.execute_query(
+            """
+            MATCH (n)
+            WHERE any(cid IN coalesce(n.source_chunk_ids, []) WHERE cid IN $chunk_ids)
+            RETURN n['uuid'] AS uuid, n['name'] AS name, labels(n) AS labels,
+                   n['description'] AS description, properties(n) AS properties
+            """,
+            parameters_={"chunk_ids": wanted},
+            database_=brain_id,
+        )
+        nodes = [
+            Node(
+                uuid=str(record.get("uuid") or ""),
+                name=str(record.get("name") or ""),
+                labels=list(record.get("labels") or []),
+                description=record.get("description") or "",
+                properties=record.get("properties") or {},
+            )
+            for record in node_rows.records
+            if record.get("uuid")
+        ]
+        edge_rows = self.driver.execute_query(
+            """
+            MATCH (a)-[r]->(b)
+            WHERE r.uuid IN $edge_uuids
+               OR any(cid IN coalesce(r.source_chunk_ids, []) WHERE cid IN $chunk_ids)
+               OR any(cid IN coalesce(r.properties.source_chunk_ids, []) WHERE cid IN $chunk_ids)
+            RETURN a['uuid'] AS tail, b['uuid'] AS tip, type(r) AS rel_type,
+                   r['description'] AS description, properties(r) AS properties
+            """,
+            parameters_={"chunk_ids": wanted, "edge_uuids": known},
+            database_=brain_id,
+        )
+        triples = []
+        for record in edge_rows.records:
+            properties = record.get("properties") or {}
+            rel_uuid = str(properties.get("uuid") or "")
+            triples.append(
+                (
+                    Node(uuid=str(record.get("tail") or ""), name="", labels=[], properties={}),
+                    Predicate(
+                        uuid=rel_uuid,
+                        name=str(record.get("rel_type") or ""),
+                        description=str(record.get("description") or ""),
+                        properties=properties,
+                    ),
+                    Node(uuid=str(record.get("tip") or ""), name="", labels=[], properties={}),
+                )
+            )
+        return nodes, triples
 
     def remove_nodes(self, uuids: list[str], brain_id: str) -> list[Node]:
         """
