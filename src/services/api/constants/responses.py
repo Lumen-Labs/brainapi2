@@ -6,6 +6,7 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, JsonValue, RootModel
 
+from src.constants.conflicts import FactConflict
 from src.constants.data import KGChanges, Observation, StructuredData, TextChunk
 from src.constants.embeddings import Vector
 from src.constants.kg import Node, Predicate, Triple
@@ -129,6 +130,30 @@ class ValidityChange(BaseModel):
     object: Optional[JsonValue] = None
     text: Optional[str] = None
     changelog: Optional[dict[str, JsonValue]] = None
+
+
+class ConflictItemResponse(BaseModel):
+    message: str
+    conflict: FactConflict
+
+
+class ConflictListResponse(BaseModel):
+    message: str
+    conflicts: list[FactConflict]
+    count: int
+    total: int
+
+
+class ConflictScanAcceptedResponse(BaseModel):
+    message: str
+    task_id: str
+
+
+class ConflictReportResponse(BaseModel):
+    message: str
+    summary: dict[str, JsonValue]
+    conflicts: list[FactConflict]
+    markdown: Optional[str] = None
 
 
 class ChangelogListResponse(BaseModel):

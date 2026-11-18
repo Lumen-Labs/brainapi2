@@ -1489,6 +1489,20 @@ def process_architect_relationships(self, args: dict):
                 f"[DEBUG (process_architect_relationships)]: Session {session_id} has {remaining} remaining tasks"
             )
 
+        try:
+            from src.core.saving.conflicts import maybe_detect_after_ingest
+
+            maybe_detect_after_ingest(
+                brain_id,
+                [
+                    str(getattr(rel, "uuid", "") or "")
+                    for rel in relationships
+                    if getattr(rel, "uuid", None)
+                ],
+            )
+        except Exception as exc:
+            print(f"[!] Incremental conflict detection skipped: {exc}")
+
         return self.request.id
 
     except Ignore:

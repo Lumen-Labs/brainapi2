@@ -440,6 +440,7 @@ class GraphAdapter:
         limit: int = 100,
         since: str | None = None,
         until: str | None = None,
+        subject_uuids: list[str] | None = None,
     ):
         method = getattr(self.graph, "list_validity_relationships", None)
         if method is None:
@@ -449,9 +450,19 @@ class GraphAdapter:
                 for item in (getattr(result, "results", None) or [])
             ]
             return triples, int(getattr(result, "total", len(triples)) or 0)
-        return method(
-            brain_id, skip=skip, limit=limit, since=since, until=until
-        )
+        try:
+            return method(
+                brain_id,
+                skip=skip,
+                limit=limit,
+                since=since,
+                until=until,
+                subject_uuids=subject_uuids,
+            )
+        except TypeError:
+            return method(
+                brain_id, skip=skip, limit=limit, since=since, until=until
+            )
 
     def search_entities(
         self,

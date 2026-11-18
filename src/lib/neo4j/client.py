@@ -48,6 +48,22 @@ from src.utils.logging import log
 from src.utils.serialization.data import always_dict
 
 
+def _jsonable_neo4j_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _jsonable_neo4j_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable_neo4j_value(item) for item in value]
+    iso = getattr(value, "isoformat", None)
+    if callable(iso) and not isinstance(value, str):
+        try:
+            text = iso()
+        except TypeError:
+            return value
+        if isinstance(text, str):
+            return text.replace("+00:00", "Z") if text.endswith("+00:00") else text
+    return value
+
+
 def _is_homogeneous_neo4j_list(items: list) -> bool:
     """True when every item is the same non-null Neo4j primitive type."""
     if not items:
@@ -327,7 +343,7 @@ class Neo4jClient(GraphClient):
             if props.get(key) not in (None, "", []) and key not in extra:
                 extra[key] = self._neo4j_property_value(props[key])
         for key, value in props.items():
-            if key in extra or value in (None, "", {}, []):
+            if key in extra or key == "uuid" or value in (None, "", {}, []):
                 continue
             extra[self._clean_property_key(key)] = self._neo4j_property_value(value)
         return extra
@@ -538,11 +554,15 @@ class Neo4jClient(GraphClient):
         for obj in objects:
             for attr in attributes:
                 value = getattr(obj, attr, None)
-                if value not in (None, "", {}, []):
-                    extra_props[static_property_key(attr)] = self._bind_property_value(
-                        value
-                    )
+                if value is None or value == "":
+                    continue
+                if attr == "properties":
+                    continue
+                extra_props[static_property_key(attr)] = self._neo4j_property_value(
+                    value
+                )
         extra_props.update(self._relationship_property_primitives(predicate.properties))
+        extra_props.pop("uuid", None)
 
         rel_type = self._quoted_rel_type(predicate.name)
         params = {
@@ -1281,14 +1301,19 @@ class Neo4jClient(GraphClient):
         limit: int = 100,
         since: str | None = None,
         until: str | None = None,
+        subject_uuids: list[str] | None = None,
     ) -> tuple[list[tuple[Node, Predicate, Node]], int]:
         params: dict[str, Any] = {
             "skip": require_limit(skip, name="skip"),
             "limit": require_limit(limit),
         }
-        where_str = ""
+        filters: list[str] = []
         if since and until:
-            where_str = "WHERE " + relationship_changed_in_window_clause("r") + "\n"
+            filters.append(relationship_changed_in_window_clause("r"))
+        if subject_uuids:
+            params["subject_uuids"] = list(subject_uuids)
+            filters.append("n['uuid'] IN $subject_uuids")
+        where_str = ("WHERE " + " AND ".join(filters) + "\n") if filters else ""
         cypher_query = (
             "MATCH (n)-[r]->(m)\n"
             + where_str
@@ -1405,7 +1430,9 @@ class Neo4jClient(GraphClient):
             )
             uuid = record.get("uuid") or properties_record.get("uuid") or name
             labels = record.get("labels") or properties_record.get("labels") or []
-            properties = self._python_properties(properties_record)
+            properties = _jsonable_neo4j_value(
+                self._python_properties(properties_record)
+            )
             nodes.append(
                 Node(
                     uuid=str(uuid),

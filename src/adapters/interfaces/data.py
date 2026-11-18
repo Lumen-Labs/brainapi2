@@ -14,6 +14,7 @@ from typing import Any, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel
 
+from src.constants.conflicts import FactConflict
 from src.constants.data import Brain, KGChanges, Observation, StructuredData, TextChunk
 
 
@@ -338,3 +339,41 @@ class DataClient(ABC):
         Fetch the durable ingest-group meter for a brain, or None if never credited.
         """
         raise NotImplementedError("get_ingest_group method not implemented")
+
+    @abstractmethod
+    def save_conflict(self, conflict: FactConflict, brain_id: str) -> FactConflict:
+        raise NotImplementedError("save_conflict method not implemented")
+
+    @abstractmethod
+    def get_conflict_by_id(self, id: str, brain_id: str) -> Optional[FactConflict]:
+        raise NotImplementedError("get_conflict_by_id method not implemented")
+
+    @abstractmethod
+    def get_conflict_by_pair_key(
+        self, pair_key: str, brain_id: str
+    ) -> Optional[FactConflict]:
+        raise NotImplementedError("get_conflict_by_pair_key method not implemented")
+
+    @abstractmethod
+    def get_conflicts_list(
+        self,
+        brain_id: str,
+        limit: int = 10,
+        skip: int = 0,
+        status: str | None = None,
+        source: str | None = None,
+        subject: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> Tuple[list[FactConflict], int]:
+        raise NotImplementedError("get_conflicts_list method not implemented")
+
+    @abstractmethod
+    def update_conflict(self, conflict: FactConflict, brain_id: str) -> FactConflict:
+        raise NotImplementedError("update_conflict method not implemented")
+
+    @abstractmethod
+    def get_open_conflicts_for_facts(
+        self, fact_ids: list[str], brain_id: str
+    ) -> list[FactConflict]:
+        raise NotImplementedError("get_open_conflicts_for_facts method not implemented")

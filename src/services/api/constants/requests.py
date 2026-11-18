@@ -621,6 +621,10 @@ class GetContextRequestBody(BaseModel):
         default=None,
         description="ISO-8601 datetime. When set, return the knowledge state valid at that instant.",
     )
+    annotate_conflicts: bool = Field(
+        default=False,
+        description="When true, mark retrieved facts that are in an open cross-source conflict.",
+    )
     include_history: Optional[bool] = None
     historical_limit: int = 10
     max_facts: int = Field(40, ge=0)
@@ -643,6 +647,7 @@ class GetContextTriple(BaseModel):
     triple: Tuple[Node, Predicate, Node, Predicate, Node]
     source_chunk_ids: Optional[List[str]] = None
     source_session_ids: Optional[List[str]] = None
+    open_conflicts: Optional[List[dict[str, Any]]] = None
     verification: Optional[FactVerificationInfo] = None
 
 
@@ -658,6 +663,20 @@ class GetContextResponse(BaseModel):
     paths: Optional[List[dict[str, Any]]] = None
     topics: Optional[List[dict[str, Any]]] = None
     stage_timings: Optional[dict[str, Any]] = None
+
+
+class ConflictResolveRequest(BaseModel):
+    winning_fact_id: Optional[str] = None
+    notes: Optional[str] = None
+    method: Optional[str] = "manual"
+
+
+class ConflictDismissRequest(BaseModel):
+    notes: Optional[str] = None
+
+
+class ConflictScanRequest(BaseModel):
+    use_llm: bool = False
 
 
 class SearchRequestBody(BaseModel):

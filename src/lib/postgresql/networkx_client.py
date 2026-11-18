@@ -651,6 +651,7 @@ class NetworkXGraphClient(GraphClient):
         limit: int = 100,
         since: str | None = None,
         until: str | None = None,
+        subject_uuids: list[str] | None = None,
     ) -> tuple[list[tuple[Node, Predicate, Node]], int]:
         from src.core.saving.validity import change_kind, parse_instant
 
@@ -658,8 +659,11 @@ class NetworkXGraphClient(GraphClient):
         brain = self._store.get_brain(brain_id)
         since_dt = parse_instant(since) if since else None
         until_dt = parse_instant(until) if until else None
+        subject_filter = set(subject_uuids) if subject_uuids else None
         matched: list[tuple[Node, Predicate, Node]] = []
         for source, target, key, edge_data in brain.graph.edges(keys=True, data=True):
+            if subject_filter is not None and source not in subject_filter:
+                continue
             props = dict(edge_data)
             if since_dt is not None and until_dt is not None:
                 if not change_kind(props, since_dt, until_dt):

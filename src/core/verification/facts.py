@@ -15,6 +15,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from src.utils.serialization.data import always_dict
+
 VerificationState = Literal["unverified", "verified", "rejected"]
 
 UNVERIFIED: VerificationState = "unverified"
@@ -107,15 +109,24 @@ def normalize_state(value: Any) -> VerificationState:
     return UNVERIFIED
 
 
+def _property_map(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        return dict(raw)
+    if isinstance(raw, str):
+        coerced = always_dict(raw)
+        return coerced if isinstance(coerced, dict) else {}
+    return {}
+
+
 def _mapping(entity: Any) -> dict[str, Any]:
     if entity is None:
         return {}
     if isinstance(entity, dict):
-        props = dict(entity.get("properties") or {})
+        props = _property_map(entity.get("properties"))
         merged = dict(entity)
         merged.update(props)
         return merged
-    props = dict(getattr(entity, "properties", None) or {})
+    props = _property_map(getattr(entity, "properties", None))
     merged = dict(props)
     for key in VERIFICATION_PROPERTY_FIELDS + ("uuid", "name", "description"):
         value = getattr(entity, key, None)
