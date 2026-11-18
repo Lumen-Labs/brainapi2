@@ -89,6 +89,7 @@ class CypherSafetyHelperTests(unittest.TestCase):
 
     def test_static_property_key_allowlist(self):
         self.assertEqual(static_property_key("description"), "description")
+        self.assertEqual(static_property_key("ingest_task_ids"), "ingest_task_ids")
         with self.assertRaises(InvalidCypherIdentifier):
             static_property_key("not_allowlisted")
 

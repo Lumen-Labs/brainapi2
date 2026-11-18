@@ -66,6 +66,7 @@ _STATIC_PROPERTY_KEYS = frozenset(
         "description",
         "flow_key",
         "happened_at",
+        "ingest_task_ids",
         "last_updated",
         "metadata",
         "name",
