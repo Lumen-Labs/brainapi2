@@ -160,8 +160,8 @@ def merge_effect(current: Optional[IngestEffect], task_id: str, delta: dict) -> 
         edges=list(edges.values()),
         purged_at=base.purged_at,
         revision=uuid.uuid4().hex,
-        ledger_incomplete=False,
-        ledger_error=None,
+        ledger_incomplete=base.ledger_incomplete,
+        ledger_error=base.ledger_error,
     )
 
 

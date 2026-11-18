@@ -15,6 +15,7 @@ from src.core.saving.ingest_effects import (
     chunks_linked_to_task,
     confirm_digest,
     handle_purge,
+    merge_effect,
     plan_purge,
     reconstruct_effect,
     reconstruct_live,
@@ -297,6 +298,18 @@ class LedgerAndPartialPurgeTests(unittest.TestCase):
                 flagged = True
                 self.assertIn("mongo down", payload["$set"].get("ledger_error", ""))
         self.assertTrue(flagged)
+
+    def test_later_remember_keeps_incomplete_ledger_flag(self):
+        current = IngestEffect(
+            task_id="task-1",
+            created_chunk_ids=["c1"],
+            ledger_incomplete=True,
+            ledger_error="mongo down",
+        )
+        merged = merge_effect(current, "task-1", {"created_chunk_ids": ["c2"]})
+        self.assertTrue(merged.ledger_incomplete)
+        self.assertEqual(merged.ledger_error, "mongo down")
+        self.assertEqual(merged.created_chunk_ids, ["c1", "c2"])
 
     def test_preview_surfaces_incomplete_ledger(self):
         chunks, nodes, edges = _snapshots()
