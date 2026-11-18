@@ -899,6 +899,7 @@ class NetworkXGraphClient(GraphClient):
             data["deprecated"] = True
             data.setdefault("valid_to", closed_at)
             data.setdefault("invalid_at", closed_at)
+            data.setdefault("retired_reason", "janitor deprecated relationship")
             self._store._persist_relationship(
                 brain_id, key, rel_type, source, target, data
             )
