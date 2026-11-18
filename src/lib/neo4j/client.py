@@ -2005,7 +2005,8 @@ class Neo4jClient(GraphClient):
                 metadata=self._python_properties(record.get("m_metadata", {})),
                 happened_at=record.get("m_happened_at", "") or "",
                 last_updated=self._python_datetime(record.get("m_last_updated")),
-                observations=self._decode_observations(record.get("m_observations")),            )
+                observations=self._decode_observations(record.get("m_observations")),
+            )
 
             predicate = Predicate(
                 name=record.get("rel_type", "") or "",
@@ -2015,7 +2016,8 @@ class Neo4jClient(GraphClient):
                 flow_key=record.get("rel_flowkey", "") or "",
                 uuid=record.get("rel_uuid", "") or "",
                 last_updated=self._python_datetime(record.get("rel_last_updated")),
-                observations=self._decode_observations(record.get("rel_observations")),                amount=record.get("rel_amount"),
+                observations=self._decode_observations(record.get("rel_observations")),
+                amount=record.get("rel_amount"),
             )
 
             nested_neighbors = self._get_neighborhood_recursive(
@@ -2076,7 +2078,8 @@ class Neo4jClient(GraphClient):
                     metadata=self._python_properties(record.get("n_metadata", {})),
                     happened_at=record.get("n_happened_at", "") or "",
                     last_updated=self._python_datetime(record.get("n_last_updated")),
-                    observations=self._decode_observations(record.get("n_observations")),                ),
+                    observations=self._decode_observations(record.get("n_observations")),
+                ),
                 Predicate(
                     uuid=record.get("r_uuid", "") or "",
                     name=record.get("r_type", "") or "",
@@ -2085,7 +2088,8 @@ class Neo4jClient(GraphClient):
                     properties=self._python_properties(record.get("r_properties", {})),
                     flow_key=record.get("r_flow_key", "") or "",
                     last_updated=self._python_datetime(record.get("r_last_updated")),
-                    observations=self._decode_observations(record.get("r_observations")),                    amount=record.get("r_amount"),
+                    observations=self._decode_observations(record.get("r_observations")),
+                    amount=record.get("r_amount"),
                 ),
                 Node(
                     uuid=record.get("m_uuid", "") or "",
@@ -2097,7 +2101,8 @@ class Neo4jClient(GraphClient):
                     metadata=self._python_properties(record.get("m_metadata", {})),
                     happened_at=record.get("m_happened_at", "") or "",
                     last_updated=self._python_datetime(record.get("m_last_updated")),
-                    observations=self._decode_observations(record.get("m_observations")),                ),
+                    observations=self._decode_observations(record.get("m_observations")),
+                ),
                 Predicate(
                     uuid=record.get("r2_uuid", "") or "",
                     name=record.get("r2_type", "") or "",
@@ -2106,7 +2111,8 @@ class Neo4jClient(GraphClient):
                     properties=self._python_properties(record.get("r2_properties", {})),
                     flow_key=record.get("r2_flow_key", "") or "",
                     last_updated=self._python_datetime(record.get("r2_last_updated")),
-                    observations=self._decode_observations(record.get("r2_observations")),                    amount=record.get("r2_amount"),
+                    observations=self._decode_observations(record.get("r2_observations")),
+                    amount=record.get("r2_amount"),
                 ),
                 Node(
                     uuid=record.get("b_uuid", "") or "",
@@ -2118,7 +2124,8 @@ class Neo4jClient(GraphClient):
                     metadata=self._python_properties(record.get("b_metadata", {})),
                     happened_at=record.get("b_happened_at", "") or "",
                     last_updated=self._python_datetime(record.get("b_last_updated")),
-                    observations=self._decode_observations(record.get("b_observations")),                ),
+                    observations=self._decode_observations(record.get("b_observations")),
+                ),
             )
             for record in result.records
         ]
@@ -2169,7 +2176,8 @@ class Neo4jClient(GraphClient):
                         metadata=self._python_properties(record.get("m_metadata", {})),
                         happened_at=record.get("m_happened_at", "") or "",
                         last_updated=self._python_datetime(record.get("m_last_updated")),
-                        observations=self._decode_observations(record.get("m_observations")),                    ),
+                        observations=self._decode_observations(record.get("m_observations")),
+                    ),
                     Predicate(
                         uuid=record.get("r2_uuid", "") or "",
                         name=record.get("r2_type", "") or "",
@@ -2178,7 +2186,8 @@ class Neo4jClient(GraphClient):
                         properties=self._python_properties(record.get("r2_properties", {})),
                         flow_key=record.get("r2_flow_key", "") or "",
                         last_updated=self._python_datetime(record.get("r2_last_updated")),
-                        observations=self._decode_observations(record.get("r2_observations")),                        amount=record.get("r2_amount"),
+                        observations=self._decode_observations(record.get("r2_observations")),
+                        amount=record.get("r2_amount"),
                     ),
                     Node(
                         uuid=record.get("b_uuid", "") or "",
@@ -2190,7 +2199,8 @@ class Neo4jClient(GraphClient):
                         metadata=self._python_properties(record.get("b_metadata", {})),
                         happened_at=record.get("b_happened_at", "") or "",
                         last_updated=self._python_datetime(record.get("b_last_updated")),
-                        observations=self._decode_observations(record.get("b_observations")),                    ),
+                        observations=self._decode_observations(record.get("b_observations")),
+                    ),
                 )
                 for record in result.records
             ]
@@ -2457,7 +2467,8 @@ class Neo4jClient(GraphClient):
                     metadata=record.get("n_metadata", {}) or {},
                     happened_at=record.get("n_happened_at", "") or "",
                     last_updated=self._python_datetime(record.get("n_last_updated")),
-                    observations=self._decode_observations(record.get("n_observations")),                ),
+                    observations=self._decode_observations(record.get("n_observations")),
+                ),
                 Predicate(
                     uuid=record.get("r_uuid", "") or "",
                     name=record.get("r_type", "") or "",
@@ -2466,7 +2477,8 @@ class Neo4jClient(GraphClient):
                     properties=self._python_properties(record.get("r_properties", {}) or {}),
                     flow_key=record.get("r_flow_key", "") or "",
                     last_updated=self._python_datetime(record.get("r_last_updated")),
-                    observations=self._decode_observations(record.get("r_observations")),                    amount=record.get("r_amount"),
+                    observations=self._decode_observations(record.get("r_observations")),
+                    amount=record.get("r_amount"),
                 ),
                 Node(
                     uuid=record.get("m_uuid", "") or "",
@@ -2478,7 +2490,8 @@ class Neo4jClient(GraphClient):
                     metadata=record.get("m_metadata", {}) or {},
                     happened_at=record.get("m_happened_at", "") or "",
                     last_updated=self._python_datetime(record.get("m_last_updated")),
-                    observations=self._decode_observations(record.get("m_observations")),                ),
+                    observations=self._decode_observations(record.get("m_observations")),
+                ),
             )
             for record in result.records
         ]
@@ -2524,7 +2537,8 @@ class Neo4jClient(GraphClient):
                     metadata=self._python_properties(record.get("n_metadata", {})),
                     happened_at=record.get("n_happened_at", "") or "",
                     last_updated=self._python_datetime(record.get("n_last_updated")),
-                    observations=self._decode_observations(record.get("n_observations")),                ),
+                    observations=self._decode_observations(record.get("n_observations")),
+                ),
                 Predicate(
                     uuid=record.get("r_uuid", "") or "",
                     name=record.get("r_type", "") or "",
@@ -2533,7 +2547,8 @@ class Neo4jClient(GraphClient):
                     properties=self._python_properties(record.get("r_properties", {})),
                     flow_key=record.get("r_flow_key", "") or "",
                     last_updated=self._python_datetime(record.get("r_last_updated")),
-                    observations=self._decode_observations(record.get("r_observations")),                    amount=record.get("r_amount"),
+                    observations=self._decode_observations(record.get("r_observations")),
+                    amount=record.get("r_amount"),
                 ),
                 Node(
                     uuid=record.get("m_uuid", "") or "",
@@ -2545,7 +2560,8 @@ class Neo4jClient(GraphClient):
                     metadata=self._python_properties(record.get("m_metadata", {})),
                     happened_at=record.get("m_happened_at", "") or "",
                     last_updated=self._python_datetime(record.get("m_last_updated")),
-                    observations=self._decode_observations(record.get("m_observations")),                ),
+                    observations=self._decode_observations(record.get("m_observations")),
+                ),
                 Predicate(
                     uuid=record.get("r2_uuid", "") or "",
                     name=record.get("r2_type", "") or "",
@@ -2554,7 +2570,8 @@ class Neo4jClient(GraphClient):
                     properties=self._python_properties(record.get("r2_properties", {})),
                     flow_key=record.get("r2_flow_key", "") or "",
                     last_updated=self._python_datetime(record.get("r2_last_updated")),
-                    observations=self._decode_observations(record.get("r2_observations")),                    amount=record.get("r2_amount"),
+                    observations=self._decode_observations(record.get("r2_observations")),
+                    amount=record.get("r2_amount"),
                 ),
                 Node(
                     uuid=record.get("b_uuid", "") or "",
@@ -2566,7 +2583,8 @@ class Neo4jClient(GraphClient):
                     metadata=self._python_properties(record.get("b_metadata", {})),
                     happened_at=record.get("b_happened_at", "") or "",
                     last_updated=self._python_datetime(record.get("b_last_updated")),
-                    observations=self._decode_observations(record.get("b_observations")),                ),
+                    observations=self._decode_observations(record.get("b_observations")),
+                ),
             )
             for record in result.records
         ]
