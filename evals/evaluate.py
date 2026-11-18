@@ -59,6 +59,9 @@ def _record(
         "prediction": result.answer,
         "conflict_pairs": [list(pair) for pair in result.conflict_pairs],
         "notes": result.notes,
+        "as_of_mode": (result.raw or {}).get("as_of_mode"),
+        "conflict_mode": (result.raw or {}).get("conflict_mode"),
+        "conflict_mapping": (result.raw or {}).get("conflict_mapping"),
         "retrieve_ms": result.retrieve_ms,
         "answer_ms": result.answer_ms,
         "e2e_ms": result.e2e_ms,
@@ -79,12 +82,48 @@ def _score_one(
     settings: Settings | None = None,
     use_judge: bool = False,
 ) -> dict[str, Any]:
+    as_of_mode = (result.raw or {}).get("as_of_mode")
+    if as_of_mode == "unsupported" and (
+        str(question.get("task") or "") == "changelog" or question.get("date_to")
+    ):
+        return {
+            "unsupported": True,
+            "exact_match": False,
+            "must_include": False,
+            "token_f1": None,
+            "correct": None,
+            "scoring": "as_of_unsupported",
+            "reason": "BrainAPI changelog retrieval has no supported range or history mode",
+        }
     if question.get("task") == "conflict_audit":
+        notes = result.notes or []
+        mapping_unsupported = (
+            "conflict_mapping_unsupported" in notes
+            or "conflict_capability_pending" in notes
+        )
         gold = question.get("gold_pairs")
         if gold is None and gold_pairs is not None:
             gold = gold_pairs
         gold_t = [pair_key(str(a), str(b)) for a, b in (gold or [])]
         pred_t = [pair_key(str(a), str(b)) for a, b in result.conflict_pairs]
+        if mapping_unsupported:
+            pending = "conflict_capability_pending" in notes
+            return {
+                "unsupported": True,
+                "exact_match": False,
+                "must_include": False,
+                "token_f1": None,
+                "correct": None,
+                "scoring": "conflict_pairs_unsupported",
+                "non_pair_leaks": 0,
+                "n_gold": len(gold_t),
+                "n_predicted": 0,
+                "reason": (
+                    "BrainAPI conflict pair producer is not available on this deployment"
+                    if pending
+                    else "BrainAPI conflict identifiers could not be mapped to statement/doc gold ids"
+                ),
+            }
         prf = conflict_prf(pred_t, gold_t)
         non_pairs = [pair_key(str(a), str(b)) for a, b in (question.get("non_pairs") or [])]
         leaked = [pair for pair in pred_t if pair in set(non_pairs)]
@@ -148,10 +187,21 @@ def _query_records(
     settings: Settings,
     use_judge: bool,
 ) -> list[dict[str, Any]]:
-    records: list[dict[str, Any]] = []
+    pending: list[tuple[dict[str, Any], QueryResult | None, Exception | None]] = []
     for question in questions:
         try:
-            result = adapter.query(question)
+            pending.append((question, adapter.query(question), None))
+        except Exception as exc:
+            pending.append((question, None, exc))
+    finalize = getattr(adapter, "finalize_conflict_mappings", None)
+    if callable(finalize):
+        finalize()
+    records: list[dict[str, Any]] = []
+    for question, result, exc in pending:
+        if exc is not None or result is None:
+            records.append(_error_record(use_case, adapter.name, question, exc or RuntimeError("query failed")))
+            continue
+        try:
             score = _score_one(
                 question,
                 result,
@@ -159,26 +209,35 @@ def _query_records(
                 settings=settings,
                 use_judge=use_judge,
             )
-            rec = _record(use_case, adapter.name, question, result, score)
-        except Exception as exc:
-            rec = _error_record(use_case, adapter.name, question, exc)
-        records.append(rec)
+            records.append(_record(use_case, adapter.name, question, result, score))
+        except Exception as score_exc:
+            records.append(_error_record(use_case, adapter.name, question, score_exc))
     return records
 
 
 def _aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
     n = len(records)
     scored = [row for row in records if row.get("error") is None]
-    successes = sum(1 for row in records if row.get("correct") and row.get("error") is None)
-    lo, hi = wilson_ci(successes, n)
+    n_unsupported = sum(1 for row in records if row.get("unsupported") and row.get("error") is None)
+    denom = n - n_unsupported
+    successes = sum(
+        1
+        for row in records
+        if row.get("correct") and row.get("error") is None and not row.get("unsupported")
+    )
+    lo, hi = wilson_ci(successes, denom)
+    f1_rows = [row for row in records if not row.get("unsupported")]
     return {
         "n": n,
         "n_errors": sum(1 for row in records if row.get("error")),
-        "accuracy": (successes / n) if n else None,
+        "n_unsupported": n_unsupported,
+        "accuracy": (successes / denom) if denom else None,
         "wilson_lo": lo,
         "wilson_hi": hi,
         "mean_token_f1": (
-            sum(float(row.get("token_f1") or 0.0) for row in scored) / n if n else None
+            sum(float(row.get("token_f1") or 0.0) for row in f1_rows) / len(f1_rows)
+            if f1_rows
+            else None
         ),
         "latency": latency_summary(float(row["e2e_ms"]) for row in scored if row.get("e2e_ms") is not None),
         "retrieve_latency": latency_summary(
@@ -192,7 +251,46 @@ def _aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _conflict_headline_unsupported(records: list[dict[str, Any]]) -> bool:
+    return any(
+        row.get("unsupported")
+        or row.get("scoring") == "conflict_pairs_unsupported"
+        or "conflict_mapping_unsupported" in (row.get("notes") or [])
+        or "conflict_capability_pending" in (row.get("notes") or [])
+        for row in records
+    )
+
+
+def _conflict_headline_reason(records: list[dict[str, Any]]) -> str:
+    pending = any(
+        "conflict_capability_pending" in (row.get("notes") or []) for row in records
+    )
+    mapping = any(
+        "conflict_mapping_unsupported" in (row.get("notes") or []) for row in records
+    )
+    if pending and not mapping:
+        for row in records:
+            reason = str(row.get("reason") or "").strip()
+            if reason:
+                return reason
+        return "BrainAPI conflict pair producer is not available on this deployment"
+    return "BrainAPI conflict identifiers could not be mapped to statement/doc gold ids"
+
+
 def _conflict_headline(records: list[dict[str, Any]], gold_pairs: list[tuple[str, str]]) -> dict[str, Any]:
+    if _conflict_headline_unsupported(records):
+        return {
+            "unsupported": True,
+            "reason": _conflict_headline_reason(records),
+            "f1": None,
+            "precision": None,
+            "recall": None,
+            "tp": 0,
+            "fp": 0,
+            "fn": 0,
+            "n_predicted": 0,
+            "n_gold": len(gold_pairs),
+        }
     pred: list[tuple[str, str]] = []
     for row in records:
         for pair in row.get("conflict_pairs") or []:
@@ -407,7 +505,11 @@ REQUIRED_BRAINAPI_CAPS = {
 
 
 def _system_question_ids(records: list[dict[str, Any]], system: str) -> set[Any]:
-    return {row.get("question_id") for row in records if row.get("system") == system}
+    return {
+        row.get("question_id")
+        for row in records
+        if row.get("system") == system and not row.get("unsupported")
+    }
 
 
 def compare_systems(
@@ -432,6 +534,33 @@ def compare_systems(
                 ),
                 "missing_capability": cap,
             }
+    if use_case == "versioned_rules":
+        mode = str(caps.get("as_of_mode") or "")
+        if mode not in {"api_field", "api_schema"}:
+            return {
+                "verdict": "capability_pending",
+                "reason": (
+                    "BrainAPI native as-of is not available on this run; "
+                    "include_history is not a date filter and is not scored as a win."
+                ),
+                "missing_capability": "as_of",
+            }
+        if records is not None and any(
+            row.get("system") == "brainapi"
+            and (
+                row.get("as_of_mode") == "unsupported"
+                or row.get("scoring") == "as_of_unsupported"
+            )
+            for row in records
+        ):
+            return {
+                "verdict": "capability_pending",
+                "reason": (
+                    "BrainAPI changelog retrieval had no supported range mode; "
+                    "not scored as a win."
+                ),
+                "missing_capability": "as_of",
+            }
     if records is not None:
         hybrid_ids = _system_question_ids(records, "hybrid_baseline")
         brain_ids = _system_question_ids(records, "brainapi")
@@ -444,12 +573,14 @@ def compare_systems(
             }
     h = system_runs["hybrid_baseline"]["metrics"]
     b = system_runs["brainapi"]["metrics"]
-    if h.get("n") != b.get("n"):
+    h_n = int(h.get("n") or 0) - int(h.get("n_unsupported") or 0)
+    b_n = int(b.get("n") or 0) - int(b.get("n_unsupported") or 0)
+    if h_n != b_n:
         return {
             "verdict": "incomplete",
             "reason": "Systems did not score the same number of items.",
-            "hybrid_n": h.get("n"),
-            "brainapi_n": b.get("n"),
+            "hybrid_n": h_n,
+            "brainapi_n": b_n,
         }
     if h.get("accuracy") is None or b.get("accuracy") is None:
         return {"verdict": "undecided", "reason": "accuracy unavailable"}

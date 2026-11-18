@@ -10,8 +10,8 @@ Academic memory/search leaderboards stay in [`benchmarks/`](../benchmarks/). Thi
 
 | Id | What it tests | BrainAPI on current main |
 | --- | --- | --- |
-| `versioned_rules` | As-of clause text and changelogs over dated regulation versions | Adapter is **pluggable**; no `as_of` API yet. Questions still run as written. |
-| `policy_conflicts` | Precision/recall of contradicting statement pairs | Adapter is **pluggable** (`EVAL_CONFLICT_PATH` / `temporal_conflicts` sidecar). Pair detection is pending as a first-class product feature. |
+| `versioned_rules` | As-of clause text and changelogs over dated regulation versions | Adapter is **pluggable**. A native `as_of`/`point_in_time`/`valid_at` field is used when OpenAPI (or `EVAL_AS_OF_FIELD`) exposes it. Until then, versioned-rule questions send `include_history=true` (interim; **not** a date filter) and record `as_of_mode`. |
+| `policy_conflicts` | Precision/recall of contradicting statement pairs | Adapter is **pluggable** (`EVAL_CONFLICT_PATH` / `temporal_conflicts` sidecar). Graph hub/entity UUIDs are mapped back to ingested statement/doc ids before scoring; if mapping is impossible the pair metric is **unsupported**, not 0. |
 | `expert_knowhow` | Multi-hop procedural QA over runbooks | **Runnable on current main.** |
 | `decision_precedent` | Optional: prior incident decisions | Same path as know-how. |
 
@@ -103,9 +103,9 @@ Do **not** hardcode or commit secrets. Staging keys are expected to already exis
 | `EVAL_BASELINE_PROFILE` | optional | Default `sota` (`BAAI/bge-large-en-v1.5` + `BAAI/bge-reranker-v2-m3`). `minilm` selects the cheaper MiniLM pair. |
 | `EVAL_EMBEDDING_API_KEY` / `EVAL_EMBEDDING_BASE_URL` / `EVAL_EMBEDDING_MODEL` | optional | OpenAI embeddings, or override the dense model name. |
 | `EVAL_RERANKER` / `EVAL_CROSS_ENCODER_MODEL` | optional | Default `cross-encoder` (`BAAI/bge-reranker-v2-m3`). `lexical` is smoke-only. |
-| `EVAL_AS_OF_FIELD` | optional | If OpenAPI `GetContextRequestBody` grows an as-of field, set its name (e.g. `as_of`). |
+| `EVAL_AS_OF_FIELD` | optional | If OpenAPI `GetContextRequestBody` grows an as-of field, set its name (e.g. `as_of`). That native field takes precedence. Until then the adapter sends `include_history=true` for as-of/changelog questions when that flag exists; `include_history` is not a date filter. |
 | `EVAL_CONFLICT_PATH` | optional | Future pair-conflict endpoint, e.g. `/retrieve/conflicts`. |
-| `EVAL_CONFLICT_PLUGIN` | optional | Default `temporal_conflicts` (sidecar on `/retrieve/context`, **not** statement-pair gold). |
+| `EVAL_CONFLICT_PLUGIN` | optional | Default `temporal_conflicts` (sidecar on `/retrieve/context`). Results are mapped to ingested statement/doc ids before pair F1 is scored. |
 | `EVAL_RUNS_DIR` / `EVAL_SCALE` / `EVAL_BRAIN_PREFIX` | optional | Defaults: `evals/runs`, `local/small-scale`, `evaluc`. |
 
 The harness **never** writes locomo/beam/searchbench/demorecsys brains.
