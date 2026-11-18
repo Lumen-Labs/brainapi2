@@ -15,7 +15,8 @@ import re
 from typing import Any, Sequence
 
 IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,254}$")
-DATABASE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{0,62}$")
+DATABASE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9.-]{1,61}[A-Za-z0-9]$")
+_PROCEDURE_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 MAX_IDENTIFIER_LEN = 255
 MAX_LIMIT = 1_000_000
 MAX_PATH_DEPTH = 1_000
@@ -34,12 +35,6 @@ _CROSS_DATABASE_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
-_ADMIN_PROCEDURE_RE = re.compile(
-    r"\bCALL\s+(?:`?dbms`?\.|`?db`?\.`?admin)",
-    re.IGNORECASE,
-)
-_ADMIN_PROCEDURE_COMPACT_RE = re.compile(r"call(?:dbms\.|db\.admin)")
-
 _LABEL_TRANSLATION = str.maketrans(
     {
         " ": "_",
@@ -66,6 +61,7 @@ _STATIC_PROPERTY_KEYS = frozenset(
         "description",
         "flow_key",
         "happened_at",
+        "ingest_task_ids",
         "last_updated",
         "metadata",
         "name",
@@ -225,8 +221,8 @@ def require_database_name(name: str) -> str:
         )
     if not DATABASE_RE.fullmatch(name):
         raise InvalidCypherIdentifier(
-            f"Invalid database name: {name!r}. "
-            "Use a letter followed by letters, digits, dots, underscores, or dashes.",
+            "Invalid database name. Use 3-63 letters, digits, and internal "
+            "dots or dashes; start with a letter; do not end with a dot or dash.",
             kind="database",
             value=name,
         )
@@ -310,7 +306,7 @@ def _structural_cypher(query: str, *, blank_identifiers: bool = True) -> str:
     n = len(query)
     while i < n:
         if query.startswith("//", i):
-            while i < n and query[i] != "\n":
+            while i < n and query[i] not in "\r\n":
                 out.append(" ")
                 i += 1
             continue
@@ -380,19 +376,80 @@ def _skip_quoted(
 def _cypher_statements(query: str) -> list[str]:
     structural = _structural_cypher(query)
     statements: list[str] = []
-    current: list[str] = []
+    current_original: list[str] = []
+    current_masked: list[str] = []
     for original, masked in zip(query, structural):
         if masked == ";":
-            part = "".join(current).strip()
-            if part:
-                statements.append(part)
-            current = []
+            _append_executable_statement(
+                statements, current_original, current_masked
+            )
+            current_original = []
+            current_masked = []
         else:
-            current.append(original)
-    tail = "".join(current).strip()
-    if tail:
-        statements.append(tail)
+            current_original.append(original)
+            current_masked.append(masked)
+    _append_executable_statement(statements, current_original, current_masked)
     return statements
+
+
+def _append_executable_statement(
+    statements: list[str], original_chars: list[str], masked_chars: list[str]
+) -> None:
+    original = "".join(original_chars).strip()
+    if original and "".join(masked_chars).strip():
+        statements.append(original)
+
+
+def _procedure_names_after_call(query: str) -> list[str]:
+    """Find CALL keywords in identifier-blanked text, then parse names.
+
+    Quoted labels such as ``call dbms.metrics`` therefore cannot look like
+    CALL, while ``CALL `dbms`.components()`` is still visible.
+    """
+    blanked = _structural_cypher(query, blank_identifiers=True)
+    unblanked = _structural_cypher(query, blank_identifiers=False)
+    names: list[str] = []
+    for match in re.finditer(r"\bCALL\b", blanked, re.IGNORECASE):
+        i = match.end()
+        n = len(unblanked)
+        parts: list[str] = []
+        while i < n:
+            while i < n and unblanked[i].isspace():
+                i += 1
+            if i >= n:
+                break
+            if unblanked[i] == "`":
+                i += 1
+                start = i
+                while i < n and unblanked[i] != "`":
+                    i += 1
+                parts.append(unblanked[start:i].replace("``", "`"))
+                if i < n:
+                    i += 1
+            else:
+                ident = _PROCEDURE_IDENT_RE.match(unblanked, i)
+                if not ident:
+                    break
+                parts.append(ident.group(0))
+                i = ident.end()
+            while i < n and unblanked[i].isspace():
+                i += 1
+            if i < n and unblanked[i] == ".":
+                i += 1
+                continue
+            break
+        if parts:
+            names.append(".".join(parts).lower())
+    return names
+
+
+def _is_admin_procedure(name: str) -> bool:
+    return (
+        name == "dbms"
+        or name.startswith("dbms.")
+        or name == "db.admin"
+        or name.startswith("db.admin.")
+    )
 
 
 def validate_raw_cypher(query: str) -> str:
@@ -408,11 +465,9 @@ def validate_raw_cypher(query: str) -> str:
         raise RawCypherRejected(
             "Raw Cypher cannot switch databases or run database administration"
         )
-    admin_structural = _structural_cypher(normalized, blank_identifiers=False)
-    admin_compact = re.sub(r"[`\s]+", "", admin_structural).lower()
-    if (
-        _ADMIN_PROCEDURE_RE.search(admin_structural)
-        or _ADMIN_PROCEDURE_COMPACT_RE.search(admin_compact)
+    if any(
+        _is_admin_procedure(name)
+        for name in _procedure_names_after_call(normalized)
     ):
         raise RawCypherRejected(
             "Raw Cypher cannot call dbms.* or db.admin procedures"
