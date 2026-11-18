@@ -38,6 +38,7 @@ _ADMIN_PROCEDURE_RE = re.compile(
     r"\bCALL\s+(?:`?dbms`?\.|`?db`?\.`?admin)",
     re.IGNORECASE,
 )
+_ADMIN_PROCEDURE_COMPACT_RE = re.compile(r"call(?:dbms\.|db\.admin)")
 
 _LABEL_TRANSLATION = str.maketrans(
     {
@@ -299,10 +300,10 @@ def show_database_status_query(database: str) -> str:
 def _structural_cypher(query: str, *, blank_identifiers: bool = True) -> str:
     """Blank comments and quoted literals so keyword scans ignore them.
 
-    String literals honor Cypher backslash escapes and doubled quotes.
-    Backtick identifiers are blanked for database-admin scans so a quoted
-    label cannot look like USE/CREATE DATABASE, and left intact for
-    procedure scans so CALL `dbms`.components() is still visible.
+    String literals honor Cypher backslash escapes only. Backtick identifiers
+    honor doubled backticks. Identifiers are blanked for database-admin scans
+    so a quoted label cannot look like USE/CREATE DATABASE, and left intact
+    for procedure scans so CALL `dbms`.components() is still visible.
     """
     out: list[str] = []
     i = 0
@@ -364,7 +365,7 @@ def _skip_quoted(
             i += 2
             continue
         if query[i] == quote:
-            if i + 1 < n and query[i + 1] == quote:
+            if not escape_backslash and i + 1 < n and query[i + 1] == quote:
                 out.append("  " if blank else query[i : i + 2])
                 i += 2
                 continue
@@ -408,7 +409,11 @@ def validate_raw_cypher(query: str) -> str:
             "Raw Cypher cannot switch databases or run database administration"
         )
     admin_structural = _structural_cypher(normalized, blank_identifiers=False)
-    if _ADMIN_PROCEDURE_RE.search(admin_structural):
+    admin_compact = re.sub(r"[`\s]+", "", admin_structural).lower()
+    if (
+        _ADMIN_PROCEDURE_RE.search(admin_structural)
+        or _ADMIN_PROCEDURE_COMPACT_RE.search(admin_compact)
+    ):
         raise RawCypherRejected(
             "Raw Cypher cannot call dbms.* or db.admin procedures"
         )
