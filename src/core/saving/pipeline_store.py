@@ -23,6 +23,9 @@ CREATE INDEX IF NOT EXISTS pipeline_documents_operation
 CREATE UNIQUE INDEX IF NOT EXISTS pipeline_documents_task
     ON pipeline_documents ((document->>'task_id'))
     WHERE namespace = 'ingest_sections';
+CREATE INDEX IF NOT EXISTS pipeline_documents_pending_cleanup
+    ON pipeline_documents (namespace)
+    WHERE namespace = 'ingest_runs' AND (document->>'pending_cleanup') = 'true';
 """
 NAMES = frozenset({'ingest_manifests', 'ingest_sections', 'ingest_runs', 'ingest_access_gates', 'ingest_staged_inputs', 'ingest_staged_outputs', 'pipeline_usage_events'})
 

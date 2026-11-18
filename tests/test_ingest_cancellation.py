@@ -464,6 +464,240 @@ def test_publication_replay_failure_is_terminal_and_reopens_access(run, monkeypa
         pass
 
 
+class _MemoryCollection:
+    def __init__(self, documents):
+        self.documents = documents
+
+    def update_one(self, query, update, upsert=False):
+        identity = query["_id"]
+        if upsert and identity not in self.documents:
+            self.documents[identity] = {"_id": identity, **update.get("$setOnInsert", {})}
+        return SimpleNamespace(modified_count=0)
+
+    def find_one(self, query):
+        return self.documents.get(query["_id"])
+
+    def delete_one(self, query):
+        self.documents.pop(query["_id"], None)
+        return SimpleNamespace(deleted_count=1)
+
+
+def _memory_data_client():
+    collections = {}
+
+    class DataClient:
+        def get_collection(self, name, database):
+            assert database == "brain"
+            collections.setdefault(name, {})
+            return _MemoryCollection(collections[name])
+
+    return DataClient(), collections
+
+
+def _complete_publishing_run(staging, root, refs):
+    staging.create_run("brain", root)
+    for index, ref in enumerate(refs):
+        unit = staging.register_unit("brain", root, f"unit-{index}", {"payload": {}})
+        claim = staging.claim_unit("brain", root, unit)
+        assert staging.complete_unit("brain", root, unit, claim, ref)
+    staging.seal_units("brain", root)
+    assert staging.close_staging("brain", root)["status"] == "publishing"
+
+
+def test_publish_budget_exhaustion_rolls_back_applied_units(run, monkeypatch, tmp_path):
+    from src.constants.data import TextChunk
+    from src.core.saving import ingest_access_gate as gate, ingest_publication, ingest_recovery, ingest_staging as staging
+
+    monkeypatch.setenv("INGEST_PUBLICATION_LOCK_DIR", str(tmp_path))
+    monkeypatch.setattr(gate, "_gates", cancellation._runs)
+
+    data, collections = _memory_data_client()
+    applied = TextChunk(id="applied", text="live from unit 0")
+    failed = TextChunk(id="failed", text="never committed")
+    outputs = {
+        "first": [{"adapter": "data", "method": "save_text_chunk", "args": {"text_chunk": applied.model_dump(mode="json")}}],
+        "second": [{"adapter": "data", "method": "save_text_chunk", "args": {"text_chunk": failed.model_dump(mode="json")}}],
+    }
+    monkeypatch.setattr(ingest_publication, "load_output", lambda brain, root, ref: outputs[ref])
+    real_replay = ingest_publication.replay_data_operation
+
+    def replay(client, brain, operation):
+        if operation["args"]["text_chunk"]["id"] == "failed":
+            raise RuntimeError("replay failed")
+        return real_replay(client, brain, operation)
+
+    monkeypatch.setattr(ingest_publication, "replay_data_operation", replay)
+    _complete_publishing_run(staging, "staged", ["first", "second"])
+
+    def publish(brain, root):
+        ingest_publication.publish_staged_run(brain, root, gate.publication_gate, data, Mock(), None)
+
+    def rollback(brain, root):
+        ingest_publication.rollback_published_run(brain, root, data, Mock(), None)
+
+    for _ in range(staging.MAX_SETTLEMENT_FAILURES - 1):
+        with pytest.raises(RuntimeError, match="replay failed"):
+            ingest_recovery.reconcile_run("brain", "staged", Mock(), publish, rollback)
+        assert cancellation.public_state("brain", "staged", {})["status"] == "processing"
+        assert "applied" in collections["text_chunks"]
+        assert "failed" not in collections["text_chunks"]
+
+    ingest_recovery.reconcile_run("brain", "staged", Mock(), publish, rollback)
+    stored = cancellation._runs("brain").find_one({"_id": "staged"})
+    assert stored["status"] == "failed"
+    assert stored["pending_cleanup"] is True
+    assert cancellation.public_state("brain", "staged", {})["status"] == "failed"
+    assert stored["publication_cursor"] == 1
+    assert "applied" not in collections["text_chunks"]
+    assert "failed" not in collections["text_chunks"]
+    with gate.brain_access("brain"):
+        pass
+
+
+def test_publish_rollback_failure_keeps_staged_data(run, monkeypatch, tmp_path):
+    from src.constants.data import TextChunk
+    from src.core.saving import ingest_access_gate as gate, ingest_publication, ingest_recovery, ingest_runtime, ingest_staging as staging
+
+    monkeypatch.setenv("INGEST_PUBLICATION_LOCK_DIR", str(tmp_path))
+    monkeypatch.setattr(gate, "_gates", cancellation._runs)
+
+    data, collections = _memory_data_client()
+    applied = TextChunk(id="applied", text="live from unit 0")
+    outputs = {
+        "first": [{"adapter": "data", "method": "save_text_chunk", "args": {"text_chunk": applied.model_dump(mode="json")}}],
+        "second": [{"adapter": "data", "method": "save_text_chunk", "args": {"text_chunk": TextChunk(id="failed", text="no").model_dump(mode="json")}}],
+    }
+    monkeypatch.setattr(ingest_publication, "load_output", lambda brain, root, ref: outputs[ref])
+    real_replay = ingest_publication.replay_data_operation
+
+    def replay(client, brain, operation):
+        if operation["args"]["text_chunk"]["id"] == "failed":
+            raise RuntimeError("replay failed")
+        return real_replay(client, brain, operation)
+
+    monkeypatch.setattr(ingest_publication, "replay_data_operation", replay)
+    discard = Mock()
+    monkeypatch.setattr(ingest_recovery, "discard_outputs", discard)
+    _complete_publishing_run(staging, "staged", ["first", "second"])
+
+    def publish(brain, root):
+        ingest_publication.publish_staged_run(brain, root, gate.publication_gate, data, Mock(), None)
+
+    def rollback(brain, root):
+        raise RuntimeError("undo failed")
+
+    for _ in range(staging.MAX_SETTLEMENT_FAILURES - 1):
+        with pytest.raises(RuntimeError, match="replay failed"):
+            ingest_recovery.reconcile_run("brain", "staged", Mock(), publish, rollback)
+        assert cancellation.public_state("brain", "staged", {})["status"] == "processing"
+
+    with pytest.raises(RuntimeError, match="undo failed"):
+        ingest_recovery.reconcile_run("brain", "staged", Mock(), publish, rollback)
+    stored = cancellation._runs("brain").find_one({"_id": "staged"})
+    assert stored["status"] == "publish_partial"
+    assert stored.get("pending_cleanup") is not True
+    assert cancellation.public_state("brain", "staged", {})["status"] == "publish_partial"
+    assert "applied" in collections["text_chunks"]
+    assert all(unit.get("output_ref") for unit in stored["units"].values())
+
+    for _ in range(staging.MAX_SETTLEMENT_FAILURES - 2):
+        with pytest.raises(RuntimeError, match="undo failed"):
+            ingest_recovery.reconcile_run("brain", "staged", Mock(), publish, rollback)
+        assert cancellation.public_state("brain", "staged", {})["status"] == "publish_partial"
+
+    ingest_recovery.reconcile_run("brain", "staged", Mock(), publish, rollback)
+    stored = cancellation._runs("brain").find_one({"_id": "staged"})
+    assert stored["status"] == "rollback_failed"
+    assert stored["pending_cleanup"] is False
+    assert cancellation.public_state("brain", "staged", {})["status"] == "rollback_failed"
+    assert stored["publication_cursor"] == 1
+    assert all(unit.get("output_ref") for unit in stored["units"].values())
+    assert "applied" in collections["text_chunks"]
+    discard.assert_not_called()
+    ingest_runtime.recover_brain("brain", data, Mock(), Mock())
+    discard.assert_not_called()
+    assert ingest_publication.load_output("brain", "staged", "first") == outputs["first"]
+    with gate.brain_access("brain"):
+        pass
+
+
+def test_deterministic_conflict_rolls_back_partial_unit_and_keeps_existing_record(run, monkeypatch, tmp_path):
+    from src.constants.data import TextChunk
+    from src.core.saving import ingest_access_gate as gate, ingest_publication, ingest_recovery, ingest_staging as staging
+
+    monkeypatch.setenv("INGEST_PUBLICATION_LOCK_DIR", str(tmp_path))
+    monkeypatch.setattr(gate, "_gates", cancellation._runs)
+
+    data, collections = _memory_data_client()
+    applied = TextChunk(id="applied", text="from first unit")
+    partial = TextChunk(id="partial", text="from failing unit")
+    conflict = TextChunk(id="conflict", text="staged replacement")
+    collections["text_chunks"] = {
+        "conflict": {"_id": "conflict", **conflict.model_dump(mode="json"), "text": "already present"},
+    }
+    outputs = {
+        "first": [{"adapter": "data", "method": "save_text_chunk", "args": {"text_chunk": applied.model_dump(mode="json")}}],
+        "second": [
+            {"adapter": "data", "method": "save_text_chunk", "args": {"text_chunk": partial.model_dump(mode="json")}},
+            {"adapter": "data", "method": "save_text_chunk", "args": {"text_chunk": conflict.model_dump(mode="json")}},
+        ],
+    }
+    monkeypatch.setattr(ingest_publication, "load_output", lambda brain, root, ref: outputs[ref])
+    _complete_publishing_run(staging, "staged", ["first", "second"])
+
+    def publish(brain, root):
+        ingest_publication.publish_staged_run(brain, root, gate.publication_gate, data, Mock(), None)
+
+    def rollback(brain, root):
+        ingest_publication.rollback_published_run(brain, root, data, Mock(), None)
+
+    with pytest.raises(ValueError, match="Staged data conflicts with an existing record"):
+        ingest_recovery.reconcile_run("brain", "staged", Mock(), publish, rollback)
+    assert "applied" in collections["text_chunks"]
+    assert "partial" in collections["text_chunks"]
+    assert collections["text_chunks"]["conflict"]["text"] == "already present"
+
+    for _ in range(staging.MAX_SETTLEMENT_FAILURES - 2):
+        with pytest.raises(ValueError, match="Staged data conflicts with an existing record"):
+            ingest_recovery.reconcile_run("brain", "staged", Mock(), publish, rollback)
+
+    ingest_recovery.reconcile_run("brain", "staged", Mock(), publish, rollback)
+    stored = cancellation._runs("brain").find_one({"_id": "staged"})
+    assert stored["status"] == "failed"
+    assert stored["pending_cleanup"] is True
+    assert cancellation.public_state("brain", "staged", {})["status"] == "failed"
+    assert "applied" not in collections["text_chunks"]
+    assert "partial" not in collections["text_chunks"]
+    assert collections["text_chunks"]["conflict"]["text"] == "already present"
+
+
+def test_recover_brain_cleans_only_pending_cleanup_rows(run, monkeypatch, tmp_path):
+    from src.core.saving import ingest_access_gate as gate, ingest_recovery, ingest_runtime, ingest_staging as staging
+
+    monkeypatch.setenv("INGEST_PUBLICATION_LOCK_DIR", str(tmp_path))
+    monkeypatch.setattr(gate, "_gates", cancellation._runs)
+    discard = Mock()
+    monkeypatch.setattr(ingest_recovery, "discard_outputs", discard)
+
+    staging.create_run("brain", "kept")
+    cancellation._runs("brain").update_one(
+        {"_id": "kept"},
+        {"$set": {"status": "rollback_failed", "pending_cleanup": False}},
+    )
+    staging.create_run("brain", "dirty")
+    cancellation._runs("brain").update_one(
+        {"_id": "dirty"},
+        {"$set": {"status": "failed", "pending_cleanup": True}},
+    )
+
+    ingest_runtime.recover_brain("brain", Mock(), Mock(), Mock())
+    discard.assert_called_once_with("brain", "dirty")
+    assert cancellation._runs("brain").find_one({"_id": "dirty"})["pending_cleanup"] is False
+    assert cancellation._runs("brain").find_one({"_id": "kept"})["pending_cleanup"] is False
+    ingest_runtime.recover_brain("brain", Mock(), Mock(), Mock())
+    assert discard.call_count == 1
+
+
 def test_rollback_failed_cleanup_is_retryable_and_idempotent(run, monkeypatch, tmp_path):
     from src.core.saving import ingest_access_gate as gate, ingest_recovery, ingest_runtime, ingest_staging as staging
 
