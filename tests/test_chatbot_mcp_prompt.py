@@ -7,6 +7,8 @@ class ChatbotMcpPromptTests(unittest.TestCase):
     def test_build_mcp_tools_instructions_includes_brain_id(self):
         text = build_mcp_tools_instructions("my-brain")
         self.assertIn("my-brain", text)
+        self.assertIn("brainapi_recall", text)
+        self.assertIn("brainapi_check", text)
         self.assertIn("search_semantically", text)
         self.assertIn("traverse_graph", text)
         self.assertIn("list_changelogs", text)
