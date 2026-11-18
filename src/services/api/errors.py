@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, JsonValue
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from src.lib.cypher_safety import InvalidCypherIdentifier
+from src.lib.cypher_safety import InvalidCypherIdentifier, RawCypherRejected
 
 
 class ErrorInfo(BaseModel):
@@ -157,6 +157,23 @@ def install_error_handlers(app: FastAPI) -> None:
             request,
             status_code=422,
             detail=exc.errors(),
+        )
+
+    @app.exception_handler(RawCypherRejected)
+    async def raw_cypher_rejected_handler(
+        request: Request,
+        exc: RawCypherRejected,
+    ):
+        return error_response(
+            request,
+            status_code=400,
+            detail=str(exc),
+            code="CYPHER_QUERY_REJECTED",
+            message="The graph query is not allowed.",
+            resolution=(
+                "Send a single read-only query against this brain. Writes, DELETE, "
+                "USE, CALL dbms.*, and database administration are blocked."
+            ),
         )
 
     @app.exception_handler(InvalidCypherIdentifier)

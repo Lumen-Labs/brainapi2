@@ -139,10 +139,10 @@ def close_validity(
     if superseded_by and not props.get(SUPERSEDED_BY):
         props[SUPERSEDED_BY] = superseded_by
     if not props.get("invalid_at"):
-        props["invalid_at"] = closed_at or stamp
+        props["invalid_at"] = stamp
     props["deprecated"] = True
     if not props.get("superseded_at"):
-        props["superseded_at"] = closed_at or stamp
+        props["superseded_at"] = stamp
     return props
 
 

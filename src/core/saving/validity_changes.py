@@ -12,18 +12,52 @@ from src.core.saving.validity import (
     change_kind,
     event_timestamp,
     format_instant,
+    parse_instant,
 )
 
 _CHUNK_PAGE = 100
 _REL_PAGE = 100
-_MAX_SCAN = 5000
+
+
+def _timestamp_in_window(
+    value: Any, since: datetime | None, until: datetime | None
+) -> bool:
+    stamp = parse_instant(value)
+    if stamp is None:
+        return False
+    if since is not None and stamp < since:
+        return False
+    if until is not None and stamp >= until:
+        return False
+    return True
+
+
+def _jsonish(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    iso = getattr(value, "iso_format", None)
+    if callable(iso):
+        try:
+            return iso()
+        except Exception:
+            pass
+    if isinstance(value, datetime):
+        return format_instant(value)
+    if isinstance(value, dict):
+        return {str(key): _jsonish(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonish(item) for item in value]
+    dump = getattr(value, "model_dump", None)
+    if callable(dump):
+        try:
+            return dump(mode="json")
+        except Exception:
+            return _jsonish(dump(mode="python"))
+    return str(value)
 
 
 def _dump(row: Any) -> Any:
-    dump = getattr(row, "model_dump", None)
-    if callable(dump):
-        return dump(mode="json")
-    return row
+    return _jsonish(row)
 
 
 def _chunk_change(chunk: Any, kind: str) -> dict[str, Any]:
@@ -76,7 +110,7 @@ def _relationship_change(triple: Any, kind: str) -> dict[str, Any]:
 
 def _changelog_change(row: Any) -> dict[str, Any]:
     payload = _dump(row)
-    stamp = payload.get("timestamp") if isinstance(payload, dict) else None
+    stamp = parse_instant(getattr(row, "timestamp", None))
     return {
         "kind": "added"
         if str(getattr(row, "type", "") or "").endswith("created")
@@ -92,7 +126,7 @@ def _changelog_change(row: Any) -> dict[str, Any]:
 
 def _iter_chunks(adapter: Any, brain_id: str):
     skip = 0
-    while skip < _MAX_SCAN:
+    while True:
         chunks, total = adapter.get_text_chunks(
             brain_id=brain_id, limit=_CHUNK_PAGE, skip=skip, order="desc"
         )
@@ -102,6 +136,8 @@ def _iter_chunks(adapter: Any, brain_id: str):
             yield chunk
         skip += len(chunks)
         if total is not None and skip >= int(total):
+            break
+        if len(chunks) < _CHUNK_PAGE:
             break
 
 
@@ -114,7 +150,7 @@ def _iter_relationships(
     method = getattr(graph, "list_validity_relationships", None)
     if callable(method):
         skip = 0
-        while skip < _MAX_SCAN:
+        while True:
             triples, total = method(
                 brain_id,
                 skip=skip,
@@ -129,9 +165,11 @@ def _iter_relationships(
             skip += len(triples)
             if total is not None and skip >= int(total):
                 break
+            if len(triples) < _REL_PAGE:
+                break
         return
     skip = 0
-    while skip < _MAX_SCAN:
+    while True:
         result = graph.search_relationships(brain_id, limit=_REL_PAGE, skip=skip)
         triples = getattr(result, "results", None) or result or []
         if not triples:
@@ -141,6 +179,43 @@ def _iter_relationships(
         skip += len(triples)
         total = getattr(result, "total", None)
         if total is not None and skip >= int(total):
+            break
+        if len(triples) < _REL_PAGE:
+            break
+
+
+def _iter_changelogs(
+    adapter: Any,
+    brain_id: str,
+    types: list[str] | None,
+    query_text: str | None,
+    since: datetime | None,
+    until: datetime | None,
+):
+    skip = 0
+    while True:
+        try:
+            rows = adapter.get_changelogs_list(
+                brain_id,
+                _CHUNK_PAGE,
+                skip,
+                types,
+                query_text,
+                since,
+                until,
+            )
+        except TypeError:
+            rows = adapter.get_changelogs_list(
+                brain_id, _CHUNK_PAGE, skip, types, query_text
+            )
+        if not rows:
+            break
+        for row in rows:
+            if not _timestamp_in_window(getattr(row, "timestamp", None), since, until):
+                continue
+            yield row
+        skip += len(rows)
+        if len(rows) < _CHUNK_PAGE:
             break
 
 
@@ -171,21 +246,7 @@ def collect_validity_changes(
             kind = change_kind(props, since, until)
             if kind:
                 changes.append(_relationship_change(triple, kind))
-    try:
-        rows = adapter.get_changelogs_list(
-            brain_id,
-            min(max(limit + skip, 1), 200),
-            0,
-            types,
-            query_text,
-            since,
-            until,
-        )
-    except TypeError:
-        rows = adapter.get_changelogs_list(
-            brain_id, min(max(limit + skip, 1), 200), 0, types, query_text
-        )
-    for row in rows or []:
+    for row in _iter_changelogs(adapter, brain_id, types, query_text, since, until):
         changes.append(_changelog_change(row))
     changes.sort(key=lambda item: str(item.get("timestamp") or ""), reverse=True)
     total = len(changes)

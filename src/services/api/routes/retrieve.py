@@ -743,6 +743,10 @@ async def post_recommend(
 async def get_search(
     query: str = Query(..., description="The search query."),
     k: int = Query(10, ge=1, le=200, description="Number of hits to return."),
+    as_of: Optional[str] = Query(
+        None,
+        description="ISO-8601 datetime. When set, search the knowledge state valid at that instant.",
+    ),
     channels: Optional[str] = Query(
         "passages",
         description=(
@@ -794,6 +798,7 @@ async def get_search(
     request = SearchRequestBody(
         query=query,
         k=k,
+        as_of=as_of,
         channels=channel_list,
         node_labels=node_label_list,
         community_labels=community_label_list,

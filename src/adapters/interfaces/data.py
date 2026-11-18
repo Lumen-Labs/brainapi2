@@ -50,6 +50,11 @@ class DataClient(ABC):
     ) -> None:
         raise NotImplementedError("mark_text_chunks_superseded method not implemented")
 
+    def fill_text_chunk_validity(
+        self, chunk_id: str, brain_id: str, patch: dict[str, Any]
+    ) -> None:
+        raise NotImplementedError("fill_text_chunk_validity method not implemented")
+
     @abstractmethod
     def save_observations(
         self, observations: List[Observation], brain_id: str

@@ -19,6 +19,25 @@ DATABASE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{0,62}$")
 MAX_IDENTIFIER_LEN = 255
 MAX_LIMIT = 1_000_000
 MAX_PATH_DEPTH = 1_000
+MAX_RAW_QUERY_ROWS = 100
+RAW_QUERY_TIMEOUT_SECONDS = 10.0
+
+_CROSS_DATABASE_RE = re.compile(
+    r"\b("
+    r"USE|"
+    r"CREATE\s+(?:OR\s+REPLACE\s+)?(?:COMPOSITE\s+)?DATABASE|"
+    r"DROP\s+(?:COMPOSITE\s+)?DATABASE|"
+    r"ALTER\s+DATABASE|"
+    r"STOP\s+DATABASE|"
+    r"START\s+DATABASE|"
+    r"SHOW\s+DATABASES?"
+    r")\b",
+    re.IGNORECASE,
+)
+_ADMIN_PROCEDURE_RE = re.compile(
+    r"\bCALL\s+(?:`?dbms`?\.|`?db`?\.`?admin)",
+    re.IGNORECASE,
+)
 
 _LABEL_TRANSLATION = str.maketrans(
     {
@@ -77,6 +96,10 @@ class InvalidCypherIdentifier(ValueError):
         super().__init__(message)
         self.kind = kind
         self.value = value
+
+
+class RawCypherRejected(ValueError):
+    """Raised when a caller-supplied Cypher query is not allowed."""
 
 
 def require_identifier(name: str, *, kind: str = "identifier") -> str:
@@ -232,16 +255,23 @@ def require_int(
             kind="integer",
             value=value,
         )
-    if isinstance(value, int):
-        parsed = value
-    elif isinstance(value, str) and value.strip().isdigit():
-        parsed = int(value.strip())
-    else:
+    try:
+        if isinstance(value, int):
+            parsed = value
+        elif isinstance(value, str) and value.strip().isdigit():
+            parsed = int(value.strip())
+        else:
+            raise InvalidCypherIdentifier(
+                f"{name} must be an integer",
+                kind="integer",
+                value=value,
+            )
+    except (ValueError, OverflowError) as exc:
         raise InvalidCypherIdentifier(
             f"{name} must be an integer",
             kind="integer",
             value=value,
-        )
+        ) from exc
     if parsed < minimum or parsed > maximum:
         raise InvalidCypherIdentifier(
             f"{name} must be between {minimum} and {maximum}",
@@ -347,3 +377,122 @@ def create_database_if_not_exists_query(database: str) -> str:
 
 def show_database_status_query(database: str) -> str:
     return "SHOW DATABASE " + quote_database_name(database) + " YIELD currentStatus"
+
+
+def _structural_cypher(query: str, *, blank_identifiers: bool = True) -> str:
+    """Blank comments and quoted literals so keyword scans ignore them.
+
+    String literals honor Cypher backslash escapes and doubled quotes.
+    Backtick identifiers are blanked for database-admin scans so a quoted
+    label cannot look like USE/CREATE DATABASE, and left intact for
+    procedure scans so CALL `dbms`.components() is still visible.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(query)
+    while i < n:
+        if query.startswith("//", i):
+            while i < n and query[i] != "\n":
+                out.append(" ")
+                i += 1
+            continue
+        if query.startswith("/*", i):
+            out.append("  ")
+            i += 2
+            while i < n and not query.startswith("*/", i):
+                out.append("\n" if query[i] == "\n" else " ")
+                i += 1
+            if i < n:
+                out.append("  ")
+                i += 2
+            continue
+        ch = query[i]
+        if ch in {"'", '"'}:
+            i = _skip_quoted(query, i, ch, out, blank=True, escape_backslash=True)
+            continue
+        if ch == "`":
+            i = _skip_quoted(
+                query,
+                i,
+                "`",
+                out,
+                blank=blank_identifiers,
+                escape_backslash=False,
+            )
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _skip_quoted(
+    query: str,
+    start: int,
+    quote: str,
+    out: list[str],
+    *,
+    blank: bool,
+    escape_backslash: bool,
+) -> int:
+    n = len(query)
+    i = start
+    out.append(" " if blank else query[i])
+    i += 1
+    while i < n:
+        if escape_backslash and query[i] == "\\" and i + 1 < n:
+            if blank:
+                out.append("  ")
+            else:
+                out.append(query[i : i + 2])
+            i += 2
+            continue
+        if query[i] == quote:
+            if i + 1 < n and query[i + 1] == quote:
+                out.append("  " if blank else query[i : i + 2])
+                i += 2
+                continue
+            out.append(" " if blank else query[i])
+            i += 1
+            break
+        out.append("\n" if query[i] == "\n" else (" " if blank else query[i]))
+        i += 1
+    return i
+
+
+def _cypher_statements(query: str) -> list[str]:
+    structural = _structural_cypher(query)
+    statements: list[str] = []
+    current: list[str] = []
+    for original, masked in zip(query, structural):
+        if masked == ";":
+            part = "".join(current).strip()
+            if part:
+                statements.append(part)
+            current = []
+        else:
+            current.append(original)
+    tail = "".join(current).strip()
+    if tail:
+        statements.append(tail)
+    return statements
+
+
+def validate_raw_cypher(query: str) -> str:
+    """Reject empty, multi-statement, cross-database, and admin Cypher."""
+    if not isinstance(query, str) or not query.strip():
+        raise RawCypherRejected("Raw Cypher query must be a non-empty string")
+    statements = _cypher_statements(query)
+    if len(statements) != 1:
+        raise RawCypherRejected("Multiple Cypher statements are not allowed")
+    normalized = statements[0]
+    structural = _structural_cypher(normalized)
+    if _CROSS_DATABASE_RE.search(structural):
+        raise RawCypherRejected(
+            "Raw Cypher cannot switch databases or run database administration"
+        )
+    admin_structural = _structural_cypher(normalized, blank_identifiers=False)
+    if _ADMIN_PROCEDURE_RE.search(admin_structural):
+        raise RawCypherRejected(
+            "Raw Cypher cannot call dbms.* or db.admin procedures"
+        )
+    return normalized

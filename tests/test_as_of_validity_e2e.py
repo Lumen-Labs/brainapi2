@@ -268,12 +268,12 @@ def test_as_of_v1_v2_v3_regulation_and_changes_window():
                     "Article 12", 10, "", brain_id, as_of=as_of
                 )
 
-            as_of_v1 = asyncio.run(_retrieve("2024-06-01T00:00:00Z"))
-            as_of_v3 = asyncio.run(_retrieve("2026-06-01T00:00:00Z"))
-            live_retrieve = asyncio.run(_retrieve(None))
-            assert {chunk.text for chunk in as_of_v1.data} == {REG_V1}
-            assert {chunk.text for chunk in as_of_v3.data} == {REG_V3}
-            assert REG_V3 in {chunk.text for chunk in live_retrieve.data}
+        as_of_v1 = asyncio.run(_retrieve("2024-06-01T00:00:00Z"))
+        as_of_v3 = asyncio.run(_retrieve("2026-06-01T00:00:00Z"))
+        live_retrieve = asyncio.run(_retrieve(None))
+        assert {chunk.text for chunk in as_of_v1.data} == {REG_V1}
+        assert {chunk.text for chunk in as_of_v3.data} == {REG_V3}
+        assert REG_V3 in {chunk.text for chunk in live_retrieve.data}
 
         async def _changes():
             with (
@@ -342,6 +342,88 @@ def test_staged_validity_mark_rolls_back_until_replay():
         assert (loaded[0].metadata or {}).get("superseded_at") == "2025-01-01T00:00:00Z"
         assert (loaded[0].metadata or {}).get("valid_to") == "2025-01-01T00:00:00Z"
         assert (loaded[0].metadata or {}).get("superseded_by") == "next"
+    finally:
+        _drop_brain(uri, brain_id)
+        _restore_postgres(original)
+
+
+@pytest.mark.skipif(not _postgres_ready(), reason="PostgreSQL data backend not available")
+def test_validity_backfill_mixed_legacy_dates_on_live_postgres_brain():
+    from src.adapters.data import DataAdapter
+    from src.adapters.graph import GraphAdapter
+    from src.core.saving.validity_backfill import backfill_brain_validity
+    from src.lib.postgresql.data import PostgreSQLDataClient
+    from src.lib.postgresql.networkx_client import NetworkXGraphClient
+
+    uri = os.getenv("PROGRESSIVE_POSTGRES_TEST_URI")
+    original = _configure_postgres(uri)
+    brain_id = "asofbf" + uuid4().hex[:8]
+    data = DataAdapter()
+    data.add_client(PostgreSQLDataClient())
+    graph = GraphAdapter()
+    graph.add_client(NetworkXGraphClient())
+    try:
+        data.save_text_chunk(
+            TextChunk(
+                id="reg-v1",
+                text=REG_V1,
+                metadata={"source_key": SOURCE_KEY, "superseded_at": "15/01/2025"},
+                inserted_at=datetime(2024, 1, 1, 8, 0, 0),
+            ),
+            brain_id,
+        )
+        data.save_text_chunk(
+            TextChunk(
+                id="reg-v2",
+                text=REG_V2,
+                metadata={"source_key": SOURCE_KEY, "valid_from": "2025-01-15T00:00:00Z"},
+                inserted_at=datetime(2025, 1, 15, tzinfo=timezone.utc),
+            ),
+            brain_id,
+        )
+        subject = graph.add_nodes(
+            [Node(uuid="org-bf", name="Issuer", labels=["ORG"])], brain_id
+        )[0]
+        clause = graph.add_nodes(
+            [Node(uuid="clause-bf", name="Article12", labels=["CLAUSE"])], brain_id
+        )[0]
+        graph.add_relationship(
+            subject,
+            Predicate(
+                uuid="rel-old",
+                name="REQUIRES",
+                description="five years",
+                properties={"valid_at": "01/01/2024", "invalid_at": "15/01/2025"},
+            ),
+            clause,
+            brain_id,
+        )
+        graph.add_relationship(
+            subject,
+            Predicate(
+                uuid="rel-live",
+                name="REQUIRES",
+                description="seven years",
+                properties={"valid_at": "2025-01-15T00:00:00"},
+            ),
+            clause,
+            brain_id,
+        )
+        first = backfill_brain_validity(data, graph, brain_id)
+        assert first["chunks"] >= 1
+        assert first["relationships"] >= 1
+        stored, _ = data.get_text_chunks_by_ids(["reg-v1", "reg-v2"], False, brain_id)
+        by_id = {chunk.id: chunk for chunk in stored}
+        assert by_id["reg-v1"].text == REG_V1
+        assert by_id["reg-v1"].metadata["valid_from"] == "2024-01-01T08:00:00Z"
+        assert by_id["reg-v1"].metadata["valid_to"] == "2025-01-15T00:00:00Z"
+        assert by_id["reg-v1"].metadata["superseded_at"] == "15/01/2025"
+        assert by_id["reg-v2"].metadata["valid_from"] == "2025-01-15T00:00:00Z"
+        assert not by_id["reg-v2"].metadata.get("valid_to")
+        dry = backfill_brain_validity(data, graph, brain_id, dry_run=True)
+        assert dry == {"chunks": 0, "relationships": 0}
+        second = backfill_brain_validity(data, graph, brain_id)
+        assert second == {"chunks": 0, "relationships": 0}
     finally:
         _drop_brain(uri, brain_id)
         _restore_postgres(original)

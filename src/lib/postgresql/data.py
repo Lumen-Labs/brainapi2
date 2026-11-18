@@ -420,12 +420,38 @@ class PostgreSQLDataClient(DataClient):
                         document = jsonb_set(
                             COALESCE(document, '{}'::jsonb),
                             '{metadata}',
-                            COALESCE(document->'metadata', '{}'::jsonb) || %s::jsonb,
+                            (CASE WHEN jsonb_typeof(document->'metadata') = 'object'
+                                  THEN document->'metadata' ELSE '{}'::jsonb END) || %s::jsonb,
                             true
                         )
                     WHERE id = ANY(%s)
                     """,
                     (payload, payload, list(ids)),
+                )
+            conn.commit()
+
+    def fill_text_chunk_validity(
+        self, chunk_id: str, brain_id: str, patch: dict[str, Any]
+    ) -> None:
+        if not chunk_id or not patch:
+            return
+        payload = json.dumps(patch)
+        with self._brain_connection(brain_id) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE data_text_chunks
+                    SET metadata = %s::jsonb || COALESCE(metadata, '{}'::jsonb),
+                        document = jsonb_set(
+                            COALESCE(document, '{}'::jsonb),
+                            '{metadata}',
+                            %s::jsonb || CASE WHEN jsonb_typeof(document->'metadata') = 'object'
+                                              THEN document->'metadata' ELSE '{}'::jsonb END,
+                            true
+                        )
+                    WHERE id = %s
+                    """,
+                    (payload, payload, chunk_id),
                 )
             conn.commit()
 

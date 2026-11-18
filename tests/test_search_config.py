@@ -126,12 +126,14 @@ class SearchConfigValidationTests(unittest.TestCase):
                 "SEARCH_FUSION",
                 "SEARCH_LITERAL_FILL",
                 "CONTEXT_PASSAGE_MODE",
+                "GRAPH_RAW_WRITE_ENABLED",
             ):
                 os.environ.pop(key, None)
             from src.config import Config
 
             cfg = Config()
             self.assertFalse(cfg.search_enabled)
+            self.assertFalse(cfg.graph_raw_write_enabled)
             self.assertTrue(cfg.search_use_dense)
             self.assertTrue(cfg.search_use_bm25)
             self.assertEqual(cfg.search_fusion, "rrf")
