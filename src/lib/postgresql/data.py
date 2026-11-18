@@ -372,6 +372,61 @@ class PostgreSQLDataClient(DataClient):
             conn.commit()
         return text_chunk
 
+    def delete_text_chunks(self, ids: List[str], brain_id: str) -> None:
+        if not ids:
+            return
+        with self._brain_connection(brain_id) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM data_text_chunks WHERE id = ANY(%s)",
+                    (list(ids),),
+                )
+            conn.commit()
+
+    def set_text_chunk_task_ids(
+        self, chunk_id: str, task_ids: List[str], brain_id: str
+    ) -> None:
+        payload = json.dumps(list(task_ids))
+        with self._brain_connection(brain_id) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE data_text_chunks
+                    SET metadata = jsonb_set(coalesce(metadata, '{}'::jsonb), '{ingest_task_ids}', %s::jsonb, true),
+                        document = jsonb_set(document, '{metadata,ingest_task_ids}', %s::jsonb, true)
+                    WHERE id = %s
+                    """,
+                    (payload, payload, chunk_id),
+                )
+            conn.commit()
+
+    def delete_observations(
+        self, ids: List[str], brain_id: str, resource_ids: Optional[List[str]] = None
+    ) -> None:
+        if not ids and not resource_ids:
+            return
+        with self._brain_connection(brain_id) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    DELETE FROM data_observations
+                    WHERE id = ANY(%s) OR resource_id = ANY(%s)
+                    """,
+                    (list(ids or []), list(resource_ids or [])),
+                )
+            conn.commit()
+
+    def delete_structured_data(self, structured_id: str, brain_id: str) -> None:
+        if not structured_id:
+            return
+        with self._brain_connection(brain_id) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM data_structured_data WHERE id = %s",
+                    (structured_id,),
+                )
+            conn.commit()
+
     def mark_text_chunks_superseded(
         self,
         ids: List[str],

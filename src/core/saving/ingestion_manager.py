@@ -98,6 +98,9 @@ class IngestionManager:
             "name": node_data.name,
             "uuid": node_data.uuid,
         }
+        task_ids = (node_data.properties or {}).get("ingest_task_ids")
+        if task_ids:
+            v_sub.metadata["ingest_task_ids"] = list(task_ids)
         if v_sub.embeddings:
             v_ids = self.vector_store.add_vectors(
                 [v_sub], store="nodes", brain_id=brain_id
@@ -144,6 +147,9 @@ class IngestionManager:
                 "node_ids": [rel_data.tail.uuid, rel_data.tip.uuid],
                 "predicate": rel_data.name,
             }
+            task_ids = (rel_data.properties or {}).get("ingest_task_ids")
+            if task_ids:
+                v_rel.metadata["ingest_task_ids"] = list(task_ids)
             if v_rel.embeddings:
                 v_ids = self.vector_store.add_vectors(
                     [v_rel], store="relationships", brain_id=brain_id

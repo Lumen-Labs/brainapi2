@@ -722,11 +722,16 @@ def source_text_from_payload(payload: IngestionTaskArgs) -> str:
     return json.dumps(payload.data.json_data)
 
 
-def _save_source(payload, source_text):
+def _save_source(payload, source_text, task_id=None):
+    from src.core.saving.ingest_effects import remember, stamp_task_ids
+
+    metadata = dict(payload.meta_keys or {})
+    if task_id:
+        metadata["ingest_task_ids"] = stamp_task_ids(metadata.get("ingest_task_ids"), task_id)
     text_chunk = data_adapter.save_text_chunk(
         TextChunk(
             text=source_text,
-            metadata=payload.meta_keys,
+            metadata=metadata or None,
             brain_version=BRAIN_VERSION,
         ),
         brain_id=payload.brain_id,
@@ -734,14 +739,23 @@ def _save_source(payload, source_text):
     text_chunk_vector = embeddings_adapter.embed_text(text_chunk.text)
 
     text_chunk_vector.metadata = {
-        **(payload.meta_keys if payload.meta_keys else {}),
+        **metadata,
         "resource_id": text_chunk.id,
     }
-    vector_store_adapter.add_vectors(
+    stored = vector_store_adapter.add_vectors(
         [text_chunk_vector],
         "data",
         brain_id=payload.brain_id,
     )
+    if task_id:
+        vector_ids = {}
+        if stored:
+            vector_ids[text_chunk.id] = str(stored[0])
+        remember(
+            payload.brain_id,
+            task_id,
+            {"created_chunk_ids": [text_chunk.id], "chunk_vector_ids": vector_ids},
+        )
 
     return text_chunk
 
@@ -833,6 +847,9 @@ def _ingest_data(self, args, *, staged=False):
             out_superseded=superseded_ids,
         )
         if revision == "unchanged":
+            from src.core.saving.ingest_effects import remember
+
+            remember(payload.brain_id, self.request.id, {})
             set_ingestion_task_status(
                 self.request.id,
                 payload.brain_id,
@@ -847,7 +864,7 @@ def _ingest_data(self, args, *, staged=False):
         payload.meta_keys = stamp_valid_from(payload.meta_keys, revision_at)
 
         checkpoint()
-        text_chunk = _save_source(payload, source_text)
+        text_chunk = _save_source(payload, source_text, self.request.id)
         if superseded_ids:
             data_adapter.mark_text_chunks_superseded(
                 superseded_ids,
@@ -890,7 +907,7 @@ def _ingest_data(self, args, *, staged=False):
                 )
 
             checkpoint()
-            data_adapter.save_observations(
+            saved_observations = data_adapter.save_observations(
                 [
                     Observation(
                         text=observation,
@@ -900,6 +917,19 @@ def _ingest_data(self, args, *, staged=False):
                     for observation in observations
                 ],
                 brain_id=payload.brain_id,
+            )
+            from src.core.saving.ingest_effects import remember
+
+            remember(
+                payload.brain_id,
+                self.request.id,
+                {
+                    "observations": [
+                        {"id": item.id, "resource_id": text_chunk.id}
+                        for item in saved_observations or []
+                        if getattr(item, "id", None)
+                    ]
+                },
             )
 
         checkpoint()
@@ -1105,6 +1135,24 @@ def process_architect_relationships(self, args: dict):
             source_chunk_id=source_chunk_id,
             source_timestamp=reference_time,
         )
+        from src.core.saving.ingest_effects import stamp_task_ids
+
+        for relationship in relationships:
+            relationship.properties = {
+                **(relationship.properties or {}),
+                "ingest_task_ids": stamp_task_ids(
+                    (relationship.properties or {}).get("ingest_task_ids"),
+                    status_task_id,
+                ),
+            }
+            for entity in (relationship.tail, relationship.tip):
+                entity.properties = {
+                    **(entity.properties or {}),
+                    "ingest_task_ids": stamp_task_ids(
+                        (entity.properties or {}).get("ingest_task_ids"),
+                        status_task_id,
+                    ),
+                }
 
         item_errors: List[dict] = []
         with ThreadPoolExecutor(max_workers=10) as io_executor:
@@ -1256,6 +1304,12 @@ def process_architect_relationships(self, args: dict):
                     graph_adapter.add_nodes(graph_nodes, brain_id=brain_id)
                     print(f"> Added {len(graph_nodes)} nodes")
                     _assign_relationship_interval(relationship, brain_id=brain_id)
+                    try:
+                        edge_created = not graph_adapter.get_triples_by_uuid(
+                            [relationship.uuid], brain_id=brain_id
+                        )
+                    except Exception:
+                        edge_created = (not subject_exists) and (not object_exists)
                     graph_adapter.add_relationship(
                         Node(
                             uuid=relationship.tail.uuid,
@@ -1314,6 +1368,40 @@ def process_architect_relationships(self, args: dict):
                             },
                         ),
                         brain_id=brain_id,
+                    )
+                    from src.core.saving.ingest_effects import remember
+
+                    seen_nodes = set()
+                    node_touches = []
+                    for entity, existed in (
+                        (relationship.tail, subject_exists),
+                        (relationship.tip, object_exists),
+                    ):
+                        if entity.uuid in seen_nodes:
+                            continue
+                        seen_nodes.add(entity.uuid)
+                        node_touches.append(
+                            {
+                                "uuid": entity.uuid,
+                                "created": not existed,
+                                "v_id": (entity.properties or {}).get("v_id"),
+                                "name": entity.name,
+                            }
+                        )
+                    remember(
+                        brain_id,
+                        status_task_id,
+                        {
+                            "nodes": node_touches,
+                            "edges": [
+                                {
+                                    "uuid": relationship.uuid,
+                                    "created": edge_created,
+                                    "v_id": (relationship.properties or {}).get("v_id"),
+                                    "name": relationship.name,
+                                }
+                            ],
+                        },
                     )
                     _invalidate_superseded_relationships(
                         relationship,
@@ -1498,6 +1586,8 @@ def _ingest_structured_data(self, args, *, staged=False):
             embeddings_adapter, vector_store_adapter, graph_adapter
         )
 
+        anchor = None
+        anchor_created = False
         if payload.anchor is None:
             pass
         elif payload.anchor.uuid:
@@ -1569,10 +1659,13 @@ def _ingest_structured_data(self, args, *, staged=False):
                 if kg_agent_anchor_result.exists:
                     anchor = kg_agent_anchor_result.node
                 else:
+                    from src.core.saving.ingest_effects import stamp_task_ids
+
                     anchor_entity = ScoutEntity(
                         name=payload.anchor.name,
                         type=payload.anchor.type,
                         description=payload.anchor.meta_description,
+                        properties={"ingest_task_ids": stamp_task_ids(None, self.request.id)},
                     )
                     ingestion_manager.process_node_vectors(
                         anchor_entity, payload.brain_id
@@ -1590,6 +1683,26 @@ def _ingest_structured_data(self, args, *, staged=False):
                         brain_id=payload.brain_id,
                     )
                     anchor = added_nodes[0]
+                    anchor_created = True
+
+        if anchor is not None and getattr(anchor, "uuid", None):
+            from src.core.saving.ingest_effects import remember
+
+            properties = getattr(anchor, "properties", None) or {}
+            remember(
+                payload.brain_id,
+                self.request.id,
+                {
+                    "nodes": [
+                        {
+                            "uuid": anchor.uuid,
+                            "created": anchor_created,
+                            "name": getattr(anchor, "name", "") or "",
+                            "v_id": properties.get("v_id") if isinstance(properties, dict) else None,
+                        }
+                    ]
+                },
+            )
 
         checkpoint()
         data_adapter.save_structured_data(
@@ -1611,6 +1724,9 @@ def _ingest_structured_data(self, args, *, staged=False):
             ),
             brain_id=payload.brain_id,
         )
+        from src.core.saving.ingest_effects import remember
+
+        remember(payload.brain_id, self.request.id, {"structured_data_id": self.request.id})
 
         current_triples: List[IngestionTripleSet] = []
         partial_triples: List[IngestionTripleSet] = []

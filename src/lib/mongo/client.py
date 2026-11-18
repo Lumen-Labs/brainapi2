@@ -83,6 +83,42 @@ class MongoClient(DataClient):
         collection = self.get_collection("text_chunks", database=brain_id)
         collection.update_one({"id": chunk_id}, [{"$set": set_expr}])
 
+    def delete_text_chunks(self, ids: List[str], brain_id: str) -> None:
+        if not ids:
+            return
+        self.get_collection("text_chunks", database=brain_id).delete_many(
+            {"id": {"$in": list(ids)}}
+        )
+
+    def set_text_chunk_task_ids(
+        self, chunk_id: str, task_ids: List[str], brain_id: str
+    ) -> None:
+        self.get_collection("text_chunks", database=brain_id).update_one(
+            {"id": chunk_id},
+            {"$set": {"metadata.ingest_task_ids": list(task_ids)}},
+        )
+
+    def delete_observations(
+        self, ids: List[str], brain_id: str, resource_ids: Optional[List[str]] = None
+    ) -> None:
+        clauses: list[dict] = []
+        if ids:
+            clauses.append({"id": {"$in": list(ids)}})
+        if resource_ids:
+            clauses.append({"resource_id": {"$in": list(resource_ids)}})
+        if not clauses:
+            return
+        self.get_collection("observations", database=brain_id).delete_many(
+            {"$or": clauses}
+        )
+
+    def delete_structured_data(self, structured_id: str, brain_id: str) -> None:
+        if not structured_id:
+            return
+        self.get_collection("structured_data", database=brain_id).delete_one(
+            {"id": structured_id}
+        )
+
     def save_observations(
         self, observations: List[Observation], brain_id: str
     ) -> List[Observation]:
