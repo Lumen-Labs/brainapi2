@@ -94,16 +94,58 @@ class ValidityIntervalTests(unittest.TestCase):
         )
         self.assertFalse(is_valid_at({}, None, deprecated=True))
 
+    def test_as_of_omits_undated_copies_and_live_view_keeps_them(self):
+        as_of = _utc("2024-06-01T00:00:00Z")
+        self.assertTrue(is_valid_at({}, None))
+        self.assertFalse(is_valid_at({}, as_of))
+        self.assertFalse(
+            is_valid_at(
+                {"recorded_at": "2024-01-01T00:00:00Z"},
+                as_of,
+            )
+        )
+        self.assertFalse(
+            is_valid_at({}, as_of, inserted_at=datetime(2024, 1, 1, tzinfo=timezone.utc))
+        )
+        pred = Predicate(uuid="r-undated", name="WORKS_WITH", description="", properties={})
+        self.assertTrue(predicate_is_valid_at(pred, None))
+        self.assertFalse(predicate_is_valid_at(pred, as_of))
+
+    def test_as_of_before_ingest_uses_valid_from_not_recorded_at(self):
+        fields = {
+            "valid_from": "2020-01-01T00:00:00Z",
+            "recorded_at": "2026-11-18T12:00:00Z",
+        }
+        self.assertTrue(is_valid_at(fields, _utc("2021-06-01T00:00:00Z")))
+        undated = {"recorded_at": "2026-11-18T12:00:00Z"}
+        self.assertFalse(is_valid_at(undated, _utc("2021-06-01T00:00:00Z")))
+        self.assertFalse(is_valid_at(undated, _utc("2026-12-01T00:00:00Z")))
+        self.assertTrue(is_valid_at(undated, None))
+
     def test_legacy_stamps_are_read(self):
         chunk = TextChunk(
             id="c1",
             text="old",
-            metadata={"superseded_at": "15/11/2026"},
+            metadata={
+                "valid_from": "2026-01-01T00:00:00Z",
+                "superseded_at": "15/11/2026",
+            },
             inserted_at=datetime(2026, 1, 1),
         )
         self.assertFalse(chunk_is_valid_at(chunk, None))
         self.assertTrue(
             chunk_is_valid_at(chunk, _utc("2026-11-14T00:00:00Z"))
+        )
+        self.assertFalse(
+            chunk_is_valid_at(
+                TextChunk(
+                    id="c-undated",
+                    text="old",
+                    metadata={"superseded_at": "15/11/2026"},
+                    inserted_at=datetime(2026, 1, 1),
+                ),
+                _utc("2026-11-14T00:00:00Z"),
+            )
         )
         pred = Predicate(
             uuid="r1",
@@ -175,6 +217,16 @@ class ValidityIntervalTests(unittest.TestCase):
         first = stamp_valid_from({}, "2024-01-01T00:00:00Z")
         second = stamp_valid_from(first, "2025-01-01T00:00:00Z")
         self.assertEqual(first["valid_from"], second["valid_from"])
+        undated = stamp_valid_from(
+            {}, None, recorded_at="2026-11-18T12:00:00Z"
+        )
+        self.assertNotIn("valid_from", undated)
+        self.assertEqual(undated["recorded_at"], "2026-11-18T12:00:00Z")
+        sourced = stamp_valid_from(
+            {}, "2020-01-01T00:00:00Z", recorded_at="2026-11-18T12:00:00Z"
+        )
+        self.assertEqual(sourced["valid_from"], "2020-01-01T00:00:00Z")
+        self.assertEqual(sourced["recorded_at"], "2026-11-18T12:00:00Z")
         closed = close_validity(first, closed_at="2025-01-01T00:00:00Z", superseded_by="n2")
         again = close_validity(closed, closed_at="2026-01-01T00:00:00Z", superseded_by="n3")
         self.assertEqual(closed["valid_to"], again["valid_to"])
@@ -203,7 +255,7 @@ class ValidityBackfillTests(unittest.TestCase):
 
         store = Store()
         self.assertEqual(backfill_chunk_validity(store, "brain"), 1)
-        self.assertEqual(chunk.metadata["valid_from"], "2024-06-01T00:00:00Z")
+        self.assertNotIn("valid_from", chunk.metadata)
         self.assertEqual(chunk.metadata["valid_to"], "2025-01-01T00:00:00Z")
         self.assertEqual(backfill_chunk_validity(store, "brain"), 0)
         self.assertEqual(len(saved), 1)
@@ -304,15 +356,15 @@ class ValidityBackfillTests(unittest.TestCase):
         store = Store()
         graph = Graph()
         first = backfill_brain_validity(store, graph, "brain")
-        self.assertEqual(first["chunks"], 3)
+        self.assertEqual(first["chunks"], 2)
         self.assertEqual(first["relationships"], 3)
-        self.assertEqual(v1.metadata["valid_from"], "2024-01-01T08:00:00Z")
+        self.assertNotIn("valid_from", v1.metadata)
         self.assertEqual(v1.metadata["valid_to"], "2025-01-15T00:00:00Z")
         self.assertEqual(v1.metadata["superseded_at"], "15/01/2025")
         self.assertEqual(v2.metadata["valid_to"], "2026-01-01T00:00:00Z")
         self.assertEqual(v3.metadata["valid_from"], "2026-01-01T00:00:00Z")
         self.assertNotIn("valid_to", v3.metadata)
-        self.assertEqual(live.metadata, {"note": "no source_key", "valid_from": "2024-06-01T00:00:00Z"})
+        self.assertEqual(live.metadata, {"note": "no source_key"})
         self.assertEqual(old_rel.properties["valid_from"], "2024-01-01T00:00:00Z")
         self.assertEqual(old_rel.properties["valid_to"], "2025-01-15T00:00:00Z")
         self.assertEqual(old_rel.properties["invalid_at"], "15/01/2025")
@@ -324,13 +376,13 @@ class ValidityBackfillTests(unittest.TestCase):
         })
         self.assertEqual(unknown_start.properties["valid_to"], "2025-01-15T00:00:00Z")
         self.assertNotIn("valid_from", unknown_start.properties)
-        self.assertEqual({row[0] for row in saved}, {"reg-v1", "reg-v2", "unrelated"})
+        self.assertEqual({row[0] for row in saved}, {"reg-v1", "reg-v2"})
         self.assertEqual(saved[0][2], "Article 12. five years.")
         dry = backfill_brain_validity(store, graph, "brain", dry_run=True)
         self.assertEqual(dry, {"chunks": 0, "relationships": 0})
         second = backfill_brain_validity(store, graph, "brain")
         self.assertEqual(second, {"chunks": 0, "relationships": 0})
-        self.assertEqual(len(saved), 3)
+        self.assertEqual(len(saved), 2)
 
 
 class ValidityCardinalityTests(unittest.TestCase):
@@ -353,6 +405,18 @@ class ValidityCardinalityTests(unittest.TestCase):
                 existing_properties={},
             )
         )
+        self.assertFalse(
+            should_close_outgoing_edge(
+                relationship_name="REQUIRES",
+                existing_properties={},
+            )
+        )
+        self.assertFalse(
+            should_close_outgoing_edge(
+                relationship_name="LOCATED_IN",
+                existing_properties={},
+            )
+        )
         self.assertTrue(
             should_close_outgoing_edge(
                 relationship_name="WORKS_WITH",
@@ -363,10 +427,17 @@ class ValidityCardinalityTests(unittest.TestCase):
 
     def test_allowlist_env_extends_single_valued_types(self):
         self.assertNotIn("APPLIES_TO", single_valued_relationship_types())
-        with patch.dict(os.environ, {"VALIDITY_SINGLE_VALUED_REL_TYPES": "APPLIES_TO"}):
+        self.assertNotIn("REQUIRES", single_valued_relationship_types())
+        with patch.dict(os.environ, {"VALIDITY_SINGLE_VALUED_REL_TYPES": "APPLIES_TO,REQUIRES"}):
             self.assertTrue(
                 should_close_outgoing_edge(
                     relationship_name="APPLIES_TO",
+                    existing_properties={},
+                )
+            )
+            self.assertTrue(
+                should_close_outgoing_edge(
+                    relationship_name="REQUIRES",
                     existing_properties={},
                 )
             )
@@ -547,7 +618,7 @@ class ValidityChangesTests(unittest.TestCase):
         self.assertIn(10000, seen)
 
     def test_chunk_fill_keeps_concurrent_end_stamp(self):
-        meta = {"superseded_at": "2025-01-01T00:00:00Z", "valid_to": "concurrent"}
+        meta = {"superseded_at": "2025-01-01T00:00:00Z"}
 
         class Store:
             def get_text_chunks(self, brain_id, limit=10, skip=0, order="asc"):
@@ -560,6 +631,8 @@ class ValidityChangesTests(unittest.TestCase):
                 return [chunk], 1
 
             def fill_text_chunk_validity(self, chunk_id, brain_id, patch):
+                if not meta.get("valid_to"):
+                    meta["valid_to"] = "concurrent"
                 for key, value in patch.items():
                     if not meta.get(key):
                         meta[key] = value
@@ -568,7 +641,7 @@ class ValidityChangesTests(unittest.TestCase):
                 raise AssertionError("use fill_text_chunk_validity")
 
         self.assertEqual(backfill_chunk_validity(Store(), "brain"), 1)
-        self.assertEqual(meta["valid_from"], "2024-01-01T00:00:00Z")
+        self.assertNotIn("valid_from", meta)
         self.assertEqual(meta["valid_to"], "concurrent")
         self.assertEqual(backfill_chunk_validity(Store(), "brain"), 0)
 
@@ -610,7 +683,12 @@ class AsOfRetrieveTests(unittest.IsolatedAsyncioTestCase):
                 properties={"valid_from": "2025-01-01T00:00:00Z"},
             ),
             Node(uuid="mid", name="Clause12", labels=["EVENT"]),
-            Predicate(uuid="r-live-2", name="FOR", description="", properties={}),
+            Predicate(
+                uuid="r-live-2",
+                name="FOR",
+                description="",
+                properties={"valid_from": "2025-01-01T00:00:00Z"},
+            ),
             Node(uuid="tip", name="SevenYears", labels=["CLAUSE"]),
         )
         old = (
@@ -628,7 +706,15 @@ class AsOfRetrieveTests(unittest.IsolatedAsyncioTestCase):
                 deprecated=True,
             ),
             Node(uuid="mid", name="Clause12", labels=["EVENT"]),
-            Predicate(uuid="r-old-2", name="FOR", description="", properties={}),
+            Predicate(
+                uuid="r-old-2",
+                name="FOR",
+                description="",
+                properties={
+                    "valid_from": "2024-01-01T00:00:00Z",
+                    "valid_to": "2025-01-01T00:00:00Z",
+                },
+            ),
             Node(uuid="tip", name="FiveYears", labels=["CLAUSE"]),
         )
         mock_embeddings = MagicMock()
@@ -741,7 +827,12 @@ class AsOfRetrieveTests(unittest.IsolatedAsyncioTestCase):
                     "name": "REQUIRES",
                 },
                 "related_nodes": Node(uuid="clause", name="SevenYears", labels=["CLAUSE"]),
-            }
+            },
+            {
+                "node": Node(uuid="org", name="Org", labels=["ORG"]),
+                "relationships": {"name": "MENTIONS"},
+                "related_nodes": Node(uuid="note", name="UndatedNote", labels=["NOTE"]),
+            },
         ]
         with (
             patch.object(retrieve_mod, "embeddings_adapter", mock_embeddings),
@@ -762,7 +853,7 @@ class AsOfRetrieveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({obs.resource_id for obs in current.observations}, {"v1", "v2"})
         self.assertEqual({obs.resource_id for obs in as_of.observations}, {"v1"})
         self.assertEqual({obs.resource_id for obs in later.observations}, {"v2"})
-        self.assertEqual(len(current.relationships), 1)
+        self.assertEqual(len(current.relationships), 2)
         self.assertEqual(as_of.relationships, [])
         self.assertEqual(len(later.relationships), 1)
 

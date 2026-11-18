@@ -475,6 +475,29 @@ class AsOfPassageTests(unittest.TestCase):
         self.assertEqual(len(store.calls), 2)
         self.assertEqual(kept, [])
 
+    def test_as_of_omits_undated_hits_and_live_retrieve_keeps_them(self):
+        undated = TextChunk(id="plain", text="no dates", metadata={})
+        dated = TextChunk(
+            id="dated",
+            text="dated",
+            metadata={"valid_from": "2024-01-01T00:00:00Z"},
+        )
+        store = _Store([undated, dated])
+        hits = [("plain", 0.1, undated.text), ("dated", 0.2, dated.text)]
+        as_of = datetime.datetime(2024, 6, 1, tzinfo=datetime.timezone.utc)
+        self.assertEqual(
+            [item[0] for item in screen_passage_hits(
+                store, "brain", hits, include_history=False, as_of=as_of
+            )],
+            ["dated"],
+        )
+        self.assertEqual(
+            [item[0] for item in screen_passage_hits(
+                store, "brain", hits, include_history=False
+            )],
+            ["plain", "dated"],
+        )
+
 
 class SourceRevisionStampTests(unittest.TestCase):
     def test_new_revision_reuses_one_timestamp(self):
@@ -495,8 +518,9 @@ class SourceRevisionStampTests(unittest.TestCase):
             ),
             "insert",
         )
-        self.assertEqual(store.marked[0][1], meta["valid_from"])
-        self.assertEqual(store.marked[0][3], meta["valid_from"])
+        self.assertNotIn("valid_from", meta)
+        self.assertEqual(store.marked[0][1], meta["recorded_at"])
+        self.assertEqual(store.marked[0][3], meta["recorded_at"])
 
 
 if __name__ == "__main__":

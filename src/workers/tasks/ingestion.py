@@ -500,10 +500,12 @@ def _resolve_relationship_entities(
                 **(relationship.properties or {}),
                 "valid_at": source_timestamp,
             }
-        from src.core.saving.validity import stamp_valid_from
+        from src.core.saving.validity import format_instant, stamp_valid_from, utc_now
 
         relationship.properties = stamp_valid_from(
-            relationship.properties, source_timestamp
+            relationship.properties,
+            source_timestamp,
+            recorded_at=format_instant(utc_now()),
         )
         for entity in (relationship.tail, relationship.tip):
             entity.properties = stamp_provenance(
@@ -561,10 +563,24 @@ def _relationship_flow_key(obj) -> str:
     return str(getattr(obj, "flow_key", None) or props.get("flow_key") or "").strip()
 
 
+def _relationship_neighbor_map(
+    relationship: ArchitectAgentRelationship,
+    *,
+    brain_id: str,
+    neighbors=None,
+):
+    if neighbors is not None:
+        return neighbors
+    return graph_adapter.get_neighbors(
+        [relationship.tail.uuid], brain_id=brain_id
+    )
+
+
 def _assign_relationship_interval(
     relationship: ArchitectAgentRelationship,
     *,
     brain_id: str,
+    neighbors=None,
 ) -> None:
     """Keep a closed interval intact when the same fact is observed again.
 
@@ -585,8 +601,8 @@ def _assign_relationship_interval(
         relationship.tip.uuid,
         relationship.flow_key,
     )
-    neighbors = graph_adapter.get_neighbors(
-        [relationship.tail.uuid], brain_id=brain_id
+    neighbors = _relationship_neighbor_map(
+        relationship, brain_id=brain_id, neighbors=neighbors
     )
     open_match = None
     closed_match = None
@@ -631,6 +647,7 @@ def _invalidate_superseded_relationships(
     *,
     brain_id: str,
     superseded_chunk_ids: list[str] | tuple[str, ...] | None = None,
+    neighbors=None,
 ) -> None:
     """Close an older outgoing edge only when it is single-valued or source-revision-driven.
 
@@ -644,12 +661,9 @@ def _invalidate_superseded_relationships(
         relationship.tip.type or ""
     ).strip():
         return
-    try:
-        neighbors = graph_adapter.get_neighbors(
-            [relationship.tail.uuid], brain_id=brain_id
-        )
-    except Exception:
-        return
+    neighbors = _relationship_neighbor_map(
+        relationship, brain_id=brain_id, neighbors=neighbors
+    )
     from src.core.saving.validity_cardinality import should_close_outgoing_edge
 
     pairs = (neighbors or {}).get(relationship.tail.uuid) or []
@@ -834,16 +848,16 @@ def _ingest_data(self, args, *, staged=False):
         from src.core.saving.validity import format_instant, parse_instant, stamp_valid_from, utc_now
 
         superseded_ids: list[str] = []
-        revision_at = format_instant(
-            parse_instant(payload.source_timestamp) or utc_now()
-        )
-        payload.source_timestamp = revision_at
+        recorded_at = format_instant(utc_now())
+        source_instant = parse_instant(payload.source_timestamp)
+        if source_instant is not None:
+            payload.source_timestamp = format_instant(source_instant)
         revision = prepare_source_revision(
             data_adapter,
             brain_id=payload.brain_id,
             source_text=source_text,
             meta_keys=payload.meta_keys,
-            source_timestamp=revision_at,
+            source_timestamp=payload.source_timestamp,
             out_superseded=superseded_ids,
         )
         if revision == "unchanged":
@@ -861,17 +875,20 @@ def _ingest_data(self, args, *, staged=False):
 
         if payload.meta_keys is None:
             payload.meta_keys = {}
-        payload.meta_keys = stamp_valid_from(payload.meta_keys, revision_at)
+        payload.meta_keys = stamp_valid_from(
+            payload.meta_keys, payload.source_timestamp, recorded_at=recorded_at
+        )
 
         checkpoint()
         text_chunk = _save_source(payload, source_text, self.request.id)
         if superseded_ids:
+            close_at = payload.source_timestamp or recorded_at
             data_adapter.mark_text_chunks_superseded(
                 superseded_ids,
-                revision_at,
+                close_at,
                 payload.brain_id,
                 superseded_by=str(text_chunk.id),
-                valid_to=format_instant(parse_instant(revision_at) or utc_now()),
+                valid_to=format_instant(parse_instant(close_at) or utc_now()),
             )
 
         if config.pipeline_mode == "lightweight":
@@ -1303,7 +1320,12 @@ def process_architect_relationships(self, args: dict):
 
                     graph_adapter.add_nodes(graph_nodes, brain_id=brain_id)
                     print(f"> Added {len(graph_nodes)} nodes")
-                    _assign_relationship_interval(relationship, brain_id=brain_id)
+                    neighbors = _relationship_neighbor_map(
+                        relationship, brain_id=brain_id
+                    )
+                    _assign_relationship_interval(
+                        relationship, brain_id=brain_id, neighbors=neighbors
+                    )
                     try:
                         edge_created = not graph_adapter.get_triples_by_uuid(
                             [relationship.uuid], brain_id=brain_id
@@ -1407,6 +1429,7 @@ def process_architect_relationships(self, args: dict):
                         relationship,
                         brain_id=brain_id,
                         superseded_chunk_ids=args.get("superseded_chunk_ids") or [],
+                        neighbors=neighbors,
                     )
                 except FutureTimeoutError:
                     rel_name = getattr(relationship, "name", "unknown")

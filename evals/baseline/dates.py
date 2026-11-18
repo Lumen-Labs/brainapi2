@@ -27,7 +27,9 @@ def in_force(doc: dict, as_of: str | None) -> bool:
         return True
     start = parse_date(str(doc.get("valid_from") or "") or None)
     end = parse_date(str(doc.get("valid_to") or "") or None)
-    if start and point < start:
+    if start is None:
+        return False
+    if point < start:
         return False
     if end and point > end:
         return False

@@ -1,10 +1,13 @@
 """Point-in-time validity for chunks and graph relationships.
 
 Canonical stored timestamps are ISO-8601 UTC (``YYYY-MM-DDTHH:MM:SSZ``).
-Readers still accept the historical ``invalid_at`` / ``superseded_at`` /
-``valid_at`` / ``inserted_at`` stamps so existing brains keep answering
-without a backfill. Default retrieve (no ``as_of``) still hides superseded
-and invalidated copies unless ``include_history`` is on.
+Readers still accept historical ``invalid_at`` / ``superseded_at`` /
+``valid_at`` stamps so existing brains keep answering without a backfill.
+``as_of`` lookups fail closed: a copy with no valid-time start
+(``valid_from`` / ``valid_at``) is omitted. Ingest/transaction time
+(``recorded_at`` / ``inserted_at``) is not a valid-time start. Default
+retrieve (no ``as_of``) still hides superseded and invalidated copies
+unless ``include_history`` is on, and still returns undated live copies.
 """
 
 from __future__ import annotations
@@ -17,6 +20,7 @@ from src.utils.dates import parse_date_string, to_naive_utc
 VALID_FROM = "valid_from"
 VALID_TO = "valid_to"
 SUPERSEDED_BY = "superseded_by"
+RECORDED_AT = "recorded_at"
 VALIDITY_PROPERTY_KEYS = (VALID_FROM, VALID_TO, SUPERSEDED_BY)
 
 _AS_OF_FORMATS = (
@@ -117,12 +121,18 @@ def validity_props_from_mapping(mapping: Mapping[str, Any] | None) -> dict[str, 
 def stamp_valid_from(
     mapping: Mapping[str, Any] | None,
     source_timestamp: str | None = None,
+    *,
+    recorded_at: Any = None,
 ) -> dict[str, Any]:
     props = dict(_mapping(mapping))
-    if props.get(VALID_FROM):
-        return props
-    instant = parse_instant(source_timestamp) or parse_instant(props.get("valid_at"))
-    props[VALID_FROM] = format_instant(instant)
+    if not props.get(VALID_FROM):
+        instant = parse_instant(source_timestamp) or parse_instant(props.get("valid_at"))
+        if instant is not None:
+            props[VALID_FROM] = format_instant(instant)
+    if not props.get(RECORDED_AT):
+        ingest = parse_instant(recorded_at)
+        if ingest is not None:
+            props[RECORDED_AT] = format_instant(ingest)
     return props
 
 
@@ -146,10 +156,14 @@ def close_validity(
     return props
 
 
-def _valid_from_of(fields: Mapping[str, Any], inserted_at: Any = None) -> datetime | None:
+def _valid_from_of(fields: Mapping[str, Any]) -> datetime | None:
+    return parse_instant(fields.get(VALID_FROM)) or parse_instant(fields.get("valid_at"))
+
+
+def _recorded_at_of(fields: Mapping[str, Any], inserted_at: Any = None) -> datetime | None:
     return (
-        parse_instant(fields.get(VALID_FROM))
-        or parse_instant(fields.get("valid_at"))
+        parse_instant(fields.get(RECORDED_AT))
+        or parse_instant(fields.get("inserted_at"))
         or parse_instant(inserted_at)
     )
 
@@ -172,7 +186,8 @@ def is_valid_at(
     """Half-open interval: valid_from <= as_of < valid_to.
 
     ``as_of is None`` is the live/current view: a copy is current when it has
-    no end stamp and is not deprecated.
+    no end stamp and is not deprecated. A snapshot requires a valid-time
+    start; ingest/transaction time is ignored.
     """
     source = _mapping(fields)
     end = _valid_to_of(source)
@@ -182,8 +197,10 @@ def is_valid_at(
         if deprecated or source.get("deprecated") is True:
             return False
         return True
-    start = _valid_from_of(source, inserted_at)
-    if start is not None and as_of < start:
+    start = _valid_from_of(source)
+    if start is None:
+        return False
+    if as_of < start:
         return False
     if end is not None and as_of >= end:
         return False
@@ -192,7 +209,7 @@ def is_valid_at(
 
 def chunk_is_valid_at(chunk: Any, as_of: datetime | None) -> bool:
     meta = _mapping(getattr(chunk, "metadata", None))
-    return is_valid_at(meta, as_of, inserted_at=getattr(chunk, "inserted_at", None))
+    return is_valid_at(meta, as_of)
 
 
 def predicate_is_valid_at(predicate: Any, as_of: datetime | None) -> bool:
@@ -209,7 +226,7 @@ def interval_overlaps(
     inserted_at: Any = None,
 ) -> bool:
     source = _mapping(fields)
-    start = _valid_from_of(source, inserted_at)
+    start = _valid_from_of(source) or _recorded_at_of(source, inserted_at)
     end = _valid_to_of(source)
     if start is not None and since <= start < until:
         return True
@@ -226,7 +243,7 @@ def change_kind(
     inserted_at: Any = None,
 ) -> str | None:
     source = _mapping(fields)
-    start = _valid_from_of(source, inserted_at)
+    start = _valid_from_of(source) or _recorded_at_of(source, inserted_at)
     end = _valid_to_of(source)
     added = start is not None and since <= start < until
     closed = end is not None and since <= end < until
@@ -247,7 +264,7 @@ def event_timestamp(
 ) -> str:
     source = _mapping(fields)
     if kind == "added":
-        instant = _valid_from_of(source, inserted_at)
+        instant = _valid_from_of(source) or _recorded_at_of(source, inserted_at)
     else:
         instant = _valid_to_of(source)
     return format_instant(instant or utc_now())

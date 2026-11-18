@@ -1,9 +1,11 @@
-"""Idempotent validity backfill from inserted_at / superseded_at / invalid_at.
+"""Idempotent validity backfill from source dates / superseded_at / invalid_at.
 
 Safe on a live brain: only fills *missing* ``valid_from`` / ``valid_to``.
 Existing stamps are left untouched (including legacy date formats). Live
-copies without ``superseded_at`` / ``invalid_at`` are never closed. Run
-twice; the second pass writes nothing. See ``docs/validity-backfill.md``.
+copies without ``superseded_at`` / ``invalid_at`` are never closed.
+``inserted_at`` is ingest/transaction time and is never copied onto
+``valid_from``. Run twice; the second pass writes nothing. See
+``docs/validity-backfill.md``.
 """
 
 from __future__ import annotations
@@ -56,10 +58,6 @@ def _relationship_triples(graph: Any, brain_id: str, skip: int, limit: int):
 def _chunk_patch(chunk: Any) -> dict[str, Any] | None:
     meta = dict(getattr(chunk, "metadata", None) or {})
     patch: dict[str, Any] = {}
-    if not meta.get(VALID_FROM):
-        start = parse_instant(getattr(chunk, "inserted_at", None))
-        if start is not None:
-            patch[VALID_FROM] = format_instant(start)
     if meta.get("superseded_at") and not meta.get(VALID_TO):
         parsed = parse_instant(meta.get("superseded_at"))
         if parsed is not None:

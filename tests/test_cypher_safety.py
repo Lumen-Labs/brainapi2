@@ -120,8 +120,11 @@ class CypherSafetyHelperTests(unittest.TestCase):
     def test_validity_clauses_use_allowlisted_keys_and_parameters(self):
         valid_at = relationship_valid_at_clause("r", "as_of")
         self.assertIn("r['valid_from']", valid_at)
+        self.assertIn("r['valid_at']", valid_at)
         self.assertIn("r['valid_to']", valid_at)
         self.assertIn("$as_of", valid_at)
+        self.assertIn("IS NOT NULL", valid_at)
+        self.assertNotIn("r['valid_from'] IS NULL OR", valid_at)
         self.assertNotIn(";", valid_at)
         window = relationship_changed_in_window_clause("r", "since", "until")
         self.assertIn("r['invalid_at']", window)

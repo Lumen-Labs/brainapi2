@@ -20,6 +20,11 @@ class AsOfTests(unittest.TestCase):
         self.assertTrue(in_force(doc, "2024-01-10"))
         self.assertFalse(in_force(doc, "2020-01-01"))
 
+    def test_as_of_omits_undated_docs(self) -> None:
+        self.assertFalse(in_force({}, "2024-01-10"))
+        self.assertFalse(in_force({"valid_to": "2025-01-01"}, "2024-01-10"))
+        self.assertTrue(in_force({}, None))
+
     def test_versioned_rules_filter_picks_v1_payment(self) -> None:
         docs = load_corpus("versioned_rules")
         as_of = filter_as_of(docs, "2021-06-15")
