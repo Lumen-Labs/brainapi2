@@ -404,8 +404,8 @@ async def retrieve_data(
     limit: int,
     preferred_entities: str,
     brain_id: str = "default",
-    as_of: Optional[str] = None,
     include_rejected: bool = False,
+    as_of: Optional[str] = None,
 ) -> RetrieveRequestResponse:
     """
     Retrieve data from the knowledge graph and data store.

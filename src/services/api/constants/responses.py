@@ -234,3 +234,29 @@ class IngestionCapabilitiesResponse(BaseModel):
 
 class IngestionActivityResponse(RootModel[dict[str, JsonValue]]):
     pass
+
+
+class PurgePassagesSummary(BaseModel):
+    delete: int
+    unlink: int
+    reused: int
+
+
+class PurgeNamedItems(BaseModel):
+    delete: list[str]
+    unlink: list[str]
+
+
+class PurgeConnectionsSummary(BaseModel):
+    delete: int
+    unlink: int
+
+
+class PurgeIngestionResponse(BaseModel):
+    digest: str
+    executed: bool
+    passages: PurgePassagesSummary
+    records: int
+    entities: PurgeNamedItems
+    connections: PurgeConnectionsSummary
+    unresolved: int

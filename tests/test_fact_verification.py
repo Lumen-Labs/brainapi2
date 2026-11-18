@@ -38,7 +38,8 @@ for key, value in ENV_DEFAULTS.items():
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.constants.kg import Node, Predicate
+from src.adapters.graph import GraphAdapter
+from src.constants.kg import Node, Predicate, SearchEntitiesResult, SearchRelationshipsResult, Triple
 from src.core.search.traverse import flatten_neighborhood
 from src.core.verification.facts import (
     REJECTED,
@@ -47,7 +48,9 @@ from src.core.verification.facts import (
     extract_verification,
     fact_pair_allowed,
     fact_tuple_is_rejected,
+    filter_relationship_results,
     include_rejected_enabled,
+    neighborhood_row_is_rejected,
     parse_history,
     verification_scope,
     verification_write_properties,
@@ -120,6 +123,39 @@ class VerificationHelpersTests(unittest.TestCase):
 
     def test_rank_boost_default_is_positive(self):
         self.assertGreater(verified_rank_boost(), 0)
+        self.assertAlmostEqual(verified_rank_boost(), 0.15)
+
+    def test_filter_relationship_results_hides_rejected_event_endpoints(self):
+        live = Triple(
+            subject=_node("a", "Alice"),
+            predicate=_pred("r1", "MADE"),
+            object=_node("e", "Meeting", labels=["EVENT"]),
+        )
+        rejected_event = Triple(
+            subject=_node("a", "Alice"),
+            predicate=_pred("r2", "MADE"),
+            object=_node(
+                "e-bad",
+                "BadEvent",
+                labels=["EVENT"],
+                properties={"verification_state": REJECTED},
+            ),
+        )
+        kept = filter_relationship_results([live, rejected_event])
+        self.assertEqual([item.predicate.uuid for item in kept], ["r1"])
+        with verification_scope(include_rejected=True):
+            included = filter_relationship_results([live, rejected_event])
+        self.assertEqual(len(included), 2)
+
+    def test_neighborhood_row_hides_rejected_relationships(self):
+        row = {
+            "node": _node("a", "Alice"),
+            "relationships": {"uuid": "r-bad", "verification_state": REJECTED},
+            "related_nodes": _node("b", "Bob"),
+        }
+        self.assertTrue(neighborhood_row_is_rejected(row))
+        with verification_scope(include_rejected=True):
+            self.assertFalse(neighborhood_row_is_rejected(row))
 
 
 class RetrieveVerificationTests(unittest.TestCase):
@@ -349,3 +385,104 @@ class VerificationServiceTests(unittest.TestCase):
                 "verification_history",
             },
         )
+
+
+class NeighborhoodGraph:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def get_nodes_by_uuid(self, *args, **kwargs):
+        return list(self.rows)
+
+
+class PagedGraph:
+    def __init__(self, triples):
+        self.triples = triples
+        self.calls = []
+
+    def search_relationships(self, brain_id, limit, skip, *args, **kwargs):
+        self.calls.append((skip, limit))
+        return SearchRelationshipsResult(
+            results=self.triples[skip : skip + limit],
+            total=len(self.triples),
+        )
+
+    def search_entities(self, brain_id, limit, skip, *args, **kwargs):
+        return SearchEntitiesResult(results=[], total=0)
+
+
+class GraphAdapterVerificationTests(unittest.TestCase):
+    def test_get_nodes_by_uuid_drops_rejected_relationships(self):
+        rows = [
+            {
+                "node": _node("a", "Alice"),
+                "relationships": {"uuid": "r-bad", "verification_state": REJECTED},
+                "related_nodes": _node("b", "Bob"),
+            },
+            {
+                "node": _node("a", "Alice"),
+                "relationships": {"uuid": "r-ok", "verification_state": UNVERIFIED},
+                "related_nodes": _node("c", "Carol"),
+            },
+        ]
+        adapter = GraphAdapter()
+        adapter.add_client(NeighborhoodGraph(rows))
+        kept = adapter.get_nodes_by_uuid(["a"], with_relationships=True)
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(kept[0]["relationships"]["uuid"], "r-ok")
+        with verification_scope(include_rejected=True):
+            included = adapter.get_nodes_by_uuid(["a"], with_relationships=True)
+        self.assertEqual(len(included), 2)
+
+    def test_search_relationships_total_is_not_page_length(self):
+        triples = [
+            Triple(
+                subject=_node("a", "Alice"),
+                predicate=_pred(
+                    "r-bad", "KNOWS", properties={"verification_state": REJECTED}
+                ),
+                object=_node("b", "Bob"),
+            ),
+            Triple(
+                subject=_node("a", "Alice"),
+                predicate=_pred("r-ok", "KNOWS"),
+                object=_node("c", "Carol"),
+            ),
+        ]
+        adapter = GraphAdapter()
+        adapter.add_client(PagedGraph(triples))
+        result = adapter.search_relationships(limit=10, skip=0)
+        self.assertEqual([item.predicate.uuid for item in result.results], ["r-ok"])
+        self.assertEqual(result.total, 1)
+
+
+class HubBridgeReturnTests(unittest.TestCase):
+    def test_get_hub_bridges_returns_all_matches(self):
+        from types import SimpleNamespace
+
+        from src.lib.neo4j.client import Neo4jClient
+
+        records = [
+            {
+                "event_a": "e1",
+                "event_b": "e2",
+                "shared_entity": "x",
+                "shared_entity_name": "X",
+                "weight": 1,
+            },
+            {
+                "event_a": "e1",
+                "event_b": "e3",
+                "shared_entity": "y",
+                "shared_entity_name": "Y",
+                "weight": 2,
+            },
+        ]
+        client = Neo4jClient.__new__(Neo4jClient)
+        client.ensure_database = lambda brain_id: None
+        client.driver = SimpleNamespace(
+            execute_query=lambda *args, **kwargs: SimpleNamespace(records=records)
+        )
+        bridges = client.get_hub_bridges(["e1"], "brain")
+        self.assertEqual(len(bridges), 2)
+        self.assertEqual({bridge.event_b for bridge in bridges}, {"e2", "e3"})

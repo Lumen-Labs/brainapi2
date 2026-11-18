@@ -131,6 +131,20 @@ class DataAdapter:
             order=order,
         )
 
+    def delete_text_chunks(self, ids: List[str], brain_id: str = "default") -> None:
+        self.data.delete_text_chunks(ids, brain_id)
+
+    def set_text_chunk_task_ids(self, chunk_id: str, task_ids: List[str], brain_id: str = "default") -> None:
+        self.data.set_text_chunk_task_ids(chunk_id, task_ids, brain_id)
+
+    def delete_observations(
+        self, ids: List[str], brain_id: str = "default", resource_ids: Optional[List[str]] = None
+    ) -> None:
+        self.data.delete_observations(ids, brain_id, resource_ids)
+
+    def delete_structured_data(self, structured_id: str, brain_id: str = "default") -> None:
+        self.data.delete_structured_data(structured_id, brain_id)
+
     def save_structured_data(
         self, structured_data: StructuredData, brain_id: str = "default"
     ) -> StructuredData:

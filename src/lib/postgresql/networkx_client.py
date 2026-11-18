@@ -1224,6 +1224,60 @@ class NetworkXGraphClient(GraphClient):
         return triples
 
 
+    def nodes_and_edges_citing(self, brain_id: str, chunk_ids: list[str], edge_uuids: list[str]):
+        self._store.ensure_database(brain_id)
+        brain = self._store.get_brain(brain_id)
+        wanted = {str(item) for item in chunk_ids if item}
+        known_edges = {str(item) for item in edge_uuids if item}
+        nodes: list[Node] = []
+        for node_uuid, data in brain.graph.nodes(data=True):
+            cited = {str(item) for item in (data.get("source_chunk_ids") or [])}
+            if not cited & wanted:
+                continue
+            nodes.append(
+                Node(
+                    uuid=str(node_uuid),
+                    name=str(data.get("name") or ""),
+                    labels=list(data.get("labels") or []),
+                    description=data.get("description") or "",
+                    properties={key: value for key, value in data.items() if key != "labels"},
+                )
+            )
+        triples = []
+        for source, target, key, data in brain.graph.edges(keys=True, data=True):
+            nested = data.get("properties") if isinstance(data.get("properties"), dict) else {}
+            cited = {
+                str(item)
+                for item in list(data.get("source_chunk_ids") or [])
+                + list(nested.get("source_chunk_ids") or [])
+            }
+            rel_uuid = str(data.get("uuid") or nested.get("uuid") or "")
+            if rel_uuid not in known_edges and not cited & wanted:
+                continue
+            triples.append(
+                (
+                    Node(
+                        uuid=str(source),
+                        name=str(brain.node_data(source).get("name") or ""),
+                        labels=list(brain.labels(source)),
+                        properties=brain.node_data(source),
+                    ),
+                    Predicate(
+                        uuid=rel_uuid or str(key),
+                        name=str(data.get("rel_type") or ""),
+                        description=str(data.get("description") or ""),
+                        properties=dict(data),
+                    ),
+                    Node(
+                        uuid=str(target),
+                        name=str(brain.node_data(target).get("name") or ""),
+                        labels=list(brain.labels(target)),
+                        properties=brain.node_data(target),
+                    ),
+                )
+            )
+        return nodes, triples
+
     def remove_nodes(self, uuids: list[str], brain_id: str) -> list[Node]:
         self._store.ensure_database(brain_id)
         records = self._store.delete_nodes_by_uuids(brain_id, uuids)

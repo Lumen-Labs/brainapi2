@@ -17,7 +17,12 @@ from src.utils.logging import log
 from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from src.services.api.dependencies import get_brain_id
 from src.services.kg_agent.main import cache_adapter
-from src.services.api.constants.responses import TaskListResponse, TaskStateResponse, IngestionActivityResponse
+from src.services.api.constants.responses import (
+    IngestionActivityResponse,
+    PurgeIngestionResponse,
+    TaskListResponse,
+    TaskStateResponse,
+)
 
 tasks_router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -82,6 +87,32 @@ async def get_task(task_id: str, brain_id: str = Depends(get_brain_id)):
             status_code=500,
             detail="Could not retrieve task",
         ) from e
+
+
+class PurgeIngestionRequest(BaseModel):
+    digest: str | None = None
+    source_key: str | None = None
+
+
+@tasks_router.post("/{task_id}/purge", response_model=PurgeIngestionResponse)
+async def purge_ingestion(
+    task_id: str,
+    body: PurgeIngestionRequest,
+    brain_id: str = Depends(get_brain_id),
+):
+    from src.core.saving.ingest_effects import DigestMismatch, PurgeNotFound, purge_task
+
+    try:
+        return purge_task(
+            brain_id,
+            task_id,
+            digest=body.digest,
+            source_key=body.source_key,
+        )
+    except PurgeNotFound as exc:
+        raise HTTPException(404, "This import has no recorded additions") from exc
+    except DigestMismatch as exc:
+        raise HTTPException(409, "This import changed since it was previewed. Preview it again.") from exc
 
 
 class CancelIngestionRequest(BaseModel):

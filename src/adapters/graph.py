@@ -18,6 +18,7 @@ from src.core.verification.facts import (
     fact_tuple_is_rejected,
     filter_relationship_results,
     include_rejected_enabled,
+    neighborhood_row_is_rejected,
 )
 from src.constants.embeddings import Vector
 from src.constants.kg import (
@@ -40,6 +41,33 @@ from src.core.search.traverse import (
 )
 from src.utils.normalization.list_reduction import reduce_list
 from src.utils.similarity.vectors import cosine_similarity
+
+
+def _page_without_rejected(fetch, skip: int, limit: int, keep):
+    collected = []
+    cursor = 0
+    batch = max(limit * 4, skip + limit, 20)
+    last_total = 0
+    while True:
+        page = fetch(cursor, batch)
+        last_total = int(getattr(page, "total", 0) or 0)
+        rows = list(getattr(page, "results", None) or [])
+        if not rows:
+            break
+        collected.extend(keep(rows))
+        cursor += len(rows)
+        if len(collected) >= skip + limit:
+            break
+        if len(rows) < batch:
+            break
+        if last_total and cursor >= last_total:
+            break
+    sliced = collected[skip : skip + limit]
+    if last_total and cursor >= last_total:
+        total = len(collected)
+    else:
+        total = max(last_total, skip + len(sliced))
+    return sliced, total
 
 
 class NeighborVectorReductionStrategy(ABC):
@@ -220,7 +248,7 @@ class GraphAdapter:
         """
         Get nodes by their UUIDs with optional relationships and preferred labels.
         """
-        return self.graph.get_nodes_by_uuid(
+        rows = self.graph.get_nodes_by_uuid(
             uuids,
             brain_id,
             with_relationships,
@@ -228,6 +256,9 @@ class GraphAdapter:
             relationships_type,
             preferred_labels,
         )
+        if not with_relationships or include_rejected_enabled():
+            return rows
+        return [row for row in rows if not neighborhood_row_is_rejected(row)]
 
     def get_graph_entities(self, brain_id: str = "default") -> list[str]:
         """
@@ -381,21 +412,26 @@ class GraphAdapter:
         Search the relationships of the graph.
         """
         relationship_uuids = []
-        result = self.graph.search_relationships(
-            brain_id,
-            limit,
-            skip,
-            relationship_types,
-            from_node_labels,
-            to_node_labels,
-            relationship_uuids,
-            query_text,
-            query_search_target,
-        )
+
+        def fetch(cursor: int, batch: int):
+            return self.graph.search_relationships(
+                brain_id,
+                batch,
+                cursor,
+                relationship_types,
+                from_node_labels,
+                to_node_labels,
+                relationship_uuids,
+                query_text,
+                query_search_target,
+            )
+
         if include_rejected_enabled():
-            return result
-        kept = filter_relationship_results(result.results)
-        return SearchRelationshipsResult(results=kept, total=len(kept))
+            return fetch(skip, limit)
+        kept, total = _page_without_rejected(
+            fetch, skip, limit, filter_relationship_results
+        )
+        return SearchRelationshipsResult(results=kept, total=total)
 
     def list_validity_relationships(
         self,
@@ -440,13 +476,21 @@ class GraphAdapter:
         Search the entities of the graph.
         """
         node_uuids = []
-        result = self.graph.search_entities(
-            brain_id, limit, skip, node_labels, node_uuids, query_text
-        )
+
+        def fetch(cursor: int, batch: int):
+            return self.graph.search_entities(
+                brain_id, batch, cursor, node_labels, node_uuids, query_text
+            )
+
         if include_rejected_enabled():
-            return result
-        kept = [node for node in result.results if not entity_is_rejected(node)]
-        return SearchEntitiesResult(results=kept, total=len(kept))
+            return fetch(skip, limit)
+        kept, total = _page_without_rejected(
+            fetch,
+            skip,
+            limit,
+            lambda rows: [node for node in rows if not entity_is_rejected(node)],
+        )
+        return SearchEntitiesResult(results=kept, total=total)
 
     def search_nodes_bm25(
         self,
@@ -1045,6 +1089,12 @@ class GraphAdapter:
         }):
             return 0
         return self.graph.rebuild_hub_bridge_index(brain_id)
+
+    def nodes_and_edges_citing(self, brain_id: str, chunk_ids: list, edge_uuids: list):
+        method = getattr(self.graph, "nodes_and_edges_citing", None)
+        if method is None:
+            return [], []
+        return method(brain_id, chunk_ids, edge_uuids)
 
     def refresh_hub_bridges_for_entities(
         self, entity_uuids: list, brain_id: str = "default"

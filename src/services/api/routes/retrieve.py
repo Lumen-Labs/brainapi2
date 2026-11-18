@@ -115,13 +115,13 @@ async def retrieve(
         "",
         description="The entities to prioritize in the relationships, separated by commas.",
     ),
-    as_of: Optional[str] = Query(
-        None,
-        description="ISO-8601 datetime. When set, return the knowledge state valid at that instant.",
-    ),
     include_rejected: bool = Query(
         False,
         description="If true, include expert-rejected facts.",
+    ),
+    as_of: Optional[str] = Query(
+        None,
+        description="ISO-8601 datetime. When set, return the knowledge state valid at that instant.",
     ),
     brain_id: str = Depends(get_brain_id),
 ):
@@ -129,7 +129,12 @@ async def retrieve(
     Retrieve data from the knowledge graph and data store.
     """
     return await retrieve_data_controller(
-        text, limit, preferred_entities, brain_id, as_of, include_rejected
+        text,
+        limit,
+        preferred_entities,
+        brain_id,
+        include_rejected=include_rejected,
+        as_of=as_of,
     )
 
 

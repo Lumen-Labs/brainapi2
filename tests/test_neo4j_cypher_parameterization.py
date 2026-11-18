@@ -141,6 +141,49 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
         )
         self.assertIsInstance(node.last_updated, dt)
 
+    def test_event_centric_neighbors_hydrate_neo4j_datetime(self):
+        from datetime import datetime as dt
+        from neo4j.time import DateTime
+
+        neo4j_dt = DateTime(2026, 11, 18, 15, 32, 53, 3725000)
+        client = _client()
+        client._run_query = MagicMock(
+            return_value=_Result(
+                [
+                    _Record(
+                        {
+                            "n_uuid": "alice",
+                            "n_name": "Alice",
+                            "n_labels": ["PERSON"],
+                            "n_last_updated": neo4j_dt,
+                            "r_uuid": "made",
+                            "r_type": "MADE",
+                            "r_direction": "out",
+                            "r_last_updated": neo4j_dt,
+                            "m_uuid": "event",
+                            "m_name": "Meeting",
+                            "m_labels": ["EVENT"],
+                            "m_last_updated": neo4j_dt,
+                            "r2_uuid": "targeted",
+                            "r2_type": "TARGETED",
+                            "r2_direction": "out",
+                            "r2_last_updated": neo4j_dt,
+                            "b_uuid": "bob",
+                            "b_name": "Bob",
+                            "b_labels": ["PERSON"],
+                            "b_last_updated": neo4j_dt,
+                        }
+                    )
+                ]
+            )
+        )
+        triples = client.get_event_centric_neighbors(["alice"], "braina")
+        self.assertEqual(len(triples), 1)
+        for entity in triples[0]:
+            self.assertIsInstance(entity.last_updated, dt)
+            dumped = entity.model_dump(mode="json")
+            self.assertIsInstance(dumped["last_updated"], str)
+
     def test_add_relationship_returns_ok_string(self):
         client = _client()
         predicate = Predicate(uuid="rel-1", name="OWNS", description="owns")
