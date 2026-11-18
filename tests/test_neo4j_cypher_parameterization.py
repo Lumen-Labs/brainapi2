@@ -97,6 +97,56 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
         self.assertNotIn("'alice-1'", query)
         self.assertNotIn("'Alice'", query)
 
+    def test_bind_property_value_keeps_homogeneous_lists_and_json_mixed(self):
+        client = _client()
+        self.assertEqual(client._bind_property_value([1, 2, 3]), [1, 2, 3])
+        self.assertEqual(client._bind_property_value(["a", "b"]), ["a", "b"])
+        self.assertEqual(client._bind_property_value([]), [])
+        mixed_null = client._bind_property_value([1, None])
+        mixed_types = client._bind_property_value([1, "two"])
+        self.assertIsInstance(mixed_null, str)
+        self.assertIsInstance(mixed_types, str)
+        self.assertIn("null", mixed_null)
+        self.assertIn("two", mixed_types)
+
+    def test_python_properties_convert_neo4j_temporals(self):
+        from datetime import datetime as dt
+        from neo4j.time import DateTime
+
+        client = _client()
+        neo4j_dt = DateTime(2026, 11, 16, 20, 17, 39)
+        coerced = client._python_value(neo4j_dt)
+        self.assertIsInstance(coerced, dt)
+        props = client._python_properties({"last_updated": neo4j_dt, "note": "x"})
+        self.assertIsInstance(props["last_updated"], dt)
+        self.assertEqual(props["note"], "x")
+        dumped = Node(
+            uuid="n1",
+            name="Ada",
+            labels=["PERSON"],
+            properties=props,
+        ).model_dump(mode="json")
+        self.assertEqual(dumped["properties"]["note"], "x")
+        self.assertIsInstance(dumped["properties"]["last_updated"], str)
+
+    def test_add_relationship_returns_ok_string(self):
+        client = _client()
+        predicate = Predicate(uuid="rel-1", name="OWNS", description="owns")
+        result = client.add_relationship(
+            _person("a"), predicate, _person("b", "Widget"), "braina"
+        )
+        self.assertEqual(result, "ok")
+
+    def test_add_nodes_serializes_metadata_maps_for_storage(self):
+        client = _client()
+        node = _person()
+        node.metadata = {"source": "api"}
+        client.add_nodes([node], "braina", metadata={"origin": "ingest"})
+        _query, params, _db = client.driver.calls[0]
+        self.assertIsInstance(params["props"]["metadata"], str)
+        self.assertIn("source", params["props"]["metadata"])
+        self.assertIn("origin", params["props"]["metadata"])
+
     def test_add_nodes_injection_payload_stays_in_params(self):
         client = _client()
         for payload in INJECTION_VALUES:
@@ -132,6 +182,8 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
         self.assertEqual(params["subject_uuid"], "a")
         self.assertEqual(params["object_uuid"], "b")
         self.assertEqual(params["predicate_uuid"], "rel-1")
+        self.assertIsInstance(params["extra_props"]["properties"], str)
+        self.assertIn("v1", params["extra_props"]["properties"])
 
     def test_deprecate_relationship_does_not_interpolate_names(self):
         client = _client()
@@ -328,8 +380,10 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
             ],
             "braina",
         )
-        endpoint_query = client.driver.calls[-1][0]
-        self.assertIn("MATCH (n)-[r:", endpoint_query)
+        self.assertIn(
+            "MATCH (n)-[r:`KNOWS`]-(m)",
+            client.driver.calls[-1][0],
+        )
         for query, params, _db in client.driver.calls:
             self.assertNotIn(payload, query)
             self.assertTrue(params)

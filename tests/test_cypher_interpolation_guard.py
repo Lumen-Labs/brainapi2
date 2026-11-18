@@ -45,10 +45,21 @@ def _iter_python_files() -> list[Path]:
 
 
 def _find_interpolated_cypher(path: Path) -> list[str]:
-    source = path.read_text(encoding="utf-8")
-    tree = ast.parse(source, filename=str(path))
+    relative = str(path.relative_to(_REPO_ROOT))
+    return _find_interpolated_cypher_in_source(
+        path.read_text(encoding="utf-8"),
+        relative=relative,
+        filename=str(path),
+    )
+
+
+def _find_interpolated_cypher_in_source(
+    source: str,
+    relative: str = "snippet.py",
+    filename: str = "snippet.py",
+) -> list[str]:
+    tree = ast.parse(source, filename=filename)
     hits: list[str] = []
-    relative = path.relative_to(_REPO_ROOT)
 
     for node in ast.walk(tree):
         if isinstance(node, ast.JoinedStr):
@@ -114,17 +125,15 @@ def _is_quoted_value_concat(node: ast.BinOp) -> bool:
 
 
 class CypherInterpolationGuardTests(unittest.TestCase):
-    def test_keyword_only_format_is_detected(self):
+    def test_detects_keyword_only_str_format(self):
         source = (
-            'query = "MATCH (n) WHERE n.name = \'{name}\' RETURN n".format(name=user_input)\n'
+            "query = \"MATCH (n) WHERE n.name = '{name}' RETURN n\".format(name=name)\n"
         )
-        path = _REPO_ROOT / "tests" / "_keyword_format_guard_probe.py"
-        try:
-            path.write_text(source, encoding="utf-8")
-            hits = _find_interpolated_cypher(path)
-        finally:
-            path.unlink(missing_ok=True)
-        self.assertTrue(any("str.format interpolates Cypher" in hit for hit in hits))
+        hits = _find_interpolated_cypher_in_source(source)
+        self.assertTrue(
+            any("str.format interpolates Cypher" in hit for hit in hits),
+            hits,
+        )
 
     def test_no_interpolated_cypher_outside_helper(self):
         os.environ.setdefault("BRAINPAT_TOKEN", "test-token")

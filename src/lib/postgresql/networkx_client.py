@@ -49,6 +49,7 @@ class NetworkXGraphClient(GraphClient):
         self._store.invalidate_brain(brain_id)
 
     def execute_operation(self, operation: str, brain_id: str) -> Any:
+        # Raw SQL stays read-only even when GRAPH_RAW_WRITE_ENABLED is on.
         self._store.ensure_database(brain_id)
         return self._store.execute_read_query(brain_id, operation)
 
