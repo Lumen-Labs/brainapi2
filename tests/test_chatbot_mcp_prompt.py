@@ -9,6 +9,9 @@ class ChatbotMcpPromptTests(unittest.TestCase):
         self.assertIn("my-brain", text)
         self.assertIn("search_semantically", text)
         self.assertIn("traverse_graph", text)
+        self.assertIn("list_changelogs", text)
+        self.assertIn("list_source_versions", text)
+        self.assertIn("invalidated", text)
         self.assertIn("tool_name", text)
 
     def test_prepend_wraps_user_prompt(self):

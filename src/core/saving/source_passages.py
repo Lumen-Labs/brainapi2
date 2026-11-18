@@ -8,9 +8,11 @@ from __future__ import annotations
 import datetime
 import hashlib
 import json
+from collections.abc import Callable
 from typing import Any, Literal
 
 from src.constants.data import TextChunk
+from src.core.saving.history_intent import cosine
 
 Revision = Literal["plain", "insert", "unchanged"]
 _PAGE = 100
@@ -238,6 +240,97 @@ def screen_passage_hits(
             continue
         screened.append((chunk_id, score, visible))
     return screened
+
+
+def _revision_rank(
+    body: str,
+    meta: dict | None,
+    *,
+    query_text: str | None,
+    query_vector: list[float] | None,
+    embed: Callable[[str], list[float]] | None,
+) -> tuple[float, str]:
+    recency = str((meta or {}).get("superseded_at") or "")
+    if query_vector and embed:
+        try:
+            vector = embed(body)
+            return (cosine(query_vector, vector), recency)
+        except Exception:
+            pass
+    if query_text:
+        query_terms = set(query_text.lower().split())
+        overlap = float(len(query_terms & set(body.lower().split())))
+        return (overlap, recency)
+    return (0.0, recency)
+
+
+def prior_revision_texts(
+    adapter: Any,
+    brain_id: str,
+    hits: list[tuple[str, float, str]],
+    *,
+    limit: int,
+    query_text: str | None = None,
+    query_vector: list[float] | None = None,
+    embed: Callable[[str], list[float]] | None = None,
+) -> list[str]:
+    """Load superseded copies for the source keys already in these hits.
+
+    Search does not have to rank the older copy. The key on a current hit is enough.
+    When a query is provided, older copies are ordered by relevance, then recency.
+    """
+    cap = max(0, limit)
+    if cap == 0:
+        return []
+    ids = [str(chunk_id) for chunk_id, _, _ in hits if chunk_id]
+    if not ids:
+        return []
+    try:
+        chunks, _ = adapter.get_text_chunks_by_ids(ids, False, brain_id)
+    except Exception:
+        return []
+    keys: list[str] = []
+    for chunk in chunks:
+        key = source_key_from_meta(getattr(chunk, "metadata", None))
+        if key and key not in keys:
+            keys.append(key)
+    ranked: list[tuple[float, str, str]] = []
+    seen: set[str] = set()
+    for key in keys:
+        try:
+            stored, _ = adapter.get_text_chunks(
+                brain_id=brain_id,
+                limit=_MAX_CHUNKS,
+                skip=0,
+                metadata_eq={"source_key": key},
+            )
+        except Exception:
+            continue
+        older = [
+            chunk
+            for chunk in stored
+            if (getattr(chunk, "metadata", None) or {}).get("superseded_at")
+        ]
+        for chunk in older:
+            meta = getattr(chunk, "metadata", None) or {}
+            body = visible_passage_body(
+                meta,
+                getattr(chunk, "text", None),
+                include_history=True,
+            )
+            if not body or body in seen:
+                continue
+            seen.add(body)
+            score, recency = _revision_rank(
+                body,
+                meta if isinstance(meta, dict) else None,
+                query_text=query_text,
+                query_vector=query_vector,
+                embed=embed,
+            )
+            ranked.append((score, recency, body))
+    ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return [body for _score, _recency, body in ranked[:cap]]
 
 
 def screened_passage_texts(

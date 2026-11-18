@@ -28,7 +28,6 @@ from src.core.instances import (
     graph_adapter,
     vector_store_adapter,
 )
-from src.services.mcp.oauth_provider import BrainapiMcpOAuthProvider
 from src.core.verification.facts import verification_scope
 from src.core.verification.service import (
     FactNotFound,
@@ -37,7 +36,15 @@ from src.core.verification.service import (
     list_fact_records,
     require_state,
 )
+from src.services.mcp.oauth_provider import BrainapiMcpOAuthProvider
+from src.services.mcp.prompt import HISTORY_NAVIGATION_GUIDE
 from src.services.mcp.utils import guard_brainpat
+from src.services.mcp.versions import (
+    invalidated_hops,
+    read_changelog,
+    read_changelogs,
+    read_source_versions,
+)
 from src.utils.vector_search import VectorSearchFacade
 
 auth_token_var: ContextVar[str | None] = ContextVar("auth_token", default=None)
@@ -189,6 +196,8 @@ def get_search_operation_instructions(message: str) -> str:
     2. traverse_graph — multi-hop expansion with filters (preferred over hand-written queries)
     3. search_memory — ad-hoc read queries not covered by traverse_graph
 
+    {HISTORY_NAVIGATION_GUIDE}
+
     traverse_graph parameters:
     - brain_id (required)
     - start_uuid OR (start_name + start_labels)
@@ -233,6 +242,8 @@ def _traverse_graph_sync(
                 direction=direction,
                 limit=limit,
             )
+        if isinstance(result, dict) and isinstance(result.get("hops"), list):
+            result["invalidated"] = invalidated_hops(result["hops"])
         return json.dumps(result, default=str)
     except Exception as e:
         return f"Error traversing graph: {e}"
@@ -255,6 +266,7 @@ async def traverse_graph(
     Traverse the knowledge graph from a starting node up to N hops with optional filters.
     Prefer this over search_memory for multi-hop exploration.
 
+    The result keeps every hop and also lists superseded relationships in invalidated.
     Provide start_uuid, or both start_name and start_labels to identify the start node.
     Rejected facts are excluded unless include_rejected is true.
     """
@@ -525,3 +537,138 @@ async def get_fact_verification(
     history for a fact.
     """
     return await asyncio.to_thread(_get_fact_sync, fact_id, brain_id)
+
+
+def _string_list(value: Any) -> list[str] | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, str):
+        parts = [part.strip() for part in value.split(",") if part.strip()]
+        return parts or None
+    if isinstance(value, list):
+        parts = [str(part).strip() for part in value if str(part).strip()]
+        return parts or None
+    return None
+
+
+def _list_changelogs_sync(
+    brain_id: str,
+    query_text: str,
+    types: Any,
+    limit: int,
+    skip: int,
+) -> Any:
+    result = read_changelogs(
+        data_adapter,
+        brain_id,
+        authorized=bool(guard_brainpat(auth_token_var.get(), brain_id)),
+        query_text=query_text or None,
+        types=_string_list(types),
+        limit=limit,
+        skip=skip,
+    )
+    if isinstance(result, str):
+        return result
+    return json.dumps(result, default=str)
+
+
+@mcp.tool()
+async def list_changelogs(
+    brain_id: str,
+    query_text: str = "",
+    types: list[str] | None = None,
+    limit: int = 10,
+    skip: int = 0,
+) -> Any:
+    """
+    List graph changelog entries for a brain, newest first.
+
+    Optional query_text matches the stored change. Optional types restrict the page
+    to relationship_created, relationship_deprecated, node_properties_updated,
+    or relationship_properties_updated.
+    """
+    return await asyncio.to_thread(
+        _list_changelogs_sync,
+        brain_id,
+        query_text,
+        types,
+        limit,
+        skip,
+    )
+
+
+def _get_changelog_sync(brain_id: str, changelog_id: str) -> Any:
+    result = read_changelog(
+        data_adapter,
+        brain_id,
+        changelog_id,
+        authorized=bool(guard_brainpat(auth_token_var.get(), brain_id)),
+    )
+    if isinstance(result, str):
+        return result
+    return json.dumps(result, default=str)
+
+
+@mcp.tool()
+async def get_changelog(brain_id: str, id: str = "") -> Any:
+    """
+    Read one graph changelog entry by id.
+    """
+    return await asyncio.to_thread(_get_changelog_sync, brain_id, id)
+
+
+def _embed_query(text: str) -> Any:
+    return embeddings_adapter.embed_text(text)
+
+
+def _search_passages(vector: Any, brain_id: str) -> Any:
+    return vector_search.search_data(vector, brain_id=brain_id, k=10)
+
+
+def _list_source_versions_sync(
+    brain_id: str,
+    source_key: str,
+    query: str,
+    limit: int,
+    skip: int,
+) -> Any:
+    result = read_source_versions(
+        data_adapter,
+        brain_id,
+        authorized=bool(guard_brainpat(auth_token_var.get(), brain_id)),
+        source_key=source_key,
+        query=query,
+        limit=limit,
+        skip=skip,
+        embed=_embed_query,
+        search=_search_passages,
+    )
+    if isinstance(result, str):
+        return result
+    return json.dumps(result, default=str)
+
+
+@mcp.tool()
+async def list_source_versions(
+    brain_id: str,
+    source_key: str = "",
+    query: str = "",
+    limit: int = 10,
+    skip: int = 0,
+) -> Any:
+    """
+    Read the current copy and previous copies of a source.
+
+    Pass source_key when it is known. Otherwise pass a query; passage search
+    only discovers the source key, then every stored copy for that key is returned.
+    Use skip to page previous copies (source_key) or discovered keys (query).
+    """
+    return await asyncio.to_thread(
+        _list_source_versions_sync,
+        brain_id,
+        source_key,
+        query,
+        limit,
+        skip,
+    )
+

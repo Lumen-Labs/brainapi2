@@ -35,8 +35,11 @@ async def execute_mcp_tool(
 
     from src.services.mcp.main import (
         auth_token_var,
+        get_changelog,
         get_search_operation_instructions,
         list_brains,
+        list_changelogs,
+        list_source_versions,
         search_memory,
         search_semantically,
         traverse_graph,
@@ -75,6 +78,30 @@ async def execute_mcp_tool(
             result = await search_memory(
                 db_query=str(params.get("db_query") or ""),
                 brain_id=str(params.get("brain_id") or ""),
+            )
+            return result if isinstance(result, str) else json.dumps(result, default=str)
+        if tool_name == "list_changelogs":
+            result = await list_changelogs(
+                brain_id=str(params.get("brain_id") or ""),
+                query_text=str(params.get("query_text") or ""),
+                types=params.get("types"),
+                limit=int(params.get("limit") or 10),
+                skip=int(params.get("skip") or 0),
+            )
+            return result if isinstance(result, str) else json.dumps(result, default=str)
+        if tool_name == "get_changelog":
+            result = await get_changelog(
+                brain_id=str(params.get("brain_id") or ""),
+                id=str(params.get("id") or ""),
+            )
+            return result if isinstance(result, str) else json.dumps(result, default=str)
+        if tool_name == "list_source_versions":
+            result = await list_source_versions(
+                brain_id=str(params.get("brain_id") or ""),
+                source_key=str(params.get("source_key") or ""),
+                query=str(params.get("query") or ""),
+                limit=int(params.get("limit") or 10),
+                skip=int(params.get("skip") or 0),
             )
             return result if isinstance(result, str) else json.dumps(result, default=str)
         return f"Error: tool '{tool_name}' is not implemented"

@@ -8,7 +8,8 @@ from src.core.saving import ingest_cancellation
 CLAIM_SECONDS = 120
 DISPATCH_RETRY_SECONDS = 30
 MAX_UNIT_FAILURES = 3
-MAX_ROLLBACK_FAILURES = 5
+MAX_SETTLEMENT_FAILURES = 5
+MAX_ROLLBACK_FAILURES = MAX_SETTLEMENT_FAILURES
 
 
 def create_run(brain_id, root_id, *, callback_deadline=None, upload_deadline=None, message=None, discovery=False):
@@ -64,6 +65,34 @@ def register_unit(brain_id, root_id, key, message, *, seal=False, task_id=None):
 
     run = ingest_cancellation._change(brain_id, root_id, transition)
     if run and run["status"] == "staging" and unit_id in run["units"]:
+        return unit_id
+    return None
+
+
+def register_ocr_callback(brain_id, root_id, message):
+    """Accept one OCR payload on an open run. Duplicates and late calls return None."""
+    unit_id = uuid5(NAMESPACE_URL, f"brainapi:ingest:{root_id}:source").hex
+    inserted = []
+
+    def transition(run):
+        deadline = run.get("callback_deadline")
+        if (
+            run["status"] != "staging"
+            or run.get("sealed")
+            or unit_id in run.get("units", {})
+            or (deadline is not None and deadline <= time())
+        ):
+            return None
+        unit = {
+            "state": "pending",
+            "ordinal": len(run["units"]),
+            "message": message,
+        }
+        inserted.append(unit)
+        return {"sealed": True, "units": {**run["units"], unit_id: unit}}
+
+    run = ingest_cancellation._change(brain_id, root_id, transition)
+    if inserted and run and run["status"] == "staging" and run["units"].get(unit_id) is inserted[-1]:
         return unit_id
     return None
 
@@ -284,19 +313,51 @@ def finish_discard(brain_id, root_id):
     )
 
 
-def record_rollback_failure(brain_id, root_id):
-    """Report exhausted cleanup retries without holding the brain gate indefinitely."""
+def _terminal_settlement_status(run):
+    if run["status"] == "discarding" and run.get("mode") == "rollback":
+        return "rollback_failed"
+    if run["status"] == "discarding":
+        return run.get("discard_result", "failed")
+    return "failed"
+
+
+def record_settlement_failure(brain_id, root_id, phase):
+    """Bound discard and publish retries, then fail without holding the brain gate."""
     def transition(run):
-        if run["status"] != "discarding" or run.get("mode") != "rollback":
+        if run["status"] != phase or phase not in {"discarding", "publishing"}:
             return None
-        failures = run.get("rollback_failures", 0) + 1
-        changes = {"rollback_failures": failures}
-        if failures >= MAX_ROLLBACK_FAILURES:
-            changes.update(status="rollback_failed", units=_terminal_units(run))
+        failures = run.get("settlement_failures", 0) + 1
+        changes = {"settlement_failures": failures}
+        if failures >= MAX_SETTLEMENT_FAILURES:
+            changes.update(
+                status=_terminal_settlement_status(run),
+                units=_terminal_units(run),
+                pending_cleanup=True,
+            )
         return changes
 
     run = ingest_cancellation._change(brain_id, root_id, transition)
-    return bool(run and run["status"] == "rollback_failed")
+    return bool(run and run.get("pending_cleanup"))
+
+
+def record_rollback_failure(brain_id, root_id):
+    """Report exhausted cleanup retries without holding the brain gate indefinitely."""
+    return record_settlement_failure(brain_id, root_id, "discarding")
+
+
+def needs_abandoned_cleanup(run):
+    if not run.get("staged"):
+        return False
+    if run.get("pending_cleanup") is True:
+        return True
+    return run.get("status") == "rollback_failed" and run.get("pending_cleanup") is not False
+
+
+def mark_cleanup_complete(brain_id, root_id):
+    return ingest_cancellation._change(
+        brain_id, root_id,
+        lambda run: {"pending_cleanup": False} if run.get("pending_cleanup") is not False else None,
+    )
 
 
 def complete_discovery(brain_id, root_id, unit_id, token, messages, *, wait_for_sections=False):
