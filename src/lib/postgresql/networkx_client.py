@@ -198,12 +198,15 @@ class NetworkXGraphClient(GraphClient):
         to_object: Node,
         brain_id: str,
     ) -> str:
+        from src.core.saving.validity import validity_props_from_mapping
+
         rel_props: dict[str, Any] = {
             "description": predicate.description,
             "uuid": predicate.uuid,
             "v_id": (predicate.properties or {}).get("v_id"),
             "flow_key": predicate.flow_key,
         }
+        rel_props.update(validity_props_from_mapping(predicate.properties))
         for attr in ("properties", "happened_at", "last_updated", "amount"):
             value = getattr(predicate, attr, None)
             if value:
@@ -649,9 +652,11 @@ class NetworkXGraphClient(GraphClient):
                         properties=brain.node_data(source),
                     ),
                     predicate=Predicate(
+                        uuid=str(edge_data.get("uuid") or key),
                         name=str(edge_data.get("rel_type") or ""),
                         description=edge_data.get("description") or "",
                         direction=direction,
+                        properties=dict(edge_data),
                         observations=None,
                         level=None,
                         deprecated=edge_data.get("deprecated", False),
@@ -667,6 +672,57 @@ class NetworkXGraphClient(GraphClient):
             )
         return SearchRelationshipsResult(results=triples, total=total)
 
+    def list_validity_relationships(
+        self,
+        brain_id: str,
+        skip: int = 0,
+        limit: int = 100,
+        since: str | None = None,
+        until: str | None = None,
+        subject_uuids: list[str] | None = None,
+    ) -> tuple[list[tuple[Node, Predicate, Node]], int]:
+        from src.core.saving.validity import change_kind, parse_instant
+
+        self._store.ensure_database(brain_id)
+        brain = self._store.get_brain(brain_id)
+        since_dt = parse_instant(since) if since else None
+        until_dt = parse_instant(until) if until else None
+        subject_filter = set(subject_uuids) if subject_uuids else None
+        matched: list[tuple[Node, Predicate, Node]] = []
+        for source, target, key, edge_data in brain.graph.edges(keys=True, data=True):
+            if subject_filter is not None and source not in subject_filter:
+                continue
+            props = dict(edge_data)
+            if since_dt is not None and until_dt is not None:
+                if not change_kind(props, since_dt, until_dt):
+                    continue
+            matched.append(
+                (
+                    Node(
+                        uuid=source,
+                        name=str(brain.node_data(source).get("name") or source),
+                        labels=list(brain.labels(source)),
+                        description=brain.node_data(source).get("description"),
+                        properties=brain.node_data(source),
+                    ),
+                    Predicate(
+                        uuid=str(edge_data.get("uuid") or key or ""),
+                        name=str(edge_data.get("rel_type") or ""),
+                        description=edge_data.get("description") or "",
+                        properties=props,
+                        deprecated=edge_data.get("deprecated", False),
+                    ),
+                    Node(
+                        uuid=target,
+                        name=str(brain.node_data(target).get("name") or target),
+                        labels=list(brain.labels(target)),
+                        description=brain.node_data(target).get("description"),
+                        properties=brain.node_data(target),
+                    ),
+                )
+            )
+        total = len(matched)
+        return matched[skip : skip + limit], total
 
     def search_entities(
         self,
@@ -774,7 +830,12 @@ class NetworkXGraphClient(GraphClient):
                 continue
             if data.get("rel_type") != rel_type:
                 continue
+            from src.core.saving.validity import format_instant, utc_now
+
+            closed_at = format_instant(utc_now())
             data["deprecated"] = True
+            data.setdefault("valid_to", closed_at)
+            data.setdefault("invalid_at", closed_at)
             self._store._persist_relationship(
                 brain_id, key, rel_type, source, target, data
             )
@@ -1662,6 +1723,113 @@ class NetworkXGraphClient(GraphClient):
             )
             for tid, label, sid, weight in rows
         ]
+
+    def _edge_matches_uuid(self, key: str, edge_data: dict, fact_id: str) -> bool:
+        return key == fact_id or str(edge_data.get("uuid") or "") == fact_id
+
+    def _relationship_fact_row(
+        self, brain, source: str, target: str, key: str, edge_data: dict
+    ) -> dict:
+        return {
+            "kind": "relationship",
+            "uuid": str(edge_data.get("uuid") or key),
+            "name": str(edge_data.get("rel_type") or ""),
+            "description": str(edge_data.get("description") or ""),
+            "properties": dict(edge_data),
+            "subject_uuid": source,
+            "subject_name": brain.node_data(source).get("name"),
+            "subject_labels": list(brain.labels(source)),
+            "object_uuid": target,
+            "object_name": brain.node_data(target).get("name"),
+            "object_labels": list(brain.labels(target)),
+            "labels": [],
+        }
+
+    def _node_fact_row(self, brain, node_uuid: str) -> dict:
+        data = brain.node_data(node_uuid)
+        return {
+            "kind": "node",
+            "uuid": node_uuid,
+            "name": str(data.get("name") or ""),
+            "description": str(data.get("description") or ""),
+            "properties": dict(data),
+            "subject_uuid": None,
+            "subject_name": None,
+            "subject_labels": [],
+            "object_uuid": None,
+            "object_name": None,
+            "object_labels": [],
+            "labels": list(brain.labels(node_uuid)),
+        }
+
+    def get_fact_record(self, fact_id: str, brain_id: str) -> Optional[dict]:
+        if not fact_id:
+            return None
+        self._store.ensure_database(brain_id)
+        brain = self._store.get_brain(brain_id)
+        for source, target, key, edge_data in brain.graph.edges(keys=True, data=True):
+            if self._edge_matches_uuid(key, edge_data, fact_id):
+                return self._relationship_fact_row(brain, source, target, key, edge_data)
+        if fact_id in brain.graph:
+            return self._node_fact_row(brain, fact_id)
+        return None
+
+    def set_fact_verification(
+        self,
+        fact_id: str,
+        brain_id: str,
+        *,
+        kind: Literal["relationship", "node"],
+        properties: dict,
+    ) -> Optional[dict]:
+        self._store.ensure_database(brain_id)
+        record = self._store.update_entity_properties(
+            brain_id,
+            fact_id,
+            kind == "relationship",
+            properties,
+            [],
+        )
+        if not record:
+            return None
+        return self.get_fact_record(fact_id, brain_id)
+
+    def list_facts_by_verification(
+        self,
+        brain_id: str,
+        *,
+        state: Optional[str] = None,
+        include_rejected: bool = False,
+        limit: int = 50,
+        skip: int = 0,
+    ) -> tuple[list[dict], int]:
+        from src.core.verification.facts import normalize_state
+
+        self._store.ensure_database(brain_id)
+        brain = self._store.get_brain(brain_id)
+        rows: list[dict] = []
+        for source, target, key, edge_data in brain.graph.edges(keys=True, data=True):
+            if str(edge_data.get("rel_type") or "") == "HUB_BRIDGE":
+                continue
+            current = normalize_state(edge_data.get("verification_state"))
+            if state and current != state:
+                continue
+            if not include_rejected and current == "rejected":
+                continue
+            rows.append(self._relationship_fact_row(brain, source, target, key, edge_data))
+        for node_uuid, data in brain.graph.nodes(data=True):
+            labels = {str(label).upper() for label in (data.get("labels") or [])}
+            if "EVENT" not in labels:
+                continue
+            current = normalize_state(data.get("verification_state"))
+            if state and current != state:
+                continue
+            if not include_rejected and current == "rejected":
+                continue
+            rows.append(self._node_fact_row(brain, node_uuid))
+        rows.sort(key=lambda row: str(row.get("uuid") or ""))
+        total = len(rows)
+        return rows[skip : skip + limit], total
 
 
 def _records(data: list | Any) -> Any:

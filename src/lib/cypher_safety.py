@@ -78,8 +78,13 @@ _STATIC_PROPERTY_KEYS = frozenset(
         "polarity",
         "properties",
         "source_chunk_ids",
+        "superseded_by",
         "uuid",
         "v_id",
+        "valid_from",
+        "valid_to",
+        "valid_at",
+        "invalid_at",
     }
 )
 
@@ -345,6 +350,53 @@ def require_limit(value: Any, *, name: str = "limit") -> int:
 
 def require_path_depth(value: Any, *, name: str = "depth") -> int:
     return require_int(value, name=name, minimum=0, maximum=MAX_PATH_DEPTH)
+
+
+def relationship_valid_at_clause(alias: str = "r", param: str = "as_of") -> str:
+    """Cypher predicate: alias is valid at $param (ISO strings, half-open)."""
+    rel = require_identifier(alias, kind="identifier")
+    bound = require_identifier(param, kind="identifier")
+    start = static_property_key("valid_from")
+    end = static_property_key("valid_to")
+    return (
+        "(" + rel + "['" + start + "'] IS NULL OR " + rel + "['" + start + "'] <= $" + bound + ")"
+        " AND "
+        "(" + rel + "['" + end + "'] IS NULL OR " + rel + "['" + end + "'] > $" + bound + ")"
+    )
+
+
+def relationship_changed_in_window_clause(
+    alias: str = "r",
+    since_param: str = "since",
+    until_param: str = "until",
+) -> str:
+    """Cypher predicate: alias has a validity stamp Python can window-filter.
+
+    Do not compare stamp strings to $since/$until here. Historical
+    ``invalid_at`` values are day-first (``DD/MM/YYYY``) and lose the
+    window under lexicographic ISO compares. Callers pass since/until
+    through ``change_kind`` after parse_instant.
+    """
+    rel = require_identifier(alias, kind="identifier")
+    require_identifier(since_param, kind="identifier")
+    require_identifier(until_param, kind="identifier")
+    start = static_property_key("valid_from")
+    end = static_property_key("valid_to")
+    invalid = static_property_key("invalid_at")
+    return (
+        rel
+        + "['"
+        + start
+        + "'] IS NOT NULL OR "
+        + rel
+        + "['"
+        + end
+        + "'] IS NOT NULL OR "
+        + rel
+        + "['"
+        + invalid
+        + "'] IS NOT NULL"
+    )
 
 
 def create_database_query(database: str) -> str:

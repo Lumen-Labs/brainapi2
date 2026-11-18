@@ -17,7 +17,12 @@ from src.utils.logging import log
 from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from src.services.api.dependencies import get_brain_id
 from src.services.kg_agent.main import cache_adapter
-from src.services.api.constants.responses import TaskListResponse, TaskStateResponse, IngestionActivityResponse
+from src.services.api.constants.responses import (
+    IngestionActivityResponse,
+    PurgeIngestionResponse,
+    TaskListResponse,
+    TaskStateResponse,
+)
 
 tasks_router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -87,42 +92,6 @@ async def get_task(task_id: str, brain_id: str = Depends(get_brain_id)):
 class PurgeIngestionRequest(BaseModel):
     digest: str | None = None
     source_key: str | None = None
-
-
-class PurgePassageCounts(BaseModel):
-    delete: int
-    unlink: int
-    reused: int
-
-
-class PurgeEntityNames(BaseModel):
-    delete: list[str]
-    unlink: list[str]
-
-
-class PurgeConnectionCounts(BaseModel):
-    delete: int
-    unlink: int
-
-
-class PurgeCompletedAction(BaseModel):
-    kind: str
-    id: str
-
-
-class PurgeIngestionResponse(BaseModel):
-    digest: str
-    executed: bool
-    passages: PurgePassageCounts
-    records: int
-    entities: PurgeEntityNames
-    connections: PurgeConnectionCounts
-    unresolved: int
-    ledger_incomplete: bool = False
-    ledger_error: str | None = None
-    partial: bool = False
-    completed: list[PurgeCompletedAction] | None = None
-    error: str | None = None
 
 
 @tasks_router.post("/{task_id}/purge", response_model=PurgeIngestionResponse)
