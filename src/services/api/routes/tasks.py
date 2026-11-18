@@ -17,7 +17,12 @@ from src.utils.logging import log
 from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from src.services.api.dependencies import get_brain_id
 from src.services.kg_agent.main import cache_adapter
-from src.services.api.constants.responses import TaskListResponse, TaskStateResponse, IngestionActivityResponse
+from src.services.api.constants.responses import (
+    IngestionActivityResponse,
+    PurgeIngestionResponse,
+    TaskListResponse,
+    TaskStateResponse,
+)
 
 tasks_router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -89,7 +94,7 @@ class PurgeIngestionRequest(BaseModel):
     source_key: str | None = None
 
 
-@tasks_router.post("/{task_id}/purge")
+@tasks_router.post("/{task_id}/purge", response_model=PurgeIngestionResponse)
 async def purge_ingestion(
     task_id: str,
     body: PurgeIngestionRequest,
