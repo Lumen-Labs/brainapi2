@@ -84,13 +84,20 @@ def _score_one(
 ) -> dict[str, Any]:
     if question.get("task") == "conflict_audit":
         notes = result.notes or []
-        mapping_unsupported = "conflict_mapping_unsupported" in notes and not result.conflict_pairs
+        mapping_unsupported = (
+            (
+                "conflict_mapping_unsupported" in notes
+                or "conflict_capability_pending" in notes
+            )
+            and not result.conflict_pairs
+        )
         gold = question.get("gold_pairs")
         if gold is None and gold_pairs is not None:
             gold = gold_pairs
         gold_t = [pair_key(str(a), str(b)) for a, b in (gold or [])]
         pred_t = [pair_key(str(a), str(b)) for a, b in result.conflict_pairs]
         if mapping_unsupported:
+            pending = "conflict_capability_pending" in notes
             return {
                 "unsupported": True,
                 "exact_match": False,
@@ -101,7 +108,11 @@ def _score_one(
                 "non_pair_leaks": 0,
                 "n_gold": len(gold_t),
                 "n_predicted": 0,
-                "reason": "BrainAPI conflict identifiers could not be mapped to statement/doc gold ids",
+                "reason": (
+                    "BrainAPI conflict pair producer is not available on this deployment"
+                    if pending
+                    else "BrainAPI conflict identifiers could not be mapped to statement/doc gold ids"
+                ),
             }
         prf = conflict_prf(pred_t, gold_t)
         non_pairs = [pair_key(str(a), str(b)) for a, b in (question.get("non_pairs") or [])]
@@ -195,7 +206,7 @@ def _aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
         if row.get("correct") and row.get("error") is None and not row.get("unsupported")
     )
     lo, hi = wilson_ci(successes, denom)
-    f1_rows = [row for row in scored if row.get("token_f1") is not None]
+    f1_rows = [row for row in records if not row.get("unsupported")]
     return {
         "n": n,
         "n_errors": sum(1 for row in records if row.get("error")),
@@ -221,14 +232,13 @@ def _aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _conflict_headline_unsupported(records: list[dict[str, Any]]) -> bool:
-    has_pairs = any(row.get("conflict_pairs") for row in records)
-    notes_hit = any(
-        "conflict_mapping_unsupported" in (row.get("notes") or [])
+    return any(
+        row.get("unsupported")
         or row.get("scoring") == "conflict_pairs_unsupported"
-        or row.get("unsupported")
+        or "conflict_mapping_unsupported" in (row.get("notes") or [])
+        or "conflict_capability_pending" in (row.get("notes") or [])
         for row in records
     )
-    return bool(notes_hit and not has_pairs)
 
 
 def _conflict_headline(records: list[dict[str, Any]], gold_pairs: list[tuple[str, str]]) -> dict[str, Any]:
@@ -459,7 +469,13 @@ REQUIRED_BRAINAPI_CAPS = {
 
 
 def _system_question_ids(records: list[dict[str, Any]], system: str) -> set[Any]:
-    return {row.get("question_id") for row in records if row.get("system") == system}
+    return {
+        row.get("question_id")
+        for row in records
+        if row.get("system") == system
+        and row.get("error") is None
+        and not row.get("unsupported")
+    }
 
 
 def compare_systems(
@@ -496,12 +512,14 @@ def compare_systems(
             }
     h = system_runs["hybrid_baseline"]["metrics"]
     b = system_runs["brainapi"]["metrics"]
-    if h.get("n") != b.get("n"):
+    h_n = int(h.get("n") or 0) - int(h.get("n_unsupported") or 0)
+    b_n = int(b.get("n") or 0) - int(b.get("n_unsupported") or 0)
+    if h_n != b_n:
         return {
             "verdict": "incomplete",
             "reason": "Systems did not score the same number of items.",
-            "hybrid_n": h.get("n"),
-            "brainapi_n": b.get("n"),
+            "hybrid_n": h_n,
+            "brainapi_n": b_n,
         }
     if h.get("accuracy") is None or b.get("accuracy") is None:
         return {"verdict": "undecided", "reason": "accuracy unavailable"}

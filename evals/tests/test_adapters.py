@@ -272,10 +272,6 @@ class AdapterTests(unittest.TestCase):
                         ],
                     },
                 ],
-                "source_passages": [
-                    "Document id: hc-refunds-billing\nStatement id: stmt-refund-14\n\n14 days",
-                    "Document id: hc-refunds-legal\nStatement id: stmt-refund-30\n\n30 days",
-                ],
             },
             latency_ms=4.0,
             status_code=200,
@@ -350,6 +346,196 @@ class AdapterTests(unittest.TestCase):
         empty = remap_conflict_pairs([("u1", "u2")], {})
         self.assertEqual(empty["pairs"], [])
         self.assertFalse(empty["supported"])
+
+    def test_clause_source_key_is_not_a_gold_alias(self) -> None:
+        adapter = _adapter_with_client()
+        adapter._remember("famr-12-4-2019", "famr-12-4-2019", lock=True)
+        adapter._remember("famr-12-4-2024", "famr-12-4-2024", lock=True)
+        adapter._remember("FAR 12.4", "famr-12-4-2019")
+        adapter._remember("FAR 12.4", "famr-12-4-2024")
+        self.assertIsNone(adapter._canonical("FAR 12.4"))
+        self.assertEqual(adapter._canonical("famr-12-4-2019"), "famr-12-4-2019")
+        self.assertEqual(adapter._canonical("famr-12-4-2024"), "famr-12-4-2024")
+
+    def test_co_retrieved_passages_are_not_conflict_pairs(self) -> None:
+        adapter = _adapter_with_client()
+        adapter._remember("stmt-a", "stmt-a")
+        adapter._remember("stmt-b", "stmt-b")
+        adapter.client.retrieve_context.return_value = MagicMock(
+            data={
+                "temporal_conflicts": [
+                    {"hubs": ["hub-unknown-a", "hub-unknown-b"]},
+                ],
+                "source_passages": [
+                    "Document id: doc-a\nStatement id: stmt-a\n\n14 days",
+                    "Document id: doc-b\nStatement id: stmt-b\n\n30 days",
+                ],
+            },
+            latency_ms=1.0,
+            status_code=200,
+        )
+        result = adapter.query({"task": "conflict_audit", "question": "conflicts?"})
+        self.assertEqual(result.conflict_pairs, [])
+        self.assertIn("conflict_mapping_unsupported", result.notes)
+        self.assertFalse(adapter.capabilities["conflict_pairs"])
+
+    def test_conflict_capability_is_order_independent(self) -> None:
+        adapter = _adapter_with_client()
+        adapter._remember("stmt-a", "stmt-a")
+        adapter._remember("stmt-b", "stmt-b")
+        adapter._remember("hub-a", "stmt-a")
+        adapter._remember("hub-b", "stmt-b")
+        mapped_payload = MagicMock(
+            data={"temporal_conflicts": [{"hubs": ["hub-a", "hub-b"]}]},
+            latency_ms=1.0,
+            status_code=200,
+        )
+        unmapped_payload = MagicMock(
+            data={"temporal_conflicts": [{"hubs": ["u1", "u2"]}]},
+            latency_ms=1.0,
+            status_code=200,
+        )
+        adapter.client.retrieve_context.side_effect = [unmapped_payload, mapped_payload]
+        adapter.query({"task": "conflict_audit", "question": "one"})
+        adapter.query({"task": "conflict_audit", "question": "two"})
+        self.assertFalse(adapter.capabilities["conflict_pairs"])
+        self.assertEqual(adapter.capabilities["conflict_mode"], "id_mapping_unsupported")
+
+        other = _adapter_with_client()
+        other._remember("stmt-a", "stmt-a")
+        other._remember("stmt-b", "stmt-b")
+        other._remember("hub-a", "stmt-a")
+        other._remember("hub-b", "stmt-b")
+        other.client.retrieve_context.side_effect = [mapped_payload, unmapped_payload]
+        other.query({"task": "conflict_audit", "question": "one"})
+        other.query({"task": "conflict_audit", "question": "two"})
+        self.assertFalse(other.capabilities["conflict_pairs"])
+        self.assertEqual(other.capabilities["conflict_mode"], "id_mapping_unsupported")
+
+    def test_retrieval_text_does_not_register_new_gold_ids(self) -> None:
+        adapter = _adapter_with_client()
+        adapter._remember("stmt-known", "stmt-known")
+        adapter.client.retrieve_context.return_value = MagicMock(
+            data={
+                "source_passages": [
+                    "Document id: invented-doc\nStatement id: invented-stmt\n\nhello",
+                ]
+            },
+            latency_ms=1.0,
+            status_code=200,
+        )
+        result = adapter.query({"question": "hello?"})
+        self.assertNotIn("invented-stmt", adapter._gold_ids)
+        self.assertNotIn("invented-doc", adapter._gold_ids)
+        self.assertIsNone(adapter._canonical("invented-stmt"))
+        self.assertTrue(result.passages[0]["doc_id"].startswith("passage-"))
+
+    def test_chunk_id_resolved_independently_of_passage_id(self) -> None:
+        adapter = _adapter_with_client()
+        adapter._remember("stmt-pw-12", "stmt-pw-12")
+        adapter._remember("chunk-meta", "stmt-pw-12")
+        adapter.client.retrieve_context.return_value = MagicMock(
+            data={
+                "source_passages": [
+                    {
+                        "id": "passage-uuid-1",
+                        "chunk_id": "chunk-meta",
+                        "text": "Passwords must be 12 characters.",
+                    }
+                ]
+            },
+            latency_ms=1.0,
+            status_code=200,
+        )
+        result = adapter.query({"question": "password length?"})
+        self.assertEqual(result.passages[0]["id"], "passage-uuid-1")
+        self.assertEqual(result.passages[0]["doc_id"], "stmt-pw-12")
+
+    def test_as_of_questions_reserve_historical_context(self) -> None:
+        adapter = _adapter_with_client()
+        adapter._schema_fields = {"text", "brain_id", "include_history"}
+        current = [f"current {i}" for i in range(8)]
+        history = [
+            f"Document id: old-{i}\nStatement id: stmt-old-{i}\n\nhist {i}" for i in range(8)
+        ]
+        for i in range(8):
+            adapter._remember(f"stmt-old-{i}", f"stmt-old-{i}")
+        adapter.client.retrieve_context.return_value = MagicMock(
+            data={"source_passages": current, "historical_context": history},
+            latency_ms=1.0,
+            status_code=200,
+        )
+        result = adapter.query(
+            {
+                "task": "as_of",
+                "as_of": "2021-06-15",
+                "question": "What did it say as of 2021-06-15?",
+            }
+        )
+        self.assertEqual(len(result.passages), 8)
+        self.assertTrue(any(p.get("title") == "historical_context" for p in result.passages))
+        extra = adapter.client.retrieve_context.call_args.kwargs["extra_body"]
+        self.assertTrue(extra["include_history"])
+        self.assertNotIn("as_of", extra)
+        self.assertEqual(result.raw["as_of_mode"], "include_history")
+
+    def test_empty_conflict_producer_is_scoreable(self) -> None:
+        adapter = _adapter_with_client()
+        adapter.capabilities["temporal_conflicts_sidecar"] = True
+        adapter.settings.conflict_path = "/retrieve/conflicts"
+        adapter.client.request_path.return_value = MagicMock(
+            data={"pairs": []},
+            status_code=200,
+        )
+        adapter.client.retrieve_context.return_value = MagicMock(
+            data={"temporal_conflicts": []},
+            latency_ms=1.0,
+            status_code=200,
+        )
+        result = adapter.query({"task": "conflict_audit", "question": "conflicts?"})
+        self.assertEqual(result.conflict_pairs, [])
+        self.assertIn("conflict_producer_empty", result.notes)
+        self.assertNotIn("conflict_mapping_unsupported", result.notes)
+        self.assertNotIn("conflict_capability_pending", result.notes)
+        self.assertTrue(adapter.capabilities["conflict_pairs"])
+
+    def test_unavailable_conflict_producer_is_unsupported(self) -> None:
+        adapter = _adapter_with_client()
+        adapter.client.retrieve_context.return_value = MagicMock(
+            data={"source_passages": ["nothing here"]},
+            latency_ms=1.0,
+            status_code=200,
+        )
+        result = adapter.query({"task": "conflict_audit", "question": "conflicts?"})
+        self.assertEqual(result.conflict_pairs, [])
+        self.assertIn("conflict_capability_pending", result.notes)
+        self.assertFalse(adapter.capabilities["conflict_pairs"])
+        self.assertFalse(result.raw["conflict_mapping"]["supported"])
+
+    def test_probe_schema_as_of_field_without_env(self) -> None:
+        settings = _settings()
+        settings.brainpat_token = "test-token"
+        settings.as_of_field = ""
+        adapter = BrainAPIAdapter(settings, brain_id="evalucversionedrules")
+        client = MagicMock()
+        client.openapi.return_value = MagicMock(
+            data={
+                "components": {
+                    "schemas": {
+                        "GetContextRequestBody": {
+                            "properties": {"text": {}, "brain_id": {}, "valid_at": {}}
+                        },
+                        "GetContextResponse": {"properties": {"text_context": {}}},
+                    }
+                },
+                "paths": {"/retrieve/context": {}},
+            },
+            status_code=200,
+        )
+        adapter.client = client
+        caps = adapter.probe()
+        self.assertTrue(caps["as_of"])
+        self.assertEqual(caps["as_of_mode"], "api_schema")
 
 
 def _adapter_with_client() -> BrainAPIAdapter:

@@ -18,7 +18,6 @@ AS_OF_FIELDS = ("as_of", "asOf", "point_in_time", "valid_at")
 AS_OF_TASKS = frozenset({"as_of", "changelog"})
 _STATEMENT_ID_RE = re.compile(r"Statement id:\s*([^\n]+)", re.I)
 _DOCUMENT_ID_RE = re.compile(r"Document id:\s*([^\n]+)", re.I)
-_SYNTHETIC_DOC_RE = re.compile(r"^(?:passage|hist)-\d+$|^(?:text_context)$")
 
 
 def _schema_properties(openapi: dict[str, Any], name: str) -> set[str]:
@@ -217,7 +216,9 @@ class BrainAPIAdapter:
             "note": (
                 "as-of queries are feature-detected on GetContextRequestBody. "
                 "Until a true as-of field lands, versioned-rule questions send "
-                "include_history=true when that flag exists. Conflict pairs from "
+                "include_history=true when that flag exists (not a date filter). "
+                "A native as-of field takes precedence when OpenAPI exposes it. "
+                "Conflict pairs from "
                 "temporal_conflicts are mapped back to ingested statement/doc ids "
                 "before scoring; unmapped graph UUIDs are reported unsupported."
             ),
@@ -227,25 +228,42 @@ class BrainAPIAdapter:
         self._probed = False
         self._id_map: dict[str, str] = {}
         self._gold_ids: set[str] = set()
+        self._locked: set[str] = set()
+        self._ambiguous: set[str] = set()
+        self._conflict_outcomes: list[str] = []
 
     def _ensure_client(self) -> BrainAPIClient:
         if self.client is None:
             self.client = BrainAPIClient(self.settings)
         return self.client
 
-    def _remember(self, alias: str | None, canonical: str | None) -> None:
+    def _remember(self, alias: str | None, canonical: str | None, *, lock: bool = False) -> None:
         gold = str(canonical or "").strip()
         key = str(alias or "").strip()
         if not gold:
             return
         self._gold_ids.add(gold)
         self._id_map[gold] = gold
-        if key:
-            self._id_map[key] = gold
+        if not key or key == gold:
+            if lock and key:
+                self._locked.add(key)
+            return
+        if key in self._ambiguous:
+            return
+        if key in self._locked and self._id_map.get(key) != gold:
+            return
+        existing = self._id_map.get(key)
+        if existing and existing != gold:
+            del self._id_map[key]
+            self._ambiguous.add(key)
+            return
+        self._id_map[key] = gold
+        if lock:
+            self._locked.add(key)
 
     def _canonical(self, raw: str | None) -> str | None:
         value = str(raw or "").strip()
-        if not value:
+        if not value or value in self._ambiguous:
             return None
         if value in self._id_map:
             return self._id_map[value]
@@ -257,18 +275,16 @@ class BrainAPIAdapter:
         parsed = parse_eval_ids_from_text(text or "")
         statement = parsed.get("statement_id")
         doc_id = parsed.get("doc_id")
-        canonical = self._canonical(statement) or self._canonical(doc_id) or statement or doc_id
+        canonical = self._canonical(statement) or self._canonical(doc_id)
         if canonical:
             self._remember(statement, canonical)
             self._remember(doc_id, canonical)
         return parsed
 
-    def _remember_metadata(self, row: dict[str, Any] | None) -> str | None:
-        if not isinstance(row, dict):
-            return None
+    def _attribution_candidates(self, row: dict[str, Any]) -> list[Any]:
         metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
         properties = row.get("properties") if isinstance(row.get("properties"), dict) else {}
-        candidates = [
+        return [
             row.get("statement_id"),
             metadata.get("statement_id") if isinstance(metadata, dict) else None,
             properties.get("statement_id") if isinstance(properties, dict) else None,
@@ -276,22 +292,18 @@ class BrainAPIAdapter:
             metadata.get("eval_doc_id") if isinstance(metadata, dict) else None,
             row.get("doc_id"),
             row.get("document_id"),
-            row.get("source_id"),
-            metadata.get("eval_doc_id") if isinstance(metadata, dict) else None,
-            metadata.get("source_key") if isinstance(metadata, dict) else None,
-            row.get("source_key"),
+            properties.get("eval_doc_id") if isinstance(properties, dict) else None,
         ]
+
+    def _remember_metadata(self, row: dict[str, Any] | None) -> str | None:
+        if not isinstance(row, dict):
+            return None
+        candidates = self._attribution_candidates(row)
         canonical = None
         for item in candidates:
             canonical = self._canonical(str(item) if item is not None else None)
             if canonical:
                 break
-        if not canonical:
-            for item in candidates:
-                text = str(item or "").strip()
-                if text in self._gold_ids:
-                    canonical = text
-                    break
         aliases = [
             row.get("id"),
             row.get("uuid"),
@@ -302,8 +314,6 @@ class BrainAPIAdapter:
         if canonical:
             for alias in aliases:
                 self._remember(str(alias) if alias is not None else None, canonical)
-            for item in candidates:
-                self._remember(str(item) if item is not None else None, canonical)
         parsed = self._remember_text(str(row.get("text") or row.get("body") or row.get("content") or ""))
         if not canonical:
             canonical = self._canonical(parsed.get("statement_id")) or self._canonical(parsed.get("doc_id"))
@@ -319,13 +329,14 @@ class BrainAPIAdapter:
         self._schema_fields = _schema_properties(payload, "GetContextRequestBody")
         self._openapi_paths = _paths(payload)
         env_field = self.settings.as_of_field
-        has_as_of_field = bool(
-            (self._schema_fields & set(AS_OF_FIELDS))
-            or (env_field and env_field in self._schema_fields)
-        )
+        has_env_as_of = bool(env_field and env_field in self._schema_fields)
+        has_schema_as_of = bool(self._schema_fields & set(AS_OF_FIELDS))
         has_include_history = "include_history" in self._schema_fields
-        if has_as_of_field:
+        if has_env_as_of:
             as_of_mode = "api_field"
+            has_as_of = True
+        elif has_schema_as_of:
+            as_of_mode = "api_schema"
             has_as_of = True
         elif has_include_history:
             as_of_mode = "include_history"
@@ -376,8 +387,8 @@ class BrainAPIAdapter:
         started = time.perf_counter()
         for doc in docs:
             canonical = gold_id_for_doc(doc)
-            self._remember(str(doc.get("id") or ""), canonical)
-            self._remember(str(doc.get("statement_id") or ""), canonical)
+            self._remember(str(doc.get("id") or ""), canonical, lock=True)
+            self._remember(str(doc.get("statement_id") or ""), canonical, lock=True)
             header = []
             if doc.get("id"):
                 header.append(f"Document id: {doc['id']}")
@@ -440,10 +451,10 @@ class BrainAPIAdapter:
         if not canonical or not isinstance(payload, dict):
             return
         for key in ("chunk_id", "text_chunk_id", "resource_id", "source_chunk_id"):
-            self._remember(str(payload.get(key) or ""), canonical)
+            self._remember(str(payload.get(key) or ""), canonical, lock=True)
         for key in ("chunk_ids", "text_chunk_ids", "source_chunk_ids", "node_ids"):
             for item in payload.get(key) or []:
-                self._remember(str(item), canonical)
+                self._remember(str(item), canonical, lock=True)
         result = payload.get("result")
         if isinstance(result, dict):
             self._remember_task_ids(result, canonical)
@@ -471,7 +482,7 @@ class BrainAPIAdapter:
         )
         payload = retrieve.data if isinstance(retrieve.data, dict) else {}
         self._index_retrieve_payload(payload)
-        passages = self._passages_from_context(payload)
+        passages = self._passages_from_context(payload, question=question)
         pairs: list[tuple[str, str]] = []
         http_calls = 1
         conflict_mode = str(self.capabilities.get("conflict_mode") or "n/a")
@@ -484,6 +495,10 @@ class BrainAPIAdapter:
         if question.get("task") == "conflict_audit":
             path = self.settings.conflict_path
             raw_pairs: list[tuple[str, str]] = []
+            pair_source = ""
+            producer_available = bool(path) or bool(
+                self.capabilities.get("temporal_conflicts_sidecar")
+            )
             if path:
                 conflict_res = client.request_path(
                     "POST",
@@ -497,14 +512,16 @@ class BrainAPIAdapter:
                 if conflict_res.status_code < 400 and isinstance(conflict_res.data, dict):
                     raw_pairs = self._pairs_from_payload(conflict_res.data)
                     notes.append("conflict_endpoint")
-                    conflict_mode = "dedicated_endpoint"
+                    if raw_pairs:
+                        pair_source = "dedicated_endpoint"
                 else:
                     notes.append(f"conflict_endpoint_http_{conflict_res.status_code}")
             if not raw_pairs:
                 raw_pairs = self._conflict_plugin(payload, question)
                 if raw_pairs:
                     notes.append("temporal_conflicts_sidecar")
-            mapped = self._mapped_conflict_pairs(raw_pairs, passages)
+                    pair_source = "temporal_conflicts_sidecar"
+            mapped = self._mapped_conflict_pairs(raw_pairs)
             mapping_info = {
                 "supported": mapped["supported"],
                 "n_raw": mapped["n_raw"],
@@ -514,21 +531,25 @@ class BrainAPIAdapter:
             if mapped["pairs"]:
                 pairs = mapped["pairs"]
                 conflict_mode = (
-                    "temporal_conflicts_mapped"
-                    if conflict_mode != "dedicated_endpoint"
-                    else "dedicated_endpoint_mapped"
+                    "dedicated_endpoint_mapped"
+                    if pair_source == "dedicated_endpoint"
+                    else "temporal_conflicts_mapped"
                 )
                 notes.append("conflict_ids_mapped")
-                self.capabilities["conflict_pairs"] = True
-                self.capabilities["conflict_mode"] = conflict_mode
+                self._conflict_outcomes.append("mapped")
             elif raw_pairs:
                 notes.append("conflict_mapping_unsupported")
                 conflict_mode = "id_mapping_unsupported"
-                self.capabilities["conflict_pairs"] = False
-                self.capabilities["conflict_mode"] = conflict_mode
                 mapping_info["supported"] = False
+                self._conflict_outcomes.append("unmapped")
+            elif producer_available:
+                notes.append("conflict_producer_empty")
+                self._conflict_outcomes.append("empty")
             else:
                 notes.append("conflict_capability_pending")
+                mapping_info["supported"] = False
+                self._conflict_outcomes.append("unavailable")
+            self._refresh_conflict_capability(conflict_mode)
         self.capabilities["last_as_of_mode"] = as_of_mode
         answer = self._answer(question, passages, payload)
         e2e_ms = (time.perf_counter() - started) * 1000
@@ -601,99 +622,110 @@ class BrainAPIAdapter:
             for blob in (parts.get("properties") or {}, parts.get("metadata") or {}):
                 if not isinstance(blob, dict):
                     continue
-                for key in ("statement_id", "eval_doc_id", "doc_id", "source_key"):
+                for key in ("statement_id", "eval_doc_id", "doc_id"):
                     found = self._canonical(str(blob.get(key) or ""))
                     if found:
                         gold = gold or found
-        if gold:
-            for alias in aliases:
-                self._remember(alias, gold)
+        if not gold:
+            return
+        for alias in aliases:
+            self._remember(alias, gold)
+        if identified and (identified in self._gold_ids or self._canonical(identified)):
             self._remember(identified, gold)
 
-    def _mapped_conflict_pairs(
-        self,
-        raw_pairs: list[tuple[str, str]],
-        passages: list[dict[str, Any]],
-    ) -> dict[str, Any]:
+    def _mapped_conflict_pairs(self, raw_pairs: list[tuple[str, str]]) -> dict[str, Any]:
         mapped = remap_conflict_pairs(raw_pairs, self._id_map)
-        if mapped["pairs"] or not raw_pairs:
-            return mapped
-        passage_ids: list[str] = []
-        seen: set[str] = set()
-        for passage in passages:
-            for key in ("statement_id", "doc_id"):
-                canonical = self._canonical(str(passage.get(key) or ""))
-                if canonical and canonical not in seen and not _SYNTHETIC_DOC_RE.match(canonical):
-                    seen.add(canonical)
-                    passage_ids.append(canonical)
-        fallback: list[tuple[str, str]] = []
-        for i, left in enumerate(passage_ids):
-            for right in passage_ids[i + 1 :]:
-                fallback.append(pair_key(left, right))
-        if fallback:
-            return {
-                "pairs": fallback,
-                "unmapped": mapped["unmapped"],
-                "supported": True,
-                "n_raw": mapped["n_raw"],
-                "n_mapped": len(fallback),
-                "n_unmapped": mapped["n_unmapped"],
-            }
-        mapped["supported"] = False
+        if raw_pairs and not mapped["pairs"]:
+            mapped["supported"] = False
         return mapped
 
-    def _passages_from_context(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
-        passages: list[dict[str, Any]] = []
-        for index, item in enumerate(payload.get("source_passages") or []):
-            passages.append(self._passage_record(item, index, prefix="passage"))
-        for index, item in enumerate(payload.get("historical_context") or []):
-            passages.append(self._passage_record(item, index, prefix="hist"))
+    def _refresh_conflict_capability(self, last_mode: str) -> None:
+        outcomes = set(self._conflict_outcomes)
+        if "unmapped" in outcomes:
+            self.capabilities["conflict_pairs"] = False
+            self.capabilities["conflict_mode"] = "id_mapping_unsupported"
+            return
+        if "mapped" in outcomes:
+            self.capabilities["conflict_pairs"] = True
+            self.capabilities["conflict_mode"] = last_mode
+            return
+        if "empty" in outcomes:
+            dedicated = bool(self.settings.conflict_path)
+            self.capabilities["conflict_pairs"] = dedicated
+            self.capabilities["conflict_mode"] = last_mode or (
+                "dedicated_endpoint" if dedicated else "temporal_conflicts_sidecar"
+            )
+            return
+        self.capabilities["conflict_pairs"] = False
+        self.capabilities["conflict_mode"] = last_mode or "pending_product"
+
+    def _passages_from_context(
+        self,
+        payload: dict[str, Any],
+        question: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        current = [
+            self._passage_record(item, index, prefix="passage")
+            for index, item in enumerate(payload.get("source_passages") or [])
+        ]
+        history = [
+            self._passage_record(item, index, prefix="hist")
+            for index, item in enumerate(payload.get("historical_context") or [])
+        ]
         blob = str(payload.get("text_context") or "").strip()
-        if blob and not passages:
-            passages.append(self._passage_record(blob, 0, prefix="text_context"))
-        return passages[: int(PROMPT_BUDGET["max_passages"])]
+        if blob and not current and not history:
+            current.append(self._passage_record(blob, 0, prefix="text_context"))
+        max_n = int(PROMPT_BUDGET["max_passages"])
+        if history and _needs_as_of(question or {}):
+            hist_budget = max(1, max_n // 2)
+            hist_take = min(len(history), hist_budget)
+            cur_take = min(len(current), max_n - hist_take)
+            leftover = max_n - cur_take - hist_take
+            hist_take = min(len(history), hist_take + leftover)
+            return current[:cur_take] + history[:hist_take]
+        return (current + history)[:max_n]
 
     def _passage_record(self, raw: Any, index: int, *, prefix: str) -> dict[str, Any]:
+        if prefix == "hist":
+            default_title = "historical_context"
+        elif prefix == "text_context":
+            default_title = "text_context"
+        elif prefix == "passage":
+            default_title = "source_passage"
+        else:
+            default_title = prefix
         if isinstance(raw, dict):
             text = str(raw.get("text") or raw.get("body") or raw.get("content") or "")
             metadata = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
-            title = str(raw.get("title") or metadata.get("title") or prefix)
-            raw_id = raw.get("id") or raw.get("chunk_id") or f"{prefix}-{index}"
+            title = str(raw.get("title") or metadata.get("title") or default_title)
+            raw_id = str(raw.get("id") or f"{prefix}-{index}")
+            chunk_id = str(raw.get("chunk_id") or "")
             self._remember_metadata(raw)
         else:
             text = str(raw)
             metadata = {}
-            title = prefix if prefix != "passage" else "source_passage"
-            if prefix == "hist":
-                title = "historical_context"
-            elif prefix == "text_context":
-                title = "text_context"
+            title = default_title
             raw_id = f"{prefix}-{index}" if prefix != "text_context" else "text_context"
+            chunk_id = ""
         parsed = self._remember_text(text)
         doc_id = None
         if isinstance(raw, dict):
-            for key in (
-                "doc_id",
-                "eval_doc_id",
-                "document_id",
-                "source_id",
-                "statement_id",
-            ):
+            for key in ("eval_doc_id", "doc_id", "document_id", "statement_id"):
                 doc_id = self._canonical(str(raw.get(key) or "")) or doc_id
             if not doc_id and isinstance(metadata, dict):
-                for key in ("eval_doc_id", "statement_id", "doc_id", "source_key"):
+                for key in ("eval_doc_id", "statement_id", "doc_id"):
                     doc_id = self._canonical(str(metadata.get(key) or "")) or doc_id
-            chunk_alias = str(raw.get("id") or raw.get("chunk_id") or "")
-            doc_id = self._canonical(chunk_alias) or doc_id
+            doc_id = self._canonical(raw_id) or self._canonical(chunk_id) or doc_id
         if not doc_id:
             doc_id = self._canonical(parsed.get("statement_id")) or self._canonical(parsed.get("doc_id"))
         if not doc_id:
-            doc_id = parsed.get("statement_id") or parsed.get("doc_id")
-        if not doc_id:
             doc_id = str(raw_id)
-        statement_id = parsed.get("statement_id") or (
-            doc_id if doc_id in self._gold_ids else None
-        )
+        statement_id = None
+        parsed_stmt = parsed.get("statement_id")
+        if parsed_stmt and (parsed_stmt in self._gold_ids or self._canonical(parsed_stmt)):
+            statement_id = self._canonical(parsed_stmt) or parsed_stmt
+        elif doc_id in self._gold_ids:
+            statement_id = doc_id
         return {
             "id": str(raw_id),
             "doc_id": str(doc_id),

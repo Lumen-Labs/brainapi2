@@ -102,6 +102,102 @@ class CompareSystemsTests(unittest.TestCase):
         self.assertIsNone(scored["correct"])
         self.assertEqual(scored["scoring"], "conflict_pairs_unsupported")
 
+    def test_score_one_marks_unavailable_producer_unsupported(self) -> None:
+        result = QueryResult(
+            answer="",
+            conflict_pairs=[],
+            notes=["conflict_capability_pending"],
+        )
+        scored = _score_one(
+            {"task": "conflict_audit"},
+            result,
+            gold_pairs=[("stmt-a", "stmt-b")],
+        )
+        self.assertTrue(scored["unsupported"])
+        self.assertIn("producer is not available", scored["reason"])
+
+    def test_empty_conflict_prediction_is_scored(self) -> None:
+        result = QueryResult(
+            answer="",
+            conflict_pairs=[],
+            notes=["conflict_producer_empty"],
+        )
+        scored = _score_one(
+            {"task": "conflict_audit"},
+            result,
+            gold_pairs=[("stmt-a", "stmt-b")],
+        )
+        self.assertFalse(scored.get("unsupported"))
+        self.assertEqual(scored["scoring"], "conflict_pairs")
+        self.assertEqual(scored["f1"], 0.0)
+        self.assertFalse(scored["correct"])
+
+    def test_mixed_mapped_and_unmapped_headline_is_unsupported(self) -> None:
+        records = [
+            {
+                "notes": ["conflict_ids_mapped"],
+                "conflict_pairs": [("stmt-a", "stmt-b")],
+                "unsupported": False,
+                "scoring": "conflict_pairs",
+            },
+            {
+                "notes": ["conflict_mapping_unsupported"],
+                "conflict_pairs": [],
+                "unsupported": True,
+                "scoring": "conflict_pairs_unsupported",
+            },
+        ]
+        headline = _conflict_headline(records, [("stmt-a", "stmt-b"), ("stmt-c", "stmt-d")])
+        self.assertTrue(headline["unsupported"])
+        self.assertIsNone(headline["f1"])
+
+    def test_mean_token_f1_keeps_timeouts_in_denominator(self) -> None:
+        rows = [
+            {"token_f1": 1.0, "correct": True},
+            {"correct": False, "error": "timeout"},
+        ]
+        headline = _aggregate(rows)
+        self.assertEqual(headline["mean_token_f1"], 0.5)
+
+    def test_compare_systems_uses_gradable_ids(self) -> None:
+        records = [
+            {"system": "hybrid_baseline", "question_id": "q1", "correct": True},
+            {"system": "hybrid_baseline", "question_id": "q2", "correct": True},
+            {"system": "brainapi", "question_id": "q1", "correct": True},
+            {
+                "system": "brainapi",
+                "question_id": "q2",
+                "unsupported": True,
+                "correct": None,
+            },
+        ]
+        result = compare_systems(
+            {
+                "hybrid_baseline": {
+                    "metrics": {
+                        "n": 2,
+                        "n_unsupported": 0,
+                        "accuracy": 1.0,
+                        "wilson_lo": 0.3,
+                        "wilson_hi": 1.0,
+                    }
+                },
+                "brainapi": {
+                    "capabilities": {},
+                    "metrics": {
+                        "n": 2,
+                        "n_unsupported": 1,
+                        "accuracy": 1.0,
+                        "wilson_lo": 0.2,
+                        "wilson_hi": 1.0,
+                    },
+                },
+            },
+            use_case="expert_knowhow",
+            records=records,
+        )
+        self.assertEqual(result["verdict"], "incomplete")
+
 
 class JudgeParseTests(unittest.TestCase):
     def test_requires_json_boolean(self) -> None:
