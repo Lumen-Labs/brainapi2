@@ -723,6 +723,7 @@ def _list_conflicts_sync(
         until=until or None,
         limit=limit,
         skip=skip,
+        graph=graph_adapter,
     )
     if isinstance(result, str):
         return result
@@ -762,6 +763,7 @@ def _get_conflict_sync(brain_id: str, conflict_id: str) -> Any:
         brain_id,
         conflict_id,
         authorized=bool(guard_brainpat(auth_token_var.get(), brain_id)),
+        graph=graph_adapter,
     )
     if isinstance(result, str):
         return result
@@ -791,6 +793,7 @@ def _resolve_conflict_sync(
         winning_fact_id=winning_fact_id or None,
         notes=notes or None,
         method=method or "manual",
+        graph=graph_adapter,
     )
     if isinstance(result, str):
         return result

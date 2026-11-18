@@ -815,14 +815,7 @@ def upsert_conflict(adapter: Any, brain_id: str, conflict: FactConflict) -> Fact
 
 
 def _optional_graph(graph: Any | None = None) -> Any | None:
-    if graph is not None:
-        return graph
-    try:
-        from src.core.instances import graph_adapter
-
-        return graph_adapter
-    except Exception:
-        return None
+    return graph
 
 
 def get_conflict(

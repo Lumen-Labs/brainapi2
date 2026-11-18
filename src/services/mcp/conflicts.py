@@ -35,6 +35,7 @@ def read_conflicts(
     until: Any = None,
     limit: Any = 10,
     skip: Any = 0,
+    graph: Any | None = None,
 ) -> dict[str, Any] | str:
     if not authorized:
         return "Unauthorized"
@@ -60,6 +61,7 @@ def read_conflicts(
         until=until_dt,
         limit=bounded,
         skip=offset,
+        graph=graph,
     )
     return {
         "conflicts": [_dump(row) for row in rows],
@@ -74,12 +76,15 @@ def read_conflict(
     conflict_id: str,
     *,
     authorized: bool,
+    graph: Any | None = None,
 ) -> dict[str, Any] | str:
     if not authorized:
         return "Unauthorized"
     if not str(conflict_id or "").strip():
         return "Error: conflict id is required"
-    conflict = get_conflict(adapter, brain_id, str(conflict_id).strip())
+    conflict = get_conflict(
+        adapter, brain_id, str(conflict_id).strip(), graph=graph
+    )
     if conflict is None:
         return "Error: conflict not found"
     return {"conflict": _dump(conflict)}
@@ -94,6 +99,7 @@ def resolve_conflict_tool(
     winning_fact_id: str | None = None,
     notes: str | None = None,
     method: str = "manual",
+    graph: Any | None = None,
 ) -> dict[str, Any] | str:
     if not authorized:
         return "Unauthorized"
@@ -107,6 +113,7 @@ def resolve_conflict_tool(
             winning_fact_id=winning_fact_id or None,
             notes=notes or None,
             method=method or "manual",
+            graph=graph,
         )
     except KeyError:
         return "Error: conflict not found"

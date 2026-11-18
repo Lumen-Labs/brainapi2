@@ -544,7 +544,7 @@ class Neo4jClient(GraphClient):
                 value = getattr(obj, attr, None)
                 if value is None or value == "":
                     continue
-                extra_props[static_property_key(attr)] = self._bind_property_value(
+                extra_props[static_property_key(attr)] = self._neo4j_property_value(
                     value
                 )
         extra_props.update(self._relationship_property_primitives(predicate.properties))

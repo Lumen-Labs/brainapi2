@@ -18,6 +18,7 @@ from src.core.saving.conflicts import (
 )
 from src.core.saving.validity import InvalidAsOf, optional_instant
 from src.services.data.main import data_adapter
+from src.services.kg_agent.main import graph_adapter
 
 
 def _dump(conflict) -> dict:
@@ -29,7 +30,7 @@ def _dump(conflict) -> dict:
 
 async def get_conflict_by_id(id: str, brain_id: str = "default"):
     def _load():
-        conflict = get_conflict(data_adapter, brain_id, id)
+        conflict = get_conflict(data_adapter, brain_id, id, graph=graph_adapter)
         if conflict is None:
             raise HTTPException(status_code=404, detail="Conflict not found")
         return conflict
@@ -72,6 +73,7 @@ async def get_conflicts_list(
             until=until_dt,
             limit=limit,
             skip=skip,
+            graph=graph_adapter,
         )
 
     rows, total = await asyncio.to_thread(_load)
@@ -94,8 +96,6 @@ async def resolve_conflict_by_id(
 ):
     def _resolve():
         try:
-            from src.services.kg_agent.main import graph_adapter
-
             return resolve_conflict(
                 data_adapter,
                 brain_id,
