@@ -106,7 +106,7 @@ class _BrainGraph:
                     incoming["description"] = incoming_desc
             elif existing_desc and not incoming_desc:
                 incoming["description"] = existing_desc
-        for list_key in ("source_chunk_ids", "aliases"):
+        for list_key in ("source_chunk_ids", "aliases", "ingest_task_ids"):
             if list_key in incoming or list_key in merged:
                 seen = []
                 for value in list(merged.get(list_key) or []) + list(

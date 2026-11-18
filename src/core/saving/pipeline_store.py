@@ -27,7 +27,7 @@ CREATE INDEX IF NOT EXISTS pipeline_documents_pending_cleanup
     ON pipeline_documents (namespace)
     WHERE namespace = 'ingest_runs' AND document @> '{"pending_cleanup": true}'::jsonb;
 """
-NAMES = frozenset({'ingest_manifests', 'ingest_sections', 'ingest_runs', 'ingest_access_gates', 'ingest_staged_inputs', 'ingest_staged_outputs', 'pipeline_usage_events'})
+NAMES = frozenset({'ingest_manifests', 'ingest_sections', 'ingest_runs', 'ingest_access_gates', 'ingest_staged_inputs', 'ingest_staged_outputs', 'pipeline_usage_events', 'ingest_effects'})
 
 
 def supports_storage(client):

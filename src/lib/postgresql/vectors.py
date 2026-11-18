@@ -395,6 +395,21 @@ class PostgreSQLVectorStoreClient(VectorStoreClient):
                     out[str(origin_id)] = collected
         return out
 
+    def remove_vectors_by_resource_id(
+        self, resource_ids: list[str], store: str, brain_id: str
+    ) -> None:
+        if not resource_ids:
+            return
+        self._ensure_store(store, brain_id)
+        table = _table_name(store)
+        with self._connection(brain_id) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"DELETE FROM {table} WHERE metadata->>'resource_id' = ANY(%s)",
+                    (list(resource_ids),),
+                )
+            conn.commit()
+
     def remove_vectors(self, ids: list[str], store: str, brain_id: str) -> None:
         if not ids:
             return

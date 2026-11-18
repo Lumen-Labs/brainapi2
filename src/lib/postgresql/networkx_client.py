@@ -23,6 +23,7 @@ from src.constants.kg import (
     SearchRelationshipsResult,
     Triple,
 )
+from src.lib.cypher_safety import clean_label, clean_property_key, quote_property_key
 from src.lib.postgresql.graph_store import (
     GraphDatabaseError,
     PostgreSQLGraphStore,
@@ -48,6 +49,7 @@ class NetworkXGraphClient(GraphClient):
         self._store.invalidate_brain(brain_id)
 
     def execute_operation(self, operation: str, brain_id: str) -> Any:
+        # Raw SQL stays read-only even when GRAPH_RAW_WRITE_ENABLED is on.
         self._store.ensure_database(brain_id)
         return self._store.execute_read_query(brain_id, operation)
 
@@ -95,50 +97,21 @@ class NetworkXGraphClient(GraphClient):
         )
 
     def _clean_labels(self, labels: list[str]) -> list[str]:
-        return [
-            label.replace(" ", "_")
-            .upper()
-            .replace("-", "_")
-            .replace(".", "_")
-            .replace(",", "_")
-            .replace(":", "_")
-            .replace(";", "_")
-            .replace("(", "_")
-            .replace(")", "_")
-            .replace("[", "_")
-            .replace("]", "_")
-            .replace("{", "_")
-            .replace("}", "_")
-            .replace("'", "_")
-            for label in labels
-        ]
+        return [clean_label(label) for label in labels]
 
     def _node_label_set(self, brain, node_uuid: str) -> set[str]:
         return set(self._clean_labels(list(brain.labels(node_uuid))))
 
     def _clean_property_key(self, property_key: str) -> str:
-        words = property_key.split()
-        return words[0].lower() + "".join(word.capitalize() for word in words[1:])
+        return clean_property_key(property_key)
 
     def _format_property_key(self, property_key: str) -> str:
-        sanitized_key = property_key.rstrip("`").lstrip("`")
-        needs_quoting = any(
-            char in sanitized_key
-            for char in ["-", " ", ".", "+", "*", "/", "%", ":", "@", "#", "$"]
-        )
-        cleaned_key = self._clean_property_key(sanitized_key)
-        return f"`{cleaned_key}`" if needs_quoting else cleaned_key
+        return quote_property_key(property_key)
 
     def _format_value(self, value: Any) -> str:
-        if isinstance(value, str):
-            v = value.replace("'", "\\'")
-            return f"'{v}'"
-        if isinstance(value, (int, float, bool)):
-            return str(value)
-        if value is None:
-            return "null"
-        v = str(value).replace("'", "\\'")
-        return f"'{v}'"
+        raise RuntimeError(
+            "Graph values must be passed as data, not interpolated into a query"
+        )
 
     def add_nodes(
         self,
@@ -1189,6 +1162,60 @@ class NetworkXGraphClient(GraphClient):
             )
         return triples
 
+
+    def nodes_and_edges_citing(self, brain_id: str, chunk_ids: list[str], edge_uuids: list[str]):
+        self._store.ensure_database(brain_id)
+        brain = self._store.get_brain(brain_id)
+        wanted = {str(item) for item in chunk_ids if item}
+        known_edges = {str(item) for item in edge_uuids if item}
+        nodes: list[Node] = []
+        for node_uuid, data in brain.graph.nodes(data=True):
+            cited = {str(item) for item in (data.get("source_chunk_ids") or [])}
+            if not cited & wanted:
+                continue
+            nodes.append(
+                Node(
+                    uuid=str(node_uuid),
+                    name=str(data.get("name") or ""),
+                    labels=list(data.get("labels") or []),
+                    description=data.get("description") or "",
+                    properties={key: value for key, value in data.items() if key != "labels"},
+                )
+            )
+        triples = []
+        for source, target, key, data in brain.graph.edges(keys=True, data=True):
+            nested = data.get("properties") if isinstance(data.get("properties"), dict) else {}
+            cited = {
+                str(item)
+                for item in list(data.get("source_chunk_ids") or [])
+                + list(nested.get("source_chunk_ids") or [])
+            }
+            rel_uuid = str(data.get("uuid") or nested.get("uuid") or "")
+            if rel_uuid not in known_edges and not cited & wanted:
+                continue
+            triples.append(
+                (
+                    Node(
+                        uuid=str(source),
+                        name=str(brain.node_data(source).get("name") or ""),
+                        labels=list(brain.labels(source)),
+                        properties=brain.node_data(source),
+                    ),
+                    Predicate(
+                        uuid=rel_uuid or str(key),
+                        name=str(data.get("rel_type") or ""),
+                        description=str(data.get("description") or ""),
+                        properties=dict(data),
+                    ),
+                    Node(
+                        uuid=str(target),
+                        name=str(brain.node_data(target).get("name") or ""),
+                        labels=list(brain.labels(target)),
+                        properties=brain.node_data(target),
+                    ),
+                )
+            )
+        return nodes, triples
 
     def remove_nodes(self, uuids: list[str], brain_id: str) -> list[Node]:
         self._store.ensure_database(brain_id)

@@ -251,6 +251,14 @@ class VectorStoreAdapter:
             return None
         return self.vector_store.remove_vectors(ids, store, brain_id)
 
+    def remove_vectors_by_resource_id(
+        self, resource_ids: list[str], store: str, brain_id: str = "default"
+    ) -> None:
+        method = getattr(self.vector_store, "remove_vectors_by_resource_id", None)
+        if method is None:
+            return None
+        return method(resource_ids, store, brain_id)
+
     def list_vectors(
         self,
         store: str,
