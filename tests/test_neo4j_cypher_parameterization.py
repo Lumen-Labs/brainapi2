@@ -121,6 +121,15 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
         self.assertNotIn("'alice-1'", query)
         self.assertNotIn("'Alice'", query)
 
+    def test_add_nodes_merges_ingest_task_ids(self):
+        client = _client()
+        node = _person()
+        node.properties = {"ingest_task_ids": ["task-1"]}
+        client.add_nodes([node], "braina")
+        query, params, _db = client.driver.calls[0]
+        self.assertIn("n.ingest_task_ids = CASE", query)
+        self.assertEqual(params["ingest_task_ids"], ["task-1"])
+
     def test_bind_property_value_keeps_homogeneous_lists_and_json_mixed(self):
         client = _client()
         self.assertEqual(client._bind_property_value([1, 2, 3]), [1, 2, 3])
