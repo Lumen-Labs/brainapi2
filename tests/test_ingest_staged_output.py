@@ -93,6 +93,27 @@ def test_staged_vector_write_uses_replayable_identity():
     client.upsert_staged_vectors.assert_called_with([vector], "data", "brain")
 
 
+def test_rollback_vector_operation_deletes_int64_primary_keys():
+    from src.core.saving.ingest_publication import rollback_vector_operation
+    from src.lib.postgresql.vectors import string_to_int64
+
+    client = Mock()
+    rollback_vector_operation(
+        client,
+        "brain",
+        {
+            "method": "add_vectors",
+            "args": {
+                "store": "data",
+                "vectors": [{"id": "stable", "embeddings": [1.0]}],
+            },
+        },
+    )
+    client.remove_vectors.assert_called_once_with(
+        [string_to_int64("stable")], "data", "brain"
+    )
+
+
 def test_worker_commits_only_while_claim_is_current(monkeypatch):
     from src.core.saving import ingest_worker
 

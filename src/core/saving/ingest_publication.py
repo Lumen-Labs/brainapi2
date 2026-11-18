@@ -92,6 +92,8 @@ def _rollback_postgres_data(client, brain_id, table, records):
 
 def rollback_data_operation(client, brain_id, operation):
     method = operation["method"]
+    if method == "mark_text_chunks_superseded":
+        raise ValueError("Staged supersession has no safe inverse")
     name, argument, model = _DATA_OPERATIONS[method]
     value = operation["args"][argument]
     records = (
@@ -130,8 +132,13 @@ def replay_vector_operation(client, brain_id, operation):
 def rollback_vector_operation(client, brain_id, operation):
     if operation["method"] != "add_vectors":
         raise ValueError("Unsupported staged vector rollback")
+    from src.lib.postgresql.vectors import string_to_int64
+
     args = operation["args"]
-    ids = [vector["id"] for vector in args["vectors"]]
+    ids = []
+    for vector in args["vectors"]:
+        vector_id = vector["id"]
+        ids.append(vector_id if isinstance(vector_id, int) else string_to_int64(str(vector_id)))
     if ids:
         client.remove_vectors(ids, args["store"], brain_id)
 
