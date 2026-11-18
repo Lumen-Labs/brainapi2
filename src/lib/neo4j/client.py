@@ -1463,7 +1463,8 @@ class Neo4jClient(GraphClient):
             "MATCH (a)-[r:" + rel_type + "]->(b)\n"
             "SET r['deprecated'] = true,\n"
             "    r['valid_to'] = coalesce(r['valid_to'], $closed_at),\n"
-            "    r['invalid_at'] = coalesce(r['invalid_at'], $closed_at)\n"
+            "    r['invalid_at'] = coalesce(r['invalid_at'], $closed_at),\n"
+            "    r['retired_reason'] = coalesce(r['retired_reason'], $retired_reason)\n"
             "RETURN a['uuid'] as a_uuid, a['name'] as a_name, labels(a) as a_labels, "
             "a['description'] as a_description, properties(a) as a_properties,\n"
             "    b['uuid'] as b_uuid, b['name'] as b_name, labels(b) as b_labels, "
@@ -1480,6 +1481,7 @@ class Neo4jClient(GraphClient):
                 "subject_name": subject.name,
                 "object_name": object.name,
                 "closed_at": format_instant(utc_now()),
+                "retired_reason": "janitor deprecated relationship",
             },
         )
         if result.records:

@@ -682,10 +682,16 @@ def _invalidate_superseded_relationships(
             from src.core.saving.validity import close_validity, format_instant, parse_instant, utc_now
 
             closed_at = valid_at or format_instant(utc_now())
+            reason = (
+                "source revision replaced this edge"
+                if superseded_chunk_ids
+                else "single-valued predicate replaced"
+            )
             closed = close_validity(
                 props,
                 closed_at=closed_at,
                 superseded_by=getattr(relationship, "uuid", None),
+                reason=reason,
             )
             graph_adapter.update_properties(
                 predicate.uuid,
@@ -698,6 +704,7 @@ def _invalidate_superseded_relationships(
                     or format_instant(parse_instant(closed_at) or utc_now()),
                     "superseded_by": closed.get("superseded_by")
                     or getattr(relationship, "uuid", None),
+                    "retired_reason": closed.get("retired_reason") or reason,
                 },
             )
         except Exception as exc:
