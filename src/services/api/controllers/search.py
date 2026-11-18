@@ -50,6 +50,7 @@ from src.services.api.constants.requests import (
 from src.services.data.main import data_adapter
 from src.services.kg_agent.main import embeddings_adapter, graph_adapter, vector_store_adapter
 from src.utils.vector_search import VectorSearchFacade
+from src.core.verification.facts import verification_scope
 
 vector_search = VectorSearchFacade(vector_store_adapter)
 
@@ -201,16 +202,24 @@ def _collect_graph_hits(
 
 async def search(request: SearchRequestBody) -> SearchResponse:
     _require_search_enabled()
-    with profile_request(
-        "retrieve.search", enabled=request.profile_stages
-    ) as profiler:
-        response = await _search(request)
+    with verification_scope(include_rejected=bool(request.include_rejected)):
+        with profile_request(
+            "retrieve.search", enabled=request.profile_stages
+        ) as profiler:
+            response = await _search(request)
     if profiler is not None:
         response.stage_timings = profiler.last_report
     return response
 
 
 async def _search(request: SearchRequestBody) -> SearchResponse:
+    from src.core.saving.source_passages import screen_passage_hits
+    from src.core.saving.validity import InvalidAsOf, optional_instant
+
+    try:
+        as_of = optional_instant(getattr(request, "as_of", None))
+    except InvalidAsOf as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     try:
         reranker = resolve_reranker(request.rerank)
         plugin_retrievers = resolve_retrievers(request.channels)
@@ -219,6 +228,8 @@ async def _search(request: SearchRequestBody) -> SearchResponse:
 
     k = request.k
     k_ret = retrieve_k_for_mode(request.mode, k)
+    if as_of is not None:
+        k_ret = min(200, max(k_ret, k * 8))
     rerank_max = rerank_max_k_for_mode(request.mode)
     brain_id = request.brain_id
     fusion = request.fusion or config.search_fusion
@@ -417,6 +428,28 @@ async def _search(request: SearchRequestBody) -> SearchResponse:
             for item_id in ranked_ids
             if hit_matches_extras(extras_by_id.get(item_id), request.extras)
         ]
+    if as_of is not None:
+        passage_ids = [
+            item_id for item_id in ranked_ids if item_id not in graph_by_id
+        ]
+        if passage_ids:
+            screened = screen_passage_hits(
+                data_adapter,
+                brain_id,
+                [
+                    (item_id, 0.0, texts.get(item_id) or "")
+                    for item_id in passage_ids
+                ],
+                include_history=False,
+                as_of=as_of,
+            )
+            allowed = {item_id for item_id, _, _ in screened}
+            ranked_ids = [
+                item_id
+                for item_id in ranked_ids
+                if item_id in graph_by_id or item_id in allowed
+            ]
+            ranked_ids = ranked_ids[: retrieve_k_for_mode(request.mode, k)]
     node_id_by_hit: dict[str, str | None] = {}
     for item_id in ranked_ids:
         graph_hit = graph_by_id.get(item_id)

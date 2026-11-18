@@ -14,6 +14,9 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 from src.services.api.dependencies import get_brain_id
 from src.services.api.constants.requests import (
+    ConflictDismissRequest,
+    ConflictResolveRequest,
+    ConflictScanRequest,
     GetEntityContextResponse,
     GetEntityInfoResponse,
     GetEntitySibilingsResponse,
@@ -32,6 +35,10 @@ from src.services.api.constants.requests import (
 from src.services.api.constants.responses import (
     ChangelogItemResponse,
     ChangelogListResponse,
+    ConflictItemResponse,
+    ConflictListResponse,
+    ConflictReportResponse,
+    ConflictScanAcceptedResponse,
     EntityListResponse,
     HopListResponse,
     LabelListResponse,
@@ -73,6 +80,14 @@ from src.services.api.controllers.changelogs import (
     get_changelogs_list as get_changelogs_list_controller,
     get_changelog_types as get_changelog_types_controller,
 )
+from src.services.api.controllers.conflicts import (
+    dismiss_conflict_by_id as dismiss_conflict_by_id_controller,
+    get_conflict_by_id as get_conflict_by_id_controller,
+    get_conflict_report as get_conflict_report_controller,
+    get_conflicts_list as get_conflicts_list_controller,
+    resolve_conflict_by_id as resolve_conflict_by_id_controller,
+    start_conflict_scan as start_conflict_scan_controller,
+)
 from src.services.api.controllers.entities import (
     get_entity_info as get_entity_info_controller,
     get_entity_context as get_entity_context_controller,
@@ -100,12 +115,27 @@ async def retrieve(
         "",
         description="The entities to prioritize in the relationships, separated by commas.",
     ),
+    include_rejected: bool = Query(
+        False,
+        description="If true, include expert-rejected facts.",
+    ),
+    as_of: Optional[str] = Query(
+        None,
+        description="ISO-8601 datetime. When set, return the knowledge state valid at that instant.",
+    ),
     brain_id: str = Depends(get_brain_id),
 ):
     """
     Retrieve data from the knowledge graph and data store.
     """
-    return await retrieve_data_controller(text, limit, preferred_entities, brain_id)
+    return await retrieve_data_controller(
+        text,
+        limit,
+        preferred_entities,
+        brain_id,
+        include_rejected=include_rejected,
+        as_of=as_of,
+    )
 
 
 @retrieve_router.get(
@@ -118,13 +148,21 @@ async def get_neighbors(
         None,
         description="The description of what in the neighbors should share with the target.",
     ),
+    include_rejected: bool = Query(
+        False,
+        description="If true, include expert-rejected facts.",
+    ),
     brain_id: str = Depends(get_brain_id),
 ):
     """
     Get the neighbors of an entity.
     """
     return await retrieve_neighbors_controller(
-        uuid=uuid, limit=limit, look_for=look_for, brain_id=brain_id
+        uuid=uuid,
+        limit=limit,
+        look_for=look_for,
+        brain_id=brain_id,
+        include_rejected=include_rejected,
     )
 
 
@@ -144,6 +182,7 @@ async def get_neighbors_with_identification_params(
         limit=request.limit,
         look_for=request.look_for if request.look_for else None,
         brain_id=request.brain_id,
+        include_rejected=request.include_rejected,
     )
 
 
@@ -202,6 +241,10 @@ async def get_relationships(
     to_node_labels: Optional[str] = None,
     query_text: Optional[str] = None,
     query_search_target: Optional[str] = "all",
+    include_rejected: bool = Query(
+        False,
+        description="If true, include expert-rejected facts.",
+    ),
     brain_id: str = Depends(get_brain_id),
 ):
     """
@@ -235,6 +278,7 @@ async def get_relationships(
         query_text,
         query_search_target,
         brain_id,
+        include_rejected,
     )
 
 
@@ -244,6 +288,10 @@ async def get_entities(
     skip: int = 0,
     node_labels: Optional[str] = None,
     query_text: Optional[str] = None,
+    include_rejected: bool = Query(
+        False,
+        description="If true, include expert-rejected facts.",
+    ),
     brain_id: str = Depends(get_brain_id),
 ):
     """
@@ -260,7 +308,7 @@ async def get_entities(
     if node_labels:
         node_labels = node_labels.split(",")
     return await retrieve_get_entities_controller(
-        limit, skip, node_labels, query_text, brain_id
+        limit, skip, node_labels, query_text, brain_id, include_rejected
     )
 
 
@@ -427,6 +475,75 @@ async def get_changelog_types(
     return await get_changelog_types_controller(brain_id)
 
 
+@retrieve_router.get(path="/conflicts", response_model=ConflictListResponse)
+async def get_conflicts_list(
+    limit: int = 10,
+    skip: int = 0,
+    status: Optional[str] = Query(None, description="open, resolved, or dismissed"),
+    source: Optional[str] = Query(None, description="Filter by source_key"),
+    subject: Optional[str] = Query(None, description="Filter by subject name"),
+    since: Optional[str] = Query(None, description="ISO-8601 detected_at start"),
+    until: Optional[str] = Query(None, description="ISO-8601 detected_at end"),
+    brain_id: str = Depends(get_brain_id),
+):
+    return await get_conflicts_list_controller(
+        limit, skip, status, source, subject, since, until, brain_id
+    )
+
+
+@retrieve_router.get(path="/conflicts/report", response_model=ConflictReportResponse)
+async def get_conflict_report(
+    status: Optional[str] = None,
+    source: Optional[str] = None,
+    subject: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    format: str = Query("json", description="json or markdown"),
+    limit: int = 200,
+    skip: int = 0,
+    brain_id: str = Depends(get_brain_id),
+):
+    return await get_conflict_report_controller(
+        brain_id, status, source, subject, since, until, format, limit, skip
+    )
+
+
+@retrieve_router.post(path="/conflicts/scan", response_model=ConflictScanAcceptedResponse)
+async def start_conflict_scan(
+    request: ConflictScanRequest = Body(default_factory=ConflictScanRequest),
+    brain_id: str = Depends(get_brain_id),
+):
+    return await start_conflict_scan_controller(brain_id, request.use_llm)
+
+
+@retrieve_router.get(path="/conflicts/{id}", response_model=ConflictItemResponse)
+async def get_conflict_by_id(
+    id: str,
+    brain_id: str = Depends(get_brain_id),
+):
+    return await get_conflict_by_id_controller(id, brain_id)
+
+
+@retrieve_router.post(path="/conflicts/{id}/resolve", response_model=ConflictItemResponse)
+async def resolve_conflict_by_id(
+    id: str,
+    request: ConflictResolveRequest = Body(default_factory=ConflictResolveRequest),
+    brain_id: str = Depends(get_brain_id),
+):
+    return await resolve_conflict_by_id_controller(
+        id, brain_id, request.winning_fact_id, request.notes, request.method or "manual"
+    )
+
+
+@retrieve_router.post(path="/conflicts/{id}/dismiss", response_model=ConflictItemResponse)
+async def dismiss_conflict_by_id(
+    id: str,
+    request: ConflictDismissRequest = Body(default_factory=ConflictDismissRequest),
+    brain_id: str = Depends(get_brain_id),
+):
+    return await dismiss_conflict_by_id_controller(id, brain_id, request.notes)
+
+
 @retrieve_router.get(path="/changelogs/{id}", response_model=ChangelogItemResponse)
 async def get_changelog_by_id(
     id: str,
@@ -451,6 +568,14 @@ async def get_changelogs_list(
     skip: int = 0,
     types: Optional[str] = None,
     query_text: Optional[str] = None,
+    since: Optional[str] = Query(
+        None,
+        description="ISO-8601 datetime. Inclusive start of the change window.",
+    ),
+    until: Optional[str] = Query(
+        None,
+        description="ISO-8601 datetime. Exclusive end of the change window.",
+    ),
     brain_id: str = Depends(get_brain_id),
 ):
     """
@@ -459,6 +584,8 @@ async def get_changelogs_list(
     Parameters:
         types (Optional[str]): Optional comma-separated changelog types to filter by; each type will be applied as a filter.
         query_text (Optional[str]): Optional text used to filter changelogs by content or metadata.
+        since (Optional[str]): Inclusive start of a change window. Combined with until, returns added, superseded, and invalidated facts.
+        until (Optional[str]): Exclusive end of a change window.
 
     Returns:
         list: Changelog records matching the provided filters, constrained by `limit` and `skip`.
@@ -466,7 +593,7 @@ async def get_changelogs_list(
     if types:
         types = types.split(",")
     return await get_changelogs_list_controller(
-        limit, skip, types, query_text, brain_id
+        limit, skip, types, query_text, brain_id, since, until
     )
 
 
@@ -643,6 +770,10 @@ async def post_recommend(
 async def get_search(
     query: str = Query(..., description="The search query."),
     k: int = Query(10, ge=1, le=200, description="Number of hits to return."),
+    as_of: Optional[str] = Query(
+        None,
+        description="ISO-8601 datetime. When set, search the knowledge state valid at that instant.",
+    ),
     channels: Optional[str] = Query(
         "passages",
         description=(
@@ -694,6 +825,7 @@ async def get_search(
     request = SearchRequestBody(
         query=query,
         k=k,
+        as_of=as_of,
         channels=channel_list,
         node_labels=node_label_list,
         community_labels=community_label_list,

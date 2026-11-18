@@ -43,6 +43,8 @@ from src.lib.cypher_safety import (
     quote_labels,
     quote_rel_type,
     quote_rel_types_pattern,
+    relationship_changed_in_window_clause,
+    relationship_valid_at_clause,
     require_database_name,
     require_int,
     require_limit,
@@ -114,6 +116,23 @@ class CypherSafetyHelperTests(unittest.TestCase):
             require_database_name("1abc")
         with self.assertRaises(InvalidCypherIdentifier):
             require_database_name("foo`bar")
+
+    def test_validity_clauses_use_allowlisted_keys_and_parameters(self):
+        valid_at = relationship_valid_at_clause("r", "as_of")
+        self.assertIn("r['valid_from']", valid_at)
+        self.assertIn("r['valid_to']", valid_at)
+        self.assertIn("$as_of", valid_at)
+        self.assertNotIn(";", valid_at)
+        window = relationship_changed_in_window_clause("r", "since", "until")
+        self.assertIn("r['invalid_at']", window)
+        self.assertIn("IS NOT NULL", window)
+        self.assertNotIn("$since", window)
+        self.assertNotIn("$until", window)
+        self.assertNotIn(">=", window)
+        with self.assertRaises(InvalidCypherIdentifier):
+            relationship_valid_at_clause("r`", "as_of")
+        with self.assertRaises(InvalidCypherIdentifier):
+            relationship_changed_in_window_clause("r", "since; MATCH", "until")
 
     def test_bound_integers(self):
         self.assertEqual(require_limit(10), 10)

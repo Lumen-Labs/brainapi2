@@ -28,9 +28,24 @@ from src.core.instances import (
     graph_adapter,
     vector_store_adapter,
 )
+from src.core.verification.facts import verification_scope
+from src.core.verification.service import (
+    FactNotFound,
+    apply_verification_action,
+    get_fact_record,
+    list_fact_records,
+    require_state,
+)
 from src.services.mcp.oauth_provider import BrainapiMcpOAuthProvider
 from src.services.mcp.prompt import HISTORY_NAVIGATION_GUIDE
 from src.services.mcp.utils import guard_brainpat
+from src.services.mcp.conflicts import (
+    conflict_report_tool,
+    dismiss_conflict_tool,
+    read_conflict,
+    read_conflicts,
+    resolve_conflict_tool,
+)
 from src.services.mcp.versions import (
     invalidated_hops,
     read_changelog,
@@ -215,23 +230,25 @@ def _traverse_graph_sync(
     node_labels: list[str] | None,
     direction: str,
     limit: int,
+    include_rejected: bool,
 ) -> Any:
     try:
         if not guard_brainpat(auth_token_var.get(), brain_id):
             return "Unauthorized"
         if direction not in {"in", "out", "both"}:
             return "Error: direction must be in, out, or both"
-        result = graph_adapter.traverse_graph(
-            brain_id=brain_id,
-            start_uuid=start_uuid or None,
-            start_name=start_name or None,
-            start_labels=start_labels,
-            depth=depth,
-            rel_types=rel_types,
-            node_labels=node_labels,
-            direction=direction,
-            limit=limit,
-        )
+        with verification_scope(include_rejected=include_rejected):
+            result = graph_adapter.traverse_graph(
+                brain_id=brain_id,
+                start_uuid=start_uuid or None,
+                start_name=start_name or None,
+                start_labels=start_labels,
+                depth=depth,
+                rel_types=rel_types,
+                node_labels=node_labels,
+                direction=direction,
+                limit=limit,
+            )
         if isinstance(result, dict) and isinstance(result.get("hops"), list):
             result["invalidated"] = invalidated_hops(result["hops"])
         return json.dumps(result, default=str)
@@ -250,6 +267,7 @@ async def traverse_graph(
     node_labels: list[str] | None = None,
     direction: str = "both",
     limit: int = 50,
+    include_rejected: bool = False,
 ) -> Any:
     """
     Traverse the knowledge graph from a starting node up to N hops with optional filters.
@@ -257,6 +275,7 @@ async def traverse_graph(
 
     The result keeps every hop and also lists superseded relationships in invalidated.
     Provide start_uuid, or both start_name and start_labels to identify the start node.
+    Rejected facts are excluded unless include_rejected is true.
     """
     return await asyncio.to_thread(
         _traverse_graph_sync,
@@ -269,6 +288,7 @@ async def traverse_graph(
         node_labels,
         direction,
         limit,
+        include_rejected,
     )
 
 
@@ -297,7 +317,7 @@ async def search_memory(db_query: str, brain_id: str) -> Any:
     return await asyncio.to_thread(_search_memory_sync, db_query, brain_id)
 
 
-def _search_semantically_sync(query: str, brain_id: str) -> Any:
+def _search_semantically_sync(query: str, brain_id: str, include_rejected: bool) -> Any:
     try:
         if not guard_brainpat(auth_token_var.get(), brain_id):
             return "Unauthorized"
@@ -307,16 +327,19 @@ def _search_semantically_sync(query: str, brain_id: str) -> Any:
             brain_id=brain_id,
             k=5,
         )
-        triplets = graph_adapter.get_event_centric_neighbors(
-            [v.metadata.get("uuid") for v in data_vectors], brain_id=brain_id
-        )
+        with verification_scope(include_rejected=include_rejected):
+            triplets = graph_adapter.get_event_centric_neighbors(
+                [v.metadata.get("uuid") for v in data_vectors], brain_id=brain_id
+            )
         return triplets
     except Exception as e:
         return f"Error executing graph operation: {e}"
 
 
 @mcp.tool()
-async def search_semantically(query: str, brain_id: str) -> Any:
+async def search_semantically(
+    query: str, brain_id: str, include_rejected: bool = False
+) -> Any:
     """
     Search information semantically, given a query and a brain to search in,
     this tool will return a list of graph nodes that are semantically related to the query.
@@ -326,8 +349,11 @@ async def search_semantically(query: str, brain_id: str) -> Any:
     Input must be a JSON object with the following fields:
     - query: str: the query to search for.
     - brain_id: str: the brain to search in.
+    - include_rejected: bool: include expert-rejected facts (default false).
     """
-    return await asyncio.to_thread(_search_semantically_sync, query, brain_id)
+    return await asyncio.to_thread(
+        _search_semantically_sync, query, brain_id, include_rejected
+    )
 
 
 def _list_brains_sync() -> list[str] | str:
@@ -348,6 +374,190 @@ async def list_brains() -> list[str] | str:
     return await asyncio.to_thread(_list_brains_sync)
 
 
+def _mutate_fact_sync(
+    action: str,
+    fact_id: str,
+    brain_id: str,
+    verified_by: str,
+    verification_source: str,
+    note: str,
+) -> Any:
+    try:
+        if not guard_brainpat(auth_token_var.get(), brain_id):
+            return "Unauthorized"
+        record = apply_verification_action(
+            graph_adapter,
+            fact_id=fact_id,
+            brain_id=brain_id,
+            action=action,  # type: ignore[arg-type]
+            verified_by=verified_by or None,
+            verification_source=verification_source or None,
+            note=note or None,
+        )
+        if action == "verify":
+            from src.core.saving.conflict_verification import (
+                close_open_conflicts_for_verified_fact,
+            )
+
+            close_open_conflicts_for_verified_fact(
+                data_adapter,
+                brain_id,
+                fact_id,
+                graph=graph_adapter,
+                notes=note or None,
+            )
+        return json.dumps(record.model_dump(mode="json"), default=str)
+    except FactNotFound:
+        return "Fact not found"
+    except Exception as e:
+        detail = getattr(e, "detail", None)
+        if detail:
+            return f"Error: {detail}"
+        return f"Error updating fact verification: {e}"
+
+
+@mcp.tool()
+async def verify_fact(
+    fact_id: str,
+    brain_id: str,
+    verified_by: str,
+    verification_source: str = "",
+    note: str = "",
+) -> Any:
+    """
+    Mark a fact (relationship UUID or fact-representing node UUID) as verified.
+
+    Brain-scoped; requires a valid BrainPAT. verified_by is the user or agent identity.
+    """
+    return await asyncio.to_thread(
+        _mutate_fact_sync,
+        "verify",
+        fact_id,
+        brain_id,
+        verified_by,
+        verification_source,
+        note,
+    )
+
+
+@mcp.tool()
+async def reject_fact(
+    fact_id: str,
+    brain_id: str,
+    verified_by: str,
+    verification_source: str = "",
+    note: str = "",
+) -> Any:
+    """
+    Mark a fact as rejected so retrieve/search/traverse hide it by default.
+    """
+    return await asyncio.to_thread(
+        _mutate_fact_sync,
+        "reject",
+        fact_id,
+        brain_id,
+        verified_by,
+        verification_source,
+        note,
+    )
+
+
+@mcp.tool()
+async def reset_fact_verification(
+    fact_id: str,
+    brain_id: str,
+    verified_by: str = "",
+    note: str = "",
+) -> Any:
+    """
+    Reset a fact back to unverified. Append-only audit history is retained.
+    """
+    return await asyncio.to_thread(
+        _mutate_fact_sync,
+        "reset",
+        fact_id,
+        brain_id,
+        verified_by,
+        "",
+        note,
+    )
+
+
+def _list_facts_sync(
+    brain_id: str,
+    state: str,
+    include_rejected: bool,
+    limit: int,
+    skip: int,
+) -> Any:
+    try:
+        if not guard_brainpat(auth_token_var.get(), brain_id):
+            return "Unauthorized"
+        normalized = require_state(state or None)
+        records, total = list_fact_records(
+            graph_adapter,
+            brain_id,
+            state=normalized,
+            include_rejected=include_rejected,
+            limit=limit,
+            skip=skip,
+        )
+        return json.dumps(
+            {
+                "total": total,
+                "facts": [record.model_dump(mode="json") for record in records],
+            },
+            default=str,
+        )
+    except Exception as e:
+        detail = getattr(e, "detail", None)
+        if detail:
+            return f"Error: {detail}"
+        return f"Error listing facts: {e}"
+
+
+@mcp.tool()
+async def list_facts_by_verification(
+    brain_id: str,
+    state: str = "",
+    include_rejected: bool = False,
+    limit: int = 50,
+    skip: int = 0,
+) -> Any:
+    """
+    List facts in a brain filtered by verification state:
+    unverified, verified, or rejected. Default listing hides rejected facts
+    unless include_rejected is true or state is rejected.
+    """
+    return await asyncio.to_thread(
+        _list_facts_sync, brain_id, state, include_rejected, limit, skip
+    )
+
+
+def _get_fact_sync(fact_id: str, brain_id: str) -> Any:
+    try:
+        if not guard_brainpat(auth_token_var.get(), brain_id):
+            return "Unauthorized"
+        record = get_fact_record(graph_adapter, fact_id, brain_id)
+        return json.dumps(record.model_dump(mode="json"), default=str)
+    except FactNotFound:
+        return "Fact not found"
+    except Exception as e:
+        return f"Error reading fact verification: {e}"
+
+
+@mcp.tool()
+async def get_fact_verification(
+    fact_id: str,
+    brain_id: str,
+) -> Any:
+    """
+    Get the current verification state, verifier info, and append-only audit
+    history for a fact.
+    """
+    return await asyncio.to_thread(_get_fact_sync, fact_id, brain_id)
+
+
 def _string_list(value: Any) -> list[str] | None:
     if value is None or value == "":
         return None
@@ -366,6 +576,8 @@ def _list_changelogs_sync(
     types: Any,
     limit: int,
     skip: int,
+    since: str,
+    until: str,
 ) -> Any:
     result = read_changelogs(
         data_adapter,
@@ -375,6 +587,9 @@ def _list_changelogs_sync(
         types=_string_list(types),
         limit=limit,
         skip=skip,
+        since=since or None,
+        until=until or None,
+        graph=graph_adapter,
     )
     if isinstance(result, str):
         return result
@@ -388,13 +603,16 @@ async def list_changelogs(
     types: list[str] | None = None,
     limit: int = 10,
     skip: int = 0,
+    since: str = "",
+    until: str = "",
 ) -> Any:
     """
     List graph changelog entries for a brain, newest first.
 
     Optional query_text matches the stored change. Optional types restrict the page
     to relationship_created, relationship_deprecated, node_properties_updated,
-    or relationship_properties_updated.
+    or relationship_properties_updated. Optional since/until ISO-8601 datetimes
+    return added, superseded, and invalidated facts in that window.
     """
     return await asyncio.to_thread(
         _list_changelogs_sync,
@@ -403,6 +621,8 @@ async def list_changelogs(
         types,
         limit,
         skip,
+        since,
+        until,
     )
 
 
@@ -479,4 +699,194 @@ async def list_source_versions(
         query,
         limit,
         skip,
+    )
+
+
+def _list_conflicts_sync(
+    brain_id: str,
+    status: str,
+    source: str,
+    subject: str,
+    since: str,
+    until: str,
+    limit: int,
+    skip: int,
+) -> Any:
+    result = read_conflicts(
+        data_adapter,
+        brain_id,
+        authorized=bool(guard_brainpat(auth_token_var.get(), brain_id)),
+        status=status or None,
+        source=source or None,
+        subject=subject or None,
+        since=since or None,
+        until=until or None,
+        limit=limit,
+        skip=skip,
+        graph=graph_adapter,
+    )
+    if isinstance(result, str):
+        return result
+    return json.dumps(result, default=str)
+
+
+@mcp.tool()
+async def list_conflicts(
+    brain_id: str,
+    status: str = "",
+    source: str = "",
+    subject: str = "",
+    since: str = "",
+    until: str = "",
+    limit: int = 10,
+    skip: int = 0,
+) -> Any:
+    """
+    List cross-source fact conflicts for a brain.
+    """
+    return await asyncio.to_thread(
+        _list_conflicts_sync,
+        brain_id,
+        status,
+        source,
+        subject,
+        since,
+        until,
+        limit,
+        skip,
+    )
+
+
+def _get_conflict_sync(brain_id: str, conflict_id: str) -> Any:
+    result = read_conflict(
+        data_adapter,
+        brain_id,
+        conflict_id,
+        authorized=bool(guard_brainpat(auth_token_var.get(), brain_id)),
+        graph=graph_adapter,
+    )
+    if isinstance(result, str):
+        return result
+    return json.dumps(result, default=str)
+
+
+@mcp.tool()
+async def get_conflict(brain_id: str, id: str = "") -> Any:
+    """
+    Read one conflict with full provenance for both sides.
+    """
+    return await asyncio.to_thread(_get_conflict_sync, brain_id, id)
+
+
+def _resolve_conflict_sync(
+    brain_id: str,
+    conflict_id: str,
+    winning_fact_id: str,
+    notes: str,
+    method: str,
+) -> Any:
+    result = resolve_conflict_tool(
+        data_adapter,
+        brain_id,
+        conflict_id,
+        authorized=bool(guard_brainpat(auth_token_var.get(), brain_id)),
+        winning_fact_id=winning_fact_id or None,
+        notes=notes or None,
+        method=method or "manual",
+        graph=graph_adapter,
+    )
+    if isinstance(result, str):
+        return result
+    return json.dumps(result, default=str)
+
+
+@mcp.tool()
+async def resolve_conflict(
+    brain_id: str,
+    id: str = "",
+    winning_fact_id: str = "",
+    notes: str = "",
+    method: str = "manual",
+) -> Any:
+    """
+    Resolve a conflict. Pass winning_fact_id to choose a side; method=verified_side
+    verifies the winner and rejects the other side via the fact verification API.
+    """
+    return await asyncio.to_thread(
+        _resolve_conflict_sync, brain_id, id, winning_fact_id, notes, method
+    )
+
+
+def _dismiss_conflict_sync(brain_id: str, conflict_id: str, notes: str) -> Any:
+    result = dismiss_conflict_tool(
+        data_adapter,
+        brain_id,
+        conflict_id,
+        authorized=bool(guard_brainpat(auth_token_var.get(), brain_id)),
+        notes=notes or None,
+    )
+    if isinstance(result, str):
+        return result
+    return json.dumps(result, default=str)
+
+
+@mcp.tool()
+async def dismiss_conflict(brain_id: str, id: str = "", notes: str = "") -> Any:
+    """
+    Dismiss a conflict without choosing a winning fact.
+    """
+    return await asyncio.to_thread(_dismiss_conflict_sync, brain_id, id, notes)
+
+
+def _conflict_report_sync(
+    brain_id: str,
+    status: str,
+    source: str,
+    subject: str,
+    since: str,
+    until: str,
+    fmt: str,
+    limit: int,
+) -> Any:
+    result = conflict_report_tool(
+        data_adapter,
+        brain_id,
+        authorized=bool(guard_brainpat(auth_token_var.get(), brain_id)),
+        status=status or None,
+        source=source or None,
+        subject=subject or None,
+        since=since or None,
+        until=until or None,
+        fmt=fmt or "json",
+        limit=limit,
+    )
+    if isinstance(result, str):
+        return result
+    return json.dumps(result, default=str)
+
+
+@mcp.tool()
+async def conflict_report(
+    brain_id: str,
+    status: str = "",
+    source: str = "",
+    subject: str = "",
+    since: str = "",
+    until: str = "",
+    format: str = "json",
+    limit: int = 200,
+) -> Any:
+    """
+    Conflict report with summary counts and per-conflict details.
+    """
+    return await asyncio.to_thread(
+        _conflict_report_sync,
+        brain_id,
+        status,
+        source,
+        subject,
+        since,
+        until,
+        format,
+        limit,
     )
