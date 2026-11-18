@@ -156,6 +156,20 @@ class ValidityIntervalTests(unittest.TestCase):
             ),
             "invalidated",
         )
+        slash_stamp = "15/01/2025"
+        iso_since = "2025-01-01T00:00:00Z"
+        iso_until = "2025-02-01T00:00:00Z"
+        self.assertEqual(
+            change_kind(
+                {"invalid_at": slash_stamp},
+                _utc(iso_since),
+                _utc(iso_until),
+            ),
+            "invalidated",
+        )
+        self.assertFalse(
+            slash_stamp >= iso_since and slash_stamp < iso_until
+        )
 
     def test_stamp_and_close_are_idempotent(self):
         first = stamp_valid_from({}, "2024-01-01T00:00:00Z")

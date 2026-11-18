@@ -307,63 +307,32 @@ def relationship_changed_in_window_clause(
     since_param: str = "since",
     until_param: str = "until",
 ) -> str:
-    """Cypher predicate: alias gained or lost validity inside [$since, $until)."""
+    """Cypher predicate: alias has a validity stamp Python can window-filter.
+
+    Do not compare stamp strings to $since/$until here. Historical
+    ``invalid_at`` values are day-first (``DD/MM/YYYY``) and lose the
+    window under lexicographic ISO compares. Callers pass since/until
+    through ``change_kind`` after parse_instant.
+    """
     rel = require_identifier(alias, kind="identifier")
-    since = require_identifier(since_param, kind="identifier")
-    until = require_identifier(until_param, kind="identifier")
+    require_identifier(since_param, kind="identifier")
+    require_identifier(until_param, kind="identifier")
     start = static_property_key("valid_from")
     end = static_property_key("valid_to")
     invalid = static_property_key("invalid_at")
     return (
-        "("
-        + rel
+        rel
         + "['"
         + start
-        + "'] IS NOT NULL AND "
-        + rel
-        + "['"
-        + start
-        + "'] >= $"
-        + since
-        + " AND "
-        + rel
-        + "['"
-        + start
-        + "'] < $"
-        + until
-        + ") OR ("
+        + "'] IS NOT NULL OR "
         + rel
         + "['"
         + end
-        + "'] IS NOT NULL AND "
-        + rel
-        + "['"
-        + end
-        + "'] >= $"
-        + since
-        + " AND "
-        + rel
-        + "['"
-        + end
-        + "'] < $"
-        + until
-        + ") OR ("
+        + "'] IS NOT NULL OR "
         + rel
         + "['"
         + invalid
-        + "'] IS NOT NULL AND "
-        + rel
-        + "['"
-        + invalid
-        + "'] >= $"
-        + since
-        + " AND "
-        + rel
-        + "['"
-        + invalid
-        + "'] < $"
-        + until
-        + ")"
+        + "'] IS NOT NULL"
     )
 
 

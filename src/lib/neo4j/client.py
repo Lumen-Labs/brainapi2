@@ -1274,8 +1274,6 @@ class Neo4jClient(GraphClient):
         }
         where_str = ""
         if since and until:
-            params["since"] = since
-            params["until"] = until
             where_str = "WHERE " + relationship_changed_in_window_clause("r") + "\n"
         cypher_query = (
             "MATCH (n)-[r]->(m)\n"

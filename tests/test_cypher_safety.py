@@ -124,9 +124,11 @@ class CypherSafetyHelperTests(unittest.TestCase):
         self.assertIn("$as_of", valid_at)
         self.assertNotIn(";", valid_at)
         window = relationship_changed_in_window_clause("r", "since", "until")
-        self.assertIn("$since", window)
-        self.assertIn("$until", window)
         self.assertIn("r['invalid_at']", window)
+        self.assertIn("IS NOT NULL", window)
+        self.assertNotIn("$since", window)
+        self.assertNotIn("$until", window)
+        self.assertNotIn(">=", window)
         with self.assertRaises(InvalidCypherIdentifier):
             relationship_valid_at_clause("r`", "as_of")
         with self.assertRaises(InvalidCypherIdentifier):
