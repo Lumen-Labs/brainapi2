@@ -29,4 +29,4 @@ Short answers use exact match plus `must_include` phrases. Changelog items requi
 
 ## BrainAPI note
 
-Current main has no `as_of` query parameter. The BrainAPI adapter still runs these questions as written (the date is in the question text) and marks `as_of` capability pending unless OpenAPI/env exposes a field.
+Current main has no `as_of` query parameter. The BrainAPI adapter feature-detects an as-of field when OpenAPI/`EVAL_AS_OF_FIELD` exposes one. Until that lands it sends `include_history=true` for as-of and changelog questions and records `as_of_mode` on each result.
