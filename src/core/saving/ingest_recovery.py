@@ -1,7 +1,18 @@
 """Reconcile one brain's durable staging state independently of broker delivery."""
 
+import logging
+
 from src.core.saving import ingest_access_gate, ingest_cancellation, ingest_staging
 from src.core.saving.ingest_staged_output import discard_outputs
+
+log = logging.getLogger(__name__)
+
+
+def cleanup_abandoned_staging(brain_id, root_id):
+    """Remove leftover private staging data after a terminal settlement failure."""
+    discard_outputs(brain_id, root_id)
+    ingest_staging.mark_cleanup_complete(brain_id, root_id)
+
 
 def reconcile_run(brain_id, root_id, dispatch, publish):
     """Retry pending work. Publish must acquire the brain's publication gate."""
@@ -25,13 +36,29 @@ def reconcile_run(brain_id, root_id, dispatch, publish):
             return
 
     if run["status"] == "publishing":
-        publish(brain_id, root_id)
+        try:
+            publish(brain_id, root_id)
+        except ingest_access_gate.BrainPublicationBusy:
+            raise
+        except Exception:
+            if not ingest_staging.record_settlement_failure(brain_id, root_id, "publishing"):
+                raise
+            ingest_access_gate.release_publication(brain_id, root_id)
+            log.exception(
+                "Staged ingestion %s for brain %s failed permanently while publishing",
+                root_id, brain_id,
+            )
+            return
     elif run["status"] == "discarding":
         with ingest_access_gate.publication_gate(brain_id, root_id):
             try:
                 discard_outputs(brain_id, root_id)
             except Exception:
-                if not ingest_staging.record_rollback_failure(brain_id, root_id):
+                if not ingest_staging.record_settlement_failure(brain_id, root_id, "discarding"):
                     raise
+                log.exception(
+                    "Staged ingestion %s for brain %s failed permanently while discarding",
+                    root_id, brain_id,
+                )
                 return
             ingest_staging.finish_discard(brain_id, root_id)
