@@ -82,6 +82,8 @@ _STATIC_PROPERTY_KEYS = frozenset(
         "valid_to",
         "valid_at",
         "invalid_at",
+        "recorded_at",
+        "inserted_at",
     }
 )
 
@@ -417,22 +419,16 @@ def relationship_changed_in_window_clause(
     rel = require_identifier(alias, kind="identifier")
     require_identifier(since_param, kind="identifier")
     require_identifier(until_param, kind="identifier")
-    start = static_property_key("valid_from")
-    end = static_property_key("valid_to")
-    invalid = static_property_key("invalid_at")
-    return (
-        rel
-        + "['"
-        + start
-        + "'] IS NOT NULL OR "
-        + rel
-        + "['"
-        + end
-        + "'] IS NOT NULL OR "
-        + rel
-        + "['"
-        + invalid
-        + "'] IS NOT NULL"
+    keys = (
+        "valid_from",
+        "valid_to",
+        "invalid_at",
+        "recorded_at",
+        "valid_at",
+        "inserted_at",
+    )
+    return " OR ".join(
+        rel + "['" + static_property_key(key) + "'] IS NOT NULL" for key in keys
     )
 
 

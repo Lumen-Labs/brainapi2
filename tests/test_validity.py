@@ -177,6 +177,14 @@ class ValidityIntervalTests(unittest.TestCase):
         )
         self.assertEqual(
             change_kind(
+                {"recorded_at": "2025-06-01T00:00:00Z"},
+                since,
+                until,
+            ),
+            "added",
+        )
+        self.assertEqual(
+            change_kind(
                 {
                     "valid_from": "2024-01-01T00:00:00Z",
                     "valid_to": "2025-06-01T00:00:00Z",
