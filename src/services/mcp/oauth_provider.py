@@ -31,10 +31,16 @@ class BrainapiMcpOAuthProvider(
         auth_code_ttl_seconds: int,
         redis_client=None,
         pat_verifier=None,
+        default_scopes: list[str] | None = None,
+        pat_scope_resolver=None,
     ):
         self._issuer_url = issuer_url.rstrip("/")
         self._resource_server_url = resource_server_url.rstrip("/")
         self._valid_scopes = valid_scopes
+        self._default_scopes = list(
+            default_scopes if default_scopes is not None else valid_scopes
+        )
+        self._pat_scope_resolver = pat_scope_resolver
         self._access_token_ttl = access_token_ttl_seconds
         self._refresh_token_ttl = refresh_token_ttl_seconds
         self._auth_code_ttl = auth_code_ttl_seconds
@@ -138,7 +144,7 @@ class BrainapiMcpOAuthProvider(
             )
         scopes = params.scopes
         if scopes is None:
-            scopes = list(self._valid_scopes)
+            scopes = list(self._default_scopes)
         for s in scopes:
             if s not in self._valid_scopes:
                 raise AuthorizeError(error="invalid_scope", error_description=f"unknown scope: {s}")
@@ -270,10 +276,15 @@ class BrainapiMcpOAuthProvider(
         at = self._get_model(self._access_key(token), AccessToken)
         if at is None:
             if self._pat_verifier(token):
+                scopes = list(self._default_scopes)
+                if self._pat_scope_resolver is not None:
+                    resolved = self._pat_scope_resolver(token)
+                    if resolved is not None:
+                        scopes = list(resolved)
                 return AccessToken(
                     token=token,
                     client_id="brainpat",
-                    scopes=list(self._valid_scopes),
+                    scopes=scopes,
                     expires_at=None,
                     resource=self._resource_server_url,
                 )

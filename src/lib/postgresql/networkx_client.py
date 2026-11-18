@@ -179,9 +179,19 @@ class NetworkXGraphClient(GraphClient):
             "flow_key": predicate.flow_key,
         }
         rel_props.update(validity_props_from_mapping(predicate.properties))
+        from src.core.verification.facts import VERIFICATION_PROPERTY_FIELDS
+
+        for key in VERIFICATION_PROPERTY_FIELDS:
+            rel_props.pop(key, None)
         for attr in ("properties", "happened_at", "last_updated", "amount"):
             value = getattr(predicate, attr, None)
             if value:
+                if attr == "properties" and isinstance(value, dict):
+                    value = {
+                        key: item
+                        for key, item in value.items()
+                        if key not in VERIFICATION_PROPERTY_FIELDS
+                    }
                 rel_props[attr] = value
         for attr in ("properties", "description", "happened_at", "flow_key", "last_updated", "amount"):
             for obj in (subject, to_object):
@@ -1739,7 +1749,13 @@ class NetworkXGraphClient(GraphClient):
             if self._edge_matches_uuid(key, edge_data, fact_id):
                 return self._relationship_fact_row(brain, source, target, key, edge_data)
         if fact_id in brain.graph:
-            return self._node_fact_row(brain, fact_id)
+            labels = brain.labels(fact_id) if hasattr(brain, "labels") else (
+                brain.graph.nodes[fact_id].get("labels") or []
+            )
+            from src.core.verification.facts import node_is_verifiable_event
+
+            if node_is_verifiable_event(labels):
+                return self._node_fact_row(brain, fact_id)
         return None
 
     def set_fact_verification(
@@ -1749,14 +1765,20 @@ class NetworkXGraphClient(GraphClient):
         *,
         kind: Literal["relationship", "node"],
         properties: dict,
+        history_entry: object | None = None,
     ) -> Optional[dict]:
         self._store.ensure_database(brain_id)
+        if kind == "node":
+            current = self.get_fact_record(fact_id, brain_id)
+            if current is None:
+                return None
         record = self._store.update_entity_properties(
             brain_id,
             fact_id,
             kind == "relationship",
             properties,
             [],
+            history_entry=history_entry,
         )
         if not record:
             return None

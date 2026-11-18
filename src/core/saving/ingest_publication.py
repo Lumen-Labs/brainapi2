@@ -90,6 +90,7 @@ def replay_graph_operation(client, brain_id, operation):
             brain_id,
             kind=args["kind"],
             properties=args["properties"],
+            history_entry=args.get("history_entry"),
         )
     elif method == "refresh_hub_bridges_for_entities":
         refresh = getattr(client, method, None)

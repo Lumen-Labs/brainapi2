@@ -503,7 +503,10 @@ class VerifyFactRequest(BaseModel):
 
     verified_by: Optional[str] = Field(
         default=None,
-        description="User or agent identity performing the verification action.",
+        description=(
+            "Ignored. Actor identity is taken from the authenticated token "
+            "principal; caller-supplied verified_by is not stored."
+        ),
     )
     verification_source: Optional[str] = Field(
         default=None,

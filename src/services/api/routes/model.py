@@ -10,7 +10,7 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 
 from fastapi import APIRouter, Depends
 
-from src.services.api.dependencies import get_brain_id
+from src.services.api.dependencies import get_brain_id, require_verification_permission
 from src.services.api.constants.requests import (
     AddEntityRequest,
     UpdateEntityRequest,
@@ -155,8 +155,11 @@ async def verify_fact(
     fact_id: str,
     request: VerifyFactRequest,
     brain_id: str = Depends(get_brain_id),
+    actor: str = Depends(require_verification_permission),
 ):
-    return await mutate_fact_verification(fact_id, brain_id, "verify", request)
+    return await mutate_fact_verification(
+        fact_id, brain_id, "verify", request, actor=actor
+    )
 
 
 @model_router.post(path="/facts/{fact_id}/reject", response_model=FactVerificationRecord)
@@ -164,8 +167,11 @@ async def reject_fact(
     fact_id: str,
     request: VerifyFactRequest,
     brain_id: str = Depends(get_brain_id),
+    actor: str = Depends(require_verification_permission),
 ):
-    return await mutate_fact_verification(fact_id, brain_id, "reject", request)
+    return await mutate_fact_verification(
+        fact_id, brain_id, "reject", request, actor=actor
+    )
 
 
 @model_router.post(path="/facts/{fact_id}/reset", response_model=FactVerificationRecord)
@@ -173,5 +179,8 @@ async def reset_fact(
     fact_id: str,
     request: VerifyFactRequest,
     brain_id: str = Depends(get_brain_id),
+    actor: str = Depends(require_verification_permission),
 ):
-    return await mutate_fact_verification(fact_id, brain_id, "reset", request)
+    return await mutate_fact_verification(
+        fact_id, brain_id, "reset", request, actor=actor
+    )

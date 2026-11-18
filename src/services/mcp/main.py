@@ -28,7 +28,18 @@ from src.core.instances import (
     graph_adapter,
     vector_store_adapter,
 )
-from src.core.verification.facts import verification_scope
+from src.core.auth.scopes import (
+    DEFAULT_SCOPE,
+    VERIFICATION_PERMISSION_DENIED,
+    VERIFICATION_SCOPE,
+    grantable_oauth_scopes,
+    has_verification_scope,
+    resolve_token_identity,
+)
+from src.core.verification.facts import (
+    filter_raw_operation_result,
+    verification_scope,
+)
 from src.core.verification.service import (
     FactNotFound,
     apply_verification_action,
@@ -48,6 +59,10 @@ from src.services.mcp.versions import (
 from src.utils.vector_search import VectorSearchFacade
 
 auth_token_var: ContextVar[str | None] = ContextVar("auth_token", default=None)
+auth_scopes_var: ContextVar[tuple[str, ...] | None] = ContextVar(
+    "auth_scopes", default=None
+)
+auth_principal_var: ContextVar[str | None] = ContextVar("auth_principal", default=None)
 vector_search = VectorSearchFacade(vector_store_adapter)
 
 _oauth_issuer = os.getenv("MCP_OAUTH_ISSUER_URL", "").strip()
@@ -56,10 +71,16 @@ if _oauth_issuer and not _oauth_resource:
     _oauth_resource = _oauth_issuer.rstrip("/") + "/mcp"
 
 _oauth_scopes = [
-    s for s in os.getenv("MCP_OAUTH_SCOPES", "brainapi").strip().split() if s
+    s for s in os.getenv("MCP_OAUTH_SCOPES", DEFAULT_SCOPE).strip().split() if s
 ]
 if not _oauth_scopes:
-    _oauth_scopes = ["brainapi"]
+    _oauth_scopes = [DEFAULT_SCOPE]
+_default_oauth_scopes = [scope for scope in _oauth_scopes if scope != VERIFICATION_SCOPE]
+if not _default_oauth_scopes:
+    _default_oauth_scopes = [DEFAULT_SCOPE]
+_valid_oauth_scopes = list(
+    dict.fromkeys([*_oauth_scopes, *_default_oauth_scopes, VERIFICATION_SCOPE])
+)
 
 _access_ttl = int(os.getenv("MCP_OAUTH_ACCESS_TOKEN_TTL", "3600"))
 _refresh_ttl_raw = os.getenv("MCP_OAUTH_REFRESH_TOKEN_TTL", "").strip()
@@ -68,13 +89,19 @@ _code_ttl = int(os.getenv("MCP_OAUTH_AUTH_CODE_TTL", "600"))
 
 oauth_provider: BrainapiMcpOAuthProvider | None = None
 if _oauth_issuer:
+    def _pat_scope_resolver(pat: str):
+        _principal, scopes = resolve_token_identity(pat)
+        return scopes
+
     oauth_provider = BrainapiMcpOAuthProvider(
         issuer_url=_oauth_issuer,
         resource_server_url=_oauth_resource,
-        valid_scopes=_oauth_scopes,
+        valid_scopes=_valid_oauth_scopes,
+        default_scopes=_default_oauth_scopes,
         access_token_ttl_seconds=_access_ttl,
         refresh_token_ttl_seconds=_refresh_ttl,
         auth_code_ttl_seconds=_code_ttl,
+        pat_scope_resolver=_pat_scope_resolver,
     )
     _doc_url = os.getenv("MCP_OAUTH_SERVICE_DOCUMENTATION_URL", "").strip()
     mcp = FastMCP(
@@ -88,8 +115,8 @@ if _oauth_issuer:
             service_documentation_url=AnyHttpUrl(_doc_url) if _doc_url else None,
             client_registration_options=ClientRegistrationOptions(
                 enabled=True,
-                valid_scopes=_oauth_scopes,
-                default_scopes=_oauth_scopes,
+                valid_scopes=_valid_oauth_scopes,
+                default_scopes=_default_oauth_scopes,
             ),
         ),
     )
@@ -105,7 +132,7 @@ if oauth_provider:
             client_id = q.get("client_id") or ""
             redirect_uri = q.get("redirect_uri") or ""
             code_challenge = q.get("code_challenge") or ""
-            scope = q.get("scope") or " ".join(_oauth_scopes)
+            scope = q.get("scope") or " ".join(_default_oauth_scopes)
             resource = q.get("resource") or ""
             state = q.get("state") or ""
             redirect_uri_provided = q.get("redirect_uri_provided_explicitly") or "1"
@@ -153,10 +180,15 @@ if oauth_provider:
             return HTMLResponse("Unknown client", status_code=400)
         if guard_brainpat(brainpat) is False:
             return HTMLResponse("Invalid BrainPAT", status_code=401)
-        scopes = scope_str.split() if scope_str.strip() else list(_oauth_scopes)
-        for s in scopes:
-            if s not in _oauth_scopes:
-                return HTMLResponse("Invalid scope", status_code=400)
+        _principal, pat_scopes = resolve_token_identity(brainpat)
+        requested_scopes = (
+            scope_str.split() if scope_str.strip() else list(_default_oauth_scopes)
+        )
+        scopes = grantable_oauth_scopes(
+            requested_scopes,
+            pat_scopes,
+            valid_scopes=_valid_oauth_scopes,
+        )
         try:
             ru = AnyUrl(redirect_uri)
             ru = client.validate_redirect_uri(ru)
@@ -285,20 +317,40 @@ async def traverse_graph(
     )
 
 
-def _search_memory_sync(db_query: str, brain_id: str) -> Any:
+def _search_memory_sync(
+    db_query: str, brain_id: str, include_rejected: bool
+) -> Any:
     try:
         if not guard_brainpat(auth_token_var.get(), brain_id):
             return "Unauthorized"
-        return graph_adapter.execute_operation(db_query, brain_id)
+        result = graph_adapter.execute_operation(db_query, brain_id)
+        if include_rejected or not isinstance(result, str) or result.startswith("Error"):
+            return result
+        try:
+            payload = json.loads(result)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return result
+        filtered = filter_raw_operation_result(
+            payload, include_rejected=include_rejected
+        )
+        if isinstance(filtered, str):
+            return filtered
+        return json.dumps(filtered, default=str)
     except Exception as e:
         return f"Error executing graph operation: {e}"
 
 
 @mcp.tool()
-async def search_memory(db_query: str, brain_id: str) -> Any:
+async def search_memory(
+    db_query: str, brain_id: str, include_rejected: bool = False
+) -> Any:
     """
     Search the brain for memories and information.
     This tool will search into the knowledge graph using the active graph backend query language.
+
+    Rejected facts are dropped from result rows that contain graph entities with
+    verification_state=rejected, unless include_rejected is true. Aggregations
+    and rows with no graph entities are not verification-filtered.
 
     Input must be a JSON object with the following fields:
     - db_query: str: read-only graph query (Cypher on Neo4j, SQL on PostgreSQL).
@@ -306,8 +358,11 @@ async def search_memory(db_query: str, brain_id: str) -> Any:
       timeout and result cap. Writes, DELETE, USE, CALL dbms.*, and database
       admin are rejected.
     - brain_id: str: the brain to search in.
+    - include_rejected: bool: keep rejected facts in raw rows (default false).
     """
-    return await asyncio.to_thread(_search_memory_sync, db_query, brain_id)
+    return await asyncio.to_thread(
+        _search_memory_sync, db_query, brain_id, include_rejected
+    )
 
 
 def _search_semantically_sync(query: str, brain_id: str, include_rejected: bool) -> Any:
@@ -367,23 +422,42 @@ async def list_brains() -> list[str] | str:
     return await asyncio.to_thread(_list_brains_sync)
 
 
+def _require_verification_actor() -> str | None:
+    scopes = auth_scopes_var.get()
+    if scopes is None:
+        _principal, scopes = resolve_token_identity(auth_token_var.get())
+        principal = _principal
+    else:
+        principal = auth_principal_var.get()
+        if not principal:
+            principal, _resolved = resolve_token_identity(auth_token_var.get())
+    if not has_verification_scope(scopes):
+        return None
+    return principal
+
+
 def _mutate_fact_sync(
     action: str,
     fact_id: str,
     brain_id: str,
-    verified_by: str,
     verification_source: str,
     note: str,
 ) -> Any:
     try:
         if not guard_brainpat(auth_token_var.get(), brain_id):
             return "Unauthorized"
+        actor = _require_verification_actor()
+        if not actor:
+            return (
+                f"Error: {VERIFICATION_PERMISSION_DENIED}: "
+                "verification scope is required"
+            )
         record = apply_verification_action(
             graph_adapter,
             fact_id=fact_id,
             brain_id=brain_id,
             action=action,  # type: ignore[arg-type]
-            verified_by=verified_by or None,
+            actor=actor,
             verification_source=verification_source or None,
             note=note or None,
         )
@@ -401,21 +475,21 @@ def _mutate_fact_sync(
 async def verify_fact(
     fact_id: str,
     brain_id: str,
-    verified_by: str,
     verification_source: str = "",
     note: str = "",
+    verified_by: str = "",
 ) -> Any:
     """
-    Mark a fact (relationship UUID or fact-representing node UUID) as verified.
+    Mark a fact (relationship UUID or EVENT node UUID) as verified.
 
-    Brain-scoped; requires a valid BrainPAT. verified_by is the user or agent identity.
+    Requires the verification OAuth/PAT scope. Actor identity is taken from
+    the authenticated token; verified_by is ignored.
     """
     return await asyncio.to_thread(
         _mutate_fact_sync,
         "verify",
         fact_id,
         brain_id,
-        verified_by,
         verification_source,
         note,
     )
@@ -425,19 +499,21 @@ async def verify_fact(
 async def reject_fact(
     fact_id: str,
     brain_id: str,
-    verified_by: str,
     verification_source: str = "",
     note: str = "",
+    verified_by: str = "",
 ) -> Any:
     """
     Mark a fact as rejected so retrieve/search/traverse hide it by default.
+
+    Requires the verification OAuth/PAT scope. Actor identity is taken from
+    the authenticated token; verified_by is ignored.
     """
     return await asyncio.to_thread(
         _mutate_fact_sync,
         "reject",
         fact_id,
         brain_id,
-        verified_by,
         verification_source,
         note,
     )
@@ -447,18 +523,20 @@ async def reject_fact(
 async def reset_fact_verification(
     fact_id: str,
     brain_id: str,
-    verified_by: str = "",
     note: str = "",
+    verified_by: str = "",
 ) -> Any:
     """
     Reset a fact back to unverified. Append-only audit history is retained.
+
+    Requires the verification OAuth/PAT scope. Actor identity is taken from
+    the authenticated token; verified_by is ignored.
     """
     return await asyncio.to_thread(
         _mutate_fact_sync,
         "reset",
         fact_id,
         brain_id,
-        verified_by,
         "",
         note,
     )

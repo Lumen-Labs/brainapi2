@@ -56,7 +56,7 @@ from src.core.verification.facts import (
     verification_write_properties,
     verified_rank_boost,
 )
-from src.core.verification.service import apply_verification_action
+from src.core.verification.service import FactNotFound, apply_verification_action
 from src.services.api.constants.requests import GetContextRequestBody
 from src.services.api.controllers import retrieve as retrieve_mod
 
@@ -269,10 +269,19 @@ class FakeGraph:
             return self.row
         return None
 
-    def set_fact_verification(self, fact_id, brain_id, *, kind, properties):
-        self.writes.append((fact_id, brain_id, kind, dict(properties)))
+    def set_fact_verification(
+        self, fact_id, brain_id, *, kind, properties, history_entry=None
+    ):
+        from src.core.verification.facts import serialize_history_entry
+
         props = dict(self.row.get("properties") or {})
         props.update(properties)
+        entry = serialize_history_entry(history_entry)
+        if entry:
+            history = list(props.get("verification_history") or [])
+            history.append(entry)
+            props["verification_history"] = history
+        self.writes.append((fact_id, brain_id, kind, dict(props)))
         self.row["properties"] = props
         return self.row
 
@@ -303,6 +312,24 @@ class VerificationServiceTests(unittest.TestCase):
                 action="verify",
             )
         self.assertEqual(raised.exception.status_code, 400)
+
+    def test_non_event_node_cannot_be_rejected(self):
+        row = {
+            "kind": "node",
+            "uuid": "alice-1",
+            "name": "Alice",
+            "description": "person",
+            "properties": {"uuid": "alice-1"},
+            "labels": ["PERSON"],
+        }
+        with self.assertRaises(FactNotFound):
+            apply_verification_action(
+                FakeGraph(row),
+                fact_id="alice-1",
+                brain_id="brain",
+                action="reject",
+                actor="brainpat:brain",
+            )
 
     def test_verify_appends_history_and_reset_keeps_it(self):
         graph = FakeGraph(self._row())

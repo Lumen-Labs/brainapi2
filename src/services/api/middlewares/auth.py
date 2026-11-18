@@ -75,6 +75,10 @@ class BrainPATMiddleware(BaseHTTPMiddleware):
             )
         cachepat_key = f"brainpat:{brain_id}"
         if brainpat == system_pat:
+            from src.core.auth.scopes import env_system_pat_scopes, principal_for_system
+
+            request.state.principal = principal_for_system()
+            request.state.scopes = env_system_pat_scopes()
             return await call_next(request)
         try:
             cached_brainpat = cache_adapter.get(key=cachepat_key, brain_id="system")
@@ -104,6 +108,12 @@ class BrainPATMiddleware(BaseHTTPMiddleware):
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Authentication store unavailable",
             )
+
+        from src.core.auth.scopes import effective_pat_scopes, principal_for_brain
+
+        stored_brain = data_adapter.get_brain(name_key=brain_id)
+        request.state.principal = principal_for_brain(brain_id)
+        request.state.scopes = effective_pat_scopes(stored_brain) if stored_brain else []
 
         response = await call_next(request)
 

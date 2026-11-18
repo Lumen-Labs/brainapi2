@@ -83,6 +83,8 @@ def _app(brain_id: str = BRAIN_ID) -> FastAPI:
     @app.middleware("http")
     async def inject_brain(request: Request, call_next):
         request.state.brain_id = brain_id
+        request.state.principal = f"brainpat:{brain_id}"
+        request.state.scopes = ["brainapi", "verification"]
         return await call_next(request)
 
     app.include_router(model_router)
@@ -302,6 +304,6 @@ def test_neo4j_verify_reject_and_retrieval(neo4j_graph):
 
         got = api.get(f"/model/facts/{made_id}")
         assert got.status_code == 200
-        assert got.json()["verification"]["verified_by"] == "analyst-1"
+        assert got.json()["verification"]["verified_by"] == f"brainpat:{BRAIN_ID}"
         assert got.json()["verification"]["state"] == VERIFIED
         assert len(got.json()["history"]) == 1

@@ -6,13 +6,30 @@ from collections.abc import Mapping
 from typing import Any
 from uuid import uuid4
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, JsonValue
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from src.lib.cypher_safety import InvalidCypherIdentifier, RawCypherRejected
+
+
+class CodedHTTPException(HTTPException):
+    def __init__(
+        self,
+        status_code: int,
+        detail: Any,
+        *,
+        code: str,
+        message: str | None = None,
+        resolution: str | None = None,
+        headers: Mapping[str, str] | None = None,
+    ):
+        super().__init__(status_code=status_code, detail=detail, headers=headers)
+        self.code = code
+        self.message = message
+        self.resolution = resolution
 
 
 class ErrorInfo(BaseModel):
@@ -145,6 +162,9 @@ def install_error_handlers(app: FastAPI) -> None:
             request,
             status_code=exc.status_code,
             detail=exc.detail,
+            code=getattr(exc, "code", None),
+            message=getattr(exc, "message", None),
+            resolution=getattr(exc, "resolution", None),
             headers=exc.headers,
         )
 

@@ -220,6 +220,7 @@ class MongoClient(DataClient):
             id=str(result["_id"]),
             name_key=result["name_key"],
             pat=result.get("pat"),
+            pat_scopes=list(result.get("pat_scopes") or []),
         )
 
     def get_brain_by_pat(self, pat: str) -> Brain | None:
@@ -231,6 +232,7 @@ class MongoClient(DataClient):
             id=str(result["_id"]),
             name_key=result["name_key"],
             pat=result.get("pat"),
+            pat_scopes=list(result.get("pat_scopes") or []),
         )
 
     def get_brains_list(self) -> List[Brain]:
@@ -241,6 +243,7 @@ class MongoClient(DataClient):
                 id=str(result["_id"]),
                 name_key=result["name_key"],
                 pat=result.get("pat"),
+                pat_scopes=list(result.get("pat_scopes") or []),
             )
             for result in result
         ]
