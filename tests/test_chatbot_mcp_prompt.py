@@ -11,6 +11,8 @@ class ChatbotMcpPromptTests(unittest.TestCase):
         self.assertIn("traverse_graph", text)
         self.assertIn("list_changelogs", text)
         self.assertIn("list_source_versions", text)
+        self.assertIn("list_conflicts", text)
+        self.assertIn("conflict_report", text)
         self.assertIn("invalidated", text)
         self.assertIn("tool_name", text)
 

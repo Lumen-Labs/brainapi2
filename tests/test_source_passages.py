@@ -18,7 +18,7 @@ from src.core.saving.source_passages import (
 class _Store:
     def __init__(self, chunks: list[TextChunk] | None = None):
         self.chunks = list(chunks or [])
-        self.marked: list[tuple[list[str], str]] = []
+        self.marked: list[tuple[list[str], str, str | None, str | None]] = []
         self.limits: list[int] = []
 
     def get_text_chunks(self, brain_id, limit=10, skip=0, query_text=None, metadata_eq=None, order="desc"):
@@ -37,11 +37,17 @@ class _Store:
         )
         return matched[skip : skip + limit], len(matched)
 
-    def mark_text_chunks_superseded(self, ids, superseded_at, brain_id):
-        self.marked.append((list(ids), superseded_at))
+    def mark_text_chunks_superseded(
+        self, ids, superseded_at, brain_id, superseded_by=None, valid_to=None
+    ):
+        self.marked.append((list(ids), superseded_at, superseded_by, valid_to))
         for chunk in self.chunks:
             if str(chunk.id) in ids:
                 chunk.metadata["superseded_at"] = superseded_at
+                if valid_to:
+                    chunk.metadata["valid_to"] = valid_to
+                if superseded_by:
+                    chunk.metadata["superseded_by"] = superseded_by
 
     def get_text_chunks_by_ids(self, ids, with_observations, brain_id):
         wanted = set(ids)
@@ -136,8 +142,11 @@ class SourceRevisionTests(unittest.TestCase):
             ),
             "insert",
         )
-        self.assertEqual(store.marked, [(["c1"], "16/11/2026")])
+        self.assertEqual(store.marked[0][0], ["c1"])
+        self.assertEqual(store.marked[0][1], "16/11/2026")
+        self.assertIsNotNone(store.marked[0][3])
         self.assertEqual(previous.metadata["superseded_at"], "16/11/2026")
+        self.assertTrue(previous.metadata.get("valid_to"))
         self.assertEqual(previous.text, "hello")
         self.assertEqual(meta["source_content_hash"], source_content_hash("hello again"))
 
@@ -158,9 +167,9 @@ class SourceRevisionTests(unittest.TestCase):
             ),
             "insert",
         )
-        self.assertEqual(len(store.marked), 1)
-        self.assertEqual(set(store.marked[0][0]), {"c1", "c2"})
+        self.assertEqual(store.marked[0][0], ["c1", "c2"])
         self.assertEqual(store.marked[0][1], "16/11/2026")
+        self.assertIsNotNone(store.marked[0][3])
 
     def test_screen_drops_superseded_hits_unless_history(self):
         live = TextChunk(id="live", text="now", metadata={"source_key": "src-1"})
@@ -369,6 +378,40 @@ class CurrentFactTests(unittest.TestCase):
         self.assertLess(store.limits[-1], 500)
         self.assertLessEqual(store.limits[-1], cap + 16)
 
+    def test_prior_revision_pages_past_current_chunks(self):
+        currents = [
+            TextChunk(
+                id=f"live-{index}",
+                text=f"live copy {index}",
+                metadata={"source_key": "src-1"},
+                inserted_at=datetime.datetime(2026, 11, 17, 0, index, 0),
+            )
+            for index in range(50)
+        ]
+        older = [
+            TextChunk(
+                id=f"old-{index}",
+                text=f"cedar signal {index}",
+                metadata={
+                    "source_key": "src-1",
+                    "superseded_at": f"2026-11-16T12:{index:02d}:00",
+                },
+                inserted_at=datetime.datetime(2026, 11, 16, 12, index, 0),
+            )
+            for index in range(5)
+        ]
+        live = currents[-1]
+        store = _Store(currents + older)
+        loaded = prior_revision_texts(
+            store,
+            "brain",
+            [("live-49", 0.2, live.text)],
+            limit=2,
+            query_text="cedar signal",
+        )
+        self.assertEqual(len(loaded), 2)
+        self.assertTrue(all("cedar signal" in body for body in loaded))
+
     def test_prior_revision_uses_stored_embeddings_without_embed(self):
         older = TextChunk(
             id="old",
@@ -546,8 +589,9 @@ class CurrentFactTests(unittest.TestCase):
 
 
 class _Record:
-    def __init__(self, data: dict):
+    def __init__(self, data: dict, inserted_at=None):
         self.data = data
+        self.inserted_at = inserted_at
 
 
 class StructuredRecordTests(unittest.TestCase):
@@ -592,6 +636,136 @@ class StructuredRecordTests(unittest.TestCase):
             )
         )
         self.assertIn("4410-OTTER", history)
+
+    def test_as_of_drops_records_inserted_after_the_snapshot(self):
+        chunk = TextChunk(
+            id="c1",
+            text="keep me",
+            metadata={"valid_from": "2024-01-01T00:00:00Z"},
+        )
+        records = [
+            _Record(
+                {"text": "future note"},
+                inserted_at=datetime.datetime(2025, 6, 1, tzinfo=datetime.timezone.utc),
+            ),
+            _Record(
+                {"text": "past note"},
+                inserted_at=datetime.datetime(2024, 1, 2, tzinfo=datetime.timezone.utc),
+            ),
+        ]
+        lines = current_record_texts(
+            _Store([chunk]),
+            "brain",
+            records,
+            [chunk],
+            include_history=False,
+            as_of=datetime.datetime(2024, 6, 1, tzinfo=datetime.timezone.utc),
+        )
+        joined = "\n".join(lines)
+        self.assertIn("past note", joined)
+        self.assertNotIn("future note", joined)
+
+
+class AsOfPassageTests(unittest.TestCase):
+    def test_as_of_returns_the_copy_valid_at_that_instant(self):
+        v1 = TextChunk(
+            id="v1",
+            text="Clause 12: retain records for 5 years.",
+            metadata={
+                "source_key": "reg-12",
+                "valid_from": "2024-01-01T00:00:00Z",
+                "valid_to": "2025-01-01T00:00:00Z",
+                "superseded_at": "2025-01-01T00:00:00Z",
+            },
+        )
+        v2 = TextChunk(
+            id="v2",
+            text="Clause 12: retain records for 7 years.",
+            metadata={
+                "source_key": "reg-12",
+                "valid_from": "2025-01-01T00:00:00Z",
+            },
+        )
+        store = _Store([v1, v2])
+        hits = [("v1", 0.1, v1.text), ("v2", 0.2, v2.text)]
+        mid = datetime.datetime(2024, 6, 1, tzinfo=datetime.timezone.utc)
+        after = datetime.datetime(2025, 6, 1, tzinfo=datetime.timezone.utc)
+        at_v1 = screen_passage_hits(
+            store, "brain", hits, include_history=False, as_of=mid
+        )
+        at_v2 = screen_passage_hits(
+            store, "brain", hits, include_history=False, as_of=after
+        )
+        self.assertEqual([item[2] for item in at_v1], [v1.text])
+        self.assertEqual([item[2] for item in at_v2], [v2.text])
+        self.assertFalse(any(item[2].startswith("[superseded]") for item in at_v1))
+
+    def test_as_of_omits_hits_when_lookup_fails(self):
+        class Broken(_Store):
+            def get_text_chunks_by_ids(self, ids, with_observations, brain_id):
+                raise RuntimeError("lookup down")
+
+        v2 = TextChunk(
+            id="v2",
+            text="seven years",
+            metadata={"valid_from": "2025-01-01T00:00:00Z"},
+        )
+        store = Broken([v2])
+        hits = [("v2", 0.2, v2.text)]
+        as_of = datetime.datetime(2024, 6, 1, tzinfo=datetime.timezone.utc)
+        self.assertEqual(
+            screen_passage_hits(store, "brain", hits, include_history=False, as_of=as_of),
+            [],
+        )
+        self.assertEqual(
+            screen_passage_hits(store, "brain", hits, include_history=False),
+            hits,
+        )
+
+    def test_as_of_facts_batch_lookups_and_drop_unverified(self):
+        class Capped(_Store):
+            def get_text_chunks_by_ids(self, ids, with_observations, brain_id):
+                self.calls = getattr(self, "calls", [])
+                self.calls.append(list(ids))
+                return super().get_text_chunks_by_ids(ids[:80], with_observations, brain_id)
+
+        future = TextChunk(
+            id="future",
+            text="too new",
+            metadata={"valid_from": "2025-01-01T00:00:00Z"},
+        )
+        store = Capped([future])
+        facts = [{"id": f"f{i}", "chunk_ids": [f"missing-{i}"]} for i in range(80)]
+        facts.append({"id": "f-future", "chunk_ids": ["future"]})
+        as_of = datetime.datetime(2024, 6, 1, tzinfo=datetime.timezone.utc)
+        kept = current_fact_candidates(
+            store, "brain", facts, include_history=False, as_of=as_of
+        )
+        self.assertEqual(len(store.calls), 2)
+        self.assertEqual(kept, [])
+
+
+class SourceRevisionStampTests(unittest.TestCase):
+    def test_new_revision_reuses_one_timestamp(self):
+        previous = TextChunk(
+            id="c1",
+            text="hello",
+            metadata={"source_key": "src-1", "source_content_hash": "old"},
+        )
+        store = _Store([previous])
+        meta = {"source_key": "src-1"}
+        self.assertEqual(
+            prepare_source_revision(
+                store,
+                brain_id="brain",
+                source_text="hello again",
+                meta_keys=meta,
+                source_timestamp=None,
+            ),
+            "insert",
+        )
+        self.assertEqual(store.marked[0][1], meta["valid_from"])
+        self.assertEqual(store.marked[0][3], meta["valid_from"])
 
 
 if __name__ == "__main__":

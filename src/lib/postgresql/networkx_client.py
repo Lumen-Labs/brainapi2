@@ -23,6 +23,7 @@ from src.constants.kg import (
     SearchRelationshipsResult,
     Triple,
 )
+from src.lib.cypher_safety import clean_label, clean_property_key, quote_property_key
 from src.lib.postgresql.graph_store import (
     GraphDatabaseError,
     PostgreSQLGraphStore,
@@ -48,6 +49,7 @@ class NetworkXGraphClient(GraphClient):
         self._store.invalidate_brain(brain_id)
 
     def execute_operation(self, operation: str, brain_id: str) -> Any:
+        # Raw SQL stays read-only even when GRAPH_RAW_WRITE_ENABLED is on.
         self._store.ensure_database(brain_id)
         return self._store.execute_read_query(brain_id, operation)
 
@@ -95,50 +97,21 @@ class NetworkXGraphClient(GraphClient):
         )
 
     def _clean_labels(self, labels: list[str]) -> list[str]:
-        return [
-            label.replace(" ", "_")
-            .upper()
-            .replace("-", "_")
-            .replace(".", "_")
-            .replace(",", "_")
-            .replace(":", "_")
-            .replace(";", "_")
-            .replace("(", "_")
-            .replace(")", "_")
-            .replace("[", "_")
-            .replace("]", "_")
-            .replace("{", "_")
-            .replace("}", "_")
-            .replace("'", "_")
-            for label in labels
-        ]
+        return [clean_label(label) for label in labels]
 
     def _node_label_set(self, brain, node_uuid: str) -> set[str]:
         return set(self._clean_labels(list(brain.labels(node_uuid))))
 
     def _clean_property_key(self, property_key: str) -> str:
-        words = property_key.split()
-        return words[0].lower() + "".join(word.capitalize() for word in words[1:])
+        return clean_property_key(property_key)
 
     def _format_property_key(self, property_key: str) -> str:
-        sanitized_key = property_key.rstrip("`").lstrip("`")
-        needs_quoting = any(
-            char in sanitized_key
-            for char in ["-", " ", ".", "+", "*", "/", "%", ":", "@", "#", "$"]
-        )
-        cleaned_key = self._clean_property_key(sanitized_key)
-        return f"`{cleaned_key}`" if needs_quoting else cleaned_key
+        return quote_property_key(property_key)
 
     def _format_value(self, value: Any) -> str:
-        if isinstance(value, str):
-            v = value.replace("'", "\\'")
-            return f"'{v}'"
-        if isinstance(value, (int, float, bool)):
-            return str(value)
-        if value is None:
-            return "null"
-        v = str(value).replace("'", "\\'")
-        return f"'{v}'"
+        raise RuntimeError(
+            "Graph values must be passed as data, not interpolated into a query"
+        )
 
     def add_nodes(
         self,
@@ -197,12 +170,15 @@ class NetworkXGraphClient(GraphClient):
         to_object: Node,
         brain_id: str,
     ) -> str:
+        from src.core.saving.validity import validity_props_from_mapping
+
         rel_props: dict[str, Any] = {
             "description": predicate.description,
             "uuid": predicate.uuid,
             "v_id": (predicate.properties or {}).get("v_id"),
             "flow_key": predicate.flow_key,
         }
+        rel_props.update(validity_props_from_mapping(predicate.properties))
         for attr in ("properties", "happened_at", "last_updated", "amount"):
             value = getattr(predicate, attr, None)
             if value:
@@ -648,9 +624,11 @@ class NetworkXGraphClient(GraphClient):
                         properties=brain.node_data(source),
                     ),
                     predicate=Predicate(
+                        uuid=str(edge_data.get("uuid") or key),
                         name=str(edge_data.get("rel_type") or ""),
                         description=edge_data.get("description") or "",
                         direction=direction,
+                        properties=dict(edge_data),
                         observations=None,
                         level=None,
                         deprecated=edge_data.get("deprecated", False),
@@ -666,6 +644,57 @@ class NetworkXGraphClient(GraphClient):
             )
         return SearchRelationshipsResult(results=triples, total=total)
 
+    def list_validity_relationships(
+        self,
+        brain_id: str,
+        skip: int = 0,
+        limit: int = 100,
+        since: str | None = None,
+        until: str | None = None,
+        subject_uuids: list[str] | None = None,
+    ) -> tuple[list[tuple[Node, Predicate, Node]], int]:
+        from src.core.saving.validity import change_kind, parse_instant
+
+        self._store.ensure_database(brain_id)
+        brain = self._store.get_brain(brain_id)
+        since_dt = parse_instant(since) if since else None
+        until_dt = parse_instant(until) if until else None
+        subject_filter = set(subject_uuids) if subject_uuids else None
+        matched: list[tuple[Node, Predicate, Node]] = []
+        for source, target, key, edge_data in brain.graph.edges(keys=True, data=True):
+            if subject_filter is not None and source not in subject_filter:
+                continue
+            props = dict(edge_data)
+            if since_dt is not None and until_dt is not None:
+                if not change_kind(props, since_dt, until_dt):
+                    continue
+            matched.append(
+                (
+                    Node(
+                        uuid=source,
+                        name=str(brain.node_data(source).get("name") or source),
+                        labels=list(brain.labels(source)),
+                        description=brain.node_data(source).get("description"),
+                        properties=brain.node_data(source),
+                    ),
+                    Predicate(
+                        uuid=str(edge_data.get("uuid") or key or ""),
+                        name=str(edge_data.get("rel_type") or ""),
+                        description=edge_data.get("description") or "",
+                        properties=props,
+                        deprecated=edge_data.get("deprecated", False),
+                    ),
+                    Node(
+                        uuid=target,
+                        name=str(brain.node_data(target).get("name") or target),
+                        labels=list(brain.labels(target)),
+                        description=brain.node_data(target).get("description"),
+                        properties=brain.node_data(target),
+                    ),
+                )
+            )
+        total = len(matched)
+        return matched[skip : skip + limit], total
 
     def search_entities(
         self,
@@ -773,7 +802,12 @@ class NetworkXGraphClient(GraphClient):
                 continue
             if data.get("rel_type") != rel_type:
                 continue
+            from src.core.saving.validity import format_instant, utc_now
+
+            closed_at = format_instant(utc_now())
             data["deprecated"] = True
+            data.setdefault("valid_to", closed_at)
+            data.setdefault("invalid_at", closed_at)
             self._store._persist_relationship(
                 brain_id, key, rel_type, source, target, data
             )
@@ -1189,6 +1223,60 @@ class NetworkXGraphClient(GraphClient):
             )
         return triples
 
+
+    def nodes_and_edges_citing(self, brain_id: str, chunk_ids: list[str], edge_uuids: list[str]):
+        self._store.ensure_database(brain_id)
+        brain = self._store.get_brain(brain_id)
+        wanted = {str(item) for item in chunk_ids if item}
+        known_edges = {str(item) for item in edge_uuids if item}
+        nodes: list[Node] = []
+        for node_uuid, data in brain.graph.nodes(data=True):
+            cited = {str(item) for item in (data.get("source_chunk_ids") or [])}
+            if not cited & wanted:
+                continue
+            nodes.append(
+                Node(
+                    uuid=str(node_uuid),
+                    name=str(data.get("name") or ""),
+                    labels=list(data.get("labels") or []),
+                    description=data.get("description") or "",
+                    properties={key: value for key, value in data.items() if key != "labels"},
+                )
+            )
+        triples = []
+        for source, target, key, data in brain.graph.edges(keys=True, data=True):
+            nested = data.get("properties") if isinstance(data.get("properties"), dict) else {}
+            cited = {
+                str(item)
+                for item in list(data.get("source_chunk_ids") or [])
+                + list(nested.get("source_chunk_ids") or [])
+            }
+            rel_uuid = str(data.get("uuid") or nested.get("uuid") or "")
+            if rel_uuid not in known_edges and not cited & wanted:
+                continue
+            triples.append(
+                (
+                    Node(
+                        uuid=str(source),
+                        name=str(brain.node_data(source).get("name") or ""),
+                        labels=list(brain.labels(source)),
+                        properties=brain.node_data(source),
+                    ),
+                    Predicate(
+                        uuid=rel_uuid or str(key),
+                        name=str(data.get("rel_type") or ""),
+                        description=str(data.get("description") or ""),
+                        properties=dict(data),
+                    ),
+                    Node(
+                        uuid=str(target),
+                        name=str(brain.node_data(target).get("name") or ""),
+                        labels=list(brain.labels(target)),
+                        properties=brain.node_data(target),
+                    ),
+                )
+            )
+        return nodes, triples
 
     def remove_nodes(self, uuids: list[str], brain_id: str) -> list[Node]:
         self._store.ensure_database(brain_id)
@@ -1607,6 +1695,113 @@ class NetworkXGraphClient(GraphClient):
             )
             for tid, label, sid, weight in rows
         ]
+
+    def _edge_matches_uuid(self, key: str, edge_data: dict, fact_id: str) -> bool:
+        return key == fact_id or str(edge_data.get("uuid") or "") == fact_id
+
+    def _relationship_fact_row(
+        self, brain, source: str, target: str, key: str, edge_data: dict
+    ) -> dict:
+        return {
+            "kind": "relationship",
+            "uuid": str(edge_data.get("uuid") or key),
+            "name": str(edge_data.get("rel_type") or ""),
+            "description": str(edge_data.get("description") or ""),
+            "properties": dict(edge_data),
+            "subject_uuid": source,
+            "subject_name": brain.node_data(source).get("name"),
+            "subject_labels": list(brain.labels(source)),
+            "object_uuid": target,
+            "object_name": brain.node_data(target).get("name"),
+            "object_labels": list(brain.labels(target)),
+            "labels": [],
+        }
+
+    def _node_fact_row(self, brain, node_uuid: str) -> dict:
+        data = brain.node_data(node_uuid)
+        return {
+            "kind": "node",
+            "uuid": node_uuid,
+            "name": str(data.get("name") or ""),
+            "description": str(data.get("description") or ""),
+            "properties": dict(data),
+            "subject_uuid": None,
+            "subject_name": None,
+            "subject_labels": [],
+            "object_uuid": None,
+            "object_name": None,
+            "object_labels": [],
+            "labels": list(brain.labels(node_uuid)),
+        }
+
+    def get_fact_record(self, fact_id: str, brain_id: str) -> Optional[dict]:
+        if not fact_id:
+            return None
+        self._store.ensure_database(brain_id)
+        brain = self._store.get_brain(brain_id)
+        for source, target, key, edge_data in brain.graph.edges(keys=True, data=True):
+            if self._edge_matches_uuid(key, edge_data, fact_id):
+                return self._relationship_fact_row(brain, source, target, key, edge_data)
+        if fact_id in brain.graph:
+            return self._node_fact_row(brain, fact_id)
+        return None
+
+    def set_fact_verification(
+        self,
+        fact_id: str,
+        brain_id: str,
+        *,
+        kind: Literal["relationship", "node"],
+        properties: dict,
+    ) -> Optional[dict]:
+        self._store.ensure_database(brain_id)
+        record = self._store.update_entity_properties(
+            brain_id,
+            fact_id,
+            kind == "relationship",
+            properties,
+            [],
+        )
+        if not record:
+            return None
+        return self.get_fact_record(fact_id, brain_id)
+
+    def list_facts_by_verification(
+        self,
+        brain_id: str,
+        *,
+        state: Optional[str] = None,
+        include_rejected: bool = False,
+        limit: int = 50,
+        skip: int = 0,
+    ) -> tuple[list[dict], int]:
+        from src.core.verification.facts import normalize_state
+
+        self._store.ensure_database(brain_id)
+        brain = self._store.get_brain(brain_id)
+        rows: list[dict] = []
+        for source, target, key, edge_data in brain.graph.edges(keys=True, data=True):
+            if str(edge_data.get("rel_type") or "") == "HUB_BRIDGE":
+                continue
+            current = normalize_state(edge_data.get("verification_state"))
+            if state and current != state:
+                continue
+            if not include_rejected and current == "rejected":
+                continue
+            rows.append(self._relationship_fact_row(brain, source, target, key, edge_data))
+        for node_uuid, data in brain.graph.nodes(data=True):
+            labels = {str(label).upper() for label in (data.get("labels") or [])}
+            if "EVENT" not in labels:
+                continue
+            current = normalize_state(data.get("verification_state"))
+            if state and current != state:
+                continue
+            if not include_rejected and current == "rejected":
+                continue
+            rows.append(self._node_fact_row(brain, node_uuid))
+        rows.sort(key=lambda row: str(row.get("uuid") or ""))
+        total = len(rows)
+        return rows[skip : skip + limit], total
 
 
 def _records(data: list | Any) -> Any:

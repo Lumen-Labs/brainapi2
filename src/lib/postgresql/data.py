@@ -10,6 +10,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import json
 import threading
+from datetime import datetime
 from typing import Any, Iterator, List, Literal, Optional, Tuple
 
 import psycopg2
@@ -17,6 +18,7 @@ import psycopg2.extras
 
 from src.adapters.interfaces.data import DataClient, SearchResult
 from src.config import SEARCH_FTS_REGCONFIGS, config
+from src.constants.conflicts import FactConflict, conflict_from_document, conflict_to_document
 from src.constants.data import (
     Brain,
     KGChanges,
@@ -238,6 +240,27 @@ def _validate_changelog(document: dict) -> Optional[KGChanges]:
     return KGChanges.model_validate(document)
 
 
+_CONFLICTS_DDL = """
+CREATE TABLE IF NOT EXISTS data_conflicts (
+    id TEXT PRIMARY KEY,
+    pair_key TEXT UNIQUE NOT NULL,
+    claim_key TEXT,
+    status TEXT NOT NULL,
+    subject_name TEXT,
+    source_keys TEXT[],
+    fact_ids TEXT[],
+    detected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    document JSONB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_data_conflicts_status ON data_conflicts (status);
+CREATE INDEX IF NOT EXISTS idx_data_conflicts_claim ON data_conflicts (claim_key);
+CREATE INDEX IF NOT EXISTS idx_data_conflicts_subject ON data_conflicts (subject_name);
+CREATE INDEX IF NOT EXISTS idx_data_conflicts_detected ON data_conflicts (detected_at DESC);
+CREATE INDEX IF NOT EXISTS idx_data_conflicts_fact_ids ON data_conflicts USING gin (fact_ids);
+CREATE INDEX IF NOT EXISTS idx_data_conflicts_source_keys ON data_conflicts USING gin (source_keys);
+"""
+
+
 _INGEST_GROUP_DDL = """
 CREATE TABLE IF NOT EXISTS data_ingest_group_credits (
     group_tracking TEXT NOT NULL,
@@ -331,6 +354,7 @@ class PostgreSQLDataClient(DataClient):
                     if needs_base:
                         cur.execute(_BRAIN_DDL)
                         cur.execute(_INGEST_GROUP_DDL)
+                        cur.execute(_CONFLICTS_DDL)
                         from src.core.saving.pipeline_store import DDL as PIPELINE_DDL
                         cur.execute(PIPELINE_DDL)
                     if needs_search:
@@ -371,32 +395,118 @@ class PostgreSQLDataClient(DataClient):
             conn.commit()
         return text_chunk
 
-    def mark_text_chunks_superseded(
-        self, ids: List[str], superseded_at: str, brain_id: str
-    ) -> None:
+    def delete_text_chunks(self, ids: List[str], brain_id: str) -> None:
         if not ids:
             return
         with self._brain_connection(brain_id) as conn:
             with conn.cursor() as cur:
                 cur.execute(
+                    "DELETE FROM data_text_chunks WHERE id = ANY(%s)",
+                    (list(ids),),
+                )
+            conn.commit()
+
+    def set_text_chunk_task_ids(
+        self, chunk_id: str, task_ids: List[str], brain_id: str
+    ) -> None:
+        payload = json.dumps(list(task_ids))
+        with self._brain_connection(brain_id) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
                     """
                     UPDATE data_text_chunks
-                    SET metadata = jsonb_set(
-                            COALESCE(metadata, '{}'::jsonb),
-                            '{superseded_at}',
-                            to_jsonb(%s::text),
-                            true
-                        ),
+                    SET metadata = jsonb_set(coalesce(metadata, '{}'::jsonb), '{ingest_task_ids}', %s::jsonb, true),
+                        document = jsonb_set(document, '{metadata,ingest_task_ids}', %s::jsonb, true)
+                    WHERE id = %s
+                    """,
+                    (payload, payload, chunk_id),
+                )
+            conn.commit()
+
+    def delete_observations(
+        self, ids: List[str], brain_id: str, resource_ids: Optional[List[str]] = None
+    ) -> None:
+        if not ids and not resource_ids:
+            return
+        with self._brain_connection(brain_id) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    DELETE FROM data_observations
+                    WHERE id = ANY(%s) OR resource_id = ANY(%s)
+                    """,
+                    (list(ids or []), list(resource_ids or [])),
+                )
+            conn.commit()
+
+    def delete_structured_data(self, structured_id: str, brain_id: str) -> None:
+        if not structured_id:
+            return
+        with self._brain_connection(brain_id) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM data_structured_data WHERE id = %s",
+                    (structured_id,),
+                )
+            conn.commit()
+
+    def mark_text_chunks_superseded(
+        self,
+        ids: List[str],
+        superseded_at: str,
+        brain_id: str,
+        superseded_by: str | None = None,
+        valid_to: str | None = None,
+    ) -> None:
+        if not ids:
+            return
+        patch = {"superseded_at": superseded_at}
+        if valid_to:
+            patch["valid_to"] = valid_to
+        if superseded_by:
+            patch["superseded_by"] = superseded_by
+        payload = json.dumps(patch)
+        with self._brain_connection(brain_id) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE data_text_chunks
+                    SET metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb,
                         document = jsonb_set(
                             COALESCE(document, '{}'::jsonb),
                             '{metadata}',
-                            COALESCE(document->'metadata', '{}'::jsonb)
-                                || jsonb_build_object('superseded_at', %s::text),
+                            (CASE WHEN jsonb_typeof(document->'metadata') = 'object'
+                                  THEN document->'metadata' ELSE '{}'::jsonb END) || %s::jsonb,
                             true
                         )
                     WHERE id = ANY(%s)
                     """,
-                    (superseded_at, superseded_at, list(ids)),
+                    (payload, payload, list(ids)),
+                )
+            conn.commit()
+
+    def fill_text_chunk_validity(
+        self, chunk_id: str, brain_id: str, patch: dict[str, Any]
+    ) -> None:
+        if not chunk_id or not patch:
+            return
+        payload = json.dumps(patch)
+        with self._brain_connection(brain_id) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE data_text_chunks
+                    SET metadata = %s::jsonb || COALESCE(metadata, '{}'::jsonb),
+                        document = jsonb_set(
+                            COALESCE(document, '{}'::jsonb),
+                            '{metadata}',
+                            %s::jsonb || CASE WHEN jsonb_typeof(document->'metadata') = 'object'
+                                              THEN document->'metadata' ELSE '{}'::jsonb END,
+                            true
+                        )
+                    WHERE id = %s
+                    """,
+                    (payload, payload, chunk_id),
                 )
             conn.commit()
 
@@ -895,6 +1005,8 @@ class PostgreSQLDataClient(DataClient):
         skip: int = 0,
         types: list[str] = None,
         query_text: str = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
     ) -> list[KGChanges]:
         clauses: list[str] = []
         params: list[Any] = []
@@ -905,6 +1017,12 @@ class PostgreSQLDataClient(DataClient):
             pattern = _ilike_pattern(query_text)
             clauses.append("(change::text ILIKE %s OR type ILIKE %s)")
             params.extend([pattern, pattern])
+        if since is not None:
+            clauses.append("timestamp >= %s")
+            params.append(since)
+        if until is not None:
+            clauses.append("timestamp < %s")
+            params.append(until)
         where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         with self._brain_connection(brain_id) as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -1062,6 +1180,172 @@ class PostgreSQLDataClient(DataClient):
             conn.commit()
         return True
 
+
+    def _conflict_row(self, conflict: FactConflict) -> tuple:
+        document = conflict_to_document(conflict)
+        detected = conflict.detected_at
+        try:
+            from src.core.saving.validity import parse_instant
+
+            parsed = parse_instant(detected)
+            if parsed is not None:
+                detected = parsed
+        except Exception:
+            pass
+        return (
+            conflict.id,
+            conflict.pair_key,
+            conflict.claim_key,
+            conflict.status,
+            conflict.subject.name if conflict.subject else None,
+            list(conflict.source_keys()),
+            list(conflict.fact_ids()),
+            detected,
+            json.dumps(document, default=str),
+        )
+
+    def save_conflict(self, conflict: FactConflict, brain_id: str) -> FactConflict:
+        row = self._conflict_row(conflict)
+        with self._brain_connection(brain_id) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO data_conflicts (
+                        id, pair_key, claim_key, status, subject_name,
+                        source_keys, fact_ids, detected_at, document
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                    ON CONFLICT (id) DO UPDATE SET
+                        pair_key = EXCLUDED.pair_key,
+                        claim_key = EXCLUDED.claim_key,
+                        status = EXCLUDED.status,
+                        subject_name = EXCLUDED.subject_name,
+                        source_keys = EXCLUDED.source_keys,
+                        fact_ids = EXCLUDED.fact_ids,
+                        detected_at = EXCLUDED.detected_at,
+                        document = EXCLUDED.document
+                    """,
+                    row,
+                )
+            conn.commit()
+        return conflict
+
+    def update_conflict(self, conflict: FactConflict, brain_id: str) -> FactConflict:
+        return self.save_conflict(conflict, brain_id)
+
+    def get_conflict_by_id(self, id: str, brain_id: str) -> Optional[FactConflict]:
+        with self._brain_connection(brain_id) as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT document FROM data_conflicts WHERE id = %s",
+                    (id,),
+                )
+                row = cur.fetchone()
+        if not row:
+            return None
+        return conflict_from_document(dict(row["document"]))
+
+    def get_conflict_by_pair_key(
+        self, pair_key: str, brain_id: str
+    ) -> Optional[FactConflict]:
+        with self._brain_connection(brain_id) as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT document FROM data_conflicts WHERE pair_key = %s",
+                    (pair_key,),
+                )
+                row = cur.fetchone()
+        if not row:
+            return None
+        return conflict_from_document(dict(row["document"]))
+
+    def _conflict_filters(
+        self,
+        status: str | None,
+        source: str | None,
+        subject: str | None,
+        since: datetime | None,
+        until: datetime | None,
+    ) -> tuple[str, list[Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if status:
+            clauses.append("status = %s")
+            params.append(status)
+        if source:
+            clauses.append("%s = ANY(source_keys)")
+            params.append(source)
+        if subject:
+            clauses.append("subject_name ILIKE %s")
+            params.append(_ilike_pattern(subject))
+        if since is not None:
+            clauses.append("detected_at >= %s")
+            params.append(since)
+        if until is not None:
+            clauses.append("detected_at < %s")
+            params.append(until)
+        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        return where_sql, params
+
+    def get_conflicts_list(
+        self,
+        brain_id: str,
+        limit: int = 10,
+        skip: int = 0,
+        status: str | None = None,
+        source: str | None = None,
+        subject: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> Tuple[list[FactConflict], int]:
+        where_sql, params = self._conflict_filters(
+            status, source, subject, since, until
+        )
+        with self._brain_connection(brain_id) as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    f"SELECT COUNT(*) AS total FROM data_conflicts {where_sql}",
+                    params,
+                )
+                total = int((cur.fetchone() or {}).get("total") or 0)
+                cur.execute(
+                    f"""
+                    SELECT document FROM data_conflicts
+                    {where_sql}
+                    ORDER BY detected_at DESC, id ASC
+                    OFFSET %s LIMIT %s
+                    """,
+                    (*params, skip, limit),
+                )
+                rows = cur.fetchall()
+        conflicts: list[FactConflict] = []
+        for row in rows:
+            parsed = conflict_from_document(dict(row["document"]))
+            if parsed is not None:
+                conflicts.append(parsed)
+        return conflicts, total
+
+    def get_open_conflicts_for_facts(
+        self, fact_ids: list[str], brain_id: str
+    ) -> list[FactConflict]:
+        if not fact_ids:
+            return []
+        with self._brain_connection(brain_id) as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT document FROM data_conflicts
+                    WHERE status = 'open' AND fact_ids && %s
+                    """,
+                    (list(fact_ids),),
+                )
+                rows = cur.fetchall()
+        conflicts: list[FactConflict] = []
+        for row in rows:
+            parsed = conflict_from_document(dict(row["document"]))
+            if parsed is not None:
+                conflicts.append(parsed)
+        return conflicts
 
     def get_ingest_group(
         self, brain_id: str, group_tracking: str

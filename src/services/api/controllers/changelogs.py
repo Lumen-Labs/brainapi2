@@ -8,10 +8,14 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 -----
 """
 import asyncio
+from datetime import datetime, timezone
 from typing import Optional
 from fastapi import HTTPException
 from starlette.responses import JSONResponse
+from src.core.saving.validity import InvalidAsOf, optional_instant, utc_now
+from src.core.saving.validity_changes import collect_validity_changes
 from src.services.data.main import data_adapter
+from src.services.kg_agent.main import graph_adapter
 
 async def get_changelog_by_id(
     id: str, brain_id: str = "default"
@@ -61,6 +65,8 @@ async def get_changelogs_list(
     types: Optional[list[str]] = None,
     query_text: Optional[str] = None,
     brain_id: str = "default",
+    since: Optional[str] = None,
+    until: Optional[str] = None,
 ):
     """
     Retrieve a paginated, optionally filtered list of changelogs for a brain.
@@ -71,31 +77,73 @@ async def get_changelogs_list(
     	types (Optional[list[str]]): If provided, restrict results to these changelog types.
     	query_text (Optional[str]): If provided, filter changelogs by matching text.
     	brain_id (str): Identifier of the brain from which to fetch changelogs.
+        since (Optional[str]): Inclusive start of a change window.
+        until (Optional[str]): Exclusive end of a change window.
     
     Returns:
     	JSONResponse: Response content contains:
     		- message: Success message string.
     		- changelogs: List of changelog objects serialized as JSON.
     		- count: Integer count of returned changelogs.
+            - changes: Added/superseded/invalidated facts when since/until is set.
     """
+    try:
+        since_dt = optional_instant(since, name="since")
+        until_dt = optional_instant(until, name="until")
+    except InvalidAsOf as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     def _get_list():
-        """
-        Retrieve a list of changelog entries using the surrounding scope's filters and pagination.
-        
-        Returns:
-            list: Changelog objects matching the provided brain_id, limit, skip, types, and query_text.
-        """
-        return data_adapter.get_changelogs_list(
-            brain_id, limit, skip, types, query_text
-        )
-    
+        if since_dt is not None or until_dt is not None:
+            window_start = since_dt or datetime(1970, 1, 1, tzinfo=timezone.utc)
+            window_end = until_dt or utc_now()
+            payload = collect_validity_changes(
+                data_adapter,
+                graph_adapter,
+                brain_id,
+                since=window_start,
+                until=window_end,
+                limit=limit,
+                skip=skip,
+                query_text=query_text,
+                types=types,
+            )
+            rows = data_adapter.get_changelogs_list(
+                brain_id, limit, skip, types, query_text, window_start, window_end
+            )
+            payload["changelogs"] = [
+                r.model_dump(mode="json") if hasattr(r, "model_dump") else r
+                for r in rows
+            ]
+            return payload
+        return {
+            "changelogs": data_adapter.get_changelogs_list(
+                brain_id, limit, skip, types, query_text
+            ),
+        }
+
     results = await asyncio.to_thread(_get_list)
-    
+    if "changes" in results:
+        return JSONResponse(
+            content={
+                "message": "Changelogs list retrieved successfully",
+                "changelogs": results.get("changelogs") or [],
+                "count": results.get("count", len(results.get("changes") or [])),
+                "changes": results.get("changes") or [],
+                "total": results.get("total"),
+                "since": results.get("since"),
+                "until": results.get("until"),
+            }
+        )
+    rows = results["changelogs"]
     return JSONResponse(
         content={
             "message": "Changelogs list retrieved successfully",
-            "changelogs": [r.model_dump(mode="json") for r in results],
-            "count": len(results)
+            "changelogs": [
+                r.model_dump(mode="json") if hasattr(r, "model_dump") else r
+                for r in rows
+            ],
+            "count": len(rows),
         }
     )
 

@@ -106,7 +106,7 @@ class _BrainGraph:
                     incoming["description"] = incoming_desc
             elif existing_desc and not incoming_desc:
                 incoming["description"] = existing_desc
-        for list_key in ("source_chunk_ids", "aliases"):
+        for list_key in ("source_chunk_ids", "aliases", "ingest_task_ids"):
             if list_key in incoming or list_key in merged:
                 seen = []
                 for value in list(merged.get(list_key) or []) + list(
@@ -756,7 +756,7 @@ class PostgreSQLGraphStore:
         brain = self._load_brain(brain_id)
         if is_relationship:
             for source, target, key, data in brain.graph.edges(keys=True, data=True):
-                if data.get("uuid") != entity_uuid:
+                if data.get("uuid") != entity_uuid and key != entity_uuid:
                     continue
                 for prop, value in new_properties.items():
                     data[prop] = value
@@ -773,12 +773,12 @@ class PostgreSQLGraphStore:
             return None
         if entity_uuid not in brain.graph:
             return None
-        data = brain.node_data(entity_uuid)
+        data = brain.graph.nodes[entity_uuid]
         for prop, value in new_properties.items():
             data[prop] = value
         for prop in properties_to_remove:
             data.pop(prop, None)
-        self._persist_node(brain_id, entity_uuid, data)
+        self._persist_node(brain_id, entity_uuid, dict(data))
         return self.node_to_record(brain, entity_uuid)
 
     def delete_nodes_by_uuids(self, brain_id: str, uuids: list[str]) -> list[dict]:

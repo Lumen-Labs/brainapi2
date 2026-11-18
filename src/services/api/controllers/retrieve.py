@@ -49,6 +49,13 @@ from src.utils.dates import parse_date_string, to_naive_utc
 from src.utils.similarity.vectors import cosine_similarity
 from src.utils.nlp.ner import _entity_extractor
 from src.config import config
+from src.core.verification.facts import (
+    combined_verification,
+    fact_pair_allowed,
+    fact_tuple_is_verified,
+    verification_scope,
+)
+from src.services.api.constants.requests import FactVerificationInfo
 
 vector_search = VectorSearchFacade(vector_store_adapter)
 
@@ -212,6 +219,7 @@ def _expand_cross_event_bridges(
     *,
     max_per_hub: int,
     include_history: bool = False,
+    as_of: datetime | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     from src.core.saving.hub_bridges import (
         HubBridge,
@@ -355,7 +363,9 @@ def _expand_cross_event_bridges(
             score = max(0.0, score - min(0.05, 0.02 * len(novel)))
         reserve_ok = seed in reserve_hubs
         for n, r, m, r2, b in facts_by_hub.get(event_uuid, []):
-            if not _fact_predicates_allowed(r, r2, include_history=include_history):
+            if not _fact_predicates_allowed(
+                r, r2, include_history=include_history, as_of=as_of
+            ):
                 continue
             key = _fact_key(r, r2)
             if key in existing_keys:
@@ -364,7 +374,7 @@ def _expand_cross_event_bridges(
             chunk_ids = _extract_source_chunk_ids(n, r, m, r2, b)
             session_ids = _sessions_from_chunk_map(chunk_ids, chunk_sessions)
             fact_text = _format_event_fact(n, r, m, r2, b)
-            if include_history and not (
+            if as_of is None and include_history and not (
                 _is_currently_valid(r) and _is_currently_valid(r2)
             ):
                 fact_text = f"[superseded] {fact_text}"
@@ -390,11 +400,27 @@ def _expand_cross_event_bridges(
 
 
 async def retrieve_data(
-    text: str, limit: int, preferred_entities: str, brain_id: str = "default"
+    text: str,
+    limit: int,
+    preferred_entities: str,
+    brain_id: str = "default",
+    include_rejected: bool = False,
+    as_of: Optional[str] = None,
 ) -> RetrieveRequestResponse:
     """
     Retrieve data from the knowledge graph and data store.
     """
+    from src.core.saving.validity import (
+        InvalidAsOf,
+        chunk_is_valid_at,
+        is_valid_at,
+        optional_instant,
+    )
+
+    try:
+        as_of_dt = optional_instant(as_of)
+    except InvalidAsOf as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if preferred_entities:
         preferred_entities = [
             e.strip() for e in preferred_entities.split(",") if e.strip()
@@ -444,9 +470,37 @@ async def retrieve_data(
         )
         return ts_text_chunks, ts_observations, v_text_chunks, v_observations, nodes
 
-    ts_text_chunks, ts_observations, v_text_chunks, v_observations, nodes = (
-        await asyncio.to_thread(_get_data)
-    )
+    with verification_scope(include_rejected=include_rejected):
+        ts_text_chunks, ts_observations, v_text_chunks, v_observations, nodes = (
+            await asyncio.to_thread(_get_data)
+        )
+    if as_of_dt is not None:
+        excluded_chunk_ids = {
+            chunk.id
+            for chunk in [*ts_text_chunks, *v_text_chunks]
+            if not chunk_is_valid_at(chunk, as_of_dt)
+        }
+        ts_text_chunks = [
+            chunk for chunk in ts_text_chunks if chunk_is_valid_at(chunk, as_of_dt)
+        ]
+        v_text_chunks = [
+            chunk for chunk in v_text_chunks if chunk_is_valid_at(chunk, as_of_dt)
+        ]
+        ts_observations = [
+            obs
+            for obs in ts_observations
+            if getattr(obs, "resource_id", None) not in excluded_chunk_ids
+        ]
+        v_observations = [
+            obs
+            for obs in v_observations
+            if getattr(obs, "resource_id", None) not in excluded_chunk_ids
+        ]
+        nodes = [
+            hit
+            for hit in nodes
+            if _retrieve_hit_valid_at(hit, as_of_dt, is_valid_at)
+        ]
 
     return RetrieveRequestResponse(
         data=[*ts_text_chunks, *v_text_chunks],
@@ -461,6 +515,7 @@ async def retrieve_neighbors(
     identification_params: Optional[IdentificationParams] = None,
     limit: int = 10,
     brain_id: str = "default",
+    include_rejected: bool = False,
 ) -> RetrieveNeighborsRequestResponse:
     """
     Retrieve neighboring nodes related to a specified main node.
@@ -610,7 +665,8 @@ async def retrieve_neighbors(
             neighbors=unique_neighbors[:limit],
         )
 
-    return await _get_neighbors()
+    with verification_scope(include_rejected=include_rejected):
+        return await _get_neighbors()
 
 
 async def retrieve_neighbors_ai_mode(
@@ -656,6 +712,7 @@ async def get_relationships(
     query_text: Optional[str] = None,
     query_search_target: Optional[str] = "all",
     brain_id: str = "default",
+    include_rejected: bool = False,
 ):
     """
     Retrieve relationships from the knowledge graph with optional filtering and pagination.
@@ -676,17 +733,18 @@ async def get_relationships(
             - relationships: List of serialized relationship objects.
             - total: Total number of matching relationships.
     """
-    relationships = await asyncio.to_thread(
-        search_relationships,
-        limit,
-        skip,
-        relationship_types,
-        from_node_labels,
-        to_node_labels,
-        query_text,
-        query_search_target,
-        brain_id,
-    )
+    with verification_scope(include_rejected=include_rejected):
+        relationships = await asyncio.to_thread(
+            search_relationships,
+            limit,
+            skip,
+            relationship_types,
+            from_node_labels,
+            to_node_labels,
+            query_text,
+            query_search_target,
+            brain_id,
+        )
 
     return JSONResponse(
         content={
@@ -703,6 +761,7 @@ async def get_entities(
     node_labels: Optional[list[str]] = None,
     query_text: Optional[str] = None,
     brain_id: str = "default",
+    include_rejected: bool = False,
 ):
     """
     Retrieve entities from the knowledge graph with optional label and text filters.
@@ -720,9 +779,10 @@ async def get_entities(
             - entities (list): Serialized entity objects.
             - total (int): Total number of matching entities.
     """
-    entities = await asyncio.to_thread(
-        search_entities, limit, skip, node_labels, query_text, brain_id
-    )
+    with verification_scope(include_rejected=include_rejected):
+        entities = await asyncio.to_thread(
+            search_entities, limit, skip, node_labels, query_text, brain_id
+        )
 
     return JSONResponse(
         content={
@@ -873,12 +933,19 @@ def _relevance_score(
     completeness = _hub_completeness_score(candidate) / 3.8
     recency = _fact_recency_score(candidate, now=now)
     topic_boost = 0.08 if candidate.get("topic_preferred") else 0.0
+    triple = candidate.get("triple") or ()
+    verified_boost = 0.0
+    if fact_tuple_is_verified(*triple[:5] if len(triple) >= 5 else triple):
+        from src.core.verification.facts import verified_rank_boost
+
+        verified_boost = verified_rank_boost()
     return (
         0.45 * distance_term
         + 0.25 * ppr_term
         + 0.20 * completeness
         + 0.10 * recency
         + topic_boost
+        + verified_boost
     )
 
 
@@ -1266,13 +1333,58 @@ def _merge_variant_candidate_lists(
     return merged
 
 
-def _is_currently_valid(predicate: Predicate) -> bool:
-    props = getattr(predicate, "properties", None) or {}
-    if props.get("invalid_at"):
-        return False
-    if getattr(predicate, "deprecated", False):
-        return False
-    return True
+def _relationship_fields(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        nested = value.get("properties")
+        if isinstance(nested, dict):
+            return nested
+        return value
+    props = getattr(value, "properties", None)
+    if isinstance(props, dict):
+        return props
+    getter = getattr(value, "get", None)
+    if callable(getter):
+        fields: dict[str, Any] = {}
+        for key in (
+            "valid_from",
+            "valid_to",
+            "valid_at",
+            "invalid_at",
+            "superseded_at",
+            "deprecated",
+        ):
+            item = getter(key)
+            if item is not None:
+                fields[key] = item
+        return fields
+    return {}
+
+
+def _retrieve_hit_valid_at(hit: Any, as_of, is_valid_at) -> bool:
+    if not isinstance(hit, dict):
+        return True
+    rels = hit.get("relationships")
+    if rels is None:
+        predicate = hit.get("predicate")
+        if predicate is None:
+            return True
+        return is_valid_at(_relationship_fields(predicate), as_of)
+    items = rels if isinstance(rels, (list, tuple)) else [rels]
+    return all(
+        is_valid_at(_relationship_fields(rel), as_of)
+        for rel in items
+        if rel is not None
+    )
+
+
+def _is_currently_valid(
+    predicate: Predicate, as_of: datetime | None = None
+) -> bool:
+    from src.core.saving.validity import predicate_is_valid_at
+
+    return predicate_is_valid_at(predicate, as_of)
 
 
 def _wants_historical_facts(
@@ -1299,7 +1411,12 @@ def _fact_predicates_allowed(
     r2: Predicate,
     *,
     include_history: bool,
+    as_of: datetime | None = None,
 ) -> bool:
+    if not fact_pair_allowed(r, r2):
+        return False
+    if as_of is not None:
+        return _is_currently_valid(r, as_of) and _is_currently_valid(r2, as_of)
     if include_history:
         return True
     return _is_currently_valid(r) and _is_currently_valid(r2)
@@ -1448,6 +1565,7 @@ def _build_adjacency_from_seeds(
     query: str | None = None,
     query_embedding: list[float] | None = None,
     include_history: bool = False,
+    as_of: datetime | None = None,
 ) -> dict[str, list[tuple[str, float]]]:
     weighted: dict[str, dict[str, float]] = {}
     if not seed_uuids:
@@ -1459,7 +1577,9 @@ def _build_adjacency_from_seeds(
     except Exception:
         return {}
     for n, r, m, r2, b in neighbors:
-        if not _fact_predicates_allowed(r, r2, include_history=include_history):
+        if not _fact_predicates_allowed(
+            r, r2, include_history=include_history, as_of=as_of
+        ):
             continue
         n_uuid = getattr(n, "uuid", None)
         m_uuid = getattr(m, "uuid", None)
@@ -1663,6 +1783,51 @@ def _session_ids_for_chunks(
     return found
 
 
+def _fact_ids_from_context_triple(triple: Any) -> list[str]:
+    ids: list[str] = []
+    if not triple or len(triple) < 5:
+        return ids
+    for predicate in (triple[1], triple[3]):
+        props = getattr(predicate, "properties", None) or {}
+        uid = getattr(predicate, "uuid", None) or props.get("uuid")
+        if uid:
+            ids.append(str(uid))
+    return ids
+
+
+def _annotate_open_conflicts(
+    adapter: Any,
+    brain_id: str,
+    triples: list[GetContextTriple],
+    text_lines: list[str],
+) -> tuple[list[GetContextTriple], list[str]]:
+    from src.core.saving.conflicts import annotation_payload, open_conflicts_by_fact_ids
+
+    fact_ids: list[str] = []
+    for item in triples:
+        fact_ids.extend(_fact_ids_from_context_triple(item.triple))
+    mapping = open_conflicts_by_fact_ids(adapter, brain_id, fact_ids)
+    annotated_lines: list[str] = []
+    for index, item in enumerate(triples):
+        payloads: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for fact_id in _fact_ids_from_context_triple(item.triple):
+            for conflict in mapping.get(fact_id) or []:
+                if conflict.id in seen:
+                    continue
+                seen.add(conflict.id)
+                payloads.append(annotation_payload(conflict, fact_id))
+        if payloads:
+            item.open_conflicts = payloads
+            line = text_lines[index] if index < len(text_lines) else ""
+            if line and not line.startswith("[open conflict]"):
+                line = f"[open conflict] {line}"
+            annotated_lines.append(line)
+        else:
+            annotated_lines.append(text_lines[index] if index < len(text_lines) else "")
+    return triples, annotated_lines
+
+
 def _build_fact_channel(
     curated: list[dict[str, Any]],
     chunk_sessions: dict[str, list[str]],
@@ -1681,12 +1846,14 @@ def _build_fact_channel(
         if session_ids:
             line = f"{line} ({', '.join(session_ids)})"
         text_lines.append(line)
+        verification = combined_verification(r, r2, m)
         triples.append(
             GetContextTriple(
                 identified_entity=candidate["identified_entity"],
                 triple=(n, r, m, r2, b),
                 source_chunk_ids=chunk_ids or None,
                 source_session_ids=session_ids or None,
+                verification=FactVerificationInfo(**verification.model_dump()),
             )
         )
         for sid in session_ids:
@@ -1786,10 +1953,11 @@ async def get_context(
     and publishes it as a latency trace event; it is off unless the caller asks
     for it or `TRACE_STAGE_PROFILER_ENABLED` is set.
     """
-    with profile_request(
-        "retrieve.context", enabled=request.profile_stages
-    ) as profiler:
-        response = await _build_context(request, fact_filter_adapter)
+    with verification_scope(include_rejected=bool(request.include_rejected)):
+        with profile_request(
+            "retrieve.context", enabled=request.profile_stages
+        ) as profiler:
+            response = await _build_context(request, fact_filter_adapter)
     if profiler is not None:
         response.stage_timings = profiler.last_report
     return response
@@ -1799,6 +1967,12 @@ async def _build_context(
     request: GetContextRequestBody,
     fact_filter_adapter: Any,
 ) -> GetContextResponse:
+    from src.core.saving.validity import InvalidAsOf, optional_instant
+
+    try:
+        as_of = optional_instant(getattr(request, "as_of", None))
+    except InvalidAsOf as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     with profile_stage("nlp.extract_elements"):
         elements = _entity_extractor.extract_elements(request.text)
     with profile_stage("nlp.query_variants") as detail:
@@ -1850,7 +2024,9 @@ async def _build_context(
 
     query_vector: list[float] | None = None
     explicit_history = request.include_history
-    if explicit_history is None:
+    if as_of is not None:
+        include_history = False
+    elif explicit_history is None:
         try:
             query_vector = _embed_query(request.text)
             history_vectors, current_vectors = prototype_vectors(_embed_query)
@@ -1898,7 +2074,7 @@ async def _build_context(
             with profile_stage("facts.assemble"):
                 for n, r, m, r2, b in neighbors:
                     if not _fact_predicates_allowed(
-                        r, r2, include_history=include_history
+                        r, r2, include_history=include_history, as_of=as_of
                     ):
                         continue
                     distances = [
@@ -1912,7 +2088,7 @@ async def _build_context(
                     ]
                     score = min(distances) if distances else float("inf")
                     fact_text = _format_event_fact(n, r, m, r2, b)
-                    if include_history and not (
+                    if as_of is None and include_history and not (
                         _is_currently_valid(r) and _is_currently_valid(r2)
                     ):
                         fact_text = f"[superseded] {fact_text}"
@@ -2007,6 +2183,7 @@ async def _build_context(
                 hits,
                 include_history=include_history,
                 limit=request.historical_limit,
+                as_of=as_of,
             )
             if extra:
                 texts = texts + extra
@@ -2049,6 +2226,7 @@ async def _build_context(
                     structured_data,
                     text_chunks,
                     include_history=include_history,
+                    as_of=as_of,
                 )
                 return _history_from_hits(chunk_hits, extra)
 
@@ -2086,6 +2264,7 @@ async def _build_context(
             request.brain_id,
             max_per_hub=request.cross_event_bridges,
             include_history=include_history,
+            as_of=as_of,
         )
         detail["candidates"] = len(candidates)
         detail["paths"] = len(bridge_paths)
@@ -2106,6 +2285,7 @@ async def _build_context(
                     request.brain_id,
                     query=request.text,
                     include_history=include_history,
+                    as_of=as_of,
                 )
                 adjacency_detail["nodes"] = len(adjacency)
             with profile_stage("ppr.iterations", iterations=_PPR_ITERS):
@@ -2142,12 +2322,14 @@ async def _build_context(
         request.brain_id,
         passage_hits,
         include_history=include_history,
+        as_of=as_of,
     )
     ranked = current_fact_candidates(
         data_adapter,
         request.brain_id,
         ranked,
         include_history=include_history,
+        as_of=as_of,
     )
 
     provenance_ids: list[str] = []
@@ -2187,6 +2369,7 @@ async def _build_context(
                         chunk,
                         include_history=include_history,
                         cache=passage_cache,
+                        as_of=as_of,
                     )
                     if body and body not in source_passages:
                         source_passages.append(body)
@@ -2235,6 +2418,7 @@ async def _build_context(
         request.brain_id,
         ranked,
         include_history=include_history,
+        as_of=as_of,
     )
 
     with profile_stage("fact_filter") as detail:
@@ -2308,6 +2492,7 @@ async def _build_context(
                 request.brain_id,
                 extra_passages,
                 include_history=include_history,
+                as_of=as_of,
             )
             for chunk_id, _, body in extra_passages:
                 if body and body not in source_passages:
@@ -2355,6 +2540,7 @@ async def _build_context(
                 request.brain_id,
                 curated,
                 include_history=include_history,
+                as_of=as_of,
             )
             text_lines, triples, graph_session_ids = _build_fact_channel(
                 curated, chunk_sessions
@@ -2363,6 +2549,10 @@ async def _build_context(
     response_paths = _paths_for_curated(bridge_paths, curated)
 
     with profile_stage("context.render", passages=len(source_passages)):
+        if getattr(request, "annotate_conflicts", False):
+            triples, text_lines = _annotate_open_conflicts(
+                data_adapter, request.brain_id, triples, text_lines
+            )
         topic_block = [
             f"[topic] {t.get('label')}"
             for t in response_topics
