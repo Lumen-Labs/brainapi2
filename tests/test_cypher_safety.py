@@ -171,6 +171,15 @@ class CypherSafetyHelperTests(unittest.TestCase):
             "CALL `dbms`.components() YIELD name RETURN name",
             "CALL `db`.`admin`.waitForIndexes() YIELD name RETURN name",
             r"WITH 'a\'' AS s CALL dbms.components() YIELD name RETURN name",
+            "WITH '' AS s CALL dbms.components() YIELD name RETURN name",
+            'WITH "" AS s CALL dbms.components() YIELD name RETURN name',
+            "WITH '' AS s USE system RETURN 1",
+            "CALL dbms/*x*/.components() YIELD name RETURN name",
+            "CALL dbms\n.components() YIELD name RETURN name",
+            "CALL dbms .components() YIELD name RETURN name",
+            "CALL `dbms`/*x*/.components() YIELD name RETURN name",
+            "CALL db./*x*/admin.waitForIndexes() YIELD name RETURN name",
+            "CALL db.\nadmin.waitForIndexes() YIELD name RETURN name",
             "RETURN 1; MATCH (n) DETACH DELETE n",
             "",
         ]
@@ -178,6 +187,17 @@ class CypherSafetyHelperTests(unittest.TestCase):
             with self.subTest(query=query):
                 with self.assertRaises(RawCypherRejected):
                     validate_raw_cypher(query)
+
+    def test_validate_raw_cypher_allows_empty_strings_and_db_labels(self):
+        self.assertEqual(validate_raw_cypher("RETURN '' AS s"), "RETURN '' AS s")
+        self.assertEqual(
+            validate_raw_cypher("WITH '' AS s RETURN s"),
+            "WITH '' AS s RETURN s",
+        )
+        self.assertIn(
+            "db.labels",
+            validate_raw_cypher("CALL db.labels() YIELD label RETURN label"),
+        )
 
     def test_validate_raw_cypher_ignores_quoted_labels_for_admin_keywords(self):
         self.assertEqual(

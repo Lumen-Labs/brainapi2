@@ -147,6 +147,11 @@ def test_execute_operation_rejects_cross_database_and_admin_without_session():
         "CALL dbms.security.listUsers() YIELD user RETURN user",
         "CALL `dbms`.components() YIELD name RETURN name",
         r"WITH 'a\'' AS s CALL dbms.components() YIELD name RETURN name",
+        "WITH '' AS s CALL dbms.components() YIELD name RETURN name",
+        "CALL dbms/*x*/.components() YIELD name RETURN name",
+        "CALL dbms\n.components() YIELD name RETURN name",
+        "CALL dbms .components() YIELD name RETURN name",
+        "CALL db./*x*/admin.waitForIndexes() YIELD name RETURN name",
         "RETURN 1; MATCH (n) DETACH DELETE n",
     ]
     for query in rejected:

@@ -433,6 +433,21 @@ def test_neo4j_raw_cypher_rejects_write_delete_and_cross_database(neo4j_graph):
             r"WITH 'a\'' AS s CALL dbms.components() YIELD name RETURN name",
             BRAIN_ID,
         )
+    with pytest.raises(RawCypherRejected):
+        client.execute_operation(
+            "WITH '' AS s CALL dbms.components() YIELD name RETURN name",
+            BRAIN_ID,
+        )
+    with pytest.raises(RawCypherRejected):
+        client.execute_operation(
+            "CALL dbms/*x*/.components() YIELD name RETURN name",
+            BRAIN_ID,
+        )
+    with pytest.raises(RawCypherRejected):
+        client.execute_operation(
+            "CALL dbms .components() YIELD name RETURN name",
+            BRAIN_ID,
+        )
 
     read_ok = client.execute_operation("RETURN 1 AS n", BRAIN_ID)
     assert _record_value(read_ok.records[0], "n") == 1
