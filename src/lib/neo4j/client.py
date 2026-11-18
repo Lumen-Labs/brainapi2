@@ -525,8 +525,6 @@ class Neo4jClient(GraphClient):
         extra_props: dict[str, Any] = {}
         for obj in objects:
             for attr in attributes:
-                if attr == "properties":
-                    continue
                 value = getattr(obj, attr, None)
                 if value not in (None, "", {}, []):
                     extra_props[static_property_key(attr)] = self._bind_property_value(
