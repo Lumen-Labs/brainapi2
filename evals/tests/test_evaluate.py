@@ -197,6 +197,79 @@ class CompareSystemsTests(unittest.TestCase):
             records=records,
         )
         self.assertEqual(result["verdict"], "incomplete")
+        self.assertEqual(result["reason"], "Systems did not score the same question ids.")
+
+    def test_compare_systems_keeps_timeout_rows(self) -> None:
+        records = [
+            {"system": "hybrid_baseline", "question_id": "q1", "correct": True},
+            {
+                "system": "hybrid_baseline",
+                "question_id": "q2",
+                "correct": False,
+                "error": "timeout",
+            },
+            {"system": "brainapi", "question_id": "q1", "correct": True},
+            {
+                "system": "brainapi",
+                "question_id": "q2",
+                "correct": False,
+                "error": "timeout",
+            },
+        ]
+        result = compare_systems(
+            {
+                "hybrid_baseline": {
+                    "metrics": {
+                        "n": 2,
+                        "n_unsupported": 0,
+                        "accuracy": 0.5,
+                        "wilson_lo": 0.09,
+                        "wilson_hi": 0.91,
+                    }
+                },
+                "brainapi": {
+                    "capabilities": {},
+                    "metrics": {
+                        "n": 2,
+                        "n_unsupported": 0,
+                        "accuracy": 0.5,
+                        "wilson_lo": 0.09,
+                        "wilson_hi": 0.91,
+                    },
+                },
+            },
+            use_case="expert_knowhow",
+            records=records,
+        )
+        self.assertNotEqual(result["verdict"], "incomplete")
+
+    def test_headline_uses_producer_unavailable_reason(self) -> None:
+        records = [
+            {
+                "notes": ["conflict_capability_pending"],
+                "conflict_pairs": [],
+                "unsupported": True,
+                "scoring": "conflict_pairs_unsupported",
+                "reason": "BrainAPI conflict pair producer is not available on this deployment",
+            }
+        ]
+        headline = _conflict_headline(records, [("stmt-a", "stmt-b")])
+        self.assertTrue(headline["unsupported"])
+        self.assertIn("producer is not available", headline["reason"])
+
+    def test_score_one_partial_mapping_is_unsupported(self) -> None:
+        result = QueryResult(
+            answer="",
+            conflict_pairs=[("stmt-a", "stmt-b")],
+            notes=["conflict_mapping_unsupported"],
+        )
+        scored = _score_one(
+            {"task": "conflict_audit"},
+            result,
+            gold_pairs=[("stmt-a", "stmt-b"), ("stmt-c", "stmt-d")],
+        )
+        self.assertTrue(scored["unsupported"])
+        self.assertIsNone(scored["correct"])
 
 
 class JudgeParseTests(unittest.TestCase):

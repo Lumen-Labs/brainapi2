@@ -15,7 +15,16 @@ AsOfPlugin = Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
 ConflictPlugin = Callable[[dict[str, Any], dict[str, Any]], list[tuple[str, str]]]
 
 AS_OF_FIELDS = ("as_of", "asOf", "point_in_time", "valid_at")
+RANGE_END_FIELDS = ("date_to", "until", "valid_to", "as_of_end", "end_date")
 AS_OF_TASKS = frozenset({"as_of", "changelog"})
+_REMAP_NOTES = frozenset(
+    {
+        "conflict_ids_mapped",
+        "conflict_mapping_unsupported",
+        "conflict_producer_empty",
+        "conflict_capability_pending",
+    }
+)
 _STATEMENT_ID_RE = re.compile(r"Statement id:\s*([^\n]+)", re.I)
 _DOCUMENT_ID_RE = re.compile(r"Document id:\s*([^\n]+)", re.I)
 
@@ -76,6 +85,23 @@ def _needs_as_of(question: dict[str, Any]) -> bool:
     return str(question.get("task") or "") in AS_OF_TASKS
 
 
+def _apply_range_bounds(
+    body: dict[str, Any],
+    question: dict[str, Any],
+    schema_fields: set[str],
+) -> dict[str, Any]:
+    date_to = question.get("date_to")
+    if not date_to:
+        return body
+    for candidate in RANGE_END_FIELDS:
+        if candidate in schema_fields:
+            body[candidate] = date_to
+            return body
+    if "include_history" in schema_fields:
+        body["include_history"] = True
+    return body
+
+
 def default_as_of_plugin(
     body: dict[str, Any],
     question: dict[str, Any],
@@ -89,13 +115,13 @@ def default_as_of_plugin(
     if field and field in schema_fields and as_of:
         body = dict(body)
         body[field] = as_of
-        return body, "api_field"
+        return _apply_range_bounds(body, question, schema_fields), "api_field"
     if as_of:
         for candidate in AS_OF_FIELDS:
             if candidate in schema_fields:
                 body = dict(body)
                 body[candidate] = as_of
-                return body, "api_schema"
+                return _apply_range_bounds(body, question, schema_fields), "api_schema"
     if "include_history" in schema_fields:
         body = dict(body)
         body["include_history"] = True
@@ -120,9 +146,6 @@ def temporal_conflicts_plugin(payload: dict[str, Any], _question: dict[str, Any]
                 ids.append(str(fact[0]))
             elif fact:
                 ids.append(str(fact))
-        entity = row.get("entity_uuid")
-        if entity:
-            ids.append(str(entity))
         uniq = []
         for item in ids:
             if item not in uniq:
@@ -172,7 +195,7 @@ def remap_conflict_pairs(
                 mapped.append(key)
         else:
             unmapped.append(pair_key(str(left), str(right)))
-    supported = bool(mapped) or not pairs
+    supported = not unmapped
     return {
         "pairs": mapped,
         "unmapped": unmapped,
@@ -230,7 +253,9 @@ class BrainAPIAdapter:
         self._gold_ids: set[str] = set()
         self._locked: set[str] = set()
         self._ambiguous: set[str] = set()
+        self._id_candidates: dict[str, set[str]] = {}
         self._conflict_outcomes: list[str] = []
+        self._pending_conflict_jobs: list[dict[str, Any]] = []
 
     def _ensure_client(self) -> BrainAPIClient:
         if self.client is None:
@@ -252,9 +277,10 @@ class BrainAPIAdapter:
             return
         if key in self._locked and self._id_map.get(key) != gold:
             return
-        existing = self._id_map.get(key)
-        if existing and existing != gold:
-            del self._id_map[key]
+        candidates = self._id_candidates.setdefault(key, set())
+        candidates.add(gold)
+        if len(candidates) > 1:
+            self._id_map.pop(key, None)
             self._ambiguous.add(key)
             return
         self._id_map[key] = gold
@@ -290,9 +316,13 @@ class BrainAPIAdapter:
             properties.get("statement_id") if isinstance(properties, dict) else None,
             row.get("eval_doc_id"),
             metadata.get("eval_doc_id") if isinstance(metadata, dict) else None,
+            properties.get("eval_doc_id") if isinstance(properties, dict) else None,
             row.get("doc_id"),
             row.get("document_id"),
-            properties.get("eval_doc_id") if isinstance(properties, dict) else None,
+            metadata.get("doc_id") if isinstance(metadata, dict) else None,
+            metadata.get("document_id") if isinstance(metadata, dict) else None,
+            properties.get("doc_id") if isinstance(properties, dict) else None,
+            properties.get("document_id") if isinstance(properties, dict) else None,
         ]
 
     def _remember_metadata(self, row: dict[str, Any] | None) -> str | None:
@@ -492,13 +522,13 @@ class BrainAPIAdapter:
             "n_mapped": 0,
             "n_unmapped": 0,
         }
+        conflict_job: dict[str, Any] | None = None
         if question.get("task") == "conflict_audit":
             path = self.settings.conflict_path
             raw_pairs: list[tuple[str, str]] = []
             pair_source = ""
-            producer_available = bool(path) or bool(
-                self.capabilities.get("temporal_conflicts_sidecar")
-            )
+            dedicated_ok = False
+            sidecar_ok = "temporal_conflicts" in payload
             if path:
                 conflict_res = client.request_path(
                     "POST",
@@ -510,50 +540,36 @@ class BrainAPIAdapter:
                 )
                 http_calls += 1
                 if conflict_res.status_code < 400 and isinstance(conflict_res.data, dict):
+                    dedicated_ok = True
                     raw_pairs = self._pairs_from_payload(conflict_res.data)
                     notes.append("conflict_endpoint")
                     if raw_pairs:
                         pair_source = "dedicated_endpoint"
                 else:
                     notes.append(f"conflict_endpoint_http_{conflict_res.status_code}")
-            if not raw_pairs:
+            if not raw_pairs and sidecar_ok:
                 raw_pairs = self._conflict_plugin(payload, question)
                 if raw_pairs:
                     notes.append("temporal_conflicts_sidecar")
                     pair_source = "temporal_conflicts_sidecar"
-            mapped = self._mapped_conflict_pairs(raw_pairs)
-            mapping_info = {
-                "supported": mapped["supported"],
-                "n_raw": mapped["n_raw"],
-                "n_mapped": mapped["n_mapped"],
-                "n_unmapped": mapped["n_unmapped"],
+            conflict_job = {
+                "raw_pairs": raw_pairs,
+                "pair_source": pair_source,
+                "producer_ok": dedicated_ok or sidecar_ok,
+                "dedicated_ok": dedicated_ok,
+                "sidecar_ok": sidecar_ok,
+                "notes": notes,
             }
-            if mapped["pairs"]:
-                pairs = mapped["pairs"]
-                conflict_mode = (
-                    "dedicated_endpoint_mapped"
-                    if pair_source == "dedicated_endpoint"
-                    else "temporal_conflicts_mapped"
-                )
-                notes.append("conflict_ids_mapped")
-                self._conflict_outcomes.append("mapped")
-            elif raw_pairs:
-                notes.append("conflict_mapping_unsupported")
-                conflict_mode = "id_mapping_unsupported"
-                mapping_info["supported"] = False
-                self._conflict_outcomes.append("unmapped")
-            elif producer_available:
-                notes.append("conflict_producer_empty")
-                self._conflict_outcomes.append("empty")
-            else:
-                notes.append("conflict_capability_pending")
-                mapping_info["supported"] = False
-                self._conflict_outcomes.append("unavailable")
+            decided = self._decide_conflict_outcome(conflict_job)
+            pairs = decided["pairs"]
+            mapping_info = decided["mapping_info"]
+            conflict_mode = decided["conflict_mode"]
+            self._pending_conflict_jobs.append(conflict_job)
             self._refresh_conflict_capability(conflict_mode)
         self.capabilities["last_as_of_mode"] = as_of_mode
         answer = self._answer(question, passages, payload)
         e2e_ms = (time.perf_counter() - started) * 1000
-        return QueryResult(
+        result = QueryResult(
             answer=answer["text"],
             passages=passages,
             conflict_pairs=pairs,
@@ -574,6 +590,9 @@ class BrainAPIAdapter:
             },
             notes=notes,
         )
+        if conflict_job is not None:
+            conflict_job["result"] = result
+        return result
 
     def _index_retrieve_payload(self, payload: dict[str, Any]) -> None:
         if not isinstance(payload, dict):
@@ -634,10 +653,83 @@ class BrainAPIAdapter:
             self._remember(identified, gold)
 
     def _mapped_conflict_pairs(self, raw_pairs: list[tuple[str, str]]) -> dict[str, Any]:
-        mapped = remap_conflict_pairs(raw_pairs, self._id_map)
-        if raw_pairs and not mapped["pairs"]:
-            mapped["supported"] = False
-        return mapped
+        return remap_conflict_pairs(raw_pairs, self._id_map)
+
+    def _decide_conflict_outcome(self, job: dict[str, Any]) -> dict[str, Any]:
+        raw_pairs = list(job.get("raw_pairs") or [])
+        pair_source = str(job.get("pair_source") or "")
+        producer_ok = bool(job.get("producer_ok"))
+        notes = job.get("notes")
+        if isinstance(notes, list):
+            notes[:] = [item for item in notes if item not in _REMAP_NOTES]
+        mapped = self._mapped_conflict_pairs(raw_pairs)
+        mapping_info = {
+            "supported": mapped["supported"],
+            "n_raw": mapped["n_raw"],
+            "n_mapped": mapped["n_mapped"],
+            "n_unmapped": mapped["n_unmapped"],
+        }
+        pairs: list[tuple[str, str]] = []
+        if raw_pairs and mapped["n_unmapped"]:
+            if isinstance(notes, list):
+                notes.append("conflict_mapping_unsupported")
+            conflict_mode = "id_mapping_unsupported"
+            mapping_info["supported"] = False
+            outcome = "unmapped"
+        elif mapped["pairs"]:
+            pairs = mapped["pairs"]
+            conflict_mode = (
+                "dedicated_endpoint_mapped"
+                if pair_source == "dedicated_endpoint"
+                else "temporal_conflicts_mapped"
+            )
+            if isinstance(notes, list):
+                notes.append("conflict_ids_mapped")
+            outcome = "mapped"
+        elif producer_ok:
+            if isinstance(notes, list):
+                notes.append("conflict_producer_empty")
+            if job.get("dedicated_ok") and pair_source != "temporal_conflicts_sidecar":
+                conflict_mode = "dedicated_endpoint"
+            else:
+                conflict_mode = pair_source or "temporal_conflicts_sidecar"
+            mapping_info["supported"] = True
+            outcome = "empty"
+        else:
+            if isinstance(notes, list):
+                notes.append("conflict_capability_pending")
+            conflict_mode = "pending_product"
+            mapping_info["supported"] = False
+            outcome = "unavailable"
+        job["pairs"] = pairs
+        job["mapping_info"] = mapping_info
+        job["conflict_mode"] = conflict_mode
+        job["outcome"] = outcome
+        self._conflict_outcomes.append(outcome)
+        result = job.get("result")
+        if isinstance(result, QueryResult):
+            result.conflict_pairs = pairs
+            result.notes = notes if isinstance(notes, list) else result.notes
+            raw = dict(result.raw or {})
+            raw["conflict_mapping"] = mapping_info
+            raw["conflict_mode"] = conflict_mode
+            result.raw = raw
+        return {
+            "pairs": pairs,
+            "mapping_info": mapping_info,
+            "conflict_mode": conflict_mode,
+            "outcome": outcome,
+        }
+
+    def finalize_conflict_mappings(self) -> None:
+        if not self._pending_conflict_jobs:
+            return
+        self._conflict_outcomes = []
+        last_mode = str(self.capabilities.get("conflict_mode") or "n/a")
+        for job in self._pending_conflict_jobs:
+            decided = self._decide_conflict_outcome(job)
+            last_mode = decided["conflict_mode"]
+        self._refresh_conflict_capability(last_mode)
 
     def _refresh_conflict_capability(self, last_mode: str) -> None:
         outcomes = set(self._conflict_outcomes)
@@ -650,11 +742,8 @@ class BrainAPIAdapter:
             self.capabilities["conflict_mode"] = last_mode
             return
         if "empty" in outcomes:
-            dedicated = bool(self.settings.conflict_path)
-            self.capabilities["conflict_pairs"] = dedicated
-            self.capabilities["conflict_mode"] = last_mode or (
-                "dedicated_endpoint" if dedicated else "temporal_conflicts_sidecar"
-            )
+            self.capabilities["conflict_pairs"] = True
+            self.capabilities["conflict_mode"] = last_mode or "temporal_conflicts_sidecar"
             return
         self.capabilities["conflict_pairs"] = False
         self.capabilities["conflict_mode"] = last_mode or "pending_product"
@@ -700,22 +789,24 @@ class BrainAPIAdapter:
             title = str(raw.get("title") or metadata.get("title") or default_title)
             raw_id = str(raw.get("id") or f"{prefix}-{index}")
             chunk_id = str(raw.get("chunk_id") or "")
-            self._remember_metadata(raw)
+            resolved = self._remember_metadata(raw)
         else:
             text = str(raw)
             metadata = {}
             title = default_title
             raw_id = f"{prefix}-{index}" if prefix != "text_context" else "text_context"
             chunk_id = ""
+            resolved = None
         parsed = self._remember_text(text)
-        doc_id = None
+        doc_id = resolved
         if isinstance(raw, dict):
-            for key in ("eval_doc_id", "doc_id", "document_id", "statement_id"):
-                doc_id = self._canonical(str(raw.get(key) or "")) or doc_id
-            if not doc_id and isinstance(metadata, dict):
-                for key in ("eval_doc_id", "statement_id", "doc_id"):
-                    doc_id = self._canonical(str(metadata.get(key) or "")) or doc_id
-            doc_id = self._canonical(raw_id) or self._canonical(chunk_id) or doc_id
+            properties = raw.get("properties") if isinstance(raw.get("properties"), dict) else {}
+            for blob in (raw, metadata, properties):
+                if not isinstance(blob, dict):
+                    continue
+                for key in ("eval_doc_id", "doc_id", "document_id", "statement_id"):
+                    doc_id = doc_id or self._canonical(str(blob.get(key) or ""))
+            doc_id = doc_id or self._canonical(raw_id) or self._canonical(chunk_id)
         if not doc_id:
             doc_id = self._canonical(parsed.get("statement_id")) or self._canonical(parsed.get("doc_id"))
         if not doc_id:

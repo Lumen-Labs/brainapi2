@@ -85,11 +85,8 @@ def _score_one(
     if question.get("task") == "conflict_audit":
         notes = result.notes or []
         mapping_unsupported = (
-            (
-                "conflict_mapping_unsupported" in notes
-                or "conflict_capability_pending" in notes
-            )
-            and not result.conflict_pairs
+            "conflict_mapping_unsupported" in notes
+            or "conflict_capability_pending" in notes
         )
         gold = question.get("gold_pairs")
         if gold is None and gold_pairs is not None:
@@ -177,21 +174,28 @@ def _query_records(
     settings: Settings,
     use_judge: bool,
 ) -> list[dict[str, Any]]:
-    records: list[dict[str, Any]] = []
+    pending: list[tuple[dict[str, Any], QueryResult | None, Exception | None]] = []
     for question in questions:
         try:
-            result = adapter.query(question)
-            score = _score_one(
-                question,
-                result,
-                gold_pairs=gold_pairs if question.get("task") == "conflict_audit" else None,
-                settings=settings,
-                use_judge=use_judge,
-            )
-            rec = _record(use_case, adapter.name, question, result, score)
+            pending.append((question, adapter.query(question), None))
         except Exception as exc:
-            rec = _error_record(use_case, adapter.name, question, exc)
-        records.append(rec)
+            pending.append((question, None, exc))
+    finalize = getattr(adapter, "finalize_conflict_mappings", None)
+    if callable(finalize):
+        finalize()
+    records: list[dict[str, Any]] = []
+    for question, result, exc in pending:
+        if exc is not None or result is None:
+            records.append(_error_record(use_case, adapter.name, question, exc or RuntimeError("query failed")))
+            continue
+        score = _score_one(
+            question,
+            result,
+            gold_pairs=gold_pairs if question.get("task") == "conflict_audit" else None,
+            settings=settings,
+            use_judge=use_judge,
+        )
+        records.append(_record(use_case, adapter.name, question, result, score))
     return records
 
 
@@ -241,11 +245,27 @@ def _conflict_headline_unsupported(records: list[dict[str, Any]]) -> bool:
     )
 
 
+def _conflict_headline_reason(records: list[dict[str, Any]]) -> str:
+    pending = any(
+        "conflict_capability_pending" in (row.get("notes") or []) for row in records
+    )
+    mapping = any(
+        "conflict_mapping_unsupported" in (row.get("notes") or []) for row in records
+    )
+    if pending and not mapping:
+        for row in records:
+            reason = str(row.get("reason") or "").strip()
+            if reason:
+                return reason
+        return "BrainAPI conflict pair producer is not available on this deployment"
+    return "BrainAPI conflict identifiers could not be mapped to statement/doc gold ids"
+
+
 def _conflict_headline(records: list[dict[str, Any]], gold_pairs: list[tuple[str, str]]) -> dict[str, Any]:
     if _conflict_headline_unsupported(records):
         return {
             "unsupported": True,
-            "reason": "BrainAPI conflict identifiers could not be mapped to statement/doc gold ids",
+            "reason": _conflict_headline_reason(records),
             "f1": None,
             "precision": None,
             "recall": None,
@@ -472,9 +492,7 @@ def _system_question_ids(records: list[dict[str, Any]], system: str) -> set[Any]
     return {
         row.get("question_id")
         for row in records
-        if row.get("system") == system
-        and row.get("error") is None
-        and not row.get("unsupported")
+        if row.get("system") == system and not row.get("unsupported")
     }
 
 

@@ -16,7 +16,9 @@ from evals.datasets.loader import docs_for_run, load_corpus, load_questions
 
 
 def _settings() -> Settings:
-    return Settings.load()
+    settings = Settings.load()
+    settings.conflict_path = None
+    return settings
 
 
 class AdapterTests(unittest.TestCase):
@@ -338,11 +340,18 @@ class AdapterTests(unittest.TestCase):
 
     def test_remap_conflict_pairs_helper(self) -> None:
         mapped = remap_conflict_pairs(
-            [("hub-a", "hub-b"), ("hub-a", "unknown")],
+            [("hub-a", "hub-b")],
             {"hub-a": "stmt-1", "hub-b": "stmt-2"},
         )
         self.assertEqual(mapped["pairs"], [("stmt-1", "stmt-2")])
-        self.assertFalse(mapped["supported"] is False)
+        self.assertTrue(mapped["supported"])
+        mixed = remap_conflict_pairs(
+            [("hub-a", "hub-b"), ("hub-a", "unknown")],
+            {"hub-a": "stmt-1", "hub-b": "stmt-2"},
+        )
+        self.assertEqual(mixed["pairs"], [("stmt-1", "stmt-2")])
+        self.assertFalse(mixed["supported"])
+        self.assertEqual(mixed["n_unmapped"], 1)
         empty = remap_conflict_pairs([("u1", "u2")], {})
         self.assertEqual(empty["pairs"], [])
         self.assertFalse(empty["supported"])
@@ -411,6 +420,61 @@ class AdapterTests(unittest.TestCase):
         other.query({"task": "conflict_audit", "question": "two"})
         self.assertFalse(other.capabilities["conflict_pairs"])
         self.assertEqual(other.capabilities["conflict_mode"], "id_mapping_unsupported")
+        other.finalize_conflict_mappings()
+        self.assertFalse(other.capabilities["conflict_pairs"])
+        first = other._pending_conflict_jobs[0]["result"]
+        self.assertIn(("stmt-a", "stmt-b"), first.conflict_pairs)
+        second = other._pending_conflict_jobs[1]["result"]
+        self.assertIn("conflict_mapping_unsupported", second.notes)
+
+    def test_shared_chunk_mapping_is_order_independent(self) -> None:
+        def run(order: list[int]) -> tuple[list[list[tuple[str, str]]], bool]:
+            adapter = _adapter_with_client()
+            adapter._remember("stmt-a", "stmt-a")
+            adapter._remember("stmt-b", "stmt-b")
+            payloads = [
+                MagicMock(
+                    data={
+                        "temporal_conflicts": [{"hubs": ["shared-chunk", "hub-a"]}],
+                        "triples": [
+                            {
+                                "identified_entity": "stmt-a",
+                                "source_chunk_ids": ["shared-chunk"],
+                                "triple": [{"uuid": "hub-a", "name": "A"}],
+                            }
+                        ],
+                    },
+                    latency_ms=1.0,
+                    status_code=200,
+                ),
+                MagicMock(
+                    data={
+                        "temporal_conflicts": [{"hubs": ["shared-chunk", "hub-b"]}],
+                        "triples": [
+                            {
+                                "identified_entity": "stmt-b",
+                                "source_chunk_ids": ["shared-chunk"],
+                                "triple": [{"uuid": "hub-b", "name": "B"}],
+                            }
+                        ],
+                    },
+                    latency_ms=1.0,
+                    status_code=200,
+                ),
+            ]
+            adapter.client.retrieve_context.side_effect = [payloads[i] for i in order]
+            adapter.query({"task": "conflict_audit", "question": "one"})
+            adapter.query({"task": "conflict_audit", "question": "two"})
+            adapter.finalize_conflict_mappings()
+            pairs = [list(job["result"].conflict_pairs) for job in adapter._pending_conflict_jobs]
+            return pairs, bool(adapter.capabilities["conflict_pairs"])
+
+        pairs_a, cap_a = run([0, 1])
+        pairs_b, cap_b = run([1, 0])
+        self.assertEqual(cap_a, cap_b)
+        self.assertFalse(cap_a)
+        self.assertEqual(pairs_a, pairs_b)
+        self.assertEqual(pairs_a, [[], []])
 
     def test_retrieval_text_does_not_register_new_gold_ids(self) -> None:
         adapter = _adapter_with_client()
@@ -479,6 +543,26 @@ class AdapterTests(unittest.TestCase):
         self.assertNotIn("as_of", extra)
         self.assertEqual(result.raw["as_of_mode"], "include_history")
 
+    def test_as_of_plugin_keeps_history_for_date_range(self) -> None:
+        body, mode = default_as_of_plugin(
+            {},
+            {"task": "changelog", "date_from": "2019-01-01", "date_to": "2024-01-01"},
+            field="as_of",
+            schema_fields={"as_of", "include_history", "text"},
+        )
+        self.assertEqual(mode, "api_field")
+        self.assertEqual(body["as_of"], "2019-01-01")
+        self.assertTrue(body["include_history"])
+        body, mode = default_as_of_plugin(
+            {},
+            {"task": "changelog", "date_from": "2019-01-01", "date_to": "2024-01-01"},
+            field="as_of",
+            schema_fields={"as_of", "date_to", "text"},
+        )
+        self.assertEqual(mode, "api_field")
+        self.assertEqual(body["date_to"], "2024-01-01")
+        self.assertNotIn("include_history", body)
+
     def test_empty_conflict_producer_is_scoreable(self) -> None:
         adapter = _adapter_with_client()
         adapter.capabilities["temporal_conflicts_sidecar"] = True
@@ -498,6 +582,116 @@ class AdapterTests(unittest.TestCase):
         self.assertNotIn("conflict_mapping_unsupported", result.notes)
         self.assertNotIn("conflict_capability_pending", result.notes)
         self.assertTrue(adapter.capabilities["conflict_pairs"])
+
+    def test_sidecar_empty_response_is_scoreable(self) -> None:
+        adapter = _adapter_with_client()
+        adapter.client.retrieve_context.return_value = MagicMock(
+            data={"temporal_conflicts": []},
+            latency_ms=1.0,
+            status_code=200,
+        )
+        result = adapter.query({"task": "conflict_audit", "question": "conflicts?"})
+        self.assertEqual(result.conflict_pairs, [])
+        self.assertIn("conflict_producer_empty", result.notes)
+        self.assertNotIn("conflict_capability_pending", result.notes)
+        self.assertTrue(adapter.capabilities["conflict_pairs"])
+
+    def test_failed_conflict_endpoint_is_unavailable(self) -> None:
+        adapter = _adapter_with_client()
+        adapter.settings.conflict_path = "/retrieve/conflicts"
+        adapter.client.request_path.return_value = MagicMock(
+            data={"detail": "missing"},
+            status_code=404,
+        )
+        adapter.client.retrieve_context.return_value = MagicMock(
+            data={"source_passages": ["nothing here"]},
+            latency_ms=1.0,
+            status_code=200,
+        )
+        result = adapter.query({"task": "conflict_audit", "question": "conflicts?"})
+        self.assertEqual(result.conflict_pairs, [])
+        self.assertIn("conflict_capability_pending", result.notes)
+        self.assertNotIn("conflict_producer_empty", result.notes)
+        self.assertFalse(adapter.capabilities["conflict_pairs"])
+
+    def test_partial_conflict_mapping_is_unsupported(self) -> None:
+        adapter = _adapter_with_client()
+        adapter._remember("stmt-a", "stmt-a")
+        adapter._remember("hub-a", "stmt-a")
+        adapter.client.retrieve_context.return_value = MagicMock(
+            data={"temporal_conflicts": [{"hubs": ["hub-a", "hub-unknown"]}]},
+            latency_ms=1.0,
+            status_code=200,
+        )
+        result = adapter.query({"task": "conflict_audit", "question": "conflicts?"})
+        self.assertEqual(result.conflict_pairs, [])
+        self.assertIn("conflict_mapping_unsupported", result.notes)
+        self.assertFalse(result.raw["conflict_mapping"]["supported"])
+        self.assertEqual(result.raw["conflict_mapping"]["n_unmapped"], 1)
+
+    def test_metadata_doc_id_indexes_passage_alias(self) -> None:
+        adapter = _adapter_with_client()
+        adapter._remember("stmt-a", "stmt-a")
+        adapter._remember("stmt-b", "stmt-b")
+        adapter._remember("doc-a", "stmt-a")
+        adapter._remember("doc-b", "stmt-b")
+        adapter.client.retrieve_context.return_value = MagicMock(
+            data={
+                "temporal_conflicts": [{"hubs": ["hub-a", "hub-b"]}],
+                "source_passages": [
+                    {"id": "hub-a", "text": "14 days", "metadata": {"doc_id": "doc-a"}},
+                    {"id": "hub-b", "text": "30 days", "metadata": {"doc_id": "doc-b"}},
+                ],
+            },
+            latency_ms=1.0,
+            status_code=200,
+        )
+        result = adapter.query({"task": "conflict_audit", "question": "conflicts?"})
+        self.assertIn(("stmt-a", "stmt-b"), result.conflict_pairs)
+        self.assertEqual(result.passages[0]["doc_id"], "stmt-a")
+
+    def test_passage_properties_statement_id_is_used(self) -> None:
+        adapter = _adapter_with_client()
+        adapter._remember("stmt-a", "stmt-a")
+        adapter.client.retrieve_context.return_value = MagicMock(
+            data={
+                "source_passages": [
+                    {
+                        "text": "Passwords must be 8 characters.",
+                        "properties": {"statement_id": "stmt-a"},
+                    }
+                ]
+            },
+            latency_ms=1.0,
+            status_code=200,
+        )
+        result = adapter.query({"question": "password length?"})
+        self.assertEqual(result.passages[0]["doc_id"], "stmt-a")
+
+    def test_shared_clause_key_does_not_label_other_passages(self) -> None:
+        adapter = _adapter_with_client()
+        adapter._remember("stmt-a", "stmt-a", lock=True)
+        adapter._remember("stmt-b", "stmt-b", lock=True)
+        adapter.client.retrieve_context.return_value = MagicMock(
+            data={
+                "source_passages": [
+                    {
+                        "id": "chunk-a",
+                        "text": "Document id: famr-2019\nStatement id: stmt-a\n\nold",
+                        "metadata": {"source_key": "FAR 12.4", "statement_id": "stmt-a"},
+                    },
+                    {
+                        "id": "FAR 12.4",
+                        "text": "unrelated later passage",
+                    },
+                ]
+            },
+            latency_ms=1.0,
+            status_code=200,
+        )
+        result = adapter.query({"question": "what did it say?"})
+        self.assertEqual(result.passages[0]["doc_id"], "stmt-a")
+        self.assertNotEqual(result.passages[1]["doc_id"], "stmt-a")
 
     def test_unavailable_conflict_producer_is_unsupported(self) -> None:
         adapter = _adapter_with_client()
