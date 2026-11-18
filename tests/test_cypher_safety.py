@@ -148,6 +148,7 @@ class CypherSafetyHelperTests(unittest.TestCase):
         self.assertNotIn("r['valid_from'] IS NULL OR", valid_at)
         self.assertNotIn(";", valid_at)
         window = relationship_changed_in_window_clause("r", "since", "until")
+        self.assertTrue(window.startswith("(") and window.endswith(")"))
         self.assertIn("r['invalid_at']", window)
         self.assertIn("r['recorded_at']", window)
         self.assertIn("r['valid_at']", window)
@@ -156,6 +157,9 @@ class CypherSafetyHelperTests(unittest.TestCase):
         self.assertNotIn("$since", window)
         self.assertNotIn("$until", window)
         self.assertNotIn(">=", window)
+        combined = window + " AND n['uuid'] IN $subject_uuids"
+        self.assertTrue(combined.startswith("("))
+        self.assertIn(") AND n['uuid'] IN $subject_uuids", combined)
         with self.assertRaises(InvalidCypherIdentifier):
             relationship_valid_at_clause("r`", "as_of")
         with self.assertRaises(InvalidCypherIdentifier):

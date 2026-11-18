@@ -427,9 +427,9 @@ def relationship_changed_in_window_clause(
         "valid_at",
         "inserted_at",
     )
-    return " OR ".join(
+    return "(" + " OR ".join(
         rel + "['" + static_property_key(key) + "'] IS NOT NULL" for key in keys
-    )
+    ) + ")"
 
 
 def create_database_query(database: str) -> str:
