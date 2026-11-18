@@ -57,3 +57,42 @@ class ReportTests(unittest.TestCase):
             path = write_report(report, Path(tmp))
             self.assertTrue(path.exists())
             self.assertIn("expert_knowhow", path.read_text(encoding="utf-8"))
+
+    def test_unsupported_pair_f1_is_labeled(self) -> None:
+        md = render_markdown(
+            {
+                "run_id": "map-test",
+                "scale": "local/small-scale",
+                "split": "smoke",
+                "answerer": "extractive",
+                "use_cases": [
+                    {
+                        "use_case": "policy_conflicts",
+                        "n_docs": 2,
+                        "n_questions": 1,
+                        "split": "smoke",
+                        "comparison": {
+                            "verdict": "capability_pending",
+                            "reason": "unmapped",
+                        },
+                        "systems": {
+                            "brainapi": {
+                                "metrics": {
+                                    "accuracy": None,
+                                    "conflict_pairs": {"unsupported": True, "f1": None},
+                                    "latency": {},
+                                    "total_tokens": 0,
+                                    "llm_calls": 0,
+                                },
+                                "ingest": {},
+                                "capabilities": {
+                                    "as_of_mode": "include_history",
+                                    "conflict_mode": "id_mapping_unsupported",
+                                },
+                            }
+                        },
+                    }
+                ],
+            }
+        )
+        self.assertIn("pair F1 unsupported", md)
