@@ -104,6 +104,7 @@ class CypherSafetyHelperTests(unittest.TestCase):
 
     def test_static_property_key_allowlist(self):
         self.assertEqual(static_property_key("description"), "description")
+        self.assertEqual(static_property_key("ingest_task_ids"), "ingest_task_ids")
         with self.assertRaises(InvalidCypherIdentifier):
             static_property_key("not_allowlisted")
 
@@ -131,6 +132,11 @@ class CypherSafetyHelperTests(unittest.TestCase):
             require_database_name("1abc")
         with self.assertRaises(InvalidCypherIdentifier):
             require_database_name("foo`bar")
+        for invalid in ("ab", "foo_", "foo.", "foo-", "foo_bar"):
+            with self.subTest(name=invalid):
+                with self.assertRaises(InvalidCypherIdentifier) as raised:
+                    require_database_name(invalid)
+                self.assertNotIn(repr(invalid), str(raised.exception))
 
     def test_validity_clauses_use_allowlisted_keys_and_parameters(self):
         valid_at = relationship_valid_at_clause("r", "as_of")
@@ -197,11 +203,23 @@ class CypherSafetyHelperTests(unittest.TestCase):
             "CALL db.\nadmin.waitForIndexes() YIELD name RETURN name",
             "RETURN 1; MATCH (n) DETACH DELETE n",
             "",
+            "// just a comment",
+            "/* block only */",
+            "// x\rCALL dbms.components() YIELD name RETURN name",
+            "// x\r\nCALL dbms.components() YIELD name RETURN name",
         ]
         for query in rejected:
             with self.subTest(query=query):
                 with self.assertRaises(RawCypherRejected):
                     validate_raw_cypher(query)
+        self.assertEqual(
+            validate_raw_cypher("RETURN 1; // note"),
+            "RETURN 1",
+        )
+        self.assertEqual(
+            validate_raw_cypher("MATCH (n:`call dbms.metrics`) RETURN n"),
+            "MATCH (n:`call dbms.metrics`) RETURN n",
+        )
 
     def test_validate_raw_cypher_rejects_load_csv_and_apoc(self):
         rejected = [
