@@ -489,19 +489,22 @@ def _resolve_relationship_entities(
 
     _apply_resolutions()
 
+    from src.core.saving.validity import format_instant, parse_instant, stamp_valid_from, utc_now
+
     for relationship in relationships:
         relationship.properties = stamp_provenance(
             relationship.properties,
             source_chunk_id=source_chunk_id,
             source_timestamp=source_timestamp,
         )
-        if source_timestamp and not (relationship.properties or {}).get("valid_at"):
+        if (
+            parse_instant(source_timestamp) is not None
+            and not (relationship.properties or {}).get("valid_at")
+        ):
             relationship.properties = {
                 **(relationship.properties or {}),
                 "valid_at": source_timestamp,
             }
-        from src.core.saving.validity import format_instant, stamp_valid_from, utc_now
-
         relationship.properties = stamp_valid_from(
             relationship.properties,
             source_timestamp,
