@@ -252,6 +252,10 @@ def _completed_units(run):
     )
 
 
+def publication_operation_id(root_id, cursor):
+    return uuid5(NAMESPACE_URL, f"brainapi:publish:{root_id}:{cursor}").hex
+
+
 def next_publication_unit(brain_id, root_id):
     """Read the durable cursor. Replaying the same position uses the same ID."""
     run = ingest_cancellation._runs(brain_id).find_one({"_id": root_id})
@@ -263,7 +267,7 @@ def next_publication_unit(brain_id, root_id):
         return None
     return {
         "cursor": cursor,
-        "operation_id": uuid5(NAMESPACE_URL, f"brainapi:publish:{root_id}:{cursor}").hex,
+        "operation_id": publication_operation_id(root_id, cursor),
         "output_ref": units[cursor]["output_ref"],
     }
 
@@ -283,7 +287,7 @@ def advance_publication(brain_id, root_id, cursor):
 def units_to_unpublish(brain_id, root_id):
     """Units that reached live stores, including the partially applied cursor unit."""
     run = ingest_cancellation._runs(brain_id).find_one({"_id": root_id})
-    if not run or run["status"] != "publish_partial":
+    if not run or run["status"] not in {"publish_partial", "rollback_failed"}:
         return []
     units = _completed_units(run)
     if not units:
@@ -354,6 +358,8 @@ def record_settlement_failure(brain_id, root_id, phase):
                 changes["settlement_failures"] = 0
             elif status == "rollback_failed" and run["status"] == "publish_partial":
                 changes["pending_cleanup"] = False
+                if run.get("rollback_reason"):
+                    changes["rollback_reason"] = run["rollback_reason"]
             else:
                 changes.update(units=_terminal_units(run), pending_cleanup=True)
         return changes
@@ -370,8 +376,94 @@ def finish_publish_rollback(brain_id, root_id):
             "status": "failed",
             "units": _terminal_units(run),
             "pending_cleanup": True,
-        } if run["status"] == "publish_partial" else None,
+        } if run["status"] in {"publish_partial", "rollback_failed"} else None,
     )
+
+
+def graph_touch(brain_id, root_id, operation_id):
+    run = ingest_cancellation._runs(brain_id).find_one({"_id": root_id})
+    if not run:
+        return None
+    return (run.get("graph_touches") or {}).get(operation_id)
+
+
+def graph_touches(brain_id, root_id):
+    run = ingest_cancellation._runs(brain_id).find_one({"_id": root_id})
+    if not run:
+        return {}
+    return dict(run.get("graph_touches") or {})
+
+
+def record_graph_touch(brain_id, root_id, operation_id, touches):
+    """Persist created/reused markers before a graph MERGE is applied."""
+    def transition(run):
+        if run["status"] not in {"publishing", "publish_partial"}:
+            return None
+        ledger = dict(run.get("graph_touches") or {})
+        if operation_id in ledger:
+            return None
+        ledger[operation_id] = touches
+        return {"graph_touches": ledger}
+
+    return ingest_cancellation._change(brain_id, root_id, transition)
+
+
+def rollback_done_ids(brain_id, root_id):
+    run = ingest_cancellation._runs(brain_id).find_one({"_id": root_id})
+    if not run:
+        return []
+    return list(run.get("rollback_done") or [])
+
+
+def mark_rollback_done(brain_id, root_id, item_ids):
+    def transition(run):
+        if run["status"] not in {"publish_partial", "rollback_failed"}:
+            return None
+        done = list(run.get("rollback_done") or [])
+        known = set(done)
+        added = False
+        for item_id in item_ids:
+            if item_id in known:
+                continue
+            done.append(item_id)
+            known.add(item_id)
+            added = True
+        if not added:
+            return None
+        return {"rollback_done": done}
+
+    return ingest_cancellation._change(brain_id, root_id, transition)
+
+
+def set_rollback_reason(brain_id, root_id, reason):
+    def transition(run):
+        if run["status"] not in {"publish_partial", "rollback_failed"}:
+            return None
+        if run.get("rollback_reason") == reason:
+            return None
+        return {"rollback_reason": reason}
+
+    return ingest_cancellation._change(brain_id, root_id, transition)
+
+
+def abort_publish_rollback(brain_id, root_id, reason):
+    """Fail closed without mutating live data when undo cannot be completed safely."""
+    def transition(run):
+        if run["status"] not in {"publish_partial", "rollback_failed"}:
+            return None
+        if (
+            run["status"] == "rollback_failed"
+            and run.get("rollback_reason") == reason
+            and run.get("pending_cleanup") is False
+        ):
+            return None
+        return {
+            "status": "rollback_failed",
+            "pending_cleanup": False,
+            "rollback_reason": reason,
+        }
+
+    return ingest_cancellation._change(brain_id, root_id, transition)
 
 
 def record_rollback_failure(brain_id, root_id):

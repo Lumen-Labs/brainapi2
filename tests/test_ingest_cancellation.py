@@ -888,13 +888,24 @@ def test_rollback_data_deletes_matching_postgres_row():
     assert rows["conflict"]["text"] == "already present"
 
 
+class _CreatedGraphClient:
+    def __init__(self):
+        self.remove_nodes = Mock()
+        self.remove_relationships = Mock()
+        self.update_properties = Mock()
+
+    def list_incident_relationship_uuids(self, uuids, brain_id):
+        return {uuid: [] for uuid in uuids}
+
+
 def test_rollback_graph_uses_public_remove_methods():
     from src.core.saving.ingest_publication import rollback_graph_operation
 
-    client = Mock()
+    client = _CreatedGraphClient()
     rollback_graph_operation(client, "brain", {
         "method": "add_nodes",
         "args": {"nodes": [{"uuid": "n1", "name": "A"}]},
+        "touches": [{"kind": "node", "uuid": "n1", "created": True, "prior": None, "changed": ["name"]}],
     })
     client.remove_nodes.assert_called_once_with(["n1"], "brain")
     rollback_graph_operation(client, "brain", {
@@ -904,6 +915,7 @@ def test_rollback_graph_uses_public_remove_methods():
             "predicate": {"uuid": "r1", "name": "rel"},
             "to_object": {"uuid": "n2"},
         },
+        "touches": [{"kind": "edge", "uuid": "r1", "created": True, "prior": None, "changed": []}],
     })
     client.remove_relationships.assert_called_once_with(
         [({"uuid": "n1"}, {"uuid": "r1", "name": "rel"}, {"uuid": "n2"})],
@@ -914,17 +926,23 @@ def test_rollback_graph_uses_public_remove_methods():
 def test_rollback_graph_raises_when_undo_is_unavailable():
     from src.core.saving.ingest_publication import rollback_graph_operation
 
-    with pytest.raises(ValueError, match="remove_nodes"):
+    with pytest.raises(ValueError, match="created/reused markers"):
         rollback_graph_operation(SimpleNamespace(), "brain", {
             "method": "add_nodes",
             "args": {"nodes": [{"uuid": "n1"}]},
         })
-    with pytest.raises(ValueError, match="Unsupported staged graph rollback"):
+    with pytest.raises(ValueError, match="remove_nodes"):
+        rollback_graph_operation(SimpleNamespace(), "brain", {
+            "method": "add_nodes",
+            "args": {"nodes": [{"uuid": "n1"}]},
+            "touches": [{"kind": "node", "uuid": "n1", "created": True, "prior": None, "changed": []}],
+        })
+    with pytest.raises(ValueError, match="created/reused markers"):
         rollback_graph_operation(Mock(), "brain", {
             "method": "update_properties",
             "args": {"uuid": "n1", "updating": "node", "new_properties": {}, "properties_to_remove": []},
         })
-    with pytest.raises(ValueError, match="Unsupported staged graph rollback"):
+    with pytest.raises(ValueError, match="created/reused markers"):
         rollback_graph_operation(Mock(), "brain", {
             "method": "deprecate_relationship",
             "args": {"subject": {}, "predicate": {}, "to_object": {}},

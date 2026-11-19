@@ -90,7 +90,10 @@ def public_state(brain_id, task_id, payload):
         "publishing", "discarding", "completed", "failed", "rollback_failed", "publish_partial",
     }:
         status = "processing" if run["status"] in {"publishing", "discarding"} else run["status"]
-        return {**payload, "status": status, "stage": run["status"]}
+        extra = {"status": status, "stage": run["status"]}
+        if run.get("rollback_reason"):
+            extra["rollback_reason"] = run["rollback_reason"]
+        return {**payload, **extra}
     if run and run["status"] in {"active", "staging"}:
         modes = ["keep_saved", "rollback"] if run["status"] == "staging" else ["keep_saved"]
         return {"status": "queued", **payload, "cancellation_modes": modes}

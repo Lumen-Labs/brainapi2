@@ -1321,6 +1321,17 @@ class NetworkXGraphClient(GraphClient):
         records = self._store.delete_nodes_by_uuids(brain_id, uuids)
         return [Node(**record.get("node", {})) for record in records]
 
+    def list_incident_relationship_uuids(self, uuids: list[str], brain_id: str) -> dict[str, list[str]]:
+        self._store.ensure_database(brain_id)
+        brain = self._store.get_brain(brain_id)
+        found = {str(uuid): [] for uuid in uuids}
+        wanted = set(found)
+        for source, target, key, data in brain.graph.edges(keys=True, data=True):
+            edge_id = str((data or {}).get("uuid") or key)
+            for node_uuid in (source, target):
+                if node_uuid in wanted:
+                    found[str(node_uuid)].append(edge_id)
+        return found
 
     def remove_relationships(
         self,
