@@ -303,6 +303,58 @@ def test_publish_includes_subjects_from_units_before_resume(monkeypatch):
     assert called["subject_uuids"] == ["policy-0", "policy-2"]
 
 
+def test_publish_logs_conflict_detection_errors(monkeypatch):
+    from contextlib import contextmanager
+    from src.core.saving import ingest_publication as publisher
+
+    events = []
+
+    @contextmanager
+    def gate(brain, root):
+        yield
+
+    def publish_unit(brain, root, replay):
+        if events:
+            return False
+        replay(
+            brain,
+            "op:0",
+            {
+                "adapter": "graph",
+                "method": "add_relationship",
+                "args": {
+                    "predicate": {"uuid": "fact-1"},
+                    "subject": {"uuid": "policy-1"},
+                },
+            },
+        )
+        events.append("replay")
+        return True
+
+    monkeypatch.setattr(publisher, "publish_next_unit", publish_unit)
+    monkeypatch.setattr(publisher, "replay_graph_operation", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        publisher.ingest_cancellation,
+        "_runs",
+        lambda brain: SimpleNamespace(find_one=lambda query: {"status": "publishing"}),
+    )
+    monkeypatch.setattr(publisher, "finish_publication", lambda brain, root: {"status": "completed"})
+    monkeypatch.setattr(publisher, "discard_outputs", lambda brain, root: None)
+    monkeypatch.setattr(publisher.ingest_staging, "mark_cleanup_complete", lambda brain, root: None)
+    monkeypatch.setenv("CONFLICT_DETECT_ON_INGEST", "true")
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("detect failed")
+
+    monkeypatch.setattr(
+        "src.core.saving.conflicts.maybe_detect_after_ingest", boom
+    )
+    with patch.object(publisher.logger, "exception") as logged:
+        publisher.publish_staged_run("brain", "root", gate, Mock(), Mock(), Mock())
+    logged.assert_called_once()
+    assert "conflict detection after staged publish failed" in logged.call_args.args[0]
+
+
 def test_maybe_detect_skips_while_writes_are_staged(monkeypatch):
     from src.core.saving.conflicts import maybe_detect_after_ingest
     from src.core.saving.ingest_write_buffer import capture_writes

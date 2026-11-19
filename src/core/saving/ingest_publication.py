@@ -1,6 +1,7 @@
 """Replay a staged unit after the caller has acquired the brain publication gate."""
 
 import json
+import logging
 
 from src.constants.data import Observation, StructuredData, TextChunk
 from src.constants.embeddings import Vector
@@ -22,6 +23,8 @@ from src.core.saving.ingest_staging import (
     units_to_unpublish,
 )
 
+
+logger = logging.getLogger(__name__)
 
 _DATA_OPERATIONS = {
     "save_text_chunk": ("text_chunks", "text_chunk", TextChunk),
@@ -674,7 +677,11 @@ def publish_staged_run(brain_id, root_id, acquire_gate, data_client, vector_clie
 
             maybe_detect_after_ingest(brain_id, fact_ids, subject_uuids=subject_uuids)
         except Exception:
-            pass
+            logger.exception(
+                "conflict detection after staged publish failed brain_id=%s root_id=%s",
+                brain_id,
+                root_id,
+            )
         return finished
 
 

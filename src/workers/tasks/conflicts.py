@@ -13,7 +13,10 @@ def scan_conflicts(self, args: dict | None = None):
     payload = args or {}
     brain_id = payload.get("brain_id") or "default"
     use_llm = payload.get("use_llm")
-    from src.core.saving.conflicts import detect_conflicts
+    from src.core.saving.conflicts import (
+        conflict_detect_max_relationships,
+        detect_conflicts,
+    )
     from src.services.data.main import data_adapter
     from src.services.kg_agent.main import graph_adapter
     from src.workers.tasks.ingestion import set_ingestion_task_status
@@ -21,11 +24,15 @@ def scan_conflicts(self, args: dict | None = None):
     set_ingestion_task_status(
         self.request.id, brain_id, "started", stage="conflict_scan"
     )
+    cap = payload.get("max_relationships")
+    if cap is None:
+        cap = conflict_detect_max_relationships()
     stored = detect_conflicts(
         data_adapter,
         graph_adapter,
         brain_id,
         use_llm=use_llm,
+        max_relationships=cap,
     )
     payload_out = stored.to_dict() if hasattr(stored, "to_dict") else {
         "count": len(stored),

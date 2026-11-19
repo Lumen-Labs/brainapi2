@@ -7,6 +7,7 @@ from src.core.saving.conflicts import (
     VerificationPermissionDenied,
     annotation_payload,
     classify_disagreement,
+    conflict_detect_max_relationships,
     conflict_detect_on_ingest_enabled,
     detect_conflicts,
     dismiss_conflict,
@@ -434,6 +435,9 @@ class DetectionEngineTests(unittest.TestCase):
         self.assertEqual(len(found), 1)
         self.assertEqual(found[0].detection_method, "llm")
         self.assertEqual(found[0].disagreement_type, "semantic_contradiction")
+        self.assertEqual(found.llm_pairs_attempted, 1)
+        self.assertEqual(found.llm_pairs_judged, 1)
+        self.assertEqual(found.llm_pairs_failed, 0)
 
     def test_resolve_and_verified_side_hook(self):
         store = MemoryConflictStore()
@@ -1662,7 +1666,9 @@ class ReviewGapTests(unittest.TestCase):
             )
         self.assertTrue(found.llm_truncated)
         self.assertEqual(found.llm_pairs_total, 3)
+        self.assertEqual(found.llm_pairs_attempted, 1)
         self.assertEqual(found.llm_pairs_judged, 0)
+        self.assertEqual(found.llm_pairs_failed, 1)
         self.assertEqual(client.generate_json.call_count, 1)
 
     def test_llm_unlimited_budget_batches_all_pairs(self):
@@ -1696,7 +1702,9 @@ class ReviewGapTests(unittest.TestCase):
             )
         self.assertFalse(found.llm_truncated)
         self.assertEqual(found.llm_pairs_total, 3)
+        self.assertEqual(found.llm_pairs_attempted, 3)
         self.assertEqual(found.llm_pairs_judged, 0)
+        self.assertEqual(found.llm_pairs_failed, 3)
         self.assertEqual(client.generate_json.call_count, 1)
 
     def test_stale_conflicts_auto_resolve(self):
@@ -2171,6 +2179,258 @@ class ReviewGapTests(unittest.TestCase):
         pairs = {tuple(sorted(item.fact_ids())) for item in found}
         self.assertEqual(pairs, {("a", "b")})
 
+    def _semantic_policy_triples(self, extra=()):
+        policy = _node("p", "Policy")
+        triples = [
+            _triple(
+                policy,
+                _pred(
+                    "a",
+                    "HAS_POLICY",
+                    {
+                        "valid_from": "2024-01-01T00:00:00Z",
+                        "source_key": "s1",
+                    },
+                ),
+                _node("full", "full refund"),
+            ),
+            _triple(
+                policy,
+                _pred(
+                    "b",
+                    "HAS_POLICY",
+                    {
+                        "valid_from": "2024-01-01T00:00:00Z",
+                        "source_key": "s2",
+                    },
+                ),
+                _node("credit", "store credit only"),
+            ),
+        ]
+        triples.extend(extra)
+        return triples
+
+    def _llm_client(self, contradicts=True):
+        client = MagicMock()
+        client.generate_json.return_value = {
+            "results": [
+                {
+                    "index": 0,
+                    "contradicts": contradicts,
+                    "confidence": 0.9,
+                    "type": "semantic_contradiction",
+                }
+            ]
+        }
+        return client
+
+    def test_llm_conflict_stays_open_when_llm_off(self):
+        store = MemoryConflictStore()
+        triples = self._semantic_policy_triples()
+        found = detect_conflicts(
+            store, FakeGraph(triples), "brain", use_llm=True, llm_client=self._llm_client()
+        )
+        conflict_id = found[0].id
+        again = detect_conflicts(store, FakeGraph(triples), "brain", use_llm=False)
+        self.assertEqual(store.rows[conflict_id].status, "open")
+        self.assertEqual(again.stale_resolved, 0)
+
+    def test_llm_conflict_stays_open_when_budget_truncated(self):
+        store = MemoryConflictStore()
+        triples = self._semantic_policy_triples()
+        found = detect_conflicts(
+            store, FakeGraph(triples), "brain", use_llm=True, llm_client=self._llm_client()
+        )
+        conflict_id = found[0].id
+        extra = _triple(
+            _node("p", "Policy"),
+            _pred(
+                "c",
+                "HAS_POLICY",
+                {
+                    "valid_from": "2024-01-01T00:00:00Z",
+                    "source_key": "s3",
+                },
+            ),
+            _node("exchange", "exchange only"),
+        )
+        client = MagicMock()
+        client.generate_json.side_effect = RuntimeError("batch failed")
+        with patch.dict("os.environ", {"CONFLICT_DETECT_LLM_MAX_PAIRS": "1"}):
+            again = detect_conflicts(
+                store,
+                FakeGraph(triples + [extra]),
+                "brain",
+                use_llm=True,
+                llm_client=client,
+            )
+        self.assertTrue(again.llm_truncated)
+        self.assertEqual(store.rows[conflict_id].status, "open")
+        self.assertEqual(again.stale_resolved, 0)
+
+    def test_llm_conflict_stays_open_when_batch_fails(self):
+        store = MemoryConflictStore()
+        triples = self._semantic_policy_triples()
+        found = detect_conflicts(
+            store, FakeGraph(triples), "brain", use_llm=True, llm_client=self._llm_client()
+        )
+        conflict_id = found[0].id
+        client = MagicMock()
+        client.generate_json.side_effect = RuntimeError("judge down")
+        again = detect_conflicts(
+            store, FakeGraph(triples), "brain", use_llm=True, llm_client=client
+        )
+        self.assertEqual(again.llm_pairs_attempted, 1)
+        self.assertEqual(again.llm_pairs_judged, 0)
+        self.assertEqual(again.llm_pairs_failed, 1)
+        self.assertEqual(store.rows[conflict_id].status, "open")
+        self.assertEqual(again.stale_resolved, 0)
+
+    def test_llm_conflict_still_closes_when_side_removed(self):
+        store = MemoryConflictStore()
+        triples = self._semantic_policy_triples()
+        found = detect_conflicts(
+            store, FakeGraph(triples), "brain", use_llm=True, llm_client=self._llm_client()
+        )
+        conflict_id = found[0].id
+        again = detect_conflicts(
+            store, FakeGraph(triples[:1]), "brain", use_llm=False
+        )
+        self.assertEqual(store.rows[conflict_id].status, "resolved")
+        self.assertIn("side_removed", store.rows[conflict_id].resolution.notes)
+        self.assertEqual(again.stale_resolved, 1)
+
+    def test_stale_when_validity_windows_no_longer_overlap(self):
+        store = MemoryConflictStore()
+        live = [
+            _triple(
+                _node("p", "Policy"),
+                _pred(
+                    "a",
+                    "HAS_WINDOW",
+                    {
+                        "valid_from": "2024-01-01T00:00:00Z",
+                        "valid_to": "2024-06-01T00:00:00Z",
+                        "source_key": "s1",
+                    },
+                ),
+                _node("x", "14 days"),
+            ),
+            _triple(
+                _node("p", "Policy"),
+                _pred(
+                    "b",
+                    "HAS_WINDOW",
+                    {
+                        "valid_from": "2024-03-01T00:00:00Z",
+                        "source_key": "s2",
+                    },
+                ),
+                _node("y", "30 days"),
+            ),
+        ]
+        found = detect_conflicts(store, FakeGraph(live), "brain")
+        conflict_id = found[0].id
+        split = [
+            live[0],
+            _triple(
+                _node("p", "Policy"),
+                _pred(
+                    "b",
+                    "HAS_WINDOW",
+                    {
+                        "valid_from": "2024-07-01T00:00:00Z",
+                        "source_key": "s2",
+                    },
+                ),
+                _node("y", "30 days"),
+            ),
+        ]
+        again = detect_conflicts(store, FakeGraph(split), "brain")
+        self.assertEqual(store.rows[conflict_id].status, "resolved")
+        self.assertIn("validity_no_overlap", store.rows[conflict_id].resolution.notes)
+        self.assertEqual(again.stale_resolved, 1)
+
+    def test_stale_when_side_is_superseded(self):
+        store = MemoryConflictStore()
+        live = [
+            _triple(
+                _node("p", "Policy"),
+                _pred(
+                    "a",
+                    "HAS_WINDOW",
+                    {
+                        "valid_from": "2024-01-01T00:00:00Z",
+                        "source_key": "s1",
+                    },
+                ),
+                _node("x", "14 days"),
+            ),
+            _triple(
+                _node("p", "Policy"),
+                _pred(
+                    "b",
+                    "HAS_WINDOW",
+                    {
+                        "valid_from": "2024-01-01T00:00:00Z",
+                        "source_key": "s2",
+                    },
+                ),
+                _node("y", "30 days"),
+            ),
+        ]
+        found = detect_conflicts(store, FakeGraph(live), "brain")
+        conflict_id = found[0].id
+        superseded = [
+            _triple(
+                _node("p", "Policy"),
+                _pred(
+                    "a",
+                    "HAS_WINDOW",
+                    {
+                        "valid_from": "2024-01-01T00:00:00Z",
+                        "source_key": "s1",
+                        "superseded_by": "b",
+                    },
+                ),
+                _node("x", "14 days"),
+            ),
+            live[1],
+        ]
+        again = detect_conflicts(store, FakeGraph(superseded), "brain")
+        self.assertEqual(store.rows[conflict_id].status, "resolved")
+        self.assertIn("side_superseded", store.rows[conflict_id].resolution.notes)
+        self.assertEqual(again.stale_resolved, 1)
+
+    def test_config_max_relationships_caps_full_scan(self):
+        policy = _node("policy-1", "RefundPolicy")
+        triples = [
+            _triple(
+                policy,
+                _pred(
+                    f"f{i}",
+                    "HAS_WINDOW",
+                    {
+                        "valid_from": "2024-01-01T00:00:00Z",
+                        "source_key": f"s{i}",
+                    },
+                ),
+                _node(f"v{i}", f"{i} days"),
+            )
+            for i in range(5)
+        ]
+        with patch.dict("os.environ", {"CONFLICT_DETECT_MAX_RELATIONSHIPS": "2"}):
+            capped = detect_conflicts(MemoryConflictStore(), FakeGraph(triples), "brain")
+        self.assertTrue(capped.truncated)
+        self.assertEqual(capped.scanned_relationships, 2)
+        with patch.dict("os.environ", {"CONFLICT_DETECT_MAX_RELATIONSHIPS": "0"}):
+            unlimited = detect_conflicts(
+                MemoryConflictStore(), FakeGraph(triples), "brain"
+            )
+        self.assertFalse(unlimited.truncated)
+        self.assertEqual(unlimited.scanned_relationships, 5)
+        self.assertEqual(conflict_detect_max_relationships(), 10000)
+
 
 class ConfigDefaultTests(unittest.TestCase):
     def test_config_flags_default_off(self):
@@ -2178,6 +2438,7 @@ class ConfigDefaultTests(unittest.TestCase):
 
         self.assertFalse(config.conflict_detect_on_ingest)
         self.assertFalse(config.conflict_detect_llm)
+        self.assertEqual(config.conflict_detect_max_relationships, 10000)
 
 
 if __name__ == "__main__":

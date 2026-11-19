@@ -209,6 +209,39 @@ def conflict_detect_llm_max_pairs() -> int:
     return int(getattr(config, "conflict_detect_llm_max_pairs", 20) or 20)
 
 
+def conflict_detect_max_relationships() -> int:
+    """Relationship cap for a conflict scan.
+
+    Default is 10000. ``0`` means unlimited (load every relationship).
+    Unset env falls through to ``config.conflict_detect_max_relationships``.
+    """
+    raw = os.getenv("CONFLICT_DETECT_MAX_RELATIONSHIPS")
+    if raw is not None and str(raw).strip() != "":
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            return 10_000
+    try:
+        from src.config import config
+
+        return max(
+            0, int(getattr(config, "conflict_detect_max_relationships", 10_000) or 0)
+        )
+    except Exception:
+        return 10_000
+
+
+def _effective_max_relationships(max_relationships: int | None) -> int | None:
+    cap = (
+        conflict_detect_max_relationships()
+        if max_relationships is None
+        else int(max_relationships)
+    )
+    if cap <= 0:
+        return None
+    return cap
+
+
 class ConflictScanResult:
     """Conflicts plus scan completeness metadata.
 
@@ -224,7 +257,9 @@ class ConflictScanResult:
         total_relationships: int | None = None,
         llm_truncated: bool = False,
         llm_pairs_total: int = 0,
+        llm_pairs_attempted: int = 0,
         llm_pairs_judged: int = 0,
+        llm_pairs_failed: int = 0,
         stale_resolved: int = 0,
     ):
         self.conflicts = list(conflicts or [])
@@ -235,7 +270,9 @@ class ConflictScanResult:
         )
         self.llm_truncated = bool(llm_truncated)
         self.llm_pairs_total = int(llm_pairs_total)
+        self.llm_pairs_attempted = int(llm_pairs_attempted)
         self.llm_pairs_judged = int(llm_pairs_judged)
+        self.llm_pairs_failed = int(llm_pairs_failed)
         self.stale_resolved = int(stale_resolved)
 
     def __iter__(self):
@@ -259,7 +296,9 @@ class ConflictScanResult:
             "total_relationships": self.total_relationships,
             "llm_truncated": self.llm_truncated,
             "llm_pairs_total": self.llm_pairs_total,
+            "llm_pairs_attempted": self.llm_pairs_attempted,
             "llm_pairs_judged": self.llm_pairs_judged,
+            "llm_pairs_failed": self.llm_pairs_failed,
             "stale_resolved": self.stale_resolved,
         }
 
@@ -1047,7 +1086,7 @@ def detect_conflicts(
         graph,
         brain_id,
         subjects or None,
-        max_relationships=max_relationships,
+        max_relationships=_effective_max_relationships(max_relationships),
     )
     snapshots: list[dict[str, Any]] = []
     chunk_ids: list[str] = []
@@ -1082,12 +1121,16 @@ def detect_conflicts(
         if pair_key_for(pair[0]["fact_id"], pair[1]["fact_id"]) not in found
     ]
     llm_pairs_total = len(pending)
+    llm_pairs_attempted = 0
     llm_pairs_judged = 0
+    llm_pairs_failed = 0
     llm_truncated = False
+    judged_pair_keys: set[str] = set()
     if llm_on and pending:
         budget = conflict_detect_llm_max_pairs()
         limit = len(pending) if budget <= 0 else min(len(pending), budget)
         llm_truncated = budget > 0 and len(pending) > budget
+        llm_pairs_attempted = limit
         judged: dict[int, tuple[bool, float, str]] = {}
         for start in range(0, limit, _LLM_BATCH):
             batch = pending[start : start + _LLM_BATCH]
@@ -1096,21 +1139,25 @@ def detect_conflicts(
             )
             for index, verdict in batch_results.items():
                 judged[start + index] = verdict
-        llm_pairs_judged = sum(1 for index in range(limit) if index in judged)
         for index, (left, right) in enumerate(pending[:limit]):
+            pair = pair_key_for(left["fact_id"], right["fact_id"])
             verdict = judged.get(index)
             if verdict is None:
                 continue
+            judged_pair_keys.add(pair)
             contradicts, confidence, kind = verdict
             if not contradicts:
                 continue
             conflict = _build_conflict(left, right, kind, confidence, "llm")
             found[conflict.pair_key] = conflict
+        llm_pairs_judged = len(judged_pair_keys)
+        llm_pairs_failed = max(0, llm_pairs_attempted - llm_pairs_judged)
         if llm_truncated:
             logger.warning(
-                "conflict LLM judging truncated brain_id=%s judged=%s total=%s",
+                "conflict LLM judging truncated brain_id=%s judged=%s attempted=%s total=%s",
                 brain_id,
                 llm_pairs_judged,
+                llm_pairs_attempted,
                 llm_pairs_total,
             )
     stored: list[FactConflict] = []
@@ -1128,6 +1175,9 @@ def detect_conflicts(
             fact_ids=list(wanted) or None,
             scoped=bool(subjects or wanted),
             graph=graph,
+            llm_on=llm_on,
+            llm_truncated=llm_truncated,
+            judged_pair_keys=judged_pair_keys,
         )
         stored.extend(stale)
     if scan_stats.get("truncated"):
@@ -1144,7 +1194,9 @@ def detect_conflicts(
         total_relationships=scan_stats.get("total"),
         llm_truncated=llm_truncated,
         llm_pairs_total=llm_pairs_total,
+        llm_pairs_attempted=llm_pairs_attempted,
         llm_pairs_judged=llm_pairs_judged,
+        llm_pairs_failed=llm_pairs_failed,
         stale_resolved=len(stale),
     )
 
@@ -1210,6 +1262,12 @@ def _stale_reason(
     snapshots_by_id: dict[str, dict[str, Any]],
     live_pair_keys: set[str],
 ) -> str | None:
+    """Return a concrete stale reason, or None.
+
+    Allowed reasons: a side was removed/deprecated, a side was superseded,
+    validity windows no longer overlap, or the values are now compatible.
+    Remaining disagreement is not stale; callers must not invent a catch-all.
+    """
     sides = list(conflict.sides or [])
     if len(sides) < 2:
         return "side_removed:incomplete_sides"
@@ -1253,6 +1311,35 @@ def _stale_reason(
     return None
 
 
+def _skip_llm_stale(
+    conflict: FactConflict,
+    reason: str,
+    *,
+    llm_on: bool,
+    llm_truncated: bool,
+    judged_pair_keys: set[str],
+) -> bool:
+    """LLM conflicts stay open unless this scan could re-judge them.
+
+    Concrete graph evidence (removed/deprecated/superseded sides, or
+    non-overlapping validity) still closes. Heuristic ``values_compatible``
+    does not close an LLM conflict when the LLM was off, the pair budget
+    truncated the scan, or this pair got no verdict.
+    """
+    if (conflict.detection_method or "") != "llm":
+        return False
+    if reason.startswith("side_removed") or reason.startswith("side_superseded"):
+        return False
+    if reason.startswith("no_longer_holds:validity_no_overlap"):
+        return False
+    if not llm_on or llm_truncated:
+        return True
+    pair = pair_key_for(*conflict.fact_ids()[:2]) if len(conflict.fact_ids()) >= 2 else ""
+    if not pair or pair not in judged_pair_keys:
+        return True
+    return False
+
+
 def _stale_open_conflicts(
     adapter: Any,
     brain_id: str,
@@ -1262,6 +1349,9 @@ def _stale_open_conflicts(
     fact_ids: list[str] | None = None,
     scoped: bool = False,
     graph: Any | None = None,
+    llm_on: bool = False,
+    llm_truncated: bool = False,
+    judged_pair_keys: set[str] | None = None,
 ) -> list[FactConflict]:
     snapshots_by_id = {
         str(item.get("fact_id")): item
@@ -1302,6 +1392,14 @@ def _stale_open_conflicts(
             continue
         reason = _stale_reason(conflict, snapshots_by_id, live_pair_keys)
         if not reason:
+            continue
+        if _skip_llm_stale(
+            conflict,
+            reason,
+            llm_on=llm_on,
+            llm_truncated=llm_truncated,
+            judged_pair_keys=judged_pair_keys or set(),
+        ):
             continue
         updated = conflict.model_copy(deep=True)
         updated.status = "resolved"
