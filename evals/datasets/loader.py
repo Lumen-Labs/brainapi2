@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from evals.baseline.dates import require_document_source_timestamp
 from evals.config import DATASETS_DIR, USE_CASES
 from evals.datasets.schema import validate_doc, validate_question
 
@@ -43,6 +44,8 @@ def load_corpus(name: str, datasets_dir: Path | None = None) -> list[dict[str, A
     rows = _read_jsonl(path)
     for row in rows:
         validate_doc(row, str(path))
+        if name == "versioned_rules":
+            require_document_source_timestamp(row, str(path))
     return rows
 
 
