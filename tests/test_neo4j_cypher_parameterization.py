@@ -3,6 +3,9 @@ import os
 import unittest
 from unittest.mock import MagicMock
 
+from neo4j.time import DateTime
+from pydantic import ValidationError
+
 ENV_DEFAULTS = {
     "BRAINPAT_TOKEN": "test-token",
     "MODELS_MODE": "local",
@@ -720,6 +723,92 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
         self.assertIn("$verified_by", write_query)
         self.assertEqual(write_params["verified_by"], payload)
         self.assertEqual(write_params["verification_history"], [payload])
+
+    def test_remove_nodes_decodes_json_observations_and_neo4j_datetimes(self):
+        stored_at = DateTime(2026, 1, 2, 3, 4, 5, 0)
+        observations = json.dumps(
+            [
+                {
+                    "id": "obs-1",
+                    "text": "seen after #120",
+                    "resource_id": "res-1",
+                    "inserted_at": "2026-01-02T03:04:05+00:00",
+                }
+            ]
+        )
+        raw_node = {
+            "uuid": "n-1",
+            "name": "Alice",
+            "labels": ["PERSON"],
+            "description": "a person",
+            "properties": {
+                "name": "Alice",
+                "last_updated": stored_at,
+                "observations": observations,
+            },
+            "polarity": "neutral",
+            "metadata": json.dumps({"source": "purge"}),
+            "happened_at": stored_at,
+            "last_updated": stored_at,
+            "observations": observations,
+        }
+        with self.assertRaises(ValidationError):
+            Node(**raw_node)
+        client = _client(records=[_Record({"node": dict(raw_node)})])
+        removed = client.remove_nodes(["n-1"], "braina")
+        self.assertEqual(len(removed), 1)
+        node = removed[0]
+        self.assertEqual(node.uuid, "n-1")
+        self.assertEqual(node.name, "Alice")
+        self.assertEqual(node.labels, ["PERSON"])
+        self.assertEqual(node.observations[0].text, "seen after #120")
+        self.assertEqual(node.observations[0].resource_id, "res-1")
+        self.assertEqual(node.last_updated, stored_at.to_native())
+        self.assertTrue(node.happened_at.startswith("2026-01-02T03:04:05"))
+        self.assertEqual(node.metadata["source"], "purge")
+        self.assertEqual(node.properties["last_updated"], stored_at.to_native())
+        query, params, database = client.driver.calls[0]
+        self.assertIn("WHERE n['uuid'] IN $uuids", query)
+        self.assertEqual(params["uuids"], ["n-1"])
+        self.assertEqual(database, "braina")
+
+    def test_get_by_uuids_decodes_json_observations_and_neo4j_datetimes(self):
+        stored_at = DateTime(2026, 3, 4, 5, 6, 7, 0)
+        observations = json.dumps(
+            [
+                {
+                    "id": "obs-2",
+                    "text": "read path",
+                    "resource_id": "res-2",
+                    "inserted_at": "2026-03-04T05:06:07+00:00",
+                }
+            ]
+        )
+        record = _Record(
+            {
+                "uuid": "n-2",
+                "name": "Bob",
+                "labels": ["PERSON"],
+                "description": "",
+                "properties": {"note": "ok", "happened_at": stored_at},
+                "polarity": "positive",
+                "happened_at": stored_at,
+                "last_updated": stored_at,
+                "observations": observations,
+                "metadata": {"kind": "entity"},
+            }
+        )
+        client = _client(records=[record])
+        nodes = client.get_by_uuids(["n-2"], "braina")
+        self.assertEqual(len(nodes), 1)
+        node = nodes[0]
+        self.assertEqual(node.uuid, "n-2")
+        self.assertEqual(node.polarity, "positive")
+        self.assertEqual(node.observations[0].text, "read path")
+        self.assertEqual(node.last_updated, stored_at.to_native())
+        self.assertTrue(node.happened_at.startswith("2026-03-04T05:06:07"))
+        self.assertEqual(node.properties["happened_at"], stored_at.to_native())
+        self.assertEqual(node.metadata["kind"], "entity")
 
 
 if __name__ == "__main__":

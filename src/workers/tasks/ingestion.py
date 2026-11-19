@@ -748,30 +748,105 @@ def source_text_from_payload(payload: IngestionTaskArgs) -> str:
     return json.dumps(payload.data.json_data)
 
 
+def labels_for_graph_node(labels: List[str]) -> List[str]:
+    from src.lib.cypher_safety import InvalidCypherIdentifier, clean_label
+
+    if not labels:
+        raise InvalidCypherIdentifier(
+            "At least one label is required",
+            kind="label",
+            value=labels,
+        )
+    clean_label(labels[0])
+    kept: List[str] = [labels[0]]
+    for extra in labels[1:]:
+        try:
+            clean_label(extra)
+        except InvalidCypherIdentifier:
+            continue
+        if extra not in kept:
+            kept.append(extra)
+    return kept
+
+
 def add_graph_nodes(graph_adapter, nodes: List[Node], brain_id: str):
-    from src.lib.cypher_safety import InvalidCypherIdentifier, clean_label, original_type_properties
+    from src.lib.cypher_safety import InvalidCypherIdentifier, original_type_properties
 
     if not nodes:
         return []
     safe: List[Node] = []
     for node in nodes:
         try:
-            if not node.labels:
-                raise InvalidCypherIdentifier(
-                    "At least one label is required",
-                    kind="label",
-                    value=node.labels,
-                )
-            for label in node.labels:
-                clean_label(label)
+            kept_labels = labels_for_graph_node(list(node.labels or []))
         except InvalidCypherIdentifier as exc:
             print(f"[!] Skipping node {node.uuid} with invalid labels {node.labels}: {exc}")
             continue
-        properties = {**(node.properties or {}), **original_type_properties(node.labels)}
-        safe.append(node.model_copy(update={"properties": properties}))
+        properties = {**(node.properties or {}), **original_type_properties(kept_labels)}
+        safe.append(node.model_copy(update={"labels": kept_labels, "properties": properties}))
     if not safe:
         return []
     return graph_adapter.add_nodes(safe, brain_id=brain_id)
+
+
+def graph_ingest_account(
+    relationship,
+    *,
+    requested_new_nodes: List[Node],
+    added_nodes: List[Node],
+    subject_exists: bool,
+    object_exists: bool,
+) -> Tuple[List[dict], Optional[dict], bool]:
+    added_ids = {
+        node.uuid for node in (added_nodes or []) if getattr(node, "uuid", None)
+    }
+    skipped = [
+        node
+        for node in requested_new_nodes
+        if getattr(node, "uuid", None) and node.uuid not in added_ids
+    ]
+    item_errors = [
+        {
+            "node": node.name or node.uuid,
+            "uuid": node.uuid,
+            "message": f"invalid graph label on {node.name or node.uuid}",
+        }
+        for node in skipped
+    ]
+    skipped_ids = {node.uuid for node in skipped}
+    write_edge = (
+        relationship.tail.uuid not in skipped_ids
+        and relationship.tip.uuid not in skipped_ids
+    )
+    node_touches = []
+    seen_nodes = set()
+    for entity, existed in (
+        (relationship.tail, subject_exists),
+        (relationship.tip, object_exists),
+    ):
+        if entity.uuid in seen_nodes:
+            continue
+        seen_nodes.add(entity.uuid)
+        if entity.uuid in skipped_ids:
+            continue
+        if not write_edge and existed:
+            continue
+        if not write_edge and entity.uuid not in added_ids:
+            continue
+        node_touches.append(
+            {
+                "uuid": entity.uuid,
+                "created": not existed,
+                "v_id": (entity.properties or {}).get("v_id"),
+                "name": entity.name,
+            }
+        )
+    ledger = None
+    if node_touches or write_edge:
+        ledger = {
+            "nodes": node_touches,
+            "edges": [],
+        }
+    return item_errors, ledger, write_edge
 
 
 def _save_source(payload, source_text, task_id=None):
@@ -1359,117 +1434,109 @@ def process_architect_relationships(self, args: dict):
 
                     added = add_graph_nodes(graph_adapter, graph_nodes, brain_id)
                     print(f"> Added {len(added or [])} nodes")
-                    neighbors = _relationship_neighbor_map(
-                        relationship, brain_id=brain_id
+                    node_errors, ledger, write_edge = graph_ingest_account(
+                        relationship,
+                        requested_new_nodes=graph_nodes,
+                        added_nodes=added if isinstance(added, list) else [],
+                        subject_exists=subject_exists,
+                        object_exists=object_exists,
                     )
-                    _assign_relationship_interval(
-                        relationship, brain_id=brain_id, neighbors=neighbors
-                    )
-                    try:
-                        edge_created = not graph_adapter.get_triples_by_uuid(
-                            [relationship.uuid], brain_id=brain_id
+                    item_errors.extend(node_errors)
+                    if write_edge:
+                        neighbors = _relationship_neighbor_map(
+                            relationship, brain_id=brain_id
                         )
-                    except Exception:
-                        edge_created = (not subject_exists) and (not object_exists)
-                    graph_adapter.add_relationship(
-                        Node(
-                            uuid=relationship.tail.uuid,
-                            labels=[relationship.tail.type],
-                            name=relationship.tail.name,
-                            polarity=(
-                                relationship.tail.polarity
-                                if relationship.tail.polarity
-                                else "neutral"
-                            ),
-                            **(
-                                {"happened_at": relationship.tail.happened_at}
-                                if relationship.tail.happened_at
-                                else {}
-                            ),
-                            properties={
-                                **(relationship.tail.properties or {}),
-                            },
-                        ),
-                        Predicate(
-                            uuid=relationship.uuid,
-                            flow_key=relationship.flow_key,
-                            name=relationship.name,
-                            description=relationship.description or "",
-                            properties={
-                                **{
-                                    k: v
-                                    for k, v in (relationship.properties or {}).items()
-                                    if v is not None
-                                },
+                        _assign_relationship_interval(
+                            relationship, brain_id=brain_id, neighbors=neighbors
+                        )
+                        try:
+                            edge_created = not graph_adapter.get_triples_by_uuid(
+                                [relationship.uuid], brain_id=brain_id
+                            )
+                        except Exception:
+                            edge_created = (not subject_exists) and (not object_exists)
+                        graph_adapter.add_relationship(
+                            Node(
+                                uuid=relationship.tail.uuid,
+                                labels=[relationship.tail.type],
+                                name=relationship.tail.name,
+                                polarity=(
+                                    relationship.tail.polarity
+                                    if relationship.tail.polarity
+                                    else "neutral"
+                                ),
                                 **(
-                                    {"v_id": v_rel_id}
-                                    if v_rel_id is not None
+                                    {"happened_at": relationship.tail.happened_at}
+                                    if relationship.tail.happened_at
                                     else {}
                                 ),
-                            },
-                            last_updated=datetime.datetime.now(),
-                            amount=relationship.amount,
-                        ),
-                        Node(
-                            uuid=relationship.tip.uuid,
-                            labels=[relationship.tip.type],
-                            name=relationship.tip.name,
-                            polarity=(
-                                relationship.tip.polarity
-                                if relationship.tip.polarity
-                                else "neutral"
+                                properties={
+                                    **(relationship.tail.properties or {}),
+                                },
                             ),
-                            **(
-                                {"happened_at": relationship.tip.happened_at}
-                                if relationship.tip.happened_at
-                                else {}
+                            Predicate(
+                                uuid=relationship.uuid,
+                                flow_key=relationship.flow_key,
+                                name=relationship.name,
+                                description=relationship.description or "",
+                                properties={
+                                    **{
+                                        k: v
+                                        for k, v in (relationship.properties or {}).items()
+                                        if v is not None
+                                    },
+                                    **(
+                                        {"v_id": v_rel_id}
+                                        if v_rel_id is not None
+                                        else {}
+                                    ),
+                                },
+                                last_updated=datetime.datetime.now(),
+                                amount=relationship.amount,
                             ),
-                            properties={
-                                **(relationship.tip.properties or {}),
-                            },
-                        ),
-                        brain_id=brain_id,
-                    )
-                    from src.core.saving.ingest_effects import remember
-
-                    seen_nodes = set()
-                    node_touches = []
-                    for entity, existed in (
-                        (relationship.tail, subject_exists),
-                        (relationship.tip, object_exists),
-                    ):
-                        if entity.uuid in seen_nodes:
-                            continue
-                        seen_nodes.add(entity.uuid)
-                        node_touches.append(
-                            {
-                                "uuid": entity.uuid,
-                                "created": not existed,
-                                "v_id": (entity.properties or {}).get("v_id"),
-                                "name": entity.name,
-                            }
+                            Node(
+                                uuid=relationship.tip.uuid,
+                                labels=[relationship.tip.type],
+                                name=relationship.tip.name,
+                                polarity=(
+                                    relationship.tip.polarity
+                                    if relationship.tip.polarity
+                                    else "neutral"
+                                ),
+                                **(
+                                    {"happened_at": relationship.tip.happened_at}
+                                    if relationship.tip.happened_at
+                                    else {}
+                                ),
+                                properties={
+                                    **(relationship.tip.properties or {}),
+                                },
+                            ),
+                            brain_id=brain_id,
                         )
-                    remember(
-                        brain_id,
-                        status_task_id,
-                        {
-                            "nodes": node_touches,
-                            "edges": [
+                        if ledger is not None:
+                            ledger["edges"] = [
                                 {
                                     "uuid": relationship.uuid,
                                     "created": edge_created,
                                     "v_id": (relationship.properties or {}).get("v_id"),
                                     "name": relationship.name,
                                 }
-                            ],
-                        },
-                    )
-                    _invalidate_superseded_relationships(
-                        relationship,
-                        brain_id=brain_id,
-                        superseded_chunk_ids=args.get("superseded_chunk_ids") or [],
-                        neighbors=neighbors,
-                    )
+                            ]
+                        _invalidate_superseded_relationships(
+                            relationship,
+                            brain_id=brain_id,
+                            superseded_chunk_ids=args.get("superseded_chunk_ids") or [],
+                            neighbors=neighbors,
+                        )
+                    from src.core.saving.ingest_effects import remember
+
+                    if ledger:
+                        remember(
+                            brain_id,
+                            status_task_id,
+                            ledger,
+                        )
                 except FutureTimeoutError:
                     rel_name = getattr(relationship, "name", "unknown")
                     item_errors.append(
