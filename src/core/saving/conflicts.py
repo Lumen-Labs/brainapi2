@@ -912,16 +912,16 @@ def _call_list_validity_relationships(
         for key in ("subject_uuids", "relationship_uuids")
         if key in requested and key not in accepted
     ]
-    if not missing_filters:
+    cursor_requested = bool(
+        after_subject_uuid or after_predicate or after_relationship_uuid
+    )
+    cursor_unsupported = cursor_requested and (
+        "after_subject_uuid" not in accepted
+        and "after_predicate" not in accepted
+        and "after_relationship_uuid" not in accepted
+    )
+    if not missing_filters and not cursor_unsupported:
         triples, total = method(brain_id, **accepted)
-        if after_subject_uuid or after_predicate or after_relationship_uuid:
-            if "after_subject_uuid" not in accepted and "after_predicate" not in accepted:
-                triples = _triples_after_cursor(
-                    _sort_validity_triples(triples),
-                    after_subject_uuid=after_subject_uuid,
-                    after_predicate=after_predicate,
-                    after_relationship_uuid=after_relationship_uuid,
-                )
         return triples, total
     collected: list[Any] = []
     cursor = 0
@@ -1014,22 +1014,31 @@ def _load_triples(
             return _call_list_validity_relationships(
                 method,
                 brain_id,
-                skip=0 if keyset else skip,
+                skip=0,
                 limit=page_limit,
                 subject_uuids=subject_uuids,
                 relationship_uuids=relationship_uuids,
-                after_subject_uuid=after_s if keyset else None,
-                after_predicate=after_p if keyset else None,
-                after_relationship_uuid=after_r if keyset else None,
+                after_subject_uuid=after_s,
+                after_predicate=after_p,
+                after_relationship_uuid=after_r,
             )
         keyset = False
         if search_ordered is None:
             collected, search_total = _collect_search_relationship_triples(
-                graph, brain_id
+                graph,
+                brain_id,
+                stop_relationship_uuids=relationship_uuids,
+            )
+            filtered = _filter_validity_triples(
+                collected,
+                subject_uuids=subject_uuids,
+                relationship_uuids=relationship_uuids,
             )
             search_ordered = (
-                _sort_validity_triples(collected),
-                search_total,
+                _sort_validity_triples(filtered),
+                len(filtered)
+                if subject_uuids or relationship_uuids
+                else search_total,
             )
         triples, total = search_ordered
         sliced = _triples_after_cursor(

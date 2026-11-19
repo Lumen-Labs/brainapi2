@@ -2786,15 +2786,53 @@ class ConflictScanCursorTests(unittest.TestCase):
         from src.adapters.graph import GraphAdapter
 
         triples = [
-            _window_triple(f"s{i}", f"f{i}", f"{i + 1} days") for i in range(5)
+            _window_triple(f"s{i}", f"f{i}", f"{i + 1} days") for i in range(201)
         ]
         adapter = GraphAdapter()
         adapter.graph = SearchOnlyGraph(triples)
         found, _total = adapter.list_validity_relationships(
-            "brain", skip=0, limit=2, relationship_uuids=["f4"]
+            "brain", skip=0, limit=2, relationship_uuids=["f200"]
         )
         self.assertEqual(len(found), 1)
-        self.assertEqual(found[0][1].uuid, "f4")
+        self.assertEqual(found[0][1].uuid, "f200")
+
+    def test_search_fallback_stale_lookup_honors_uuid_filter(self):
+        live = [
+            _window_triple("a", "a1", "14 days"),
+            _window_triple("a", "a2", "30 days"),
+            _window_triple("b", "b1", "14 days"),
+            _window_triple("b", "b2", "30 days"),
+            _window_triple("c", "c1", "7 days"),
+            _window_triple("c", "c2", "21 days"),
+        ]
+        store = MemoryConflictStore()
+        found = detect_conflicts(store, SearchOnlyGraph(live), "brain")
+        by_subject = {item.subject.uuid: item for item in found}
+        truncated = detect_conflicts(
+            store, SearchOnlyGraph(live), "brain", max_relationships=2
+        )
+        self.assertTrue(truncated.truncated)
+        self.assertEqual(store.rows[by_subject["a"].id].status, "open")
+        self.assertEqual(store.rows[by_subject["b"].id].status, "open")
+        self.assertEqual(store.rows[by_subject["c"].id].status, "open")
+        self.assertEqual(truncated.stale_resolved, 0)
+
+    def test_legacy_list_validity_without_cursor_still_pages(self):
+        from src.adapters.graph import GraphAdapter
+
+        triples = [
+            _window_triple(f"s{i}", f"f{i}", f"{i + 1} days") for i in range(250)
+        ]
+
+        class SkipOnlyGraph:
+            def list_validity_relationships(self, brain_id, skip=0, limit=100):
+                return triples[skip : skip + limit], len(triples)
+
+        adapter = GraphAdapter()
+        adapter.graph = SkipOnlyGraph()
+        found = detect_conflicts(MemoryConflictStore(), adapter, "brain")
+        self.assertEqual(found.scanned_relationships, 250)
+        self.assertFalse(found.truncated)
 
     def test_truncated_scan_stale_closes_removed_group(self):
         live = [
