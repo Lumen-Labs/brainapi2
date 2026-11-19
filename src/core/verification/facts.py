@@ -65,6 +65,22 @@ def is_reserved_verification_key(key: Any) -> bool:
     cleaned = words[0].lower() + "".join(word.capitalize() for word in words[1:])
     return cleaned in VERIFICATION_PROPERTY_FIELDS
 
+
+def without_reserved_verification_keys(data: dict[str, Any] | None) -> dict[str, Any]:
+    cleaned: dict[str, Any] = {}
+    for key, value in dict(data or {}).items():
+        if is_reserved_verification_key(key):
+            continue
+        if key == "properties" and isinstance(value, dict):
+            cleaned[key] = {
+                nested_key: nested_value
+                for nested_key, nested_value in value.items()
+                if not is_reserved_verification_key(nested_key)
+            }
+        else:
+            cleaned[key] = value
+    return cleaned
+
 DEFAULT_VERIFIED_RANK_BOOST = 0.15
 
 _include_rejected: ContextVar[bool] = ContextVar(
@@ -158,9 +174,27 @@ def _entity_labels(entity: Any) -> list[Any]:
 def _flatten_properties(data: dict[str, Any]) -> dict[str, Any]:
     merged = dict(data)
     nested = _property_map(merged.get("properties"))
-    if nested:
-        merged.update(nested)
+    if not nested:
+        return merged
+    for key, value in nested.items():
+        if is_reserved_verification_key(key) and merged.get(key) not in (None, ""):
+            continue
+        merged[key] = value
     return merged
+
+
+def _citation_layers(entity: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+    if entity is None:
+        return {}, {}
+    if isinstance(entity, dict):
+        outer = dict(entity)
+    else:
+        outer = _property_map(getattr(entity, "properties", None))
+        for key in ("source_chunk_ids", "source_chunk_id"):
+            value = getattr(entity, key, None)
+            if value not in (None, "", []) and outer.get(key) in (None, "", []):
+                outer[key] = value
+    return outer, _property_map(outer.get("properties"))
 
 
 def _mapping(entity: Any) -> dict[str, Any]:
@@ -571,13 +605,12 @@ def filter_raw_operation_result(result: Any, *, include_rejected: bool = False) 
 
 
 def _chunk_ids_from_entity(entity: Any) -> list[str]:
-    data = _mapping(entity)
-    nested = _property_map(data.get("properties"))
-    citations = list(data.get("source_chunk_ids") or []) + list(
+    outer, nested = _citation_layers(entity)
+    citations = list(outer.get("source_chunk_ids") or []) + list(
         nested.get("source_chunk_ids") or []
     )
     ids: list[str] = []
-    for value in citations + [data.get("source_chunk_id"), nested.get("source_chunk_id")]:
+    for value in citations + [outer.get("source_chunk_id"), nested.get("source_chunk_id")]:
         chunk_id = str(value).strip() if value not in (None, "") else ""
         if chunk_id and chunk_id not in ids:
             ids.append(chunk_id)

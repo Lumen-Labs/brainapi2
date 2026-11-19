@@ -2297,7 +2297,14 @@ class Neo4jClient(GraphClient):
             MATCH (a)-[r]->(b)
             WHERE r.uuid IN $edge_uuids
                OR any(cid IN coalesce(r.source_chunk_ids, []) WHERE cid IN $chunk_ids)
-               OR any(cid IN coalesce(r.properties.source_chunk_ids, []) WHERE cid IN $chunk_ids)
+               OR (
+                   r.properties IS :: MAP
+                   AND any(cid IN coalesce(r.properties.source_chunk_ids, []) WHERE cid IN $chunk_ids)
+               )
+               OR (
+                   r.properties IS :: STRING
+                   AND any(cid IN $chunk_ids WHERE r.properties CONTAINS ('"' + cid + '"'))
+               )
             RETURN a['uuid'] AS tail, b['uuid'] AS tip, type(r) AS rel_type,
                    r['description'] AS description, properties(r) AS properties
             """,

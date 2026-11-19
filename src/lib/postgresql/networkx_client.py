@@ -146,13 +146,17 @@ class NetworkXGraphClient(GraphClient):
                 )
                 last_invalid = exc
                 continue
+            from src.core.verification.facts import without_reserved_verification_keys
+
             identification_dict: dict[str, Any] = {"uuid": node.uuid, "name": node.name}
             merged_metadata = {**(metadata or {}), **(node.metadata or {})}
-            all_properties: dict[str, Any] = {
-                **(node.properties or {}),
-                **original_type_properties(node.labels),
-                "metadata": merged_metadata or None,
-            }
+            all_properties: dict[str, Any] = without_reserved_verification_keys(
+                {
+                    **(node.properties or {}),
+                    **original_type_properties(node.labels),
+                    "metadata": merged_metadata or None,
+                }
+            )
             if identification_params:
                 for key, value in identification_params.items():
                     normalized_key = self._clean_property_key(key)

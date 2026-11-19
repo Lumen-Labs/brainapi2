@@ -50,10 +50,13 @@ from src.core.verification.facts import (
     UNVERIFIED,
     VERIFIED,
     chunk_ids_with_only_rejected_support,
+    extract_verification,
     filter_items_with_rejected_support,
     filter_raw_operation_result,
     serialize_history_entry,
+    without_reserved_verification_keys,
 )
+from src.lib.postgresql.networkx_client import NetworkXGraphClient
 from src.core.verification.service import apply_verification_action
 from src.lib.neo4j.client import Neo4jClient
 from src.services.mcp.main import (
@@ -259,6 +262,62 @@ class ObservationSupportFilterTests(unittest.TestCase):
         rejected_ids = chunk_ids_with_only_rejected_support([], triples)
         self.assertEqual(rejected_ids, {"chunk-nested"})
 
+    def test_outer_and_nested_source_chunk_ids_are_both_counted(self):
+        rejected_rel = Predicate(
+            uuid="r-both",
+            name="KNOWS",
+            description="knows",
+            properties={
+                "verification_state": REJECTED,
+                "source_chunk_ids": ["chunk-outer"],
+                "properties": {
+                    "source_chunk_ids": ["chunk-inner"],
+                },
+            },
+        )
+        triples = [
+            (
+                Node(uuid="a", name="A", labels=["PERSON"]),
+                rejected_rel,
+                Node(uuid="b", name="B", labels=["PERSON"]),
+            )
+        ]
+        rejected_ids = chunk_ids_with_only_rejected_support([], triples)
+        self.assertEqual(rejected_ids, {"chunk-outer", "chunk-inner"})
+
+    def test_outer_verification_state_wins_over_nested(self):
+        record = extract_verification(
+            {
+                "verification_state": REJECTED,
+                "properties": {"verification_state": VERIFIED},
+            }
+        )
+        self.assertEqual(record.state, REJECTED)
+
+    def test_nested_verification_fills_when_outer_missing(self):
+        record = extract_verification(
+            {
+                "properties": {"verification_state": REJECTED},
+            }
+        )
+        self.assertEqual(record.state, REJECTED)
+
+    def test_without_reserved_keys_strips_nested_properties(self):
+        cleaned = without_reserved_verification_keys(
+            {
+                "verification_state": VERIFIED,
+                "name": "Alice",
+                "properties": {
+                    "verification_state": VERIFIED,
+                    "source_chunk_ids": ["chunk-1"],
+                },
+            }
+        )
+        self.assertEqual(cleaned.get("name"), "Alice")
+        self.assertNotIn("verification_state", cleaned)
+        self.assertEqual(cleaned["properties"]["source_chunk_ids"], ["chunk-1"])
+        self.assertNotIn("verification_state", cleaned["properties"])
+
 
 class McpVerificationPermissionTests(unittest.TestCase):
     def test_mcp_mutate_denied_without_verification_scope(self):
@@ -365,6 +424,24 @@ class Neo4jVerificationWriteTests(unittest.TestCase):
         self.assertNotIn("verification_state", extra)
         self.assertNotIn("verified_by", extra)
 
+    def test_citing_query_does_not_dot_access_string_properties(self):
+        client = Neo4jClient.__new__(Neo4jClient)
+        queries = []
+
+        class _Driver:
+            def execute_query(self, query, parameters_=None, database_=None):
+                queries.append(query)
+                return SimpleNamespace(records=[])
+
+        client.driver = _Driver()
+        client.ensure_database = lambda brain_id: None
+        client._python_properties = lambda value: value or {}
+        client.nodes_and_edges_citing("braina", ["chunk-1"], [])
+        edge_query = queries[1]
+        self.assertIn("IS :: MAP", edge_query)
+        self.assertIn("IS :: STRING", edge_query)
+        self.assertIn("r.properties IS :: MAP", edge_query)
+
     def test_add_nodes_skips_cleaned_verification_keys(self):
         client = Neo4jClient.__new__(Neo4jClient)
         calls = []
@@ -386,6 +463,34 @@ class Neo4jVerificationWriteTests(unittest.TestCase):
         self.assertEqual(props.get("age"), 30)
         self.assertNotIn("verified_by", props)
         self.assertNotIn("VERIFIED_BY", props)
+
+    def test_networkx_add_nodes_strips_nested_verification_keys(self):
+        client = NetworkXGraphClient.__new__(NetworkXGraphClient)
+        captured = {}
+        client._store = SimpleNamespace(
+            ensure_database=lambda brain_id: None,
+            merge_node=lambda brain_id, labels, identification, properties: captured.update(
+                properties
+            )
+            or "n1",
+        )
+        client._clean_property_key = lambda key: key
+        node = Node(
+            uuid="n1",
+            name="Alice",
+            labels=["EVENT"],
+            properties={
+                "verification_state": VERIFIED,
+                "properties": {
+                    "verification_state": VERIFIED,
+                    "source_chunk_ids": ["chunk-1"],
+                },
+            },
+        )
+        client.add_nodes([node], "braina")
+        self.assertNotIn("verification_state", captured)
+        self.assertEqual(captured["properties"]["source_chunk_ids"], ["chunk-1"])
+        self.assertNotIn("verification_state", captured["properties"])
 
     def test_extra_props_drop_cleaned_verification_keys(self):
         client = Neo4jClient.__new__(Neo4jClient)
