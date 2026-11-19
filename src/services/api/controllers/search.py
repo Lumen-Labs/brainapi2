@@ -551,6 +551,9 @@ async def _search(request: SearchRequestBody) -> SearchResponse:
         node_ids.append(hit.node_id)
     envelope: dict[str, Any] = {}
     if as_of is not None:
+        from src.core.saving.validity import dedupe_unknown_items
+
+        unknown_items = dedupe_unknown_items(unknown_items)
         envelope["validity_unknown_count"] = len(unknown_items)
         if getattr(request, "include_validity_unknown", False):
             envelope["validity_unknown"] = unknown_items

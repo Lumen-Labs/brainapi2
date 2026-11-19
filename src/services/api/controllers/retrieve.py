@@ -41,6 +41,7 @@ from src.services.api.constants.requests import (
     RetrieveRequestResponse,
     RetrieveNeighborsRequestResponse,
     RetrievedNeighborNode,
+    jsonable_graph_value,
 )
 from src.services.kg_agent.main import graph_adapter, kg_agent
 from src.services.data.main import data_adapter
@@ -222,6 +223,7 @@ def _expand_cross_event_bridges(
     max_per_hub: int,
     include_history: bool = False,
     as_of: datetime | None = None,
+    unknown_out: list | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     from src.core.saving.hub_bridges import (
         HubBridge,
@@ -365,6 +367,28 @@ def _expand_cross_event_bridges(
             score = max(0.0, score - min(0.05, 0.02 * len(novel)))
         reserve_ok = seed in reserve_hubs
         for n, r, m, r2, b in facts_by_hub.get(event_uuid, []):
+            if as_of is not None:
+                from src.core.saving.validity import (
+                    VALIDITY_UNKNOWN,
+                    predicate_validity_status,
+                    unknown_fact,
+                    unknown_relationship_id,
+                )
+
+                status_r = predicate_validity_status(r, as_of)
+                status_r2 = predicate_validity_status(r2, as_of)
+                if status_r == VALIDITY_UNKNOWN or status_r2 == VALIDITY_UNKNOWN:
+                    if unknown_out is not None:
+                        unknown_out.append(
+                            unknown_fact(
+                                target="relationship",
+                                item_id=unknown_relationship_id(
+                                    r, r2, status_r, status_r2
+                                ),
+                                payload=_format_event_fact(n, r, m, r2, b),
+                            )
+                        )
+                    continue
             if not _fact_predicates_allowed(
                 r, r2, include_history=include_history, as_of=as_of
             ):
@@ -417,6 +441,7 @@ async def retrieve_data(
         InvalidAsOf,
         VALIDITY_UNKNOWN,
         VALIDITY_VALID,
+        dedupe_unknown_items,
         chunk_validity_status,
         optional_instant,
         unknown_fact,
@@ -563,7 +588,7 @@ async def retrieve_data(
                     unknown_fact(
                         target="relationship",
                         item_id=_retrieve_hit_id(hit),
-                        payload=hit,
+                        payload=jsonable_graph_value(hit),
                     )
                 )
             elif status == VALIDITY_VALID:
@@ -572,6 +597,7 @@ async def retrieve_data(
 
     envelope = {}
     if as_of_dt is not None:
+        unknown_items = dedupe_unknown_items(unknown_items)
         envelope["validity_unknown_count"] = len(unknown_items)
         if include_validity_unknown:
             envelope["validity_unknown"] = unknown_items
@@ -2206,6 +2232,7 @@ async def _build_context(
                             VALIDITY_UNKNOWN,
                             predicate_validity_status,
                             unknown_fact,
+                            unknown_relationship_id,
                         )
 
                         status_r = predicate_validity_status(r, as_of)
@@ -2214,10 +2241,8 @@ async def _build_context(
                             unknown_facts.append(
                                 unknown_fact(
                                     target="relationship",
-                                    item_id=str(
-                                        getattr(r, "uuid", "")
-                                        or getattr(r2, "uuid", "")
-                                        or ""
+                                    item_id=unknown_relationship_id(
+                                        r, r2, status_r, status_r2
                                     ),
                                     payload=_format_event_fact(n, r, m, r2, b),
                                 )
@@ -2327,6 +2352,7 @@ async def _build_context(
             hits: list[tuple[str, float, str]],
             extra: list[str] | None = None,
         ) -> list[str]:
+            extra_unknown: list = []
             texts = screened_passage_texts(
                 data_adapter,
                 request.brain_id,
@@ -2334,7 +2360,22 @@ async def _build_context(
                 include_history=include_history,
                 limit=request.historical_limit,
                 as_of=as_of,
+                unknown_out=extra_unknown if as_of is not None else None,
             )
+            if as_of is not None:
+                from src.core.saving.validity import unknown_fact
+
+                for chunk_id, _score, body, chunk in extra_unknown:
+                    payload = (
+                        chunk.model_dump(mode="json")
+                        if hasattr(chunk, "model_dump")
+                        else body
+                    )
+                    unknown_passages.append(
+                        unknown_fact(
+                            target="chunk", item_id=str(chunk_id), payload=payload
+                        )
+                    )
             if extra:
                 texts = texts + extra
             return _merge_prior(texts, hits)
@@ -2415,6 +2456,7 @@ async def _build_context(
             max_per_hub=request.cross_event_bridges,
             include_history=include_history,
             as_of=as_of,
+            unknown_out=unknown_facts if as_of is not None else None,
         )
         detail["candidates"] = len(candidates)
         detail["paths"] = len(bridge_paths)
@@ -2739,7 +2781,9 @@ async def _build_context(
         passage_block = [f"[passage] {p}" for p in source_passages]
         text_context = "\n".join(topic_block + passage_block + text_lines)
 
-    unknown_items = unknown_passages + unknown_facts
+    from src.core.saving.validity import dedupe_unknown_items
+
+    unknown_items = dedupe_unknown_items(unknown_passages + unknown_facts)
     envelope: dict[str, Any] = {}
     if as_of is not None:
         envelope["validity_unknown_count"] = len(unknown_items)

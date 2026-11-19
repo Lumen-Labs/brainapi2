@@ -593,6 +593,7 @@ def screened_passage_texts(
     include_history: bool,
     limit: int,
     as_of: datetime.datetime | None = None,
+    unknown_out: list | None = None,
 ) -> list[str]:
     screened = screen_passage_hits(
         adapter,
@@ -600,6 +601,7 @@ def screened_passage_texts(
         passages,
         include_history=include_history,
         as_of=as_of,
+        unknown_out=unknown_out,
     )
     return [text for _, _, text in screened if text][: max(0, limit)]
 

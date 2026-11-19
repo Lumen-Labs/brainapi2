@@ -162,6 +162,8 @@ class CypherSafetyHelperTests(unittest.TestCase):
         self.assertIn("$until", window)
         self.assertIn(">= $since", window)
         self.assertIn("< $until", window)
+        self.assertIn("=~ '^[0-9]{4}-.*Z$'", window)
+        self.assertNotIn("=~ '^[0-9]{4}-')", window)
         self.assertNotIn("MATCH", window)
         combined = window + " AND n['uuid'] IN $subject_uuids"
         self.assertTrue(combined.startswith("("))

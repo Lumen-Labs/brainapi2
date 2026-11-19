@@ -38,6 +38,7 @@ from src.lib.cypher_safety import (
     optional_node_labels,
     original_type_properties,
     quote_identifier,
+    quote_rel_type,
     quote_rel_types_pattern,
     relationship_as_of_match_clause,
     relationship_changed_in_window_clause,
@@ -187,28 +188,61 @@ class Neo4jClient(GraphClient):
             )
         self._ensure_validity_indexes(database)
 
-    def _ensure_validity_indexes(self, database: str) -> None:
-        ready = getattr(self, "_validity_indexes_ready", None)
-        if ready is None:
-            self._validity_indexes_ready = set()
-            ready = self._validity_indexes_ready
-        if database in ready:
-            return
-        for key in _VALIDITY_REL_INDEX_KEYS:
-            name = quote_identifier("rel_" + key)
-            prop = static_property_key(key)
-            query = (
-                "CREATE RANGE INDEX "
-                + name
-                + " IF NOT EXISTS FOR ()-[r]-() ON (r."
-                + prop
-                + ")"
+    def _relationship_types(self, database: str) -> list[str]:
+        try:
+            result = self.driver.execute_query(
+                "CALL db.relationshipTypes() YIELD relationshipType "
+                "RETURN relationshipType",
+                database_=database,
             )
-            try:
-                self.driver.execute_query(query, database_=database)
-            except Exception:
+        except Exception:
+            return []
+        names: list[str] = []
+        for record in getattr(result, "records", None) or []:
+            getter = getattr(record, "get", None)
+            name = getter("relationshipType") if callable(getter) else None
+            if name:
+                names.append(str(name))
+        return names
+
+    def _ensure_validity_indexes(self, database: str) -> None:
+        indexed = getattr(self, "_validity_indexed_types", None)
+        if indexed is None:
+            self._validity_indexed_types = {}
+            indexed = self._validity_indexed_types
+        known = indexed.setdefault(database, set())
+        pending: list[tuple[str, str]] = []
+        for rel_type in self._relationship_types(database):
+            if rel_type in known:
                 continue
-        ready.add(database)
+            try:
+                pending.append((rel_type, quote_rel_type(rel_type)))
+            except InvalidCypherIdentifier:
+                continue
+        if not pending:
+            return
+        for rel_type, quoted_type in pending:
+            type_stem = clean_label(rel_type)[:80]
+            created = True
+            for key in _VALIDITY_REL_INDEX_KEYS:
+                name = quote_identifier("rel_" + type_stem + "_" + key)
+                prop = static_property_key(key)
+                query = (
+                    "CREATE RANGE INDEX "
+                    + name
+                    + " IF NOT EXISTS FOR ()-[r:"
+                    + quoted_type
+                    + "]-() ON (r."
+                    + prop
+                    + ")"
+                )
+                try:
+                    self.driver.execute_query(query, database_=database)
+                except Exception:
+                    created = False
+                    continue
+            if created:
+                known.add(rel_type)
 
     def clear_brain_data(self, brain_id: str) -> None:
         if not self._verify_database_accessible(brain_id):

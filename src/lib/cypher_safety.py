@@ -438,10 +438,13 @@ def _timestamp_in_window_term(
     rel: str, key: str, since_param: str, until_param: str
 ) -> str:
     prop = rel + "['" + static_property_key(key) + "']"
+    canonical = prop + " =~ '^[0-9]{4}-.*Z$'"
     return (
         "("
         + prop
-        + " IS NOT NULL AND "
+        + " IS NOT NULL AND (("
+        + canonical
+        + " AND "
         + prop
         + " >= $"
         + since_param
@@ -449,7 +452,9 @@ def _timestamp_in_window_term(
         + prop
         + " < $"
         + until_param
-        + ")"
+        + ") OR NOT "
+        + canonical
+        + "))"
     )
 
 
@@ -461,9 +466,9 @@ def relationship_changed_in_window_clause(
     """Cypher predicate: an indexed ISO timestamp falls in [$since, $until).
 
     Lexicographic compares are safe for canonical ``YYYY-MM-DDTHH:MM:SSZ``
-    stamps. Historical day-first ``invalid_at`` values cannot use that
-    compare, so non-ISO ``invalid_at`` rows are still selected and filtered
-    in Python by ``change_kind``.
+    stamps. Non-canonical values (``+00:00`` offsets, day-first
+    ``invalid_at``) are still selected and classified in Python by
+    ``change_kind``.
     """
     rel = require_identifier(alias, kind="identifier")
     since_name = require_identifier(since_param, kind="identifier")
@@ -480,21 +485,8 @@ def relationship_changed_in_window_clause(
         _timestamp_in_window_term(rel, key, since_name, until_name)
         for key in iso_keys
     ]
-    invalid = rel + "['" + static_property_key("invalid_at") + "']"
     terms.append(
-        "("
-        + invalid
-        + " IS NOT NULL AND (("
-        + invalid
-        + " >= $"
-        + since_name
-        + " AND "
-        + invalid
-        + " < $"
-        + until_name
-        + ") OR NOT "
-        + invalid
-        + " =~ '^[0-9]{4}-'))"
+        _timestamp_in_window_term(rel, "invalid_at", since_name, until_name)
     )
     return "(" + " OR ".join(terms) + ")"
 

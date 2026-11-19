@@ -386,11 +386,14 @@ def _search_semantically_sync(
             InvalidAsOf,
             VALIDITY_UNKNOWN,
             VALIDITY_VALID,
+            dedupe_unknown_items,
             format_instant,
             optional_instant,
             predicate_validity_status,
             unknown_fact,
+            unknown_relationship_id,
         )
+        from src.services.api.constants.requests import jsonable_graph_value
 
         try:
             as_of_dt = optional_instant(as_of)
@@ -429,18 +432,17 @@ def _search_semantically_sync(
                 unknown_items.append(
                     unknown_fact(
                         target="relationship",
-                        item_id=str(
-                            getattr(rel, "uuid", "")
-                            or getattr(rel2, "uuid", "")
-                            or ""
+                        item_id=unknown_relationship_id(
+                            rel, rel2, status_r, status_r2
                         ),
-                        payload=triple,
+                        payload=jsonable_graph_value(triple),
                     )
                 )
                 continue
             if status_r != VALIDITY_VALID or status_r2 != VALIDITY_VALID:
                 continue
             kept.append(triple)
+        unknown_items = dedupe_unknown_items(unknown_items)
         envelope: dict[str, Any] = {
             "results": kept,
             "validity_unknown_count": len(unknown_items),

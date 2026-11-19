@@ -44,9 +44,11 @@ from src.constants.kg import Node, Predicate
 from src.core.saving.validity import (
     InvalidAsOf,
     VALIDITY_UNKNOWN,
+    VALIDITY_VALID,
     change_kind,
     chunk_is_valid_at,
     close_validity,
+    dedupe_unknown_items,
     format_instant,
     is_valid_at,
     optional_instant,
@@ -54,6 +56,7 @@ from src.core.saving.validity import (
     predicate_is_valid_at,
     stamp_valid_from,
     unknown_fact,
+    unknown_relationship_id,
     validity_status,
 )
 from src.core.saving.validity_backfill import (
@@ -123,6 +126,36 @@ class ValidityIntervalTests(unittest.TestCase):
             unknown_fact(target="chunk", item_id="plain")["validity"],
             VALIDITY_UNKNOWN,
         )
+        dated = Predicate(
+            uuid="r-dated",
+            name="REQUIRES",
+            description="",
+            properties={"valid_from": "2024-01-01T00:00:00Z"},
+        )
+        undated = Predicate(
+            uuid="r-undated",
+            name="MENTIONS",
+            description="",
+            properties={},
+        )
+        self.assertEqual(
+            unknown_relationship_id(
+                dated, undated, VALIDITY_VALID, VALIDITY_UNKNOWN
+            ),
+            "r-undated",
+        )
+        self.assertEqual(
+            unknown_relationship_id(
+                undated, undated, VALIDITY_UNKNOWN, VALIDITY_UNKNOWN
+            ),
+            "r-undated|r-undated",
+        )
+        duplicated = [
+            unknown_fact(target="chunk", item_id="plain", payload="a"),
+            unknown_fact(target="chunk", item_id="plain", payload="a"),
+            unknown_fact(target="chunk", item_id="plain", payload="b"),
+        ]
+        self.assertEqual(len(dedupe_unknown_items(duplicated)), 2)
 
     def test_as_of_before_ingest_uses_valid_from_not_recorded_at(self):
         fields = {
@@ -872,7 +905,7 @@ class AsOfRetrieveTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(as_of_response.validity_unknown)
         self.assertEqual(as_of_shown.validity_unknown_count, 1)
         self.assertEqual(as_of_shown.validity_unknown[0]["validity"], "unknown")
-        self.assertEqual(as_of_shown.validity_unknown[0]["id"], "r-undated")
+        self.assertEqual(as_of_shown.validity_unknown[0]["id"], "r-undated|r-undated-2")
         self.assertEqual(bad.status_code, 400)
 
     async def _bad_as_of(self, retrieve_mod):
@@ -1053,7 +1086,157 @@ class McpAsOfUnknownTests(unittest.TestCase):
         self.assertNotIn("validity_unknown", hidden)
         self.assertEqual(shown["validity_unknown_count"], 1)
         self.assertEqual(shown["validity_unknown"][0]["validity"], "unknown")
+        self.assertEqual(shown["validity_unknown"][0]["id"], "r-undated|r-undated-2")
+        self.assertIsInstance(shown["validity_unknown"][0]["payload"], list)
+
+    def test_search_semantically_as_of_uses_unknown_rel_uuid(self):
+        from src.constants.embeddings import Vector
+        from src.services.mcp import main as mcp_mod
+
+        mixed = (
+            Node(uuid="tail", name="Org", labels=["ORG"]),
+            Predicate(
+                uuid="r-dated",
+                name="REQUIRES",
+                description="",
+                properties={"valid_from": "2024-01-01T00:00:00Z"},
+            ),
+            Node(uuid="mid", name="Clause12", labels=["EVENT"]),
+            Predicate(
+                uuid="r-undated",
+                name="MENTIONS",
+                description="",
+                properties={},
+            ),
+            Node(uuid="tip", name="UndatedNote", labels=["NOTE"]),
+        )
+        mock_embeddings = MagicMock()
+        mock_embeddings.embed_text.return_value = Vector(
+            id="q", embeddings=[0.1], metadata={}
+        )
+        mock_vs = MagicMock()
+        mock_vs.search_nodes.return_value = [
+            Vector(id="n1", embeddings=[0.1], metadata={"uuid": "tail"})
+        ]
+        mock_graph = MagicMock()
+        mock_graph.get_event_centric_neighbors.return_value = [mixed]
+        with (
+            patch.object(mcp_mod, "guard_brainpat", return_value=True),
+            patch.object(mcp_mod, "embeddings_adapter", mock_embeddings),
+            patch.object(mcp_mod, "vector_search", mock_vs),
+            patch.object(mcp_mod, "graph_adapter", mock_graph),
+        ):
+            shown = mcp_mod._search_semantically_sync(
+                "q",
+                "brain",
+                False,
+                as_of="2024-06-01T00:00:00Z",
+                include_validity_unknown=True,
+            )
+        self.assertEqual(shown["validity_unknown_count"], 1)
         self.assertEqual(shown["validity_unknown"][0]["id"], "r-undated")
+
+
+class RetrieveUnknownJsonTests(unittest.TestCase):
+    def test_retrieve_response_json_encodes_unknown_payloads(self):
+        from src.services.api.constants.requests import RetrieveRequestResponse
+
+        class _Blob:
+            def __str__(self):
+                return "blob"
+
+        response = RetrieveRequestResponse(
+            data=[],
+            observations=[],
+            relationships=[],
+            validity_unknown_count=1,
+            validity_unknown=[
+                {
+                    "validity": "unknown",
+                    "target": "relationship",
+                    "id": "r1",
+                    "payload": {"relationships": _Blob()},
+                }
+            ],
+        )
+        dumped = response.model_dump(mode="json")
+        self.assertEqual(
+            dumped["validity_unknown"][0]["payload"]["relationships"],
+            "blob",
+        )
+
+
+class BridgeUnknownAsOfTests(unittest.TestCase):
+    def test_bridge_expand_reports_undated_facts(self):
+        from src.core.saving.hub_bridges import HubBridge
+        from src.services.api.controllers import retrieve as retrieve_mod
+
+        seed = {
+            "identified_entity": "q",
+            "triple": (
+                Node(uuid="n", name="n", labels=["PERSON"], properties={}),
+                Predicate(
+                    uuid="r1",
+                    name="MADE",
+                    description="",
+                    properties={"valid_from": "2024-01-01T00:00:00Z"},
+                ),
+                Node(
+                    uuid="event-seed",
+                    name="event-seed",
+                    labels=["EVENT"],
+                    properties={},
+                ),
+                Predicate(
+                    uuid="r2",
+                    name="TARGETED",
+                    description="",
+                    properties={"valid_from": "2024-01-01T00:00:00Z"},
+                ),
+                Node(uuid="b", name="b", labels=["PERSON"], properties={}),
+            ),
+            "score": 0.1,
+            "key": ("r1", "r2"),
+            "text": "fact-event-seed",
+            "chunk_ids": [],
+        }
+        bridged = (
+            Node(uuid="actor2", name="actor2", labels=["PERSON"], properties={}),
+            Predicate(uuid="r3", name="MADE", description="", properties={}),
+            Node(
+                uuid="event-bridge",
+                name="event-bridge",
+                labels=["EVENT"],
+                properties={},
+            ),
+            Predicate(uuid="r4", name="TARGETED", description="", properties={}),
+            Node(uuid="obj2", name="obj2", labels=["PERSON"], properties={}),
+        )
+        mock_adapter = MagicMock()
+        mock_adapter.get_hub_bridges.return_value = [
+            HubBridge(
+                event_a="event-bridge",
+                event_b="event-seed",
+                shared_entity="actor",
+                shared_entity_name="actor",
+                weight=1.0,
+            )
+        ]
+        mock_adapter.get_event_hub_facts.return_value = [bridged]
+        unknown = []
+        with patch.object(retrieve_mod, "graph_adapter", mock_adapter):
+            expanded, _paths = retrieve_mod._expand_cross_event_bridges(
+                [seed],
+                "brain",
+                max_per_hub=3,
+                as_of=_utc("2024-06-01T00:00:00Z"),
+                unknown_out=unknown,
+            )
+        self.assertEqual(len(expanded), 1)
+        self.assertEqual(expanded[0]["key"], ("r1", "r2"))
+        self.assertEqual(len(unknown), 1)
+        self.assertEqual(unknown[0]["validity"], "unknown")
+        self.assertEqual(unknown[0]["id"], "r3|r4")
 
 
 class ChangelogWindowControllerTests(unittest.IsolatedAsyncioTestCase):

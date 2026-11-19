@@ -596,17 +596,26 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
         self.assertEqual(params["as_of"], "2024-06-01T00:00:00Z")
 
     def test_ensure_database_creates_validity_range_indexes(self):
+        class _TypedDriver(_Driver):
+            def execute_query(self, query, parameters_=None, database_=None):
+                self.calls.append((query, dict(parameters_ or {}), database_))
+                if "relationshipTypes" in query:
+                    return _Result([_Record({"relationshipType": "REQUIRES"})])
+                return _Result(self._records)
+
         client = Neo4jClient.__new__(Neo4jClient)
-        client.driver = _Driver()
+        client.driver = _TypedDriver()
         client._verify_database_accessible = MagicMock(return_value=True)
         client.ensure_database("braina")
         queries = [query for query, _params, _db in client.driver.calls]
-        self.assertTrue(queries)
+        self.assertTrue(any("relationshipTypes" in query for query in queries))
+        index_queries = [query for query in queries if "CREATE RANGE INDEX" in query]
+        self.assertTrue(index_queries)
         self.assertTrue(
-            all("CREATE RANGE INDEX" in query for query in queries),
-            queries,
+            all("FOR ()-[r:`REQUIRES`]-()" in query for query in index_queries),
+            index_queries,
         )
-        joined = "\n".join(queries)
+        joined = "\n".join(index_queries)
         for key in (
             "valid_from",
             "valid_to",
@@ -617,6 +626,7 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
             "superseded_at",
         ):
             self.assertIn(key, joined)
+            self.assertIn("rel_REQUIRES_" + key, joined)
 
     def test_execute_operation_rejects_injected_database_name(self):
         client = _client()

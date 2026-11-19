@@ -277,6 +277,50 @@ def unknown_fact(
     return row
 
 
+def unknown_relationship_id(
+    left: Any,
+    right: Any,
+    status_left: str,
+    status_right: str,
+) -> str:
+    left_id = str(getattr(left, "uuid", "") or "")
+    right_id = str(getattr(right, "uuid", "") or "")
+    if status_left == VALIDITY_UNKNOWN and status_right != VALIDITY_UNKNOWN:
+        return left_id or right_id
+    if status_right == VALIDITY_UNKNOWN and status_left != VALIDITY_UNKNOWN:
+        return right_id or left_id
+    if left_id and right_id:
+        return left_id + "|" + right_id
+    return left_id or right_id
+
+
+def unknown_item_identity(item: Mapping[str, Any]) -> tuple[Any, ...]:
+    target = item.get("target")
+    item_id = item.get("id")
+    payload = item.get("payload")
+    if isinstance(payload, str):
+        return (target, item_id, payload)
+    if isinstance(payload, dict):
+        return (target, item_id, payload.get("uuid") or payload.get("id") or "")
+    if isinstance(payload, (list, tuple)) and len(payload) >= 4:
+        left = getattr(payload[1], "uuid", None) or ""
+        right = getattr(payload[3], "uuid", None) or ""
+        return (target, item_id, str(left), str(right))
+    return (target, item_id)
+
+
+def dedupe_unknown_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[tuple[Any, ...]] = set()
+    out: list[dict[str, Any]] = []
+    for item in items:
+        key = unknown_item_identity(item)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+    return out
+
+
 def interval_overlaps(
     fields: Mapping[str, Any] | None,
     since: datetime,
