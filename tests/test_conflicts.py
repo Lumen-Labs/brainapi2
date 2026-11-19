@@ -879,8 +879,10 @@ class AuthorizedResolveTests(unittest.TestCase):
             losing_fact_ids=["b"],
             actor="brainpat:demo",
             apply_action=fake_apply,
+            read_state=lambda fact_id, **kwargs: "unverified",
         )
         self.assertEqual(result, "failed")
+        self.assertFalse(result.rollback_failed)
         self.assertEqual(actions, [("a", "verify"), ("b", "reject"), ("a", "reset")])
 
         store = MemoryConflictStore()
@@ -902,6 +904,125 @@ class AuthorizedResolveTests(unittest.TestCase):
                     resolved_by="brainpat:demo",
                 )
         self.assertEqual(store.rows[numeric.id].status, "open")
+
+    def test_reject_failure_restores_already_verified_winner(self):
+        from src.core.saving.conflict_verification import apply_verified_side_to_facts
+
+        actions: list[tuple[str, str]] = []
+        priors = {"a": "verified", "b": "unverified"}
+
+        def fake_apply(
+            graph, *, fact_id, brain_id, action, actor=None, verified_by=None, note=None
+        ):
+            actions.append((fact_id, action))
+            if fact_id == "b" and action == "reject":
+                return "failed"
+            return "applied"
+
+        result = apply_verified_side_to_facts(
+            object(),
+            "brain",
+            winning_fact_id="a",
+            losing_fact_ids=["b"],
+            actor="brainpat:demo",
+            apply_action=fake_apply,
+            read_state=lambda fact_id, **kwargs: priors[fact_id],
+        )
+        self.assertEqual(result, "failed")
+        self.assertFalse(result.rollback_failed)
+        self.assertEqual(actions, [("a", "verify"), ("b", "reject"), ("a", "verify")])
+
+    def test_reject_failure_restores_earlier_losers_when_later_reject_fails(self):
+        from src.core.saving.conflict_verification import apply_verified_side_to_facts
+
+        actions: list[tuple[str, str]] = []
+        priors = {"w": "unverified", "l1": "unverified", "l2": "rejected"}
+
+        def fake_apply(
+            graph, *, fact_id, brain_id, action, actor=None, verified_by=None, note=None
+        ):
+            actions.append((fact_id, action))
+            if fact_id == "l2" and action == "reject":
+                return "failed"
+            return "applied"
+
+        result = apply_verified_side_to_facts(
+            object(),
+            "brain",
+            winning_fact_id="w",
+            losing_fact_ids=["l1", "l2"],
+            actor="brainpat:demo",
+            apply_action=fake_apply,
+            read_state=lambda fact_id, **kwargs: priors[fact_id],
+        )
+        self.assertEqual(result, "failed")
+        self.assertFalse(result.rollback_failed)
+        self.assertEqual(
+            actions,
+            [
+                ("w", "verify"),
+                ("l1", "reject"),
+                ("l2", "reject"),
+                ("l1", "reset"),
+                ("w", "reset"),
+            ],
+        )
+
+    def test_rollback_failure_is_surfaced_and_conflict_stays_open(self):
+        from src.core.saving.conflict_verification import VerifiedSideApplyResult
+
+        store = MemoryConflictStore()
+        found = detect_conflicts(store, FakeGraph(DetectionEngineTests()._refund_triples()), "brain")
+        numeric = next(
+            item for item in found if item.disagreement_type == "numeric_mismatch"
+        )
+        with patch(
+            "src.core.saving.conflict_verification.apply_verified_side_to_facts",
+            return_value=VerifiedSideApplyResult(
+                "failed",
+                rollback_failed=True,
+                rollback_errors=("a verify returned failed",),
+            ),
+        ):
+            with self.assertRaises(ValueError) as raised:
+                resolve_conflict(
+                    store,
+                    "brain",
+                    numeric.id,
+                    winning_fact_id=numeric.sides[0].fact_id,
+                    method="verified_side",
+                    resolved_by="brainpat:demo",
+                )
+        self.assertIn("rollback failed", str(raised.exception))
+        self.assertIn("a verify returned failed", str(raised.exception))
+        self.assertEqual(store.rows[numeric.id].status, "open")
+
+    def test_restore_checks_each_result_when_rollback_fails(self):
+        from src.core.saving.conflict_verification import apply_verified_side_to_facts
+
+        actions: list[tuple[str, str]] = []
+
+        def fake_apply(
+            graph, *, fact_id, brain_id, action, actor=None, verified_by=None, note=None
+        ):
+            actions.append((fact_id, action))
+            if action == "reject" or action == "reset":
+                return "failed"
+            return "applied"
+
+        result = apply_verified_side_to_facts(
+            object(),
+            "brain",
+            winning_fact_id="w",
+            losing_fact_ids=["l1", "l2"],
+            actor="brainpat:demo",
+            apply_action=fake_apply,
+            read_state=lambda fact_id, **kwargs: "unverified",
+        )
+        self.assertEqual(result, "failed")
+        self.assertTrue(result.rollback_failed)
+        self.assertEqual(result.rollback_errors, ("w reset returned failed",))
+        self.assertEqual(actions, [("w", "verify"), ("l1", "reject"), ("w", "reset")])
 
 
 class RestConflictResolveAuthTests(unittest.TestCase):

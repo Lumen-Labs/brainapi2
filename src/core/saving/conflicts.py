@@ -8,6 +8,7 @@ is gated by ``CONFLICT_DETECT_ON_INGEST`` (default off).
 from __future__ import annotations
 
 import hashlib
+import logging
 import math
 import os
 import re
@@ -32,6 +33,8 @@ from src.core.saving.validity import (
     parse_instant,
     utc_now,
 )
+
+logger = logging.getLogger(__name__)
 
 _REL_PAGE = 200
 _MAX_SCAN = 10000
@@ -925,8 +928,24 @@ def _apply_resolution(
                 actor=resolved_by,
                 note=notes,
             )
-            if outcome != "applied":
-                raise ValueError("fact verification failed")
+            apply_status = getattr(outcome, "status", outcome)
+            if apply_status != "applied":
+                message = "fact verification failed"
+                if getattr(outcome, "rollback_failed", False):
+                    details = "; ".join(
+                        getattr(outcome, "rollback_errors", ()) or ()
+                    )
+                    message = (
+                        f"{message}; rollback failed"
+                        + (f": {details}" if details else "")
+                    )
+                    logger.error(
+                        "%s brain_id=%s conflict_id=%s",
+                        message,
+                        brain_id,
+                        conflict_id,
+                    )
+                raise ValueError(message)
     conflict.status = status  # type: ignore[assignment]
     conflict.resolution = ConflictResolution(
         method=method,  # type: ignore[arg-type]

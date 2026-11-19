@@ -9,9 +9,30 @@ has already verified. #113 verify endpoints call that hook after they persist.
 
 from __future__ import annotations
 
+import logging
+from dataclasses import dataclass
 from typing import Any, Callable, Literal
 
 VerificationApplyResult = Literal["applied", "absent", "failed"]
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class VerifiedSideApplyResult:
+    status: VerificationApplyResult
+    rollback_failed: bool = False
+    rollback_errors: tuple[str, ...] = ()
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, str):
+            return self.status == other
+        if isinstance(other, VerifiedSideApplyResult):
+            return (
+                self.status == other.status
+                and self.rollback_failed == other.rollback_failed
+                and self.rollback_errors == other.rollback_errors
+            )
+        return NotImplemented
 
 
 def read_fact_verification_state(
@@ -90,6 +111,15 @@ def apply_fact_verification_action(
     return "applied"
 
 
+def _restore_action_for_prior_state(state: str | None) -> str:
+    normalized = str(state or "").strip().lower()
+    if normalized == "verified":
+        return "verify"
+    if normalized == "rejected":
+        return "reject"
+    return "reset"
+
+
 def apply_verified_side_to_facts(
     graph: Any | None,
     brain_id: str,
@@ -100,15 +130,26 @@ def apply_verified_side_to_facts(
     verified_by: str | None = None,
     note: str | None = None,
     apply_action: Callable[..., VerificationApplyResult] | None = None,
-) -> VerificationApplyResult:
+    read_state: Callable[..., str | None] | None = None,
+) -> VerifiedSideApplyResult:
     """Verify the winning fact and reject the other conflict side via #113.
 
-    Writes verification first. If a later write fails, reset the winner so the
-    conflict is not left half-updated. The caller must not mark the conflict
-    resolved unless this returns ``applied``.
+    Snapshot prior verification states before writing. If a later write fails,
+    restore every mutated fact to that snapshot. The caller must not mark the
+    conflict resolved unless this returns ``applied``.
     """
     apply = apply_action or apply_fact_verification_action
+    reader = read_state or read_fact_verification_state
     principal = (actor or verified_by or "").strip() or None
+    touched: list[str] = []
+    seen: set[str] = set()
+    for fact_id in (winning_fact_id, *list(losing_fact_ids or [])):
+        if fact_id and fact_id not in seen:
+            seen.add(fact_id)
+            touched.append(fact_id)
+    prior_states = {
+        fact_id: reader(fact_id, graph=graph, brain_id=brain_id) for fact_id in touched
+    }
 
     def _call(action: str, fact_id: str) -> VerificationApplyResult:
         return apply(
@@ -121,15 +162,44 @@ def apply_verified_side_to_facts(
             note=note,
         )
 
+    def _rollback(mutated: list[str]) -> VerifiedSideApplyResult:
+        errors: list[str] = []
+        for fact_id in reversed(mutated):
+            action = _restore_action_for_prior_state(prior_states.get(fact_id))
+            restored = _call(action, fact_id)
+            if restored != "applied":
+                detail = f"{fact_id} {action} returned {restored}"
+                errors.append(detail)
+                logger.error(
+                    "verified_side rollback failed brain_id=%s fact_id=%s action=%s result=%s",
+                    brain_id,
+                    fact_id,
+                    action,
+                    restored,
+                )
+        if errors:
+            logger.error(
+                "verified_side could not restore prior verification states brain_id=%s winner=%s errors=%s",
+                brain_id,
+                winning_fact_id,
+                errors,
+            )
+        return VerifiedSideApplyResult(
+            "failed",
+            rollback_failed=bool(errors),
+            rollback_errors=tuple(errors),
+        )
+
     applied = _call("verify", winning_fact_id)
     if applied != "applied":
-        return applied
+        return VerifiedSideApplyResult(applied)
+    mutated = [winning_fact_id]
     for fact_id in losing_fact_ids:
         rejected = _call("reject", fact_id)
         if rejected != "applied":
-            _call("reset", winning_fact_id)
-            return "failed"
-    return "applied"
+            return _rollback(mutated)
+        mutated.append(fact_id)
+    return VerifiedSideApplyResult("applied")
 
 
 def hydrate_conflict_sides(
