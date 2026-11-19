@@ -607,10 +607,30 @@ def publish_next_unit(brain_id, root_id, replay_operation):
     return True
 
 
+def _conflict_touches(operation):
+    if operation.get("adapter") != "graph":
+        return None, None
+    if operation.get("method") not in {"add_relationship", "deprecate_relationship"}:
+        return None, None
+    args = operation.get("args") or {}
+    predicate = args.get("predicate") or {}
+    subject = args.get("subject") or {}
+    fact_id = predicate.get("uuid") if isinstance(predicate, dict) else None
+    subject_uuid = subject.get("uuid") if isinstance(subject, dict) else None
+    return fact_id, subject_uuid
+
 
 def publish_staged_run(brain_id, root_id, acquire_gate, data_client, vector_client, graph_client=None):
     """Apply staged units while the caller's exclusive brain gate is held."""
+    fact_ids = []
+    subject_uuids = []
+
     def replay(target, operation_id, operation):
+        fact_id, subject_uuid = _conflict_touches(operation)
+        if fact_id:
+            fact_ids.append(str(fact_id))
+        if subject_uuid:
+            subject_uuids.append(str(subject_uuid))
         adapter = operation["adapter"]
         if adapter == "data":
             replay_data_operation(data_client, target, operation)
@@ -638,6 +658,12 @@ def publish_staged_run(brain_id, root_id, acquire_gate, data_client, vector_clie
             return
         discard_outputs(brain_id, root_id)
         ingest_staging.mark_cleanup_complete(brain_id, root_id)
+        try:
+            from src.core.saving.conflicts import maybe_detect_after_ingest
+
+            maybe_detect_after_ingest(brain_id, fact_ids, subject_uuids=subject_uuids)
+        except Exception:
+            pass
         return finished
 
 
