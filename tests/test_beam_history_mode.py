@@ -253,7 +253,9 @@ CURRENT_VALUE_NEGATIVES = (
     "tell me the latest count",
     "what value is in the config now",
     "what is currently used to cache responses",
+    "what library is currently used to do response caching",
     "what is the current timeout that was changed yesterday",
+    "what is the current timeout which was updated yesterday",
     "did I use postgres or mysql",
     "have I turned on TLS",
     "what timezone is set",
@@ -289,6 +291,7 @@ HISTORY_POSITIVES = (
     "what did the cedar code used to be",
     "what was the timeout before it changed",
     "which settings were removed from the policy",
+    "show me the settings that were removed",
     "which fields were changed in the last revision",
     "which rules were updated last quarter",
     "did I already complete this",
@@ -326,6 +329,7 @@ class EverydayHistoryIntentTests(unittest.TestCase):
             "which settings were removed",
             "which fields were changed",
             "which rules were updated",
+            "show me the settings that were removed",
         ):
             with self.subTest(text=text):
                 self.assertTrue(_wants(text), text)
@@ -337,7 +341,9 @@ class EverydayHistoryIntentTests(unittest.TestCase):
             "what is the current value",
             "What is the TTL for the cache that was changed?",
             "what is currently used to cache responses",
+            "what library is currently used to do response caching",
             "what is the current timeout that was changed yesterday",
+            "what is the current timeout which was updated yesterday",
         ):
             with self.subTest(text=text):
                 self.assertFalse(_wants(text), text)
