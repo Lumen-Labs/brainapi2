@@ -722,16 +722,19 @@ class MongoClient(DataClient):
         brain_id: str,
         *,
         if_status: str | None = None,
+        if_resolution_method: str | None = None,
     ) -> FactConflict | None:
-        if if_status is None:
+        if if_status is None and if_resolution_method is None:
             return self.save_conflict(conflict, brain_id)
         self._ensure_conflict_indexes(brain_id)
         collection = self.get_collection("conflicts", database=brain_id)
         document = self._conflict_document(conflict)
-        result = collection.update_one(
-            {"id": conflict.id, "status": if_status},
-            {"$set": document},
-        )
+        query: dict[str, Any] = {"id": conflict.id}
+        if if_status is not None:
+            query["status"] = if_status
+        if if_resolution_method is not None:
+            query["resolution.method"] = if_resolution_method
+        result = collection.update_one(query, {"$set": document})
         if result.matched_count == 0:
             return None
         return conflict

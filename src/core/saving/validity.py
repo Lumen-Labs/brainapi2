@@ -36,6 +36,10 @@ _AS_OF_FORMATS = (
     "%Y-%m-%dT%H:%M:%S.%f",
     "%Y-%m-%dT%H:%M:%S%z",
     "%Y-%m-%dT%H:%M:%S.%f%z",
+    "%Y-%m-%dT%H%M%S",
+    "%Y-%m-%dT%H%M",
+    "%Y%m%dT%H%M%S",
+    "%Y%m%dT%H%M",
     "%Y-%m-%d",
 )
 

@@ -440,7 +440,8 @@ def _date_key(value) -> tuple[int, int, int] | None:
 
 
 _TIME_RE = re.compile(
-    r"T\d{1,2}:\d{2}|\d{1,2}:\d{2}(?::\d{2})?(?:\s*[APap][Mm])?"
+    r"T(?:\d{1,2}:\d{2}(?::\d{2}(?:[.,]\d+)?)?|\d{4,6}(?:[.,]\d+)?)"
+    r"|\d{1,2}:\d{2}(?::\d{2})?(?:\s*[APap][Mm])?"
 )
 
 
@@ -1126,6 +1127,7 @@ def detect_conflicts(
     llm_pairs_failed = 0
     llm_truncated = False
     judged_pair_keys: set[str] = set()
+    compatible_pair_keys: set[str] = set()
     if llm_on and pending:
         budget = conflict_detect_llm_max_pairs()
         limit = len(pending) if budget <= 0 else min(len(pending), budget)
@@ -1147,6 +1149,7 @@ def detect_conflicts(
             judged_pair_keys.add(pair)
             contradicts, confidence, kind = verdict
             if not contradicts:
+                compatible_pair_keys.add(pair)
                 continue
             conflict = _build_conflict(left, right, kind, confidence, "llm")
             found[conflict.pair_key] = conflict
@@ -1178,6 +1181,7 @@ def detect_conflicts(
             llm_on=llm_on,
             llm_truncated=llm_truncated,
             judged_pair_keys=judged_pair_keys,
+            compatible_pair_keys=compatible_pair_keys,
         )
         stored.extend(stale)
     if scan_stats.get("truncated"):
@@ -1261,6 +1265,7 @@ def _stale_reason(
     conflict: FactConflict,
     snapshots_by_id: dict[str, dict[str, Any]],
     live_pair_keys: set[str],
+    compatible_pair_keys: set[str] | None = None,
 ) -> str | None:
     """Return a concrete stale reason, or None.
 
@@ -1308,6 +1313,8 @@ def _stale_reason(
         return "no_longer_holds:validity_no_overlap"
     if classify_disagreement(left, right) is None:
         return "no_longer_holds:values_compatible"
+    if compatible_pair_keys and pair in compatible_pair_keys:
+        return "no_longer_holds:llm_compatible"
     return None
 
 
@@ -1332,12 +1339,12 @@ def _skip_llm_stale(
         return False
     if reason.startswith("no_longer_holds:validity_no_overlap"):
         return False
+    pair = pair_key_for(*conflict.fact_ids()[:2]) if len(conflict.fact_ids()) >= 2 else ""
+    if pair and pair in judged_pair_keys:
+        return False
     if not llm_on or llm_truncated:
         return True
-    pair = pair_key_for(*conflict.fact_ids()[:2]) if len(conflict.fact_ids()) >= 2 else ""
-    if not pair or pair not in judged_pair_keys:
-        return True
-    return False
+    return True
 
 
 def _stale_open_conflicts(
@@ -1352,6 +1359,7 @@ def _stale_open_conflicts(
     llm_on: bool = False,
     llm_truncated: bool = False,
     judged_pair_keys: set[str] | None = None,
+    compatible_pair_keys: set[str] | None = None,
 ) -> list[FactConflict]:
     snapshots_by_id = {
         str(item.get("fact_id")): item
@@ -1390,7 +1398,12 @@ def _stale_open_conflicts(
                     snapshots_by_id[fact_id] = snapshot
         if conflict.status != "open":
             continue
-        reason = _stale_reason(conflict, snapshots_by_id, live_pair_keys)
+        reason = _stale_reason(
+            conflict,
+            snapshots_by_id,
+            live_pair_keys,
+            compatible_pair_keys=compatible_pair_keys,
+        )
         if not reason:
             continue
         if _skip_llm_stale(
@@ -1431,6 +1444,58 @@ def _stale_open_conflicts(
     return stale
 
 
+def _reload_conflict(adapter: Any, brain_id: str, conflict_id: str) -> FactConflict | None:
+    getter = getattr(adapter, "get_conflict_by_id", None)
+    if not callable(getter):
+        return None
+    return _conflict_from_row(getter(conflict_id, brain_id))
+
+
+def _save_conflict_if_unchanged(
+    adapter: Any,
+    brain_id: str,
+    conflict: FactConflict,
+    current: FactConflict | None,
+) -> FactConflict | None:
+    if current is None:
+        saver = getattr(adapter, "save_conflict", None)
+        if not callable(saver):
+            return conflict
+        saved = saver(conflict, brain_id)
+        if isinstance(saved, FactConflict):
+            return saved
+        if isinstance(saved, dict):
+            return conflict_from_document(saved)
+        return conflict
+    updater = getattr(adapter, "update_conflict", None)
+    expected_status = current.status
+    expected_method = None
+    if expected_status == "resolved":
+        expected_method = current.resolution.method or ""
+    saved = None
+    if callable(updater):
+        try:
+            kwargs: dict[str, Any] = {"if_status": expected_status}
+            if expected_method is not None:
+                kwargs["if_resolution_method"] = expected_method
+            saved = updater(conflict, brain_id, **kwargs)
+        except TypeError:
+            try:
+                saved = updater(conflict, brain_id, if_status=expected_status)
+            except TypeError:
+                saved = updater(conflict, brain_id)
+    else:
+        saver = getattr(adapter, "save_conflict", None)
+        saved = saver(conflict, brain_id) if callable(saver) else conflict
+    if saved is None:
+        return _reload_conflict(adapter, brain_id, conflict.id)
+    if isinstance(saved, FactConflict):
+        return saved
+    if isinstance(saved, dict):
+        return conflict_from_document(saved)
+    return conflict
+
+
 def upsert_conflict(adapter: Any, brain_id: str, conflict: FactConflict) -> FactConflict | None:
     existing = None
     getter = getattr(adapter, "get_conflict_by_pair_key", None)
@@ -1453,15 +1518,7 @@ def upsert_conflict(adapter: Any, brain_id: str, conflict: FactConflict) -> Fact
         conflict.detected_at = current.detected_at
         conflict.status = current.status
         conflict.resolution = current.resolution
-    saver = getattr(adapter, "save_conflict", None)
-    if not callable(saver):
-        return conflict
-    saved = saver(conflict, brain_id)
-    if isinstance(saved, FactConflict):
-        return saved
-    if isinstance(saved, dict):
-        return conflict_from_document(saved)
-    return conflict
+    return _save_conflict_if_unchanged(adapter, brain_id, conflict, current)
 
 
 def _optional_graph(graph: Any | None = None) -> Any | None:

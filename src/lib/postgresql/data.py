@@ -1236,10 +1236,29 @@ class PostgreSQLDataClient(DataClient):
         brain_id: str,
         *,
         if_status: str | None = None,
+        if_resolution_method: str | None = None,
     ) -> FactConflict | None:
-        if if_status is None:
+        if if_status is None and if_resolution_method is None:
             return self.save_conflict(conflict, brain_id)
         row = self._conflict_row(conflict)
+        clauses = ["id = %s"]
+        params: list[Any] = [
+            row[1],
+            row[2],
+            row[3],
+            row[4],
+            row[5],
+            row[6],
+            row[7],
+            row[8],
+            conflict.id,
+        ]
+        if if_status is not None:
+            clauses.append("status = %s")
+            params.append(if_status)
+        if if_resolution_method is not None:
+            clauses.append("COALESCE(document #>> '{resolution,method}', '') = %s")
+            params.append(if_resolution_method)
         with self._brain_connection(brain_id) as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -1253,20 +1272,9 @@ class PostgreSQLDataClient(DataClient):
                         fact_ids = %s,
                         detected_at = %s,
                         document = %s::jsonb
-                    WHERE id = %s AND status = %s
-                    """,
-                    (
-                        row[1],
-                        row[2],
-                        row[3],
-                        row[4],
-                        row[5],
-                        row[6],
-                        row[7],
-                        row[8],
-                        conflict.id,
-                        if_status,
-                    ),
+                    WHERE """
+                    + " AND ".join(clauses),
+                    tuple(params),
                 )
                 updated = cur.rowcount
             conn.commit()

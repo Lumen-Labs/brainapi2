@@ -66,10 +66,18 @@ class MemoryConflictStore:
         self.rows[conflict.id] = conflict
         return conflict
 
-    def update_conflict(self, conflict, brain_id, if_status=None):
+    def update_conflict(
+        self, conflict, brain_id, if_status=None, if_resolution_method=None
+    ):
         existing = self.rows.get(conflict.id)
         if if_status is not None and (existing is None or existing.status != if_status):
             return None
+        if if_resolution_method is not None:
+            method = ""
+            if existing is not None and existing.resolution is not None:
+                method = existing.resolution.method or ""
+            if method != if_resolution_method:
+                return None
         self.rows[conflict.id] = conflict
         return conflict
 
@@ -1873,6 +1881,10 @@ class ReviewGapTests(unittest.TestCase):
         self.assertTrue(
             values_equivalent("2024-01-01T09:00:00Z", "2024-01-01T09:00:00+00:00")
         )
+        self.assertFalse(values_equivalent("20240101T090000", "20240101T170000"))
+        self.assertTrue(values_equivalent("20240101T090000", "20240101T090000"))
+        self.assertFalse(values_equivalent("2024-01-01T090000", "2024-01-01T170000"))
+        self.assertTrue(values_equivalent("2024-01-01T090000", "2024-01-01T090000"))
 
     def test_empty_scoped_scan_does_not_stale_other_conflicts(self):
         store = MemoryConflictStore()
@@ -2285,6 +2297,88 @@ class ReviewGapTests(unittest.TestCase):
         self.assertEqual(again.llm_pairs_failed, 1)
         self.assertEqual(store.rows[conflict_id].status, "open")
         self.assertEqual(again.stale_resolved, 0)
+
+    def test_llm_compatible_verdict_marks_stale(self):
+        store = MemoryConflictStore()
+        triples = self._semantic_policy_triples()
+        found = detect_conflicts(
+            store, FakeGraph(triples), "brain", use_llm=True, llm_client=self._llm_client()
+        )
+        conflict_id = found[0].id
+        again = detect_conflicts(
+            store,
+            FakeGraph(triples),
+            "brain",
+            use_llm=True,
+            llm_client=self._llm_client(contradicts=False),
+        )
+        self.assertEqual(store.rows[conflict_id].status, "resolved")
+        self.assertEqual(store.rows[conflict_id].resolution.method, "stale")
+        self.assertIn("llm_compatible", store.rows[conflict_id].resolution.notes)
+        self.assertEqual(again.stale_resolved, 1)
+
+    def test_upsert_does_not_overwrite_concurrent_manual_resolution(self):
+        from src.constants.conflicts import ConflictResolution
+        from src.core.saving.conflicts import upsert_conflict
+
+        store = MemoryConflictStore()
+        triples = [
+            _triple(
+                _node("p", "Policy"),
+                _pred(
+                    "a",
+                    "HAS_WINDOW",
+                    {
+                        "valid_from": "2024-01-01T00:00:00Z",
+                        "source_key": "s1",
+                    },
+                ),
+                _node("x", "14 days"),
+            ),
+            _triple(
+                _node("p", "Policy"),
+                _pred(
+                    "b",
+                    "HAS_WINDOW",
+                    {
+                        "valid_from": "2024-01-01T00:00:00Z",
+                        "source_key": "s2",
+                    },
+                ),
+                _node("y", "30 days"),
+            ),
+        ]
+        found = detect_conflicts(store, FakeGraph(triples), "brain")
+        conflict = found[0]
+        conflict.status = "resolved"
+        conflict.resolution = ConflictResolution(method="stale", notes="side_removed")
+        store.save_conflict(conflict, "brain")
+
+        class RacingStore(MemoryConflictStore):
+            def update_conflict(
+                self, item, brain_id, if_status=None, if_resolution_method=None
+            ):
+                existing = self.rows[item.id]
+                existing.status = "resolved"
+                existing.resolution = ConflictResolution(
+                    method="manual", notes="operator"
+                )
+                return super().update_conflict(
+                    item,
+                    brain_id,
+                    if_status=if_status,
+                    if_resolution_method=if_resolution_method,
+                )
+
+        racing = RacingStore()
+        racing.rows = store.rows
+        reopened = found[0].model_copy(deep=True)
+        reopened.status = "open"
+        reopened.resolution = ConflictResolution()
+        saved = upsert_conflict(racing, "brain", reopened)
+        self.assertEqual(saved.status, "resolved")
+        self.assertEqual(saved.resolution.method, "manual")
+        self.assertEqual(racing.rows[conflict.id].resolution.method, "manual")
 
     def test_llm_conflict_still_closes_when_side_removed(self):
         store = MemoryConflictStore()

@@ -303,6 +303,74 @@ def test_publish_includes_subjects_from_units_before_resume(monkeypatch):
     assert called["subject_uuids"] == ["policy-0", "policy-2"]
 
 
+def test_publish_skips_conflict_scan_when_prior_output_unreadable(monkeypatch):
+    from contextlib import contextmanager
+    from src.core.saving import ingest_publication as publisher
+
+    events = []
+    order = []
+
+    @contextmanager
+    def gate(brain, root):
+        order.append("enter")
+        yield
+        order.append("exit")
+
+    def publish_unit(brain, root, replay):
+        if events:
+            return False
+        replay(
+            brain,
+            "op:1",
+            {
+                "adapter": "graph",
+                "method": "add_relationship",
+                "args": {
+                    "predicate": {"uuid": "fact-2"},
+                    "subject": {"uuid": "policy-2"},
+                },
+            },
+        )
+        events.append("replay")
+        return True
+
+    def prior_units(brain, root):
+        order.append("prior")
+        return [{"output_ref": "missing"}]
+
+    monkeypatch.setattr(publisher, "publish_next_unit", publish_unit)
+    monkeypatch.setattr(publisher, "replay_graph_operation", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        publisher.ingest_cancellation,
+        "_runs",
+        lambda brain: SimpleNamespace(find_one=lambda query: {"status": "publishing"}),
+    )
+    monkeypatch.setattr(
+        publisher.ingest_staging, "published_units_before_cursor", prior_units
+    )
+    monkeypatch.setattr(
+        publisher, "load_output", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("gone"))
+    )
+    monkeypatch.setattr(publisher, "finish_publication", lambda brain, root: {"status": "completed"})
+    monkeypatch.setattr(publisher, "discard_outputs", lambda brain, root: None)
+    monkeypatch.setattr(publisher.ingest_staging, "mark_cleanup_complete", lambda brain, root: None)
+    called = {}
+
+    def fake_detect(*args, **kwargs):
+        called["ran"] = True
+
+    monkeypatch.setattr("src.core.saving.conflicts.maybe_detect_after_ingest", fake_detect)
+    monkeypatch.setenv("CONFLICT_DETECT_ON_INGEST", "true")
+    with patch.object(publisher.logger, "exception") as logged:
+        finished = publisher.publish_staged_run(
+            "brain", "root", gate, Mock(), Mock(), Mock()
+        )
+    assert finished == {"status": "completed"}
+    assert "ran" not in called
+    assert order[:2] == ["enter", "prior"]
+    logged.assert_called()
+
+
 def test_publish_logs_conflict_detection_errors(monkeypatch):
     from contextlib import contextmanager
     from src.core.saving import ingest_publication as publisher
