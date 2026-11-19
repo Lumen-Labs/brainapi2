@@ -268,6 +268,19 @@ def _rel_op(subject, predicate, obj):
     }
 
 
+def _update_op(uuid, updating, new_properties, properties_to_remove=None):
+    return {
+        "adapter": "graph",
+        "method": "update_properties",
+        "args": {
+            "uuid": uuid,
+            "updating": updating,
+            "new_properties": new_properties,
+            "properties_to_remove": properties_to_remove or [],
+        },
+    }
+
+
 def _publish_graph(run, monkeypatch, tmp_path, operations, graph):
     from src.core.saving import ingest_access_gate as gate, ingest_publication, ingest_staging as staging
 
@@ -430,6 +443,95 @@ def test_rollback_precheck_aborts_without_partial_state(run, monkeypatch, tmp_pa
     stored = cancellation._runs("brain").find_one({"_id": "staged"})
     assert stored["status"] == "rollback_failed"
     assert "alice-1" in graph.nodes
+
+
+def test_rollback_deletes_created_node_after_later_update(run, monkeypatch, tmp_path):
+    from src.core.saving import ingest_publication, ingest_staging as staging
+
+    alice = _person("alice-1", "Alice", properties={"note": "created"})
+    graph = FakeGraph()
+    _publish_graph(
+        run, monkeypatch, tmp_path,
+        [_node_op(alice), _update_op("alice-1", "node", {"note": "updated"})],
+        graph,
+    )
+    assert graph.nodes["alice-1"]["properties"]["note"] == "updated"
+
+    ingest_publication.rollback_published_run("brain", "staged", Mock(), Mock(), graph)
+    staging.finish_publish_rollback("brain", "staged")
+    assert graph.nodes == {}
+    stored = cancellation._runs("brain").find_one({"_id": "staged"})
+    node_done = [item for item in (stored.get("rollback_done") or []) if item.endswith(":node:alice-1")]
+    assert len(node_done) >= 2
+
+
+def test_rollback_deletes_created_node_after_later_add_nodes_retouch(run, monkeypatch, tmp_path):
+    from src.core.saving import ingest_publication, ingest_staging as staging
+
+    created = _person("alice-1", "Alice", properties={"note": "created"})
+    retouch = _person("alice-1", "Alice", properties={"note": "retouched"})
+    graph = FakeGraph()
+    _publish_graph(run, monkeypatch, tmp_path, [_node_op(created), _node_op(retouch)], graph)
+    assert graph.nodes["alice-1"]["properties"]["note"] == "retouched"
+    touches = [touch for values in staging.graph_touches("brain", "staged").values() for touch in values]
+    created_flags = [touch["created"] for touch in touches if touch["uuid"] == "alice-1"]
+    assert created_flags == [True, False]
+
+    ingest_publication.rollback_published_run("brain", "staged", Mock(), Mock(), graph)
+    staging.finish_publish_rollback("brain", "staged")
+    assert graph.nodes == {}
+
+
+def test_rollback_deletes_created_edge_after_later_update(run, monkeypatch, tmp_path):
+    from src.core.saving import ingest_publication, ingest_staging as staging
+
+    alice = _person("alice-1", "Alice")
+    bob = _person("bob-1", "Bob")
+    knows = _rel("rel-1", properties={"note": "created"})
+    graph = FakeGraph()
+    _publish_graph(
+        run, monkeypatch, tmp_path,
+        [
+            _node_op(alice, bob),
+            _rel_op(alice, knows, bob),
+            _update_op("rel-1", "relationship", {"note": "updated"}),
+        ],
+        graph,
+    )
+    assert graph.edges["rel-1"]["properties"]["note"] == "updated"
+
+    ingest_publication.rollback_published_run("brain", "staged", Mock(), Mock(), graph)
+    staging.finish_publish_rollback("brain", "staged")
+    assert graph.edges == {}
+    assert graph.nodes == {}
+
+
+def test_rollback_deletes_created_edge_after_later_add_relationship_retouch(run, monkeypatch, tmp_path):
+    from src.core.saving import ingest_publication, ingest_staging as staging
+
+    alice = _person("alice-1", "Alice")
+    bob = _person("bob-1", "Bob")
+    created = _rel("rel-1", properties={"note": "created"})
+    retouch = _rel("rel-1", properties={"note": "retouched"})
+    graph = FakeGraph()
+    _publish_graph(
+        run, monkeypatch, tmp_path,
+        [
+            _node_op(alice, bob),
+            _rel_op(alice, created, bob),
+            _rel_op(alice, retouch, bob),
+        ],
+        graph,
+    )
+    assert graph.edges["rel-1"]["properties"]["note"] == "retouched"
+    touches = [touch for values in staging.graph_touches("brain", "staged").values() for touch in values]
+    created_flags = [touch["created"] for touch in touches if touch["uuid"] == "rel-1"]
+    assert created_flags == [True, False]
+
+    ingest_publication.rollback_published_run("brain", "staged", Mock(), Mock(), graph)
+    staging.finish_publish_rollback("brain", "staged")
+    assert graph.edges == {}
+    assert graph.nodes == {}
 
 
 def test_publish_records_created_versus_reused_before_merge(run, monkeypatch, tmp_path):
