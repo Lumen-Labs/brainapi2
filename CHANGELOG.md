@@ -16,6 +16,7 @@ Deferred: [#121](https://github.com/Lumen-Labs/brainapi2/pull/121) (agent-first 
 
 - Cross-source conflict scan, list, report, resolve, dismiss. REST under `/retrieve/conflicts`. MCP: `list_conflicts`, `get_conflict`, `resolve_conflict`, `dismiss_conflict`, `conflict_report`. ([#114](https://github.com/Lumen-Labs/brainapi2/pull/114), [#126](https://github.com/Lumen-Labs/brainapi2/pull/126))
 - Ingest-time scan is incremental (touched subjects), pages past the old 10k cap, and evals scan-then-list with versioned timestamps. ([#128](https://github.com/Lumen-Labs/brainapi2/pull/128), [#132](https://github.com/Lumen-Labs/brainapi2/pull/132))
+- Stale auto-resolve requires a concrete reason (side removed/superseded, validity windows no longer overlap, values compatible, or an explicit LLM `contradicts=false`). LLM-detected conflicts stay open when the LLM is off, the pair budget is exhausted, or that pair got no verdict. Full scans honor `CONFLICT_DETECT_MAX_RELATIONSHIPS` (default `10000`; `0` is unlimited); hitting the cap sets `truncated` and skips stale-resolve. Compact ISO clock times compare as instants. `upsert_conflict` does not overwrite a concurrent operator resolution. Ingest scans include prior published units in the same run and skip detect when a prior staged output cannot be read. ([#138](https://github.com/Lumen-Labs/brainapi2/pull/138))
 - Optional ingest/LLM detection stays **off**: `CONFLICT_DETECT_ON_INGEST=false`, `CONFLICT_DETECT_LLM=false`.
 
 ### As-of retrieve and changelogs
@@ -52,6 +53,7 @@ Deferred: [#121](https://github.com/Lumen-Labs/brainapi2/pull/121) (agent-first 
 | `GRAPH_RAW_WRITE_ENABLED` | `false` |
 | `CONFLICT_DETECT_ON_INGEST` | `false` |
 | `CONFLICT_DETECT_LLM` | `false` |
+| `CONFLICT_DETECT_MAX_RELATIONSHIPS` | `10000` (`0` = unlimited) |
 | As-of missing valid-time start | fail closed (omit; count as unknown) |
 | `include_validity_unknown` | `false` |
 | Token scope `verification` | not granted by default |
@@ -67,3 +69,10 @@ Deferred: [#121](https://github.com/Lumen-Labs/brainapi2/pull/121) (agent-first 
 - REST/MCP conflict-resolve errors can include pre-read exception text; logs should stay detailed, callers should get a fixed message.
 - Cold-start index setup is not serialized per database (`CREATE RANGE INDEX IF NOT EXISTS` stays correct; overlapping first callers repeat work). A raw Cypher write during type listing can wait until the next TTL for a new type’s indexes.
 - Neo4j Community Edition still shares the default `neo4j` database when `CREATE DATABASE` is unsupported.
+- A missing, null, or non-boolean LLM `contradicts` field is treated as `false` and can stale-close as `llm_compatible`.
+- Compact timed stamps (`2024-01-01T090000`) collapse to date-only in `normalize_date_string`, so same-day events that differ only by time can share an identity UUID. Conflict detection uses `parse_date_string` and is not affected.
+- An in-flight LLM verdict can stale-close a conflict after a later scan has already refreshed it with new fact values (`if_status=open` only).
+- LLM batch indexes are not bounded to the current batch; a negative index can overwrite an earlier batch's verdict.
+- `Config.conflict_detect_max_relationships` uses `int(...)` with no fallback; a blank or non-numeric env value raises at import. Runtime `conflict_detect_max_relationships()` already falls back.
+- Compact clocks with a space separator (`20240101 090000`) compare as dates, not instants. `_instant_key` also drops microseconds, so fractional-second instants compare equal.
+- Compact `as_of` values like `2024-01-01T930` can parse as 09:03 instead of being rejected.
