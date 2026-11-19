@@ -436,40 +436,77 @@ class Neo4jClient(GraphClient):
             return coerced
         return None
 
-    def _node_from_stored(self, payload: Any) -> Node:
-        raw = payload or {}
-        if not isinstance(raw, dict):
-            items = getattr(raw, "items", None)
-            raw = dict(items()) if callable(items) else {}
-        properties = self._python_properties(raw.get("properties") or {})
-        polarity = raw.get("polarity") or properties.get("polarity") or "neutral"
+    def _stored_happened_at(self, value: Any) -> str | None:
+        if value in (None, ""):
+            return None
+        return self._python_datetime(value).isoformat()
+
+    def _record_field(self, record: Any, key: str, default: Any = None) -> Any:
+        if record is None:
+            return default
+        getter = getattr(record, "get", None)
+        if callable(getter):
+            try:
+                return getter(key, default)
+            except TypeError:
+                try:
+                    value = getter(key)
+                except Exception:
+                    return default
+                return default if value is None else value
+            except Exception:
+                return default
+        if isinstance(record, dict):
+            return record.get(key, default)
+        return default
+
+    def _node_from_stored_fields(self, record: Any) -> Node:
+        properties = self._python_properties(
+            self._record_field(record, "properties") or {}
+        )
+        polarity = (
+            self._record_field(record, "polarity")
+            or properties.get("polarity")
+            or "neutral"
+        )
         if polarity not in {"positive", "negative", "neutral"}:
             polarity = "neutral"
         kwargs: dict[str, Any] = {
-            "uuid": str(raw.get("uuid") or properties.get("uuid") or ""),
-            "name": str(raw.get("name") or properties.get("name") or ""),
-            "labels": list(raw.get("labels") or []),
-            "description": raw.get("description") or "",
+            "uuid": str(
+                self._record_field(record, "uuid") or properties.get("uuid") or ""
+            ),
+            "name": str(
+                self._record_field(record, "name") or properties.get("name") or ""
+            ),
+            "labels": list(self._record_field(record, "labels") or []),
+            "description": self._record_field(record, "description") or "",
             "properties": properties,
             "polarity": polarity,
         }
-        happened_at = raw.get("happened_at")
-        if happened_at not in (None, ""):
-            kwargs["happened_at"] = happened_at
-        last_updated = raw.get("last_updated")
-        if last_updated not in (None, ""):
-            kwargs["last_updated"] = self._python_datetime(last_updated)
-        observations = self._decode_observations(raw.get("observations"))
+        observations = self._decode_observations(
+            self._record_field(record, "observations")
+        )
         if observations is None and "observations" in properties:
             observations = self._decode_observations(properties.get("observations"))
         if observations is not None:
             kwargs["observations"] = observations
-        metadata = raw.get("metadata")
+        metadata = self._record_field(record, "metadata")
         if metadata not in (None, ""):
             kwargs["metadata"] = self._python_properties(metadata)
         elif properties.get("metadata") not in (None, ""):
             kwargs["metadata"] = self._python_properties(properties.get("metadata"))
+        last_updated = self._record_field(record, "last_updated")
+        if last_updated not in (None, ""):
+            kwargs["last_updated"] = self._python_datetime(last_updated)
+        happened_at = self._stored_happened_at(
+            self._record_field(record, "happened_at")
+        )
+        if happened_at is not None:
+            kwargs["happened_at"] = happened_at
         return Node(**kwargs)
+
+    def _node_from_stored(self, payload: Any) -> Node:
+        return self._node_from_stored_fields(payload)
 
     def add_nodes(
         self,
@@ -741,7 +778,7 @@ class Neo4jClient(GraphClient):
                 name=node.get("name", "") or "",
                 labels=node.get("labels", []) or [],
                 description=node.get("description", "") or "",
-                properties=node.get("properties", {}) or {},
+                properties=self._python_properties(node.get("properties", {}) or {}),
             )
             for node in result.records
         ]
@@ -808,7 +845,7 @@ class Neo4jClient(GraphClient):
                         name=record["name"],
                         labels=record["labels"],
                         description=record["description"],
-                        properties=record["properties"],
+                        properties=self._python_properties(record["properties"]),
                     ),
                     "relationships": record["r"] if record["r"] else None,
                     "related_nodes": (
@@ -817,7 +854,7 @@ class Neo4jClient(GraphClient):
                             name=record["m_name"],
                             labels=record["m_labels"],
                             description=record["m_description"],
-                            properties=record["m_properties"],
+                            properties=self._python_properties(record["m_properties"]),
                         )
                         if record["m_uuid"]
                         else None
@@ -832,7 +869,7 @@ class Neo4jClient(GraphClient):
                     name=record["name"],
                     labels=record["labels"],
                     description=record["description"],
-                    properties=record["properties"],
+                    properties=self._python_properties(record["properties"]),
                 )
                 for record in result.records
             ]
@@ -887,13 +924,7 @@ class Neo4jClient(GraphClient):
         )
         if not result.records or len(result.records) == 0:
             return None
-        return Node(
-            uuid=result.records[0].get("uuid", ""),
-            name=result.records[0].get("name", "") or "",
-            labels=result.records[0].get("labels", []) or [],
-            description=result.records[0].get("description", "") or "",
-            properties=self._python_properties(result.records[0].get("properties", {}) or {}),
-        )
+        return self._node_from_stored_fields(result.records[0])
 
     def get_by_uuids(self, uuids: list[str], brain_id: str) -> list[Node]:
         """
@@ -916,49 +947,7 @@ class Neo4jClient(GraphClient):
             "n['observations'] as observations, n['metadata'] as metadata"
         )
         result = self._run_query(cypher_query, brain_id, {"uuids": list(uuids)})
-        return [
-            Node(
-                uuid=record.get("uuid", ""),
-                name=record.get("name", ""),
-                labels=record.get("labels", []),
-                description=record.get("description", ""),
-                properties=self._python_properties(record.get("properties", {})),
-                polarity=record.get("polarity", "neutral"),
-                **(
-                    {"happened_at": record.get("happened_at", None)}
-                    if record.get("happened_at", None) is not None
-                    else {}
-                ),
-                **(
-                    {
-                        "last_updated": self._python_datetime(
-                            record.get("last_updated")
-                        )
-                    }
-                    if record.get("last_updated") not in (None, "")
-                    else {}
-                ),
-                **(
-                    {
-                        "observations": self._decode_observations(
-                            record.get("observations")
-                        )
-                    }
-                    if record.get("observations") is not None
-                    else {}
-                ),
-                **(
-                    {
-                        "metadata": self._python_properties(
-                            record.get("metadata", {})
-                        )
-                    }
-                    if record.get("metadata", {}) is not None
-                    else {}
-                ),
-            )
-            for record in result.records
-        ]
+        return [self._node_from_stored_fields(record) for record in result.records]
 
     def get_by_identification_params(
         self,
@@ -1012,13 +1001,7 @@ class Neo4jClient(GraphClient):
         result = self._run_query(cypher_query, brain_id, query_params)
         if not result.records or len(result.records) == 0:
             return None
-        return Node(
-            uuid=result.records[0].get("uuid", ""),
-            name=result.records[0].get("name", "") or "",
-            labels=result.records[0].get("labels", []) or [],
-            description=result.records[0].get("description", "") or "",
-            properties=self._python_properties(result.records[0].get("properties", {}) or {}),
-        )
+        return self._node_from_stored_fields(result.records[0])
 
     def get_neighbors(
         self,
@@ -2394,7 +2377,10 @@ class Neo4jClient(GraphClient):
             "RETURN node"
         )
         result = self._run_query(cypher_query, brain_id, {"uuids": list(uuids)})
-        return [self._node_from_stored(record.get("node", {})) for record in result.records]
+        return [
+            self._node_from_stored_fields(record.get("node", {}) or {})
+            for record in result.records
+        ]
 
     def list_incident_relationship_uuids(self, uuids: list[str], brain_id: str) -> dict[str, list[str]]:
         result = self._run_query(
