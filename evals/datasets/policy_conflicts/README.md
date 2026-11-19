@@ -25,4 +25,4 @@ Gold pairs are mostly **seeded** (one documented numeric or required/optional mu
 
 ## BrainAPI note
 
-The BrainAPI arm defaults to `POST /retrieve/conflicts/scan`, waits for the job, then `GET /retrieve/conflicts`. Side `source_key` / chunk ids are mapped back to ingested `statement_id` / document ids before scoring. Scan or list failures are recorded as error or skipped and do not fall back to `temporal_conflicts` on `/retrieve/context`. Set `EVAL_CONFLICT_SCAN_PATH=off` to use that sidecar only.
+The BrainAPI arm defaults to `POST /retrieve/conflicts/scan`, waits for the job, then `GET /retrieve/conflicts`. Side `source_key` / chunk ids are mapped back to ingested `statement_id` / document ids before scoring. Scan or list failures are recorded as error or skipped and do not fall back to `temporal_conflicts` on `/retrieve/context`. Sidecar-only mode requires both `EVAL_CONFLICT_SCAN_PATH=off` and `EVAL_CONFLICT_PATH=off`.

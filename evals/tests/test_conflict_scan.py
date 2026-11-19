@@ -228,6 +228,53 @@ class ConflictScanTests(unittest.TestCase):
         self.assertIn(("stmt-c", "stmt-d"), result.conflict_pairs)
         self.assertGreaterEqual(adapter.client.list_conflicts.call_count, 2)
 
+    def test_truncated_pagination_is_an_error(self) -> None:
+        adapter = _scan_adapter()
+
+        def _list(brain_id, **kwargs):
+            skip = int(kwargs.get("skip") or 0)
+            return MagicMock(
+                data={
+                    "conflicts": [_conflict(f"stmt-a{skip}", f"stmt-b{skip}")],
+                    "count": 1,
+                    "total": 10101,
+                },
+                status_code=200,
+            )
+
+        adapter.client.list_conflicts.side_effect = _list
+        result = adapter.query({"task": "conflict_audit", "question": "conflicts?"})
+        self.assertIn("conflict_list_error", result.notes)
+        scored = _score_one(
+            {"task": "conflict_audit"},
+            result,
+            gold_pairs=[("stmt-a", "stmt-b")],
+        )
+        self.assertEqual(scored["scoring"], "conflict_scan_error")
+        self.assertTrue(scored.get("error"))
+
+    def test_ambiguous_alias_is_unmapped_on_finalize(self) -> None:
+        adapter = _scan_adapter(
+            [
+                _conflict(
+                    "hub-a",
+                    "hub-b",
+                    left_key="unknown-left",
+                    right_key="unknown-right",
+                )
+            ]
+        )
+        adapter._remember("stmt-a", "stmt-a")
+        adapter._remember("stmt-b", "stmt-b")
+        adapter._remember("hub-a-chunk", "stmt-a")
+        adapter._remember("hub-b-chunk", "stmt-b")
+        result = adapter.query({"task": "conflict_audit", "question": "conflicts?"})
+        self.assertIn(("stmt-a", "stmt-b"), result.conflict_pairs)
+        adapter._remember("hub-a-chunk", "stmt-other")
+        adapter.finalize_conflict_mappings()
+        self.assertEqual(result.conflict_pairs, [])
+        self.assertIn("conflict_mapping_unsupported", result.notes)
+
     def test_compare_systems_does_not_hide_scan_error(self) -> None:
         result = compare_systems(
             {

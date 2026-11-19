@@ -6,6 +6,15 @@ from typing import Any
 TIMESTAMP_FIELDS = ("source_timestamp", "valid_from", "valid_at")
 
 
+_TIMESTAMP_FORMATS = (
+    "%Y-%m-%d",
+    "%Y/%m/%d",
+    "%d/%m/%Y",
+    "%Y-%m-%dT%H:%M:%S",
+    "%Y-%m-%dT%H:%M:%S.%f",
+)
+
+
 def parse_date(value: str | None) -> date | None:
     raw = (value or "").strip()
     if not raw:
@@ -20,6 +29,20 @@ def parse_date(value: str | None) -> date | None:
         return date.fromisoformat(raw[:10])
     except ValueError:
         return None
+
+
+def parse_timestamp(value: str | None) -> str | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    cleaned = raw[:-1] if raw.endswith("Z") else raw
+    for fmt in _TIMESTAMP_FORMATS:
+        try:
+            datetime.strptime(cleaned, fmt)
+            return raw
+        except ValueError:
+            continue
+    return None
 
 
 def in_force(doc: dict, as_of: str | None) -> bool:
@@ -78,7 +101,7 @@ def require_document_source_timestamp(
             f"{loc}document {doc_id} missing parseable "
             "source_timestamp/valid_from/valid_at"
         )
-    if parse_date(stamp) is None:
+    if parse_timestamp(stamp) is None:
         raise ValueError(
             f"{loc}document {doc_id} has unparseable source timestamp {stamp!r}"
         )

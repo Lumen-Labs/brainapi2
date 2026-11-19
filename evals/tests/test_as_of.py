@@ -35,8 +35,17 @@ class AsOfTests(unittest.TestCase):
             require_document_source_timestamp({"id": "d", "valid_at": "2021-06-15"}),
             "2021-06-15",
         )
+        self.assertEqual(
+            require_document_source_timestamp(
+                {"id": "d", "source_timestamp": "2021-06-15T12:00:00Z"}
+            ),
+            "2021-06-15T12:00:00Z",
+        )
         with self.assertRaises(ValueError):
             require_document_source_timestamp({"id": "d", "valid_from": "0000-00-00"})
+        with self.assertRaises(ValueError) as ctx:
+            require_document_source_timestamp({"id": "d", "valid_from": "2021-06-15xyz"})
+        self.assertIn("unparseable", str(ctx.exception))
 
     def test_versioned_rules_filter_picks_v1_payment(self) -> None:
         docs = load_corpus("versioned_rules")

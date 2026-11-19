@@ -105,7 +105,7 @@ Do **not** hardcode or commit secrets. Staging keys are expected to already exis
 | `EVAL_RERANKER` / `EVAL_CROSS_ENCODER_MODEL` | optional | Default `cross-encoder` (`BAAI/bge-reranker-v2-m3`). `lexical` is smoke-only. |
 | `EVAL_AS_OF_FIELD` | optional | If OpenAPI `GetContextRequestBody` grows an as-of field, set its name (e.g. `as_of`). That native field takes precedence. Until then the adapter sends `include_history=true` for as-of/changelog questions when that flag exists; `include_history` is not a date filter. |
 | `EVAL_CONFLICT_PATH` | optional | GET list path. Default `/retrieve/conflicts`. Never POSTed. |
-| `EVAL_CONFLICT_SCAN_PATH` | optional | POST scan path. Default `/retrieve/conflicts/scan`. Conflict evals scan, wait, then list. Set `off` to disable and use the sidecar only. Failures are error/skipped, not a silent sidecar fallback. |
+| `EVAL_CONFLICT_SCAN_PATH` | optional | POST scan path. Default `/retrieve/conflicts/scan`. Conflict evals scan, wait, then list. Failures are error/skipped, not a silent sidecar fallback. Sidecar-only mode needs both `EVAL_CONFLICT_SCAN_PATH=off` and `EVAL_CONFLICT_PATH=off`; turning off only the scan path still uses scan-then-list because the list path default remains. |
 | `EVAL_CONFLICT_PLUGIN` | optional | Default `temporal_conflicts` (sidecar on `/retrieve/context`) when scan-then-list is disabled. Results are mapped to ingested statement/doc ids before pair F1 is scored. |
 | `EVAL_RUNS_DIR` / `EVAL_SCALE` / `EVAL_BRAIN_PREFIX` | optional | Defaults: `evals/runs`, `local/small-scale`, `evaluc`. |
 

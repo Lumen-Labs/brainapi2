@@ -867,13 +867,13 @@ class BrainAPIAdapter:
             if total is None and len(batch) < limit:
                 break
             if skip > 10000:
-                break
+                return rows, "conflict_list_error", calls
         return rows, None, calls
 
     def _eval_id_from_side(self, side: Any) -> str | None:
         if not isinstance(side, dict):
             text = str(side or "").strip()
-            return self._canonical(text) or (text or None)
+            return text or None
         source = side.get("source") if isinstance(side.get("source"), dict) else {}
         candidates = [
             source.get("source_key"),
@@ -885,24 +885,20 @@ class BrainAPIAdapter:
             side.get("id"),
             *((source.get("chunk_ids") or []) if isinstance(source, dict) else []),
         ]
+        parsed = self._remember_text(str(source.get("text") or side.get("text") or ""))
+        candidates.extend([parsed.get("statement_id"), parsed.get("doc_id")])
+        mapped_alias: str | None = None
+        fallback: str | None = None
         for item in candidates:
             text = str(item or "").strip()
             if not text:
                 continue
-            gold = self._canonical(text)
-            if gold:
-                return gold
-        parsed = self._remember_text(str(source.get("text") or side.get("text") or ""))
-        gold = self._canonical(parsed.get("statement_id")) or self._canonical(
-            parsed.get("doc_id")
-        )
-        if gold:
-            return gold
-        for item in candidates:
-            text = str(item or "").strip()
-            if text:
-                return text
-        return None
+            if fallback is None:
+                fallback = text
+            if self._canonical(text):
+                mapped_alias = text
+                break
+        return mapped_alias or fallback
 
     def _mapped_conflict_pairs(self, raw_pairs: list[tuple[str, str]]) -> dict[str, Any]:
         return remap_conflict_pairs(raw_pairs, self._id_map)

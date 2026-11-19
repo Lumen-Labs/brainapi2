@@ -86,6 +86,16 @@ class DatasetTests(unittest.TestCase):
             }
         )
         self.assertEqual(stamp, "2021-06-15")
+        with self.assertRaises(ValueError) as ctx:
+            require_document_source_timestamp(
+                {
+                    "id": "famr-x",
+                    "text": "hello",
+                    "valid_from": "2021-06-15xyz",
+                },
+                "corpus.jsonl",
+            )
+        self.assertIn("unparseable", str(ctx.exception))
 
     def test_versioned_test_gold_is_in_force_text(self) -> None:
         bundle = load_use_case("versioned_rules")
