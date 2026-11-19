@@ -50,9 +50,11 @@ from src.utils.similarity.vectors import cosine_similarity
 from src.utils.nlp.ner import _entity_extractor
 from src.config import config
 from src.core.verification.facts import (
+    chunk_ids_with_only_rejected_support,
     combined_verification,
     fact_pair_allowed,
     fact_tuple_is_verified,
+    filter_items_with_rejected_support,
     verification_scope,
 )
 from src.services.api.constants.requests import FactVerificationInfo
@@ -468,6 +470,42 @@ async def retrieve_data(
             ],
             preferred_labels=preferred_entities or [],
         )
+        if not include_rejected:
+            chunk_ids = [
+                item.id
+                for item in [*ts_text_chunks, *v_text_chunks]
+                if getattr(item, "id", None)
+            ]
+            resource_ids = [
+                getattr(obs, "resource_id", None)
+                for obs in [*ts_observations, *v_observations]
+            ]
+            citing_ids = [item for item in [*chunk_ids, *resource_ids] if item]
+            citing_nodes, citing_triples = [], []
+            lookup = getattr(graph_adapter, "nodes_and_edges_citing", None)
+            if citing_ids and callable(lookup):
+                try:
+                    found = lookup(brain_id, citing_ids, [])
+                except Exception:
+                    found = ([], [])
+                if isinstance(found, (tuple, list)) and len(found) >= 2:
+                    citing_nodes = found[0] or []
+                    citing_triples = found[1] or []
+            rejected_chunks = chunk_ids_with_only_rejected_support(
+                citing_nodes, citing_triples
+            )
+            ts_text_chunks = filter_items_with_rejected_support(
+                ts_text_chunks, rejected_chunks
+            )
+            v_text_chunks = filter_items_with_rejected_support(
+                v_text_chunks, rejected_chunks
+            )
+            ts_observations = filter_items_with_rejected_support(
+                ts_observations, rejected_chunks
+            )
+            v_observations = filter_items_with_rejected_support(
+                v_observations, rejected_chunks
+            )
         return ts_text_chunks, ts_observations, v_text_chunks, v_observations, nodes
 
     with verification_scope(include_rejected=include_rejected):

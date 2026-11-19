@@ -112,6 +112,8 @@ def _app(brain_id: str = BRAIN_ID) -> FastAPI:
     @app.middleware("http")
     async def inject_brain(request: Request, call_next):
         request.state.brain_id = brain_id
+        request.state.principal = f"brainpat:{brain_id}"
+        request.state.scopes = ["brainapi", "verification"]
         return await call_next(request)
 
     app.include_router(model_router)
@@ -178,9 +180,6 @@ def test_verify_reject_reset_and_retrieval_respect_state():
         assert by_id[ids["made"]]["verification"]["state"] == UNVERIFIED
         assert by_id[ids["targeted"]]["verification"]["state"] == UNVERIFIED
 
-        missing_actor = api.post(f"/model/facts/{ids['made']}/verify", json={})
-        assert missing_actor.status_code == 400
-
         verified = api.post(
             f"/model/facts/{ids['made']}/verify",
             json={
@@ -192,7 +191,7 @@ def test_verify_reject_reset_and_retrieval_respect_state():
         assert verified.status_code == 200, verified.text
         verified_body = verified.json()
         assert verified_body["verification"]["state"] == VERIFIED
-        assert verified_body["verification"]["verified_by"] == "analyst-1"
+        assert verified_body["verification"]["verified_by"] == f"brainpat:{BRAIN_ID}"
         assert verified_body["verification"]["verification_source"] == "doc-1"
         assert len(verified_body["history"]) == 1
         assert verified_body["history"][0]["from_state"] == UNVERIFIED
@@ -317,7 +316,7 @@ def test_verify_reject_reset_and_retrieval_respect_state():
 
         got = api.get(f"/model/facts/{ids['made']}")
         assert got.status_code == 200
-        assert got.json()["verification"]["verified_by"] == "analyst-1"
+        assert got.json()["verification"]["verified_by"] == f"brainpat:{BRAIN_ID}"
 
         reset = api.post(
             f"/model/facts/{ids['made']}/reset",
@@ -329,6 +328,31 @@ def test_verify_reject_reset_and_retrieval_respect_state():
         assert reset_body["verification"]["verified_by"] is None
         assert len(reset_body["history"]) == 2
         assert reset_body["history"][1]["to_state"] == UNVERIFIED
+
+        person_reject = api.post(
+            f"/model/facts/{ids['alice']}/reject",
+            json={"note": "should not hide a person node"},
+        )
+        assert person_reject.status_code == 404
+        alice_row = adapter.get_fact_record(ids["alice"], BRAIN_ID)
+        assert alice_row is None
+        listed_after = api.get("/model/facts", params={"include_rejected": True})
+        listed_after_ids = {item["fact_id"] for item in listed_after.json()["facts"]}
+        assert ids["alice"] not in listed_after_ids
+
+        event_reject = api.post(
+            f"/model/facts/{ids['event']}/reject",
+            json={"note": "event nodes are verifiable facts"},
+        )
+        assert event_reject.status_code == 200, event_reject.text
+        assert event_reject.json()["verification"]["state"] == REJECTED
+        listed_rejected = api.get(
+            "/model/facts", params={"state": "rejected", "include_rejected": True}
+        )
+        listed_rejected_ids = {
+            item["fact_id"] for item in listed_rejected.json()["facts"]
+        }
+        assert ids["event"] in listed_rejected_ids
 
         missing = api.post(
             "/model/facts/does-not-exist/verify",
@@ -372,3 +396,80 @@ def test_new_facts_default_to_unverified():
             pred.get("verification_state", UNVERIFIED) == UNVERIFIED
             for pred in predicates
         )
+
+
+def _app_without_verification(brain_id: str = BRAIN_ID) -> FastAPI:
+    app = FastAPI()
+    install_error_handlers(app)
+
+    @app.middleware("http")
+    async def inject_brain(request: Request, call_next):
+        request.state.brain_id = brain_id
+        request.state.principal = f"brainpat:{brain_id}"
+        request.state.scopes = ["brainapi"]
+        return await call_next(request)
+
+    app.include_router(model_router)
+    app.include_router(retrieve_router)
+    return app
+
+
+def test_verify_rejects_plain_brain_token():
+    from src.core.auth.scopes import VERIFICATION_PERMISSION_DENIED
+
+    client = _memory_graph_client()
+    adapter = _adapter_for(client)
+    ids = _seed_facts(adapter)
+    with _patched_graph_adapter(adapter):
+        api = TestClient(_app_without_verification())
+        listed = api.get("/model/facts")
+        assert listed.status_code == 200
+        denied = api.post(
+            f"/model/facts/{ids['made']}/verify",
+            json={"verification_source": "doc-1"},
+        )
+        assert denied.status_code == 403
+        body = denied.json()
+        assert body["error"]["code"] == VERIFICATION_PERMISSION_DENIED
+        row = adapter.get_fact_record(ids["made"], BRAIN_ID)
+        assert (row.get("properties") or {}).get("verification_state", UNVERIFIED) == UNVERIFIED
+
+
+def test_concurrent_verification_appends_history():
+    from src.core.verification.service import apply_verification_action
+
+    client = _memory_graph_client()
+    adapter = _adapter_for(client)
+    ids = _seed_facts(adapter)
+    barrier = threading.Barrier(2)
+    errors = []
+
+    def _reject(note):
+        try:
+            barrier.wait()
+            apply_verification_action(
+                adapter,
+                fact_id=ids["made"],
+                brain_id=BRAIN_ID,
+                action="reject",
+                actor=f"brainpat:{note}",
+                note=note,
+            )
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=_reject, args=("one",)),
+        threading.Thread(target=_reject, args=("two",)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert not errors
+    row = adapter.get_fact_record(ids["made"], BRAIN_ID)
+    from src.core.verification.facts import parse_history
+
+    history = parse_history((row.get("properties") or {}).get("verification_history"))
+    assert len(history) == 2
+    assert {entry.note for entry in history} == {"one", "two"}

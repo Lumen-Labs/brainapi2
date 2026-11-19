@@ -2,6 +2,17 @@
 
 Verification is orthogonal to temporal validity. Do not read or write
 valid_from, valid_to, superseded_by, invalid_at, or other temporal fields here.
+
+Rejected-content filtering (default `include_rejected=false`):
+
+- Filtered: graph retrieve/search/traverse, event-centric neighbors, MCP
+  `search_memory` rows whose serialized graph entities have
+  `verification_state=rejected`, and chunk/observation hits whose *only*
+  graph support (via `source_chunk_ids` / `resource_id`) is rejected facts.
+- Not filtered: raw `search_memory` aggregations with no graph entities in
+  the row, chunks/observations that cite no graph facts, and vector hits
+  whose metadata has no resolvable source chunk. Pass `include_rejected=true`
+  to keep rejected support and leave verification fields visible.
 """
 
 from __future__ import annotations
@@ -109,6 +120,10 @@ def normalize_state(value: Any) -> VerificationState:
     return UNVERIFIED
 
 
+def node_is_verifiable_event(labels: Any) -> bool:
+    return any(str(label).strip().upper() == "EVENT" for label in (labels or []))
+
+
 def _property_map(raw: Any) -> dict[str, Any]:
     if isinstance(raw, dict):
         return dict(raw)
@@ -129,8 +144,10 @@ def _mapping(entity: Any) -> dict[str, Any]:
     props = _property_map(getattr(entity, "properties", None))
     merged = dict(props)
     for key in VERIFICATION_PROPERTY_FIELDS + ("uuid", "name", "description"):
+        if merged.get(key) not in (None, ""):
+            continue
         value = getattr(entity, key, None)
-        if value is not None and key not in merged:
+        if value is not None:
             merged[key] = value
     return merged
 
@@ -253,6 +270,29 @@ def serialize_history(history: Sequence[FactHistoryEntry]) -> list[str]:
         json.dumps(entry.model_dump(mode="json"), separators=(",", ":"))
         for entry in history
     ]
+
+
+def coerce_history_entry(entry: Any) -> FactHistoryEntry | None:
+    if entry is None or entry == "":
+        return None
+    if isinstance(entry, FactHistoryEntry):
+        return entry
+    if isinstance(entry, str):
+        try:
+            entry = json.loads(entry)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+    if isinstance(entry, dict):
+        parsed = parse_history([entry])
+        return parsed[0] if parsed else None
+    return None
+
+
+def serialize_history_entry(entry: Any) -> str | None:
+    coerced = coerce_history_entry(entry)
+    if coerced is None:
+        return None
+    return serialize_history([coerced])[0]
 
 
 def append_history_entry(
@@ -427,3 +467,144 @@ def _optional_str(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _record_mapping(record: Any) -> Any:
+    if record is None:
+        return None
+    if isinstance(record, dict):
+        return record
+    data = getattr(record, "data", None)
+    if callable(data):
+        try:
+            return data()
+        except Exception:
+            pass
+    try:
+        return dict(record)
+    except Exception:
+        return record
+
+
+def mapping_contains_rejected(value: Any) -> bool:
+    if value is None or include_rejected_enabled():
+        return False
+    if isinstance(value, dict):
+        if normalize_state(value.get(STATE_FIELD)) == REJECTED:
+            return True
+        nested = value.get("properties")
+        if isinstance(nested, dict) and normalize_state(nested.get(STATE_FIELD)) == REJECTED:
+            return True
+        return any(mapping_contains_rejected(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(mapping_contains_rejected(item) for item in value)
+    return entity_is_rejected(value) if not isinstance(value, (str, bytes, int, float, bool)) else False
+
+
+class _FilteredRawResult:
+    def __init__(self, records: list[Any], keys: Any, truncated: bool):
+        self.records = records
+        self._keys = keys
+        self.truncated = truncated
+
+    def keys(self):
+        keys = self._keys
+        if callable(keys):
+            return keys()
+        if keys is None:
+            return []
+        return keys
+
+
+def filter_raw_operation_result(result: Any, *, include_rejected: bool = False) -> Any:
+    if include_rejected or result is None:
+        return result
+    if hasattr(result, "records"):
+        kept = [
+            record
+            for record in (result.records or [])
+            if not mapping_contains_rejected(_record_mapping(record))
+        ]
+        keys = getattr(result, "keys", None)
+        truncated = bool(getattr(result, "truncated", False))
+        return _FilteredRawResult(kept, keys, truncated)
+    if isinstance(result, list):
+        return [row for row in result if not mapping_contains_rejected(row)]
+    if isinstance(result, dict):
+        records = result.get("records")
+        if isinstance(records, list):
+            filtered = dict(result)
+            filtered["records"] = [
+                row for row in records if not mapping_contains_rejected(row)
+            ]
+            return filtered
+        if mapping_contains_rejected(result):
+            return {}
+    return result
+
+
+def _chunk_ids_from_entity(entity: Any) -> list[str]:
+    data = _mapping(entity)
+    ids: list[str] = []
+    for value in list(data.get("source_chunk_ids") or []) + [data.get("source_chunk_id")]:
+        chunk_id = str(value).strip() if value not in (None, "") else ""
+        if chunk_id:
+            ids.append(chunk_id)
+    return ids
+
+
+def chunk_ids_with_only_rejected_support(
+    nodes: Sequence[Any] | None,
+    triples: Sequence[Any] | None,
+) -> set[str]:
+    support: dict[str, list[bool]] = {}
+    for node in nodes or []:
+        rejected = entity_is_rejected(node)
+        for chunk_id in _chunk_ids_from_entity(node):
+            support.setdefault(chunk_id, []).append(rejected)
+    for triple in triples or []:
+        parts = triple if isinstance(triple, (list, tuple)) else (triple,)
+        rejected = fact_tuple_is_rejected(*parts)
+        chunk_ids: list[str] = []
+        for part in parts:
+            chunk_ids.extend(_chunk_ids_from_entity(part))
+        for chunk_id in chunk_ids:
+            support.setdefault(chunk_id, []).append(rejected)
+    return {
+        chunk_id
+        for chunk_id, flags in support.items()
+        if flags and all(flags)
+    }
+
+
+def resource_id_of(item: Any) -> str | None:
+    if item is None:
+        return None
+    if isinstance(item, dict):
+        value = item.get("resource_id") or item.get("id")
+    else:
+        value = getattr(item, "resource_id", None) or getattr(item, "id", None)
+    text = str(value).strip() if value not in (None, "") else ""
+    return text or None
+
+
+def filter_items_with_rejected_support(
+    items: Sequence[Any],
+    rejected_chunk_ids: set[str],
+) -> list[Any]:
+    if include_rejected_enabled() or not rejected_chunk_ids:
+        return list(items)
+    kept: list[Any] = []
+    for item in items:
+        resource_id = resource_id_of(item)
+        if resource_id and resource_id in rejected_chunk_ids:
+            continue
+        metadata = None
+        if isinstance(item, dict):
+            metadata = item.get("metadata")
+        else:
+            metadata = getattr(item, "metadata", None)
+        if isinstance(metadata, dict) and normalize_state(metadata.get(STATE_FIELD)) == REJECTED:
+            continue
+        kept.append(item)
+    return kept

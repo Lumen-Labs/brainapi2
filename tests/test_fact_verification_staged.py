@@ -100,6 +100,7 @@ def test_set_fact_verification_does_not_touch_live_store_until_replay():
         "brain",
         kind="relationship",
         properties=properties,
+        history_entry=None,
     )
 
 

@@ -515,6 +515,7 @@ class GraphClient(ABC):
         *,
         kind: Literal["relationship", "node"],
         properties: dict,
+        history_entry: object | None = None,
     ) -> Optional[dict]:
         """Write verification properties onto a fact relationship or node."""
         raise NotImplementedError("set_fact_verification method not implemented")

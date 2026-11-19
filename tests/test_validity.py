@@ -827,6 +827,7 @@ class AsOfRetrieveTests(unittest.IsolatedAsyncioTestCase):
         )
         mock_data.get_text_chunks_by_ids.return_value = ([], [])
         mock_graph = MagicMock()
+        mock_graph.nodes_and_edges_citing.return_value = ([], [])
         mock_graph.get_nodes_by_uuid.return_value = [
             {
                 "node": Node(uuid="org", name="Org", labels=["ORG"]),

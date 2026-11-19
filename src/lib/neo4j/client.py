@@ -355,8 +355,15 @@ class Neo4jClient(GraphClient):
         ):
             if props.get(key) not in (None, "", []) and key not in extra:
                 extra[key] = self._neo4j_property_value(props[key])
+        from src.core.verification.facts import VERIFICATION_PROPERTY_FIELDS
+
         for key, value in props.items():
-            if key in extra or key == "uuid" or value in (None, "", {}, []):
+            if (
+                key in extra
+                or key == "uuid"
+                or key in VERIFICATION_PROPERTY_FIELDS
+                or value in (None, "", {}, [])
+            ):
                 continue
             extra[self._clean_property_key(key)] = self._neo4j_property_value(value)
         return extra
@@ -512,7 +519,14 @@ class Neo4jClient(GraphClient):
                     list_props[static_property_key(key)] = self._bind_property_value(
                         value
                     )
-                elif cleaned_key == "uuid":
+                elif cleaned_key == "uuid" or key in {
+                    "verification_state",
+                    "verified_by",
+                    "verified_at",
+                    "verification_source",
+                    "verification_note",
+                    "verification_history",
+                }:
                     continue
                 else:
                     regular_props[cleaned_key] = self._bind_property_value(value)
@@ -620,6 +634,10 @@ class Neo4jClient(GraphClient):
                 )
         extra_props.update(self._relationship_property_primitives(predicate.properties))
         extra_props.pop("uuid", None)
+        from src.core.verification.facts import VERIFICATION_PROPERTY_FIELDS
+
+        for key in VERIFICATION_PROPERTY_FIELDS:
+            extra_props.pop(key, None)
 
         rel_type = self._quoted_rel_type(predicate.name)
         params = {
@@ -2803,6 +2821,7 @@ class Neo4jClient(GraphClient):
         node_query = (
             "MATCH (n)\n"
             "WHERE n['uuid'] = $uuid\n"
+            "AND any(label IN labels(n) WHERE toUpper(label) = 'EVENT')\n"
             "RETURN 'node' AS kind,\n"
             "       n['uuid'] AS uuid,\n"
             "       n['name'] AS name,\n"
@@ -2833,7 +2852,11 @@ class Neo4jClient(GraphClient):
         *,
         kind: Literal["relationship", "node"],
         properties: dict,
+        history_entry: object | None = None,
     ) -> Optional[dict]:
+        from src.core.verification.facts import serialize_history_entry
+
+        appended = serialize_history_entry(history_entry)
         params = {
             "uuid": fact_id,
             "verification_state": properties.get("verification_state"),
@@ -2841,17 +2864,25 @@ class Neo4jClient(GraphClient):
             "verified_at": properties.get("verified_at"),
             "verification_source": properties.get("verification_source"),
             "verification_note": properties.get("verification_note"),
+            "history_entry": appended,
             "verification_history": self._bind_property_value(
                 properties.get("verification_history") or []
             ),
         }
+        if appended:
+            history_set = (
+                "    t['verification_history'] = coalesce(t['verification_history'], []) "
+                "+ [$history_entry]"
+            )
+        else:
+            history_set = "    t['verification_history'] = $verification_history"
         set_clause = (
             "SET t['verification_state'] = $verification_state,\n"
             "    t['verified_by'] = $verified_by,\n"
             "    t['verified_at'] = $verified_at,\n"
             "    t['verification_source'] = $verification_source,\n"
             "    t['verification_note'] = $verification_note,\n"
-            "    t['verification_history'] = $verification_history"
+            + history_set
         )
         if kind == "relationship":
             cypher_query = (
@@ -2862,6 +2893,7 @@ class Neo4jClient(GraphClient):
         else:
             cypher_query = (
                 "MATCH (t) WHERE t['uuid'] = $uuid\n"
+                "AND any(label IN labels(t) WHERE toUpper(label) = 'EVENT')\n"
                 + set_clause
                 + "\nRETURN t['uuid'] AS uuid"
             )
@@ -2904,7 +2936,7 @@ class Neo4jClient(GraphClient):
             "       [] AS labels\n"
             "UNION ALL\n"
             "MATCH (n)\n"
-            "WHERE 'EVENT' IN labels(n)\n"
+            "WHERE any(label IN labels(n) WHERE toUpper(label) = 'EVENT')\n"
             "AND ($state IS NULL OR coalesce(n['verification_state'], 'unverified') = $state)\n"
             "AND ($include_rejected OR coalesce(n['verification_state'], 'unverified') <> 'rejected')\n"
             "RETURN 'node' AS kind,\n"

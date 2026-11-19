@@ -9,9 +9,10 @@ from src.core.verification.facts import (
     UNVERIFIED,
     VERIFIED,
     VERIFICATION_STATES,
+    FactHistoryEntry,
     FactRecord,
     VerificationState,
-    append_history_entry,
+    node_is_verifiable_event,
     normalize_state,
     record_from_graph_row,
     utc_now_iso,
@@ -46,6 +47,7 @@ def apply_verification_action(
     fact_id: str,
     brain_id: str,
     action: VerificationAction,
+    actor: str | None = None,
     verified_by: str | None = None,
     verification_source: str | None = None,
     note: str | None = None,
@@ -54,20 +56,21 @@ def apply_verification_action(
     if not fact_id:
         raise HTTPException(status_code=400, detail="fact_id is required")
 
+    principal = (actor or verified_by or "").strip() or None
     target_state: VerificationState
     if action == "verify":
         target_state = VERIFIED
-        if not (verified_by or "").strip():
+        if not principal:
             raise HTTPException(
                 status_code=400,
-                detail="verified_by is required when verifying a fact",
+                detail="authenticated principal is required when verifying a fact",
             )
     elif action == "reject":
         target_state = REJECTED
-        if not (verified_by or "").strip():
+        if not principal:
             raise HTTPException(
                 status_code=400,
-                detail="verified_by is required when rejecting a fact",
+                detail="authenticated principal is required when rejecting a fact",
             )
     elif action == "reset":
         target_state = UNVERIFIED
@@ -79,36 +82,39 @@ def apply_verification_action(
         raise FactNotFound(fact_id)
 
     current_record = record_from_graph_row(current)
-    actor = (verified_by or "").strip() or None
+    if current_record.kind == "node" and not node_is_verifiable_event(
+        current_record.labels
+    ):
+        raise FactNotFound(fact_id)
     source = (verification_source or "").strip() or None
     comment = (note or "").strip() or None
-    verified_at = utc_now_iso() if target_state != UNVERIFIED else None
+    verified_at = utc_now_iso()
     if action == "reset":
-        actor = actor or current_record.verification.verified_by
-        verified_at = utc_now_iso()
+        principal = principal or current_record.verification.verified_by
 
-    history = append_history_entry(
-        current_record.history,
+    history_entry = FactHistoryEntry(
         from_state=current_record.verification.state,
         to_state=target_state,
-        verified_by=actor,
-        verified_at=verified_at or utc_now_iso(),
+        verified_by=principal,
+        verified_at=verified_at,
         verification_source=source,
         note=comment,
     )
     properties = verification_write_properties(
         state=target_state,
-        verified_by=None if target_state == UNVERIFIED else actor,
+        verified_by=None if target_state == UNVERIFIED else principal,
         verified_at=None if target_state == UNVERIFIED else verified_at,
         verification_source=None if target_state == UNVERIFIED else source,
         note=None if target_state == UNVERIFIED else comment,
-        history=history,
+        history=[],
     )
+    properties.pop("verification_history", None)
     updated = graph.set_fact_verification(
         fact_id,
         brain_id,
         kind=current_record.kind,
         properties=properties,
+        history_entry=history_entry,
     )
     if updated is None:
         raise FactNotFound(fact_id)

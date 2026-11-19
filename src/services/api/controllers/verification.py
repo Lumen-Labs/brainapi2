@@ -49,6 +49,7 @@ async def mutate_fact_verification(
     brain_id: str,
     action: VerificationAction,
     request: VerifyFactRequest,
+    actor: str,
 ) -> FactVerificationRecord:
     try:
         record = await asyncio.to_thread(
@@ -57,7 +58,7 @@ async def mutate_fact_verification(
             fact_id=fact_id,
             brain_id=brain_id,
             action=action,
-            verified_by=request.verified_by,
+            actor=actor,
             verification_source=request.verification_source,
             note=request.note,
         )

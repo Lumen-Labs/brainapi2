@@ -255,6 +255,7 @@ def test_as_of_v1_v2_v3_regulation_and_changes_window():
         mock_vs.search_data.return_value = []
         mock_vs.search_triplets.return_value = []
         mock_graph = MagicMock()
+        mock_graph.nodes_and_edges_citing.return_value = ([], [])
         mock_graph.get_nodes_by_uuid.return_value = []
 
         async def _retrieve(as_of=None):

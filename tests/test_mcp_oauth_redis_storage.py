@@ -60,16 +60,24 @@ class FakeRedis:
         return True
 
 
-def make_provider(redis_client, pat_verifier=lambda _pat: False):
+def make_provider(
+    redis_client,
+    pat_verifier=lambda _pat: False,
+    valid_scopes=None,
+    default_scopes=None,
+    pat_scope_resolver=None,
+):
     return BrainapiMcpOAuthProvider(
         issuer_url="https://brainapi.example",
         resource_server_url="https://brainapi.example/mcp",
-        valid_scopes=["brainapi"],
+        valid_scopes=valid_scopes or ["brainapi"],
+        default_scopes=default_scopes,
         access_token_ttl_seconds=3600,
         refresh_token_ttl_seconds=7200,
         auth_code_ttl_seconds=600,
         redis_client=redis_client,
         pat_verifier=pat_verifier,
+        pat_scope_resolver=pat_scope_resolver,
     )
 
 
@@ -149,6 +157,40 @@ class BrainapiMcpOAuthProviderRedisTests(unittest.TestCase):
         self.assertEqual(access_token.token, "brain-pat")
         self.assertEqual(access_token.client_id, "brainpat")
         self.assertEqual(access_token.scopes, ["brainapi"])
+
+    def test_raw_pat_does_not_receive_verification_scope_by_default(self):
+        provider = make_provider(
+            FakeRedis(),
+            pat_verifier=lambda pat: pat == "brain-pat",
+            valid_scopes=["brainapi", "verification"],
+            default_scopes=["brainapi"],
+        )
+        access_token = asyncio.run(provider.load_access_token("brain-pat"))
+        self.assertIsNotNone(access_token)
+        self.assertEqual(access_token.scopes, ["brainapi"])
+        self.assertNotIn("verification", access_token.scopes)
+
+    def test_authorize_without_requested_scopes_uses_defaults(self):
+        provider = make_provider(
+            FakeRedis(),
+            valid_scopes=["brainapi", "verification"],
+            default_scopes=["brainapi"],
+        )
+        client = OAuthClientInformationFull(
+            client_id="client-1",
+            redirect_uris=[AnyUrl("https://claude.ai/api/mcp/auth_callback")],
+        )
+        params = AuthorizationParams(
+            state="state",
+            scopes=None,
+            code_challenge="challenge",
+            redirect_uri=AnyUrl("https://claude.ai/api/mcp/auth_callback"),
+            redirect_uri_provided_explicitly=True,
+            resource="https://brainapi.example/mcp",
+        )
+        url = asyncio.run(provider.authorize(client, params))
+        query = parse_qs(urlparse(url).query)
+        self.assertEqual(query["scope"], ["brainapi"])
 
     def test_invalid_pat_is_not_accepted_as_bearer_token(self):
         provider = make_provider(FakeRedis(), pat_verifier=lambda _pat: False)

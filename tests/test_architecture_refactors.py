@@ -392,6 +392,11 @@ class RetrieveControllerVectorSearchTests(unittest.IsolatedAsyncioTestCase):
                 "src.services.api.controllers.retrieve.graph_adapter.get_nodes_by_uuid",
                 return_value=[],
             ),
+            patch(
+                "src.services.api.controllers.retrieve.graph_adapter.nodes_and_edges_citing",
+                return_value=([], []),
+                create=True,
+            ),
         ):
             response = await retrieve_data(
                 text="sample",

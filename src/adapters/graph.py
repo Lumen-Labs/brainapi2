@@ -1035,7 +1035,16 @@ class GraphAdapter:
         *,
         kind: Literal["relationship", "node"],
         properties: dict,
+        history_entry=None,
     ) -> dict | None:
+        entry_payload = None
+        if history_entry is not None:
+            if hasattr(history_entry, "model_dump"):
+                entry_payload = history_entry.model_dump(mode="json")
+            elif isinstance(history_entry, dict):
+                entry_payload = dict(history_entry)
+            else:
+                entry_payload = history_entry
         if capture_operation(
             brain_id,
             {
@@ -1045,15 +1054,19 @@ class GraphAdapter:
                     "fact_id": fact_id,
                     "kind": kind,
                     "properties": properties,
+                    "history_entry": entry_payload,
                 },
             },
         ):
+            captured = dict(properties or {})
+            if entry_payload is not None:
+                captured.setdefault("verification_history", [])
             return {
                 "kind": kind,
                 "uuid": fact_id,
                 "name": "",
                 "description": "",
-                "properties": dict(properties or {}),
+                "properties": captured,
                 "subject_uuid": None,
                 "subject_name": None,
                 "subject_labels": [],
@@ -1063,7 +1076,11 @@ class GraphAdapter:
                 "labels": [],
             }
         return self.graph.set_fact_verification(
-            fact_id, brain_id, kind=kind, properties=properties
+            fact_id,
+            brain_id,
+            kind=kind,
+            properties=properties,
+            history_entry=history_entry,
         )
 
     def list_facts_by_verification(
