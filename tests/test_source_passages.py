@@ -723,6 +723,58 @@ class CurrentFactTests(unittest.TestCase):
         )
         self.assertEqual(loaded, ["[superseded] same body"])
 
+    def test_prior_revision_uses_newest_copy_of_pinned_original_body(self):
+        first = TextChunk(
+            id="old",
+            text="same body",
+            metadata={
+                "source_key": "src-1",
+                "superseded_at": "2026-11-16T10:00:00",
+            },
+        )
+        other = TextChunk(
+            id="other",
+            text="other body",
+            metadata={
+                "source_key": "src-1",
+                "superseded_at": "2026-11-16T11:00:00",
+            },
+        )
+        newer = TextChunk(
+            id="newer",
+            text="same body",
+            metadata={
+                "source_key": "src-1",
+                "superseded_at": "2026-11-16T12:00:00",
+                "embeddings": [1.0, 0.0],
+            },
+        )
+        live = TextChunk(id="new", text="live", metadata={"source_key": "src-1"})
+        store = _Store([first, other, newer, live])
+        calls: list[str] = []
+
+        def embed(text: str) -> list[float]:
+            calls.append(text)
+            return [0.0, 1.0]
+
+        loaded = prior_revision_texts(
+            store,
+            "brain",
+            [("new", 0.2, live.text)],
+            limit=1,
+            query_vector=[1.0, 0.0],
+            embed=embed,
+        )
+        by_recency = prior_revision_texts(
+            store,
+            "brain",
+            [("new", 0.2, live.text)],
+            limit=1,
+        )
+        self.assertNotIn("[superseded] same body", calls)
+        self.assertEqual(loaded, ["[superseded] same body"])
+        self.assertEqual(by_recency, ["[superseded] same body"])
+
 
 class _Record:
     def __init__(self, data: dict, inserted_at=None):

@@ -535,20 +535,33 @@ def _select_revision_candidates(
 ) -> list[tuple[tuple[float, str], str, str, list[float] | None, str]]:
     if embed_cap <= 0 or not collected:
         return []
-    earliest_by_key: dict[str, tuple[tuple[float, str], str, str, list[float] | None, str]] = {}
+    newest_of_body: dict[str, tuple[tuple[float, str], str, str, list[float] | None, str]] = {}
+    earliest_when: dict[str, tuple[float, str]] = {}
+    earliest_body_by_key: dict[str, str] = {}
     for item in collected:
-        key = item[4]
-        current = earliest_by_key.get(key)
-        if current is None or item[0] < current[0]:
-            earliest_by_key[key] = item
-    newest_first = sorted(collected, key=lambda item: item[0], reverse=True)
-    selected: list[tuple[tuple[float, str], str, str, list[float] | None, str]] = []
-    seen: set[str] = set()
-    for item in list(earliest_by_key.values()) + newest_first:
         body = item[2]
+        current = newest_of_body.get(body)
+        if current is None or item[0] > current[0]:
+            newest_of_body[body] = item
+        key = item[4]
+        if key not in earliest_when or item[0] < earliest_when[key]:
+            earliest_when[key] = item[0]
+            earliest_body_by_key[key] = body
+    pinned: list[tuple[tuple[float, str], str, str, list[float] | None, str]] = []
+    seen: set[str] = set()
+    for body in earliest_body_by_key.values():
         if body in seen:
             continue
         seen.add(body)
+        pinned.append(newest_of_body[body])
+    newest_first = sorted(newest_of_body.values(), key=lambda item: item[0], reverse=True)
+    selected: list[tuple[tuple[float, str], str, str, list[float] | None, str]] = []
+    selected_bodies: set[str] = set()
+    for item in pinned + newest_first:
+        body = item[2]
+        if body in selected_bodies:
+            continue
+        selected_bodies.add(body)
         selected.append(item)
         if len(selected) >= embed_cap:
             break
