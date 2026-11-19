@@ -429,15 +429,19 @@ async def list_brains() -> list[str] | str:
     return await asyncio.to_thread(_list_brains_sync)
 
 
-def _require_verification_actor() -> str | None:
+def _current_principal_and_scopes() -> tuple[str | None, tuple[str, ...] | list[str]]:
     scopes = auth_scopes_var.get()
-    if scopes is None:
-        _principal, scopes = resolve_token_identity(auth_token_var.get())
-        principal = _principal
-    else:
-        principal = auth_principal_var.get()
-        if not principal:
-            principal, _resolved = resolve_token_identity(auth_token_var.get())
+    principal = auth_principal_var.get()
+    if scopes is None or not principal:
+        resolved_principal, resolved_scopes = resolve_token_identity(auth_token_var.get())
+        principal = principal or resolved_principal
+        if scopes is None:
+            scopes = resolved_scopes
+    return principal, scopes or ()
+
+
+def _require_verification_actor() -> str | None:
+    principal, scopes = _current_principal_and_scopes()
     if not has_verification_scope(scopes):
         return None
     return principal
@@ -863,6 +867,7 @@ def _resolve_conflict_sync(
     notes: str,
     method: str,
 ) -> Any:
+    principal, scopes = _current_principal_and_scopes()
     result = resolve_conflict_tool(
         data_adapter,
         brain_id,
@@ -872,6 +877,8 @@ def _resolve_conflict_sync(
         notes=notes or None,
         method=method or "manual",
         graph=graph_adapter,
+        actor=principal,
+        has_verification=has_verification_scope(scopes),
     )
     if isinstance(result, str):
         return result

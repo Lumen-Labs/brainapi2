@@ -3,11 +3,13 @@ from __future__ import annotations
 from typing import Any
 
 from src.core.saving.conflict_report import build_report
+from src.core.auth.scopes import VERIFICATION_PERMISSION_DENIED
 from src.core.saving.conflicts import (
+    VerificationPermissionDenied,
     dismiss_conflict,
     get_conflict,
     list_conflicts,
-    resolve_conflict,
+    resolve_conflict_authorized,
 )
 from src.core.saving.validity import InvalidAsOf, optional_instant
 from src.services.mcp.versions import clamp_page
@@ -100,21 +102,31 @@ def resolve_conflict_tool(
     notes: str | None = None,
     method: str = "manual",
     graph: Any | None = None,
+    actor: str | None = None,
+    has_verification: bool = False,
 ) -> dict[str, Any] | str:
-    if not authorized:
-        return "Unauthorized"
     if not str(conflict_id or "").strip():
         return "Error: conflict id is required"
     try:
-        conflict = resolve_conflict(
+        conflict = resolve_conflict_authorized(
             adapter,
             brain_id,
             str(conflict_id).strip(),
+            authorized=authorized,
+            actor=actor,
+            has_verification=has_verification,
             winning_fact_id=winning_fact_id or None,
             notes=notes or None,
             method=method or "manual",
             graph=graph,
         )
+    except VerificationPermissionDenied:
+        return (
+            f"Error: {VERIFICATION_PERMISSION_DENIED}: "
+            "verification scope is required"
+        )
+    except PermissionError:
+        return "Unauthorized"
     except KeyError:
         return "Error: conflict not found"
     except ValueError as exc:

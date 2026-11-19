@@ -11,11 +11,13 @@ from starlette.responses import JSONResponse, PlainTextResponse
 
 from src.core.saving.conflict_report import build_report
 from src.core.saving.conflicts import (
+    VerificationPermissionDenied,
     dismiss_conflict,
     get_conflict,
     list_conflicts,
-    resolve_conflict,
+    resolve_conflict_authorized,
 )
+from src.services.api.dependencies import verification_denied_exception
 from src.core.saving.validity import InvalidAsOf, optional_instant
 from src.services.data.main import data_adapter
 from src.services.kg_agent.main import graph_adapter
@@ -93,18 +95,25 @@ async def resolve_conflict_by_id(
     winning_fact_id: Optional[str] = None,
     notes: Optional[str] = None,
     method: str = "manual",
+    actor: Optional[str] = None,
+    has_verification: bool = False,
 ):
     def _resolve():
         try:
-            return resolve_conflict(
+            return resolve_conflict_authorized(
                 data_adapter,
                 brain_id,
                 id,
+                authorized=True,
+                actor=actor,
+                has_verification=has_verification,
                 winning_fact_id=winning_fact_id,
                 notes=notes,
                 method=method,
                 graph=graph_adapter,
             )
+        except VerificationPermissionDenied:
+            raise verification_denied_exception()
         except KeyError:
             raise HTTPException(status_code=404, detail="Conflict not found")
         except ValueError as exc:

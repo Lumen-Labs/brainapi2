@@ -355,17 +355,21 @@ class Neo4jClient(GraphClient):
         ):
             if props.get(key) not in (None, "", []) and key not in extra:
                 extra[key] = self._neo4j_property_value(props[key])
-        from src.core.verification.facts import VERIFICATION_PROPERTY_FIELDS
+        from src.core.verification.facts import is_reserved_verification_key
 
         for key, value in props.items():
+            cleaned = self._clean_property_key(key)
             if (
                 key in extra
+                or cleaned in extra
                 or key == "uuid"
-                or key in VERIFICATION_PROPERTY_FIELDS
+                or cleaned == "uuid"
+                or is_reserved_verification_key(key)
+                or is_reserved_verification_key(cleaned)
                 or value in (None, "", {}, [])
             ):
                 continue
-            extra[self._clean_property_key(key)] = self._neo4j_property_value(value)
+            extra[cleaned] = self._neo4j_property_value(value)
         return extra
 
     def _python_value(self, value: Any) -> Any:
@@ -451,6 +455,8 @@ class Neo4jClient(GraphClient):
         Returns:
             list[Node]: A list of Node objects representing the added nodes. Each returned Node preserves the original node fields and has its metadata set to the merge of the node's own metadata and the provided `metadata`.
         """
+        from src.core.verification.facts import is_reserved_verification_key
+
         results = []
         added_nodes: list[Node] = []
         last_invalid: InvalidCypherIdentifier | None = None
@@ -519,14 +525,11 @@ class Neo4jClient(GraphClient):
                     list_props[static_property_key(key)] = self._bind_property_value(
                         value
                     )
-                elif cleaned_key == "uuid" or key in {
-                    "verification_state",
-                    "verified_by",
-                    "verified_at",
-                    "verification_source",
-                    "verification_note",
-                    "verification_history",
-                }:
+                elif (
+                    cleaned_key == "uuid"
+                    or is_reserved_verification_key(key)
+                    or is_reserved_verification_key(cleaned_key)
+                ):
                     continue
                 else:
                     regular_props[cleaned_key] = self._bind_property_value(value)
@@ -2272,6 +2275,14 @@ class Neo4jClient(GraphClient):
             """
             MATCH (n)
             WHERE any(cid IN coalesce(n.source_chunk_ids, []) WHERE cid IN $chunk_ids)
+               OR (
+                   n.properties IS :: MAP
+                   AND any(cid IN coalesce(n.properties.source_chunk_ids, []) WHERE cid IN $chunk_ids)
+               )
+               OR (
+                   n.properties IS :: STRING
+                   AND any(cid IN $chunk_ids WHERE n.properties CONTAINS ('"' + cid + '"'))
+               )
             RETURN n['uuid'] AS uuid, n['name'] AS name, labels(n) AS labels,
                    n['description'] AS description, properties(n) AS properties
             """,
@@ -2294,7 +2305,14 @@ class Neo4jClient(GraphClient):
             MATCH (a)-[r]->(b)
             WHERE r.uuid IN $edge_uuids
                OR any(cid IN coalesce(r.source_chunk_ids, []) WHERE cid IN $chunk_ids)
-               OR any(cid IN coalesce(r.properties.source_chunk_ids, []) WHERE cid IN $chunk_ids)
+               OR (
+                   r.properties IS :: MAP
+                   AND any(cid IN coalesce(r.properties.source_chunk_ids, []) WHERE cid IN $chunk_ids)
+               )
+               OR (
+                   r.properties IS :: STRING
+                   AND any(cid IN $chunk_ids WHERE r.properties CONTAINS ('"' + cid + '"'))
+               )
             RETURN a['uuid'] AS tail, b['uuid'] AS tip, type(r) AS rel_type,
                    r['description'] AS description, properties(r) AS properties
             """,

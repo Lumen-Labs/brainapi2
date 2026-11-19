@@ -124,6 +124,32 @@ class StructuredErrorTests(unittest.TestCase):
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.json()["error"]["code"], "AUTH_INVALID")
 
+    def test_pat_store_failure_is_structured_service_unavailable(self):
+        app = FastAPI()
+        install_error_handlers(app)
+        app.add_middleware(BrainPATMiddleware)
+
+        @app.middleware("http")
+        async def inject_brain(request, call_next):
+            request.state.brain_id = "validbrain"
+            return await call_next(request)
+
+        @app.get("/protected")
+        async def protected():
+            return {"ok": True}
+
+        with patch.dict(os.environ, {"BRAINPAT_TOKEN": "system-token"}), patch(
+            "src.services.api.middlewares.auth.cache_adapter.get",
+            side_effect=ConnectionError("mongo secret"),
+        ):
+            response = TestClient(app).get(
+                "/protected",
+                headers={"BrainPAT": "user-token"},
+            )
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["error"]["code"], "SERVICE_UNAVAILABLE")
+        self.assertNotIn("mongo secret", response.text)
+
     def test_brain_middleware_validates_before_backing_store_access(self):
         app = FastAPI()
         install_error_handlers(app)

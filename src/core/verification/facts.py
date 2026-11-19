@@ -8,10 +8,13 @@ Rejected-content filtering (default `include_rejected=false`):
 - Filtered: graph retrieve/search/traverse, event-centric neighbors, MCP
   `search_memory` rows whose serialized graph entities have
   `verification_state=rejected`, and chunk/observation hits whose *only*
-  graph support (via `source_chunk_ids` / `resource_id`) is rejected facts.
+  graph support (via `source_chunk_ids` / `resource_id`) is rejected
+  *verifiable* facts — EVENT nodes or relationships. Ordinary PERSON/ORG
+  nodes are not counted as standalone support.
 - Not filtered: raw `search_memory` aggregations with no graph entities in
-  the row, chunks/observations that cite no graph facts, and vector hits
-  whose metadata has no resolvable source chunk. Pass `include_rejected=true`
+  the row, chunks/observations that cite no graph facts, vector hits whose
+  metadata has no resolvable source chunk, and chunks that still have a
+  non-rejected EVENT or relationship citation. Pass `include_rejected=true`
   to keep rejected support and leave verification fields visible.
 """
 
@@ -50,6 +53,33 @@ VERIFICATION_PROPERTY_FIELDS = (
     NOTE_FIELD,
     HISTORY_FIELD,
 )
+
+
+def is_reserved_verification_key(key: Any) -> bool:
+    text = str(key or "").strip()
+    if not text:
+        return False
+    if text in VERIFICATION_PROPERTY_FIELDS or text.lower() in VERIFICATION_PROPERTY_FIELDS:
+        return True
+    words = text.split()
+    cleaned = words[0].lower() + "".join(word.capitalize() for word in words[1:])
+    return cleaned in VERIFICATION_PROPERTY_FIELDS
+
+
+def without_reserved_verification_keys(data: dict[str, Any] | None) -> dict[str, Any]:
+    cleaned: dict[str, Any] = {}
+    for key, value in dict(data or {}).items():
+        if is_reserved_verification_key(key):
+            continue
+        if key == "properties" and isinstance(value, dict):
+            cleaned[key] = {
+                nested_key: nested_value
+                for nested_key, nested_value in value.items()
+                if not is_reserved_verification_key(nested_key)
+            }
+        else:
+            cleaned[key] = value
+    return cleaned
 
 DEFAULT_VERIFIED_RANK_BOOST = 0.15
 
@@ -133,16 +163,47 @@ def _property_map(raw: Any) -> dict[str, Any]:
     return {}
 
 
+def _entity_labels(entity: Any) -> list[Any]:
+    if entity is None:
+        return []
+    if isinstance(entity, dict):
+        return list(entity.get("labels") or [])
+    return list(getattr(entity, "labels", None) or [])
+
+
+def _flatten_properties(data: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(data)
+    nested = _property_map(merged.get("properties"))
+    if not nested:
+        return merged
+    for key, value in nested.items():
+        if is_reserved_verification_key(key) and merged.get(key) not in (None, ""):
+            continue
+        merged[key] = value
+    return merged
+
+
+def _citation_layers(entity: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+    if entity is None:
+        return {}, {}
+    if isinstance(entity, dict):
+        outer = dict(entity)
+    else:
+        outer = _property_map(getattr(entity, "properties", None))
+        for key in ("source_chunk_ids", "source_chunk_id"):
+            value = getattr(entity, key, None)
+            if value not in (None, "", []) and outer.get(key) in (None, "", []):
+                outer[key] = value
+    return outer, _property_map(outer.get("properties"))
+
+
 def _mapping(entity: Any) -> dict[str, Any]:
     if entity is None:
         return {}
     if isinstance(entity, dict):
-        props = _property_map(entity.get("properties"))
-        merged = dict(entity)
-        merged.update(props)
-        return merged
+        return _flatten_properties(entity)
     props = _property_map(getattr(entity, "properties", None))
-    merged = dict(props)
+    merged = _flatten_properties(props)
     for key in VERIFICATION_PROPERTY_FIELDS + ("uuid", "name", "description"):
         if merged.get(key) not in (None, ""):
             continue
@@ -544,13 +605,32 @@ def filter_raw_operation_result(result: Any, *, include_rejected: bool = False) 
 
 
 def _chunk_ids_from_entity(entity: Any) -> list[str]:
-    data = _mapping(entity)
+    outer, nested = _citation_layers(entity)
+    citations = list(outer.get("source_chunk_ids") or []) + list(
+        nested.get("source_chunk_ids") or []
+    )
     ids: list[str] = []
-    for value in list(data.get("source_chunk_ids") or []) + [data.get("source_chunk_id")]:
+    for value in citations + [outer.get("source_chunk_id"), nested.get("source_chunk_id")]:
         chunk_id = str(value).strip() if value not in (None, "") else ""
-        if chunk_id:
+        if chunk_id and chunk_id not in ids:
             ids.append(chunk_id)
     return ids
+
+
+def _is_verifiable_support(entity: Any) -> bool:
+    labels = _entity_labels(entity)
+    if not labels:
+        return True
+    return node_is_verifiable_event(labels)
+
+
+def _record_chunk_support(
+    support: dict[str, list[bool]],
+    entity: Any,
+    rejected: bool,
+) -> None:
+    for chunk_id in _chunk_ids_from_entity(entity):
+        support.setdefault(chunk_id, []).append(rejected)
 
 
 def chunk_ids_with_only_rejected_support(
@@ -559,17 +639,15 @@ def chunk_ids_with_only_rejected_support(
 ) -> set[str]:
     support: dict[str, list[bool]] = {}
     for node in nodes or []:
-        rejected = entity_is_rejected(node)
-        for chunk_id in _chunk_ids_from_entity(node):
-            support.setdefault(chunk_id, []).append(rejected)
+        if not _is_verifiable_support(node):
+            continue
+        _record_chunk_support(support, node, entity_is_rejected(node))
     for triple in triples or []:
         parts = triple if isinstance(triple, (list, tuple)) else (triple,)
-        rejected = fact_tuple_is_rejected(*parts)
-        chunk_ids: list[str] = []
         for part in parts:
-            chunk_ids.extend(_chunk_ids_from_entity(part))
-        for chunk_id in chunk_ids:
-            support.setdefault(chunk_id, []).append(rejected)
+            if not _is_verifiable_support(part):
+                continue
+            _record_chunk_support(support, part, entity_is_rejected(part))
     return {
         chunk_id
         for chunk_id, flags in support.items()

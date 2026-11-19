@@ -484,6 +484,8 @@ def test_help_center_conflict_precision_recall_and_api():
                         brain_id,
                         winning_fact_id=winning,
                         method="verified_side",
+                        actor=f"brainpat:{brain_id}",
+                        has_verification=True,
                     )
                     resolved_body = json.loads(resolved.body.decode("utf-8"))
                     dismissed = await conflicts_mod.dismiss_conflict_by_id(
@@ -544,6 +546,8 @@ def test_help_center_conflict_precision_recall_and_api():
                 numeric.id,
                 winning_fact_id=winning,
                 method="verified_side",
+                resolved_by=f"brainpat:{brain_id}",
+                graph=graph,
             )
             assert resolved.status == "resolved"
             assert resolved.resolution.method == "verified_side"

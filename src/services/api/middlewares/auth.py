@@ -8,6 +8,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
+import json
 import os
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -74,16 +75,20 @@ class BrainPATMiddleware(BaseHTTPMiddleware):
                 resolution="Send X-Brain-ID with the intended alphanumeric brain name.",
             )
         cachepat_key = f"brainpat:{brain_id}"
+        scope_cache_key = f"brainpat-scopes:{brain_id}"
         if brainpat == system_pat:
             from src.core.auth.scopes import env_system_pat_scopes, principal_for_system
 
             request.state.principal = principal_for_system()
             request.state.scopes = env_system_pat_scopes()
             return await call_next(request)
+        from src.core.auth.scopes import effective_pat_scopes, principal_for_brain
+
+        stored_brain = None
+        scopes = None
         try:
             cached_brainpat = cache_adapter.get(key=cachepat_key, brain_id="system")
 
-            # Logic --------------------------------------------------
             if not cached_brainpat:
                 stored_brain = data_adapter.get_brain(name_key=brain_id)
                 if not stored_brain or stored_brain.pat != brainpat:
@@ -92,9 +97,15 @@ class BrainPATMiddleware(BaseHTTPMiddleware):
                         status_code=status.HTTP_401_UNAUTHORIZED,
                         detail="Invalid or missing BrainPAT header",
                     )
-                cached_brainpat = stored_brain.pat
                 cache_adapter.set(
                     key=cachepat_key, value=stored_brain.pat, brain_id="system"
+                )
+                scopes = effective_pat_scopes(stored_brain)
+                cache_adapter.set(
+                    key=scope_cache_key,
+                    value=json.dumps(scopes),
+                    brain_id="system",
+                    expires_in=30,
                 )
             elif cached_brainpat != brainpat:
                 return error_response(
@@ -102,6 +113,24 @@ class BrainPATMiddleware(BaseHTTPMiddleware):
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Invalid or missing BrainPAT header",
                 )
+            else:
+                cached_scopes = cache_adapter.get(key=scope_cache_key, brain_id="system")
+                if cached_scopes:
+                    try:
+                        scopes = json.loads(cached_scopes)
+                    except (TypeError, ValueError):
+                        scopes = None
+                if scopes is None:
+                    stored_brain = data_adapter.get_brain(name_key=brain_id)
+                    scopes = (
+                        effective_pat_scopes(stored_brain) if stored_brain else []
+                    )
+                    cache_adapter.set(
+                        key=scope_cache_key,
+                        value=json.dumps(scopes),
+                        brain_id="system",
+                        expires_in=30,
+                    )
         except Exception:
             return error_response(
                 request,
@@ -109,11 +138,8 @@ class BrainPATMiddleware(BaseHTTPMiddleware):
                 detail="Authentication store unavailable",
             )
 
-        from src.core.auth.scopes import effective_pat_scopes, principal_for_brain
-
-        stored_brain = data_adapter.get_brain(name_key=brain_id)
         request.state.principal = principal_for_brain(brain_id)
-        request.state.scopes = effective_pat_scopes(stored_brain) if stored_brain else []
+        request.state.scopes = scopes or []
 
         response = await call_next(request)
 
