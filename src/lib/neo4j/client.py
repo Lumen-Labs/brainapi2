@@ -8,9 +8,12 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
+import logging
 import os
+import threading
 import time
 from typing import Any, Dict, List, Literal, Optional, Tuple, TypedDict
 from neo4j import GraphDatabase, Query, READ_ACCESS, WRITE_ACCESS
@@ -49,6 +52,11 @@ from src.lib.cypher_safety import (
     validate_raw_cypher,
 )
 
+from src.utils.logging import log
+from src.utils.serialization.data import always_dict
+
+logger = logging.getLogger(__name__)
+
 _VALIDITY_REL_INDEX_KEYS = (
     "valid_from",
     "valid_to",
@@ -58,8 +66,42 @@ _VALIDITY_REL_INDEX_KEYS = (
     "invalid_at",
     "superseded_at",
 )
-from src.utils.logging import log
-from src.utils.serialization.data import always_dict
+VALIDITY_INDEX_REFRESH_TTL_SECONDS = 60.0
+VALIDITY_INDEX_FAIL_BACKOFF_INITIAL_SECONDS = 30.0
+VALIDITY_INDEX_FAIL_BACKOFF_MAX_SECONDS = 600.0
+
+
+def _validity_index_now() -> float:
+    return time.monotonic()
+
+
+@dataclass
+class _ValidityIndexState:
+    indexed: set[str] = field(default_factory=set)
+    pending: set[str] = field(default_factory=set)
+    failed_until: dict[str, float] = field(default_factory=dict)
+    failed_backoff: dict[str, float] = field(default_factory=dict)
+    logged_failures: set[str] = field(default_factory=set)
+    last_refresh: float = 0.0
+    stale: bool = True
+
+
+_validity_index_lock = threading.Lock()
+_VALIDITY_INDEX_CACHE: dict[str, _ValidityIndexState] = {}
+
+
+def reset_validity_index_cache() -> None:
+    """Drop process-level validity-index setup state. Tests only."""
+    with _validity_index_lock:
+        _VALIDITY_INDEX_CACHE.clear()
+
+
+def _validity_index_state(database: str) -> _ValidityIndexState:
+    state = _VALIDITY_INDEX_CACHE.get(database)
+    if state is None:
+        state = _ValidityIndexState()
+        _VALIDITY_INDEX_CACHE[database] = state
+    return state
 
 
 def _jsonable_neo4j_value(value: Any) -> Any:
@@ -113,7 +155,6 @@ class Neo4jClient(GraphClient):
             warn_notification_severity="OFF",
             notifications_min_severity="OFF",
         )
-        self._validity_indexes_ready: set[str] = set()
 
     def execute_operation(self, operation: str, brain_id: str) -> Any:
         """
@@ -147,6 +188,8 @@ class Neo4jClient(GraphClient):
             consume = getattr(result, "consume", None)
             if callable(consume):
                 consume()
+        if write_enabled:
+            self._mark_validity_indexes_stale(db)
         return _RawQueryResult(records=records, keys=keys, truncated=truncated)
 
     def ensure_database(self, database: str) -> None:
@@ -188,7 +231,7 @@ class Neo4jClient(GraphClient):
             )
         self._ensure_validity_indexes(database)
 
-    def _relationship_types(self, database: str) -> list[str]:
+    def _relationship_types(self, database: str) -> list[str] | None:
         try:
             result = self.driver.execute_query(
                 "CALL db.relationshipTypes() YIELD relationshipType "
@@ -196,7 +239,7 @@ class Neo4jClient(GraphClient):
                 database_=database,
             )
         except Exception:
-            return []
+            return None
         names: list[str] = []
         for record in getattr(result, "records", None) or []:
             getter = getattr(record, "get", None)
@@ -205,25 +248,122 @@ class Neo4jClient(GraphClient):
                 names.append(str(name))
         return names
 
-    def _ensure_validity_indexes(self, database: str) -> None:
-        indexed = getattr(self, "_validity_indexed_types", None)
-        if indexed is None:
-            self._validity_indexed_types = {}
-            indexed = self._validity_indexed_types
-        known = indexed.setdefault(database, set())
-        pending: list[tuple[str, str]] = []
-        for rel_type in self._relationship_types(database):
-            if rel_type in known:
-                continue
-            try:
-                pending.append((rel_type, quote_rel_type(rel_type)))
-            except InvalidCypherIdentifier:
-                continue
-        if not pending:
+    def _mark_validity_indexes_stale(self, database: str) -> None:
+        database = require_database_name(database)
+        with _validity_index_lock:
+            _validity_index_state(database).stale = True
+
+    def _note_written_relationship_type(self, database: str, rel_type: str) -> None:
+        database = require_database_name(database)
+        try:
+            name = clean_label(rel_type)
+        except InvalidCypherIdentifier:
             return
-        for rel_type, quoted_type in pending:
+        now = _validity_index_now()
+        with _validity_index_lock:
+            state = _validity_index_state(database)
+            if name in state.indexed:
+                return
+            until = state.failed_until.get(name)
+            if until is not None and now < until:
+                return
+            state.pending.add(name)
+
+    def _ensure_validity_indexes(
+        self,
+        database: str,
+        *,
+        force: bool = False,
+        pending_only: bool = False,
+    ) -> None:
+        database = require_database_name(database)
+        now = _validity_index_now()
+        with _validity_index_lock:
+            state = _validity_index_state(database)
+            pending = set(state.pending)
+            retryable = {
+                rel_type
+                for rel_type, until in state.failed_until.items()
+                if now >= until
+            }
+            refresh_all = (not pending_only) and (
+                force
+                or state.stale
+                or state.last_refresh <= 0.0
+                or (now - state.last_refresh) >= VALIDITY_INDEX_REFRESH_TTL_SECONDS
+            )
+            if not refresh_all and not pending and not retryable:
+                return
+            if not refresh_all:
+                state.pending.clear()
+        types: set[str] = set(pending) | retryable
+        if refresh_all:
+            listed = self._relationship_types(database)
+            with _validity_index_lock:
+                state = _validity_index_state(database)
+                pending = set(state.pending)
+                state.pending.clear()
+                retryable = {
+                    rel_type
+                    for rel_type, until in state.failed_until.items()
+                    if _validity_index_now() >= until
+                }
+                if listed is None:
+                    state.stale = True
+                    types = pending | retryable
+                else:
+                    state.last_refresh = _validity_index_now()
+                    state.stale = False
+                    types = set(listed) | pending | retryable
+        if types:
+            self._create_validity_indexes_for_types(database, types)
+
+    def _record_validity_index_failure(
+        self, database: str, rel_type: str, error: BaseException
+    ) -> None:
+        now = _validity_index_now()
+        should_log = False
+        with _validity_index_lock:
+            state = _validity_index_state(database)
+            backoff = state.failed_backoff.get(
+                rel_type, VALIDITY_INDEX_FAIL_BACKOFF_INITIAL_SECONDS
+            )
+            state.failed_until[rel_type] = now + backoff
+            state.failed_backoff[rel_type] = min(
+                backoff * 2, VALIDITY_INDEX_FAIL_BACKOFF_MAX_SECONDS
+            )
+            if rel_type not in state.logged_failures:
+                state.logged_failures.add(rel_type)
+                should_log = True
+        if should_log:
+            logger.warning(
+                "validity range index setup failed database=%s relationship_type=%s error=%s",
+                database,
+                rel_type,
+                error,
+            )
+
+    def _create_validity_indexes_for_types(
+        self, database: str, rel_types: set[str]
+    ) -> None:
+        now = _validity_index_now()
+        work: list[tuple[str, str]] = []
+        with _validity_index_lock:
+            state = _validity_index_state(database)
+            for rel_type in rel_types:
+                if not rel_type or rel_type in state.indexed:
+                    continue
+                until = state.failed_until.get(rel_type)
+                if until is not None and now < until:
+                    continue
+                try:
+                    work.append((rel_type, quote_rel_type(rel_type)))
+                except InvalidCypherIdentifier:
+                    continue
+        for rel_type, quoted_type in work:
             type_stem = clean_label(rel_type)[:80]
             created = True
+            failure: BaseException | None = None
             for key in _VALIDITY_REL_INDEX_KEYS:
                 name = quote_identifier("rel_" + type_stem + "_" + key)
                 prop = static_property_key(key)
@@ -238,11 +378,19 @@ class Neo4jClient(GraphClient):
                 )
                 try:
                     self.driver.execute_query(query, database_=database)
-                except Exception:
+                except Exception as exc:
                     created = False
+                    failure = exc
                     continue
             if created:
-                known.add(rel_type)
+                with _validity_index_lock:
+                    state = _validity_index_state(database)
+                    state.indexed.add(rel_type)
+                    state.failed_until.pop(rel_type, None)
+                    state.failed_backoff.pop(rel_type, None)
+                continue
+            if failure is not None:
+                self._record_validity_index_failure(database, rel_type, failure)
 
     def clear_brain_data(self, brain_id: str) -> None:
         if not self._verify_database_accessible(brain_id):
@@ -811,6 +959,8 @@ class Neo4jClient(GraphClient):
         result = self._run_query(cypher_query, brain_id, params)
         if not getattr(result, "records", None):
             raise ValueError("Relationship endpoints were not found")
+        self._note_written_relationship_type(brain_id, predicate.name)
+        self._ensure_validity_indexes(brain_id, pending_only=True)
         return "ok"
 
     def search_graph(self, nodes: list[Node], brain_id: str) -> list[Node]:
@@ -2809,6 +2959,9 @@ class Neo4jClient(GraphClient):
                 },
                 database_=brain_id,
             )
+        if bridges:
+            self._note_written_relationship_type(brain_id, "HUB_BRIDGE")
+            self._ensure_validity_indexes(brain_id, pending_only=True)
         return len(bridges)
 
     def refresh_hub_bridges_for_entities(
@@ -2884,6 +3037,9 @@ class Neo4jClient(GraphClient):
                 },
                 database_=brain_id,
             )
+        if bridges:
+            self._note_written_relationship_type(brain_id, "HUB_BRIDGE")
+            self._ensure_validity_indexes(brain_id, pending_only=True)
         return len(bridges)
 
     def get_hub_bridges(

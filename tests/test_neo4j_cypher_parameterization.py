@@ -1,7 +1,8 @@
 import json
 import os
+import threading
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from neo4j.time import DateTime
 from pydantic import ValidationError
@@ -37,7 +38,14 @@ for key, value in ENV_DEFAULTS.items():
 from src.constants.data import Observation
 from src.constants.kg import IdentificationParams, Node, Predicate
 from src.lib.cypher_safety import InvalidCypherIdentifier, clean_label
-from src.lib.neo4j.client import Neo4jClient
+from src.lib.neo4j import client as neo4j_client
+from src.lib.neo4j.client import (
+    VALIDITY_INDEX_FAIL_BACKOFF_INITIAL_SECONDS,
+    VALIDITY_INDEX_REFRESH_TTL_SECONDS,
+    _VALIDITY_REL_INDEX_KEYS,
+    Neo4jClient,
+    reset_validity_index_cache,
+)
 
 INJECTION_VALUES = [
     "O'Brien",
@@ -611,6 +619,8 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
         self.assertEqual(params["as_of"], "2024-06-01T00:00:00Z")
 
     def test_ensure_database_creates_validity_range_indexes(self):
+        reset_validity_index_cache()
+
         class _TypedDriver(_Driver):
             def execute_query(self, query, parameters_=None, database_=None):
                 self.calls.append((query, dict(parameters_ or {}), database_))
@@ -926,6 +936,171 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
         self.assertEqual(node.name, "Cara")
         self.assertEqual(node.observations[0].text, "driver record")
         self.assertEqual(node.last_updated, stored_at.to_native())
+
+
+def _count_calls(calls, needle: str) -> int:
+    return sum(1 for query, _params, _db in calls if needle in query)
+
+
+class _TypedDriver(_Driver):
+    def __init__(self, types=None, records=None, fail_index=False):
+        super().__init__(records)
+        self.types = list(types or [])
+        self.fail_index = fail_index
+
+    def execute_query(self, query, parameters_=None, database_=None):
+        self.calls.append((query, dict(parameters_ or {}), database_))
+        if "relationshipTypes" in query:
+            return _Result(
+                [_Record({"relationshipType": rel_type}) for rel_type in self.types]
+            )
+        if self.fail_index and "CREATE RANGE INDEX" in query:
+            raise RuntimeError("index creation failed")
+        return _Result(self._records)
+
+
+class Neo4jValidityIndexCacheTests(unittest.TestCase):
+    def setUp(self):
+        reset_validity_index_cache()
+        self._clock = 1_000.0
+        self._orig_now = neo4j_client._validity_index_now
+        neo4j_client._validity_index_now = lambda: self._clock
+
+    def tearDown(self):
+        neo4j_client._validity_index_now = self._orig_now
+        reset_validity_index_cache()
+
+    def _client(self, types=None, records=None, fail_index=False) -> Neo4jClient:
+        client = Neo4jClient.__new__(Neo4jClient)
+        client.driver = _TypedDriver(
+            types=types, records=records, fail_index=fail_index
+        )
+        client._verify_database_accessible = MagicMock(return_value=True)
+        return client
+
+    def test_second_ensure_database_skips_type_listing_and_index_creates(self):
+        client = self._client(types=["REQUIRES"])
+        client.ensure_database("braina")
+        first_lists = _count_calls(client.driver.calls, "relationshipTypes")
+        first_indexes = _count_calls(client.driver.calls, "CREATE RANGE INDEX")
+        self.assertEqual(first_lists, 1)
+        self.assertEqual(first_indexes, len(_VALIDITY_REL_INDEX_KEYS))
+
+        client.ensure_database("braina")
+        self.assertEqual(
+            _count_calls(client.driver.calls, "relationshipTypes"), first_lists
+        )
+        self.assertEqual(
+            _count_calls(client.driver.calls, "CREATE RANGE INDEX"), first_indexes
+        )
+
+    def test_ttl_expiry_relists_types_but_skips_already_indexed_creates(self):
+        client = self._client(types=["REQUIRES"])
+        client.ensure_database("braina")
+        self._clock += VALIDITY_INDEX_REFRESH_TTL_SECONDS + 1
+        client.ensure_database("braina")
+        self.assertEqual(_count_calls(client.driver.calls, "relationshipTypes"), 2)
+        self.assertEqual(
+            _count_calls(client.driver.calls, "CREATE RANGE INDEX"),
+            len(_VALIDITY_REL_INDEX_KEYS),
+        )
+
+    def test_new_type_write_creates_indexes_without_relisting(self):
+        client = self._client(
+            types=["REQUIRES"], records=[_Record({"a": 1})]
+        )
+        client.ensure_database("braina")
+        lists_after_ensure = _count_calls(client.driver.calls, "relationshipTypes")
+        indexes_after_ensure = _count_calls(
+            client.driver.calls, "CREATE RANGE INDEX"
+        )
+        self.assertEqual(lists_after_ensure, 1)
+
+        predicate = Predicate(uuid="rel-1", name="KNOWS", description="")
+        client.add_relationship(_person("a"), predicate, _person("b", "Bob"), "braina")
+        self.assertEqual(
+            _count_calls(client.driver.calls, "relationshipTypes"),
+            lists_after_ensure,
+        )
+        self.assertEqual(
+            _count_calls(client.driver.calls, "CREATE RANGE INDEX"),
+            indexes_after_ensure + len(_VALIDITY_REL_INDEX_KEYS),
+        )
+        knows_indexes = [
+            query
+            for query, _params, _db in client.driver.calls
+            if "CREATE RANGE INDEX" in query and "r:`KNOWS`" in query
+        ]
+        self.assertEqual(len(knows_indexes), len(_VALIDITY_REL_INDEX_KEYS))
+
+    def test_failed_index_create_is_cached_with_backoff_and_logged_once(self):
+        client = self._client(types=["REQUIRES"], fail_index=True)
+        with patch.object(neo4j_client, "logger") as mock_logger:
+            client.ensure_database("braina")
+            client.ensure_database("braina")
+            self.assertEqual(_count_calls(client.driver.calls, "relationshipTypes"), 1)
+            self.assertEqual(
+                _count_calls(client.driver.calls, "CREATE RANGE INDEX"),
+                len(_VALIDITY_REL_INDEX_KEYS),
+            )
+            self.assertEqual(mock_logger.warning.call_count, 1)
+
+            self._clock += VALIDITY_INDEX_FAIL_BACKOFF_INITIAL_SECONDS + 1
+            client.ensure_database("braina")
+            self.assertEqual(
+                _count_calls(client.driver.calls, "CREATE RANGE INDEX"),
+                2 * len(_VALIDITY_REL_INDEX_KEYS),
+            )
+            self.assertEqual(mock_logger.warning.call_count, 1)
+
+    def test_cache_is_process_level_and_per_database(self):
+        first = self._client(types=["REQUIRES"])
+        first.ensure_database("braina")
+        second = self._client(types=["REQUIRES"])
+        second.ensure_database("braina")
+        self.assertEqual(_count_calls(second.driver.calls, "relationshipTypes"), 0)
+        self.assertEqual(_count_calls(second.driver.calls, "CREATE RANGE INDEX"), 0)
+
+        other = self._client(types=["KNOWS"])
+        other.ensure_database("brainb")
+        self.assertEqual(_count_calls(other.driver.calls, "relationshipTypes"), 1)
+        self.assertEqual(
+            _count_calls(other.driver.calls, "CREATE RANGE INDEX"),
+            len(_VALIDITY_REL_INDEX_KEYS),
+        )
+        knows_indexes = [
+            query
+            for query, _params, _db in other.driver.calls
+            if "CREATE RANGE INDEX" in query and "r:`KNOWS`" in query
+        ]
+        self.assertEqual(len(knows_indexes), len(_VALIDITY_REL_INDEX_KEYS))
+
+    def test_warm_cache_is_thread_safe_and_does_not_relist(self):
+        client = self._client(types=["REQUIRES"])
+        client.ensure_database("braina")
+        before_lists = _count_calls(client.driver.calls, "relationshipTypes")
+        before_indexes = _count_calls(client.driver.calls, "CREATE RANGE INDEX")
+        errors: list[BaseException] = []
+
+        def _worker():
+            try:
+                for _ in range(20):
+                    client.ensure_database("braina")
+            except BaseException as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=_worker) for _ in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            _count_calls(client.driver.calls, "relationshipTypes"), before_lists
+        )
+        self.assertEqual(
+            _count_calls(client.driver.calls, "CREATE RANGE INDEX"), before_indexes
+        )
 
 
 if __name__ == "__main__":
