@@ -146,7 +146,10 @@ class NetworkXGraphClient(GraphClient):
                 )
                 last_invalid = exc
                 continue
-            from src.core.verification.facts import without_reserved_verification_keys
+            from src.core.verification.facts import (
+                is_reserved_verification_key,
+                without_reserved_verification_keys,
+            )
 
             identification_dict: dict[str, Any] = {"uuid": node.uuid, "name": node.name}
             merged_metadata = {**(metadata or {}), **(node.metadata or {})}
@@ -160,8 +163,13 @@ class NetworkXGraphClient(GraphClient):
             if identification_params:
                 for key, value in identification_params.items():
                     normalized_key = self._clean_property_key(key)
-                    if normalized_key not in {"uuid", "name"}:
-                        identification_dict[normalized_key] = value
+                    if normalized_key in {"uuid", "name"}:
+                        continue
+                    if is_reserved_verification_key(key) or is_reserved_verification_key(
+                        normalized_key
+                    ):
+                        continue
+                    identification_dict[normalized_key] = value
             for attr in (
                 "description",
                 "happened_at",
@@ -1274,9 +1282,11 @@ class NetworkXGraphClient(GraphClient):
         brain = self._store.get_brain(brain_id)
         wanted = {str(item) for item in chunk_ids if item}
         known_edges = {str(item) for item in edge_uuids if item}
+        from src.core.verification.facts import _chunk_ids_from_entity
+
         nodes: list[Node] = []
         for node_uuid, data in brain.graph.nodes(data=True):
-            cited = {str(item) for item in (data.get("source_chunk_ids") or [])}
+            cited = set(_chunk_ids_from_entity(data))
             if not cited & wanted:
                 continue
             nodes.append(
@@ -1291,11 +1301,7 @@ class NetworkXGraphClient(GraphClient):
         triples = []
         for source, target, key, data in brain.graph.edges(keys=True, data=True):
             nested = data.get("properties") if isinstance(data.get("properties"), dict) else {}
-            cited = {
-                str(item)
-                for item in list(data.get("source_chunk_ids") or [])
-                + list(nested.get("source_chunk_ids") or [])
-            }
+            cited = set(_chunk_ids_from_entity(data))
             rel_uuid = str(data.get("uuid") or nested.get("uuid") or "")
             if rel_uuid not in known_edges and not cited & wanted:
                 continue

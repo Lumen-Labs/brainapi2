@@ -2275,6 +2275,14 @@ class Neo4jClient(GraphClient):
             """
             MATCH (n)
             WHERE any(cid IN coalesce(n.source_chunk_ids, []) WHERE cid IN $chunk_ids)
+               OR (
+                   n.properties IS :: MAP
+                   AND any(cid IN coalesce(n.properties.source_chunk_ids, []) WHERE cid IN $chunk_ids)
+               )
+               OR (
+                   n.properties IS :: STRING
+                   AND any(cid IN $chunk_ids WHERE n.properties CONTAINS ('"' + cid + '"'))
+               )
             RETURN n['uuid'] AS uuid, n['name'] AS name, labels(n) AS labels,
                    n['description'] AS description, properties(n) AS properties
             """,

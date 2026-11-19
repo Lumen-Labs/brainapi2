@@ -617,25 +617,37 @@ def _chunk_ids_from_entity(entity: Any) -> list[str]:
     return ids
 
 
+def _is_verifiable_support(entity: Any) -> bool:
+    labels = _entity_labels(entity)
+    if not labels:
+        return True
+    return node_is_verifiable_event(labels)
+
+
+def _record_chunk_support(
+    support: dict[str, list[bool]],
+    entity: Any,
+    rejected: bool,
+) -> None:
+    for chunk_id in _chunk_ids_from_entity(entity):
+        support.setdefault(chunk_id, []).append(rejected)
+
+
 def chunk_ids_with_only_rejected_support(
     nodes: Sequence[Any] | None,
     triples: Sequence[Any] | None,
 ) -> set[str]:
     support: dict[str, list[bool]] = {}
     for node in nodes or []:
-        if not node_is_verifiable_event(_entity_labels(node)):
+        if not _is_verifiable_support(node):
             continue
-        rejected = entity_is_rejected(node)
-        for chunk_id in _chunk_ids_from_entity(node):
-            support.setdefault(chunk_id, []).append(rejected)
+        _record_chunk_support(support, node, entity_is_rejected(node))
     for triple in triples or []:
         parts = triple if isinstance(triple, (list, tuple)) else (triple,)
-        rejected = fact_tuple_is_rejected(*parts)
-        chunk_ids: list[str] = []
         for part in parts:
-            chunk_ids.extend(_chunk_ids_from_entity(part))
-        for chunk_id in chunk_ids:
-            support.setdefault(chunk_id, []).append(rejected)
+            if not _is_verifiable_support(part):
+                continue
+            _record_chunk_support(support, part, entity_is_rejected(part))
     return {
         chunk_id
         for chunk_id, flags in support.items()
