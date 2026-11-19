@@ -56,6 +56,17 @@ class _Record(dict):
         return super().get(key, default)
 
 
+class _DriverRecord:
+    def __init__(self, data):
+        self._data = data
+
+    def get(self, key, default=None):
+        return self._data.get(key, default)
+
+    def items(self):
+        raise RuntimeError("neo4j Record.items() must not be required")
+
+
 class _Result:
     def __init__(self, records=None):
         self.records = records or []
@@ -809,6 +820,41 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
         self.assertTrue(node.happened_at.startswith("2026-03-04T05:06:07"))
         self.assertEqual(node.properties["happened_at"], stored_at.to_native())
         self.assertEqual(node.metadata["kind"], "entity")
+
+    def test_node_from_driver_record_does_not_require_items(self):
+        stored_at = DateTime(2026, 5, 6, 7, 8, 9, 0)
+        observations = json.dumps(
+            [
+                {
+                    "id": "obs-3",
+                    "text": "driver record",
+                    "resource_id": "res-3",
+                    "inserted_at": "2026-05-06T07:08:09+00:00",
+                }
+            ]
+        )
+        record = _DriverRecord(
+            {
+                "uuid": "n-3",
+                "name": "Cara",
+                "labels": ["PERSON"],
+                "description": "",
+                "properties": {"note": "ok"},
+                "polarity": "neutral",
+                "happened_at": stored_at,
+                "last_updated": stored_at,
+                "observations": observations,
+                "metadata": {"kind": "entity"},
+            }
+        )
+        client = _client(records=[record])
+        nodes = client.get_by_uuids(["n-3"], "braina")
+        self.assertEqual(len(nodes), 1)
+        node = nodes[0]
+        self.assertEqual(node.uuid, "n-3")
+        self.assertEqual(node.name, "Cara")
+        self.assertEqual(node.observations[0].text, "driver record")
+        self.assertEqual(node.last_updated, stored_at.to_native())
 
 
 if __name__ == "__main__":
