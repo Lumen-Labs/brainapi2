@@ -8,10 +8,13 @@ Rejected-content filtering (default `include_rejected=false`):
 - Filtered: graph retrieve/search/traverse, event-centric neighbors, MCP
   `search_memory` rows whose serialized graph entities have
   `verification_state=rejected`, and chunk/observation hits whose *only*
-  graph support (via `source_chunk_ids` / `resource_id`) is rejected facts.
+  graph support (via `source_chunk_ids` / `resource_id`) is rejected
+  *verifiable* facts — EVENT nodes or relationships. Ordinary PERSON/ORG
+  nodes are not counted as standalone support.
 - Not filtered: raw `search_memory` aggregations with no graph entities in
-  the row, chunks/observations that cite no graph facts, and vector hits
-  whose metadata has no resolvable source chunk. Pass `include_rejected=true`
+  the row, chunks/observations that cite no graph facts, vector hits whose
+  metadata has no resolvable source chunk, and chunks that still have a
+  non-rejected EVENT or relationship citation. Pass `include_rejected=true`
   to keep rejected support and leave verification fields visible.
 """
 
@@ -50,6 +53,17 @@ VERIFICATION_PROPERTY_FIELDS = (
     NOTE_FIELD,
     HISTORY_FIELD,
 )
+
+
+def is_reserved_verification_key(key: Any) -> bool:
+    text = str(key or "").strip()
+    if not text:
+        return False
+    if text in VERIFICATION_PROPERTY_FIELDS or text.lower() in VERIFICATION_PROPERTY_FIELDS:
+        return True
+    words = text.split()
+    cleaned = words[0].lower() + "".join(word.capitalize() for word in words[1:])
+    return cleaned in VERIFICATION_PROPERTY_FIELDS
 
 DEFAULT_VERIFIED_RANK_BOOST = 0.15
 
@@ -133,16 +147,29 @@ def _property_map(raw: Any) -> dict[str, Any]:
     return {}
 
 
+def _entity_labels(entity: Any) -> list[Any]:
+    if entity is None:
+        return []
+    if isinstance(entity, dict):
+        return list(entity.get("labels") or [])
+    return list(getattr(entity, "labels", None) or [])
+
+
+def _flatten_properties(data: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(data)
+    nested = _property_map(merged.get("properties"))
+    if nested:
+        merged.update(nested)
+    return merged
+
+
 def _mapping(entity: Any) -> dict[str, Any]:
     if entity is None:
         return {}
     if isinstance(entity, dict):
-        props = _property_map(entity.get("properties"))
-        merged = dict(entity)
-        merged.update(props)
-        return merged
+        return _flatten_properties(entity)
     props = _property_map(getattr(entity, "properties", None))
-    merged = dict(props)
+    merged = _flatten_properties(props)
     for key in VERIFICATION_PROPERTY_FIELDS + ("uuid", "name", "description"):
         if merged.get(key) not in (None, ""):
             continue
@@ -545,10 +572,14 @@ def filter_raw_operation_result(result: Any, *, include_rejected: bool = False) 
 
 def _chunk_ids_from_entity(entity: Any) -> list[str]:
     data = _mapping(entity)
+    nested = _property_map(data.get("properties"))
+    citations = list(data.get("source_chunk_ids") or []) + list(
+        nested.get("source_chunk_ids") or []
+    )
     ids: list[str] = []
-    for value in list(data.get("source_chunk_ids") or []) + [data.get("source_chunk_id")]:
+    for value in citations + [data.get("source_chunk_id"), nested.get("source_chunk_id")]:
         chunk_id = str(value).strip() if value not in (None, "") else ""
-        if chunk_id:
+        if chunk_id and chunk_id not in ids:
             ids.append(chunk_id)
     return ids
 
@@ -559,6 +590,8 @@ def chunk_ids_with_only_rejected_support(
 ) -> set[str]:
     support: dict[str, list[bool]] = {}
     for node in nodes or []:
+        if not node_is_verifiable_event(_entity_labels(node)):
+            continue
         rejected = entity_is_rejected(node)
         for chunk_id in _chunk_ids_from_entity(node):
             support.setdefault(chunk_id, []).append(rejected)

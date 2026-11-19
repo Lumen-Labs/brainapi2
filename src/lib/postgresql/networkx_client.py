@@ -207,7 +207,10 @@ class NetworkXGraphClient(GraphClient):
             "flow_key": predicate.flow_key,
         }
         rel_props.update(validity_props_from_mapping(predicate.properties))
-        from src.core.verification.facts import VERIFICATION_PROPERTY_FIELDS
+        from src.core.verification.facts import (
+            VERIFICATION_PROPERTY_FIELDS,
+            is_reserved_verification_key,
+        )
 
         for key in VERIFICATION_PROPERTY_FIELDS:
             rel_props.pop(key, None)
@@ -218,7 +221,7 @@ class NetworkXGraphClient(GraphClient):
                     value = {
                         key: item
                         for key, item in value.items()
-                        if key not in VERIFICATION_PROPERTY_FIELDS
+                        if not is_reserved_verification_key(key)
                     }
                 rel_props[attr] = value
         for attr in ("properties", "description", "happened_at", "flow_key", "last_updated", "amount"):

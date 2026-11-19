@@ -484,10 +484,7 @@ async def retrieve_data(
             citing_nodes, citing_triples = [], []
             lookup = getattr(graph_adapter, "nodes_and_edges_citing", None)
             if citing_ids and callable(lookup):
-                try:
-                    found = lookup(brain_id, citing_ids, [])
-                except Exception:
-                    found = ([], [])
+                found = lookup(brain_id, citing_ids, [])
                 if isinstance(found, (tuple, list)) and len(found) >= 2:
                     citing_nodes = found[0] or []
                     citing_triples = found[1] or []

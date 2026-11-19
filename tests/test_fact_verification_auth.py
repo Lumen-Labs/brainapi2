@@ -179,6 +179,86 @@ class ObservationSupportFilterTests(unittest.TestCase):
         self.assertEqual([item.id for item in kept_chunks], ["chunk-2", "chunk-3"])
         self.assertEqual([item.resource_id for item in kept_obs], ["chunk-2"])
 
+    def test_person_node_does_not_count_as_non_rejected_support(self):
+        person = Node(
+            uuid="p1",
+            name="Alice",
+            labels=["PERSON"],
+            properties={
+                "verification_state": UNVERIFIED,
+                "source_chunk_ids": ["chunk-1"],
+            },
+        )
+        rejected_rel = Predicate(
+            uuid="r-bad",
+            name="KNOWS",
+            description="knows",
+            properties={
+                "verification_state": REJECTED,
+                "source_chunk_ids": ["chunk-1"],
+            },
+        )
+        triples = [
+            (
+                person,
+                rejected_rel,
+                Node(uuid="p2", name="Bob", labels=["PERSON"]),
+            )
+        ]
+        rejected_ids = chunk_ids_with_only_rejected_support([person], triples)
+        self.assertEqual(rejected_ids, {"chunk-1"})
+
+    def test_unverified_event_keeps_chunk_despite_rejected_relationship(self):
+        event = Node(
+            uuid="e1",
+            name="Signed",
+            labels=["EVENT"],
+            properties={
+                "verification_state": UNVERIFIED,
+                "source_chunk_ids": ["chunk-1"],
+            },
+        )
+        rejected_rel = Predicate(
+            uuid="r-bad",
+            name="MENTIONS",
+            description="mentions",
+            properties={
+                "verification_state": REJECTED,
+                "source_chunk_ids": ["chunk-1"],
+            },
+        )
+        triples = [
+            (
+                event,
+                rejected_rel,
+                Node(uuid="p1", name="Alice", labels=["PERSON"]),
+            )
+        ]
+        rejected_ids = chunk_ids_with_only_rejected_support([event], triples)
+        self.assertEqual(rejected_ids, set())
+
+    def test_nested_source_chunk_ids_are_counted(self):
+        rejected_rel = Predicate(
+            uuid="r-nested",
+            name="KNOWS",
+            description="knows",
+            properties={
+                "properties": {
+                    "verification_state": REJECTED,
+                    "source_chunk_ids": ["chunk-nested"],
+                }
+            },
+        )
+        triples = [
+            (
+                Node(uuid="a", name="A", labels=["PERSON"]),
+                rejected_rel,
+                Node(uuid="b", name="B", labels=["PERSON"]),
+            )
+        ]
+        rejected_ids = chunk_ids_with_only_rejected_support([], triples)
+        self.assertEqual(rejected_ids, {"chunk-nested"})
+
 
 class McpVerificationPermissionTests(unittest.TestCase):
     def test_mcp_mutate_denied_without_verification_scope(self):
@@ -284,6 +364,43 @@ class Neo4jVerificationWriteTests(unittest.TestCase):
         self.assertEqual(extra.get("v_id"), "v1")
         self.assertNotIn("verification_state", extra)
         self.assertNotIn("verified_by", extra)
+
+    def test_add_nodes_skips_cleaned_verification_keys(self):
+        client = Neo4jClient.__new__(Neo4jClient)
+        calls = []
+        client.ensure_database = lambda brain_id: None
+        client._bind_property_value = lambda value: value
+        client._quoted_labels = lambda labels: "PERSON"
+        client._run_query = (
+            lambda query, brain_id, params, **kwargs: calls.append(params)
+            or SimpleNamespace(records=[])
+        )
+        node = Node(
+            uuid="n1",
+            name="Alice",
+            labels=["PERSON"],
+            properties={"VERIFIED_BY": "spoof", "age": 30},
+        )
+        client.add_nodes([node], "braina")
+        props = calls[0]["props"]
+        self.assertEqual(props.get("age"), 30)
+        self.assertNotIn("verified_by", props)
+        self.assertNotIn("VERIFIED_BY", props)
+
+    def test_extra_props_drop_cleaned_verification_keys(self):
+        client = Neo4jClient.__new__(Neo4jClient)
+        extra = client._relationship_property_primitives(
+            {
+                "VERIFIED_BY": "spoof",
+                "Verification_State": REJECTED,
+                "v_id": "v1",
+            }
+        )
+        self.assertEqual(extra.get("v_id"), "v1")
+        self.assertNotIn("verified_by", extra)
+        self.assertNotIn("VERIFIED_BY", extra)
+        self.assertNotIn("verification_state", extra)
+        self.assertNotIn("Verification_State", extra)
 
 
 class ServiceIgnoresCallerIdentityWhenActorSet(unittest.TestCase):
