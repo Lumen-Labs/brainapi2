@@ -8,9 +8,17 @@ from src.constants.kg import Node, Predicate
 from src.core.saving import ingest_cancellation, ingest_staging
 from src.core.saving.ingest_staged_output import discard_outputs, load_output
 from src.core.saving.ingest_staging import (
+    abort_publish_rollback,
     advance_publication,
     finish_publication,
+    graph_touch,
+    graph_touches,
+    mark_rollback_done,
     next_publication_unit,
+    publication_operation_id,
+    record_graph_touch,
+    rollback_done_ids,
+    set_rollback_reason,
     units_to_unpublish,
 )
 
@@ -143,9 +151,200 @@ def rollback_vector_operation(client, brain_id, operation):
         client.remove_vectors(ids, args["store"], brain_id)
 
 
-def replay_graph_operation(client, brain_id, operation):
+class GraphRollbackUnsafe(ValueError):
+    def __init__(self, reason):
+        super().__init__(reason)
+        self.reason = reason
+
+
+_ENTITY_FIELDS = (
+    "name", "description", "polarity", "metadata", "observations", "happened_at", "last_updated",
+)
+
+
+def _jsonable(value):
+    return json.loads(json.dumps(value, default=str))
+
+
+def _entity_snapshot(entity):
+    if entity is None:
+        return None
+    if hasattr(entity, "model_dump"):
+        dump = entity.model_dump(mode="json")
+    elif isinstance(entity, dict):
+        dump = dict(entity)
+    else:
+        return None
+    uuid = dump.get("uuid") or (dump.get("properties") or {}).get("uuid")
+    if uuid:
+        dump["uuid"] = uuid
+    return _jsonable(dump)
+
+
+def _changed_keys(entity):
+    keys = []
+    if hasattr(entity, "model_dump"):
+        payload = entity.model_dump(mode="json")
+    else:
+        payload = dict(entity or {})
+    for field in _ENTITY_FIELDS:
+        if payload.get(field) not in (None, "", [], {}):
+            keys.append(field)
+    for key in (payload.get("properties") or {}):
+        if key != "uuid":
+            keys.append(key)
+    return list(dict.fromkeys(keys))
+
+
+def _as_list(value):
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    return []
+
+
+def _existing_nodes(client, brain_id, uuids):
+    found = {}
+    wanted = [str(item) for item in uuids if item]
+    if not wanted:
+        return found
+    getter = getattr(client, "get_by_uuids", None)
+    nodes = None
+    if callable(getter):
+        nodes = getter(wanted, brain_id)
+    else:
+        getter = getattr(client, "get_by_uuid", None)
+        if callable(getter):
+            nodes = [getter(uuid, brain_id) for uuid in wanted]
+    for node in _as_list(nodes):
+        if node is None:
+            continue
+        uuid = getattr(node, "uuid", None) or (getattr(node, "properties", None) or {}).get("uuid")
+        if uuid:
+            found[str(uuid)] = node
+    return found
+
+
+def _existing_edges(client, brain_id, uuids):
+    found = {}
+    wanted = [str(item) for item in uuids if item]
+    if not wanted:
+        return found
+    getter = getattr(client, "get_triples_by_uuid", None)
+    if not callable(getter):
+        return found
+    for triple in _as_list(getter(wanted, brain_id)):
+        predicate = triple[1]
+        uuid = getattr(predicate, "uuid", None) or (getattr(predicate, "properties", None) or {}).get("uuid")
+        if uuid:
+            found[str(uuid)] = predicate
+    return found
+
+
+def _predicate_uuid(predicate, fallback=""):
+    if predicate is None:
+        return fallback
+    uuid = getattr(predicate, "uuid", None)
+    if uuid:
+        return str(uuid)
+    if isinstance(predicate, dict):
+        return str(predicate.get("uuid") or (predicate.get("properties") or {}).get("uuid") or fallback)
+    props = getattr(predicate, "properties", None) or {}
+    return str(props.get("uuid") or fallback)
+
+
+def _touches_for_graph_operation(client, brain_id, operation):
     method = operation["method"]
     args = operation["args"]
+    if method == "add_nodes":
+        nodes = [Node.model_validate(node) for node in args.get("nodes") or []]
+        existing = _existing_nodes(client, brain_id, [node.uuid for node in nodes])
+        return [
+            {
+                "kind": "node",
+                "uuid": node.uuid,
+                "created": node.uuid not in existing,
+                "prior": _entity_snapshot(existing.get(node.uuid)),
+                "changed": _changed_keys(node),
+            }
+            for node in nodes
+        ]
+    if method == "add_relationship":
+        predicate = Predicate.model_validate(args["predicate"])
+        uuid = _predicate_uuid(predicate)
+        existing = _existing_edges(client, brain_id, [uuid])
+        return [
+            {
+                "kind": "edge",
+                "uuid": uuid,
+                "created": uuid not in existing,
+                "prior": _entity_snapshot(existing.get(uuid)),
+                "changed": _changed_keys(predicate),
+                "subject": args.get("subject"),
+                "predicate": args.get("predicate"),
+                "to_object": args.get("to_object"),
+            }
+        ]
+    if method == "deprecate_relationship":
+        predicate = Predicate.model_validate(args["predicate"])
+        uuid = _predicate_uuid(predicate)
+        existing = _existing_edges(client, brain_id, [uuid])
+        return [
+            {
+                "kind": "edge",
+                "uuid": uuid,
+                "created": False,
+                "prior": _entity_snapshot(existing.get(uuid)),
+                "changed": ["deprecated", "valid_to", "invalid_at"],
+            }
+        ]
+    if method == "update_properties":
+        uuid = str(args.get("uuid") or "")
+        kind = "edge" if args.get("updating") == "relationship" else "node"
+        existing = (
+            _existing_edges(client, brain_id, [uuid])
+            if kind == "edge"
+            else _existing_nodes(client, brain_id, [uuid])
+        )
+        changed = list((args.get("new_properties") or {}).keys())
+        changed.extend(args.get("properties_to_remove") or [])
+        return [
+            {
+                "kind": kind,
+                "uuid": uuid,
+                "created": False,
+                "prior": _entity_snapshot(existing.get(uuid)),
+                "changed": list(dict.fromkeys(changed)),
+            }
+        ]
+    if method == "set_fact_verification":
+        uuid = str(args.get("fact_id") or "")
+        kind = "edge" if args.get("kind") == "relationship" else "node"
+        existing = (
+            _existing_edges(client, brain_id, [uuid])
+            if kind == "edge"
+            else _existing_nodes(client, brain_id, [uuid])
+        )
+        return [
+            {
+                "kind": kind,
+                "uuid": uuid,
+                "created": False,
+                "prior": _entity_snapshot(existing.get(uuid)),
+                "changed": list((args.get("properties") or {}).keys()),
+            }
+        ]
+    return []
+
+
+def replay_graph_operation(client, brain_id, operation, *, record_touch=None):
+    method = operation["method"]
+    args = operation["args"]
+    if record_touch is not None and method not in _GRAPH_INDEX_METHODS:
+        record_touch(_touches_for_graph_operation(client, brain_id, operation))
     if method == "add_nodes":
         nodes = [Node.model_validate(node) for node in args["nodes"]]
         result = client.add_nodes(nodes, brain_id, args["identification_params"], args["metadata"])
@@ -185,32 +384,207 @@ def replay_graph_operation(client, brain_id, operation):
         raise ValueError("Unsupported staged graph operation")
 
 
-def rollback_graph_operation(client, brain_id, operation):
+def _incident_edge_uuids(client, node_uuid, brain_id):
+    lister = getattr(type(client), "list_incident_relationship_uuids", None)
+    if callable(lister):
+        result = lister(client, [node_uuid], brain_id)
+        if isinstance(result, dict):
+            return [str(item) for item in (result.get(node_uuid) or []) if item]
+        if isinstance(result, (list, tuple, set)):
+            return [str(item) for item in result if item]
+    if getattr(client, "graphdb_type", None) == "neo4j" and callable(getattr(type(client), "_run_query", None)):
+        result = client._run_query(
+            "MATCH (n) WHERE n['uuid'] = $uuid "
+            "OPTIONAL MATCH (n)-[r]-() "
+            "RETURN collect(DISTINCT r['uuid']) AS uuids",
+            brain_id,
+            {"uuid": node_uuid},
+        )
+        records = getattr(result, "records", None) or []
+        if not records:
+            return []
+        return [str(item) for item in (records[0].get("uuids") or []) if item]
+    store = (getattr(client, "__dict__", None) or {}).get("_store")
+    get_brain = getattr(store, "get_brain", None) if store is not None else None
+    if not callable(get_brain):
+        return None
+    brain = get_brain(brain_id)
+    edges = getattr(getattr(brain, "graph", None), "edges", None)
+    if not callable(edges):
+        return None
+    found = []
+    for source, target, key, data in edges(keys=True, data=True):
+        if source == node_uuid or target == node_uuid:
+            found.append(str((data or {}).get("uuid") or key))
+    return found
+
+
+def _flat_prior(prior):
+    if not prior:
+        return {}
+    flat = dict(prior.get("properties") or {})
+    for field in _ENTITY_FIELDS:
+        if field in prior and prior[field] is not None:
+            flat[field] = prior[field]
+    flat.pop("uuid", None)
+    return flat
+
+
+def _restore_entity(client, brain_id, kind, uuid, prior, changed):
+    updater = getattr(client, "update_properties", None)
+    if not callable(updater):
+        raise GraphRollbackUnsafe("Staged graph property rollback requires update_properties")
+    prior_flat = _flat_prior(prior)
+    restore = {}
+    remove = []
+    for key in changed or []:
+        if key == "uuid":
+            continue
+        if key in prior_flat and prior_flat[key] is not None:
+            restore[key] = prior_flat[key]
+        else:
+            remove.append(key)
+    updater(uuid, "relationship" if kind == "edge" else "node", brain_id, restore, remove)
+
+
+def _owned_created_edge_uuids(ledger):
+    owned = set()
+    for touches in (ledger or {}).values():
+        for touch in touches or []:
+            if touch.get("kind") == "edge" and touch.get("created") and touch.get("uuid"):
+                owned.add(str(touch["uuid"]))
+    return owned
+
+
+def _touch_item_id(touch):
+    return f"{touch.get('kind') or 'node'}:{touch.get('uuid')}"
+
+
+def _require_touches(operation, touches):
+    method = operation["method"]
+    if method in _GRAPH_INDEX_METHODS:
+        return []
+    if touches:
+        return touches
+    raise GraphRollbackUnsafe(
+        f"Staged graph {method} cannot be rolled back without created/reused markers"
+    )
+
+
+def _precheck_graph_step(client, operation, touches):
+    method = operation["method"]
+    if method in _GRAPH_INDEX_METHODS:
+        return
+    marked = _require_touches(operation, touches)
+    created = [touch for touch in marked if touch.get("created")]
+    reused = [touch for touch in marked if not touch.get("created")]
+    if created and method == "add_nodes" and not callable(getattr(client, "remove_nodes", None)):
+        raise GraphRollbackUnsafe("Staged graph node rollback requires remove_nodes")
+    if created and method == "add_relationship" and not callable(getattr(client, "remove_relationships", None)):
+        raise GraphRollbackUnsafe("Staged graph relationship rollback requires remove_relationships")
+    if reused and not callable(getattr(client, "update_properties", None)):
+        raise GraphRollbackUnsafe("Staged graph property rollback requires update_properties")
+    if method == "add_nodes":
+        nodes = operation.get("args", {}).get("nodes") or []
+        if any(not node.get("uuid") for node in nodes):
+            raise GraphRollbackUnsafe("Staged graph nodes cannot be rolled back without uuids")
+    if method not in {
+        "add_nodes", "add_relationship", "update_properties",
+        "set_fact_verification", "deprecate_relationship",
+    } | _GRAPH_INDEX_METHODS:
+        raise GraphRollbackUnsafe(f"Unsupported staged graph rollback {method}")
+
+
+def rollback_graph_operation(
+    client,
+    brain_id,
+    operation,
+    touches=None,
+    *,
+    owned_edge_uuids=None,
+    done=None,
+    mark_done=None,
+):
     method = operation["method"]
     args = operation["args"]
     if method in _GRAPH_INDEX_METHODS:
-        return
+        return []
+    marked = _require_touches(operation, touches if touches is not None else operation.get("touches"))
+    completed = []
+    skipped = set(done or [])
+
+    def finish(item_id):
+        completed.append(item_id)
+        skipped.add(item_id)
+        if mark_done is not None:
+            mark_done([item_id])
+
+    owned = set(owned_edge_uuids or [])
     if method == "add_nodes":
-        remove_nodes = getattr(client, "remove_nodes", None)
-        if not callable(remove_nodes):
-            raise ValueError("Staged graph node rollback requires remove_nodes")
-        nodes = args.get("nodes") or []
-        uuids = [node["uuid"] for node in nodes if node.get("uuid")]
-        if len(uuids) != len(nodes):
-            raise ValueError("Staged graph nodes cannot be rolled back without uuids")
-        if uuids:
-            remove_nodes(uuids, brain_id)
-        return
+        created = []
+        for touch in marked:
+            item_id = _touch_item_id(touch)
+            if item_id in skipped:
+                continue
+            if touch.get("created"):
+                created.append(touch)
+            else:
+                _restore_entity(client, brain_id, "node", touch["uuid"], touch.get("prior"), touch.get("changed"))
+                finish(item_id)
+        for touch in created:
+            item_id = _touch_item_id(touch)
+            incident = _incident_edge_uuids(client, touch["uuid"], brain_id)
+            foreign = [
+                edge for edge in (incident or [])
+                if edge not in owned
+            ] if incident is not None else []
+            if incident is not None and foreign:
+                finish(item_id)
+                continue
+            remove_nodes = getattr(client, "remove_nodes", None)
+            if not callable(remove_nodes):
+                raise GraphRollbackUnsafe("Staged graph node rollback requires remove_nodes")
+            remove_nodes([touch["uuid"]], brain_id)
+            finish(item_id)
+        return completed
     if method == "add_relationship":
-        remove_relationships = getattr(client, "remove_relationships", None)
-        if not callable(remove_relationships):
-            raise ValueError("Staged graph relationship rollback requires remove_relationships")
-        remove_relationships(
-            [(args["subject"], args["predicate"], args["to_object"])],
-            brain_id,
-        )
-        return
-    raise ValueError(f"Unsupported staged graph rollback {method}")
+        created = []
+        for touch in marked:
+            item_id = _touch_item_id(touch)
+            if item_id in skipped:
+                continue
+            if touch.get("created"):
+                created.append(touch)
+            else:
+                _restore_entity(client, brain_id, "edge", touch["uuid"], touch.get("prior"), touch.get("changed"))
+                finish(item_id)
+        if created:
+            remove_relationships = getattr(client, "remove_relationships", None)
+            if not callable(remove_relationships):
+                raise GraphRollbackUnsafe("Staged graph relationship rollback requires remove_relationships")
+            for touch in created:
+                remove_relationships(
+                    [(
+                        touch.get("subject") or args["subject"],
+                        touch.get("predicate") or args["predicate"],
+                        touch.get("to_object") or args["to_object"],
+                    )],
+                    brain_id,
+                )
+                finish(_touch_item_id(touch))
+        return completed
+    if method in {"update_properties", "set_fact_verification", "deprecate_relationship"}:
+        for touch in marked:
+            item_id = _touch_item_id(touch)
+            if item_id in skipped:
+                continue
+            _restore_entity(
+                client, brain_id, touch.get("kind") or "node",
+                touch["uuid"], touch.get("prior"), touch.get("changed"),
+            )
+            finish(item_id)
+        return completed
+    raise GraphRollbackUnsafe(f"Unsupported staged graph rollback {method}")
 
 
 def publish_next_unit(brain_id, root_id, replay_operation):
@@ -235,7 +609,13 @@ def publish_staged_run(brain_id, root_id, acquire_gate, data_client, vector_clie
         elif adapter == "vector":
             replay_vector_operation(vector_client, target, operation)
         elif adapter == "graph" and graph_client is not None:
-            replay_graph_operation(graph_client, target, operation)
+            recorded = graph_touch(brain_id, root_id, operation_id)
+            def persist(touches):
+                record_graph_touch(brain_id, root_id, operation_id, touches)
+            replay_graph_operation(
+                graph_client, target, operation,
+                record_touch=None if recorded is not None else persist,
+            )
         else:
             raise ValueError(f"Unsupported staged operation {operation_id}")
 
@@ -253,19 +633,62 @@ def publish_staged_run(brain_id, root_id, acquire_gate, data_client, vector_clie
         return finished
 
 
-def rollback_published_run(brain_id, root_id, data_client, vector_client, graph_client=None):
-    def undo(operation):
-        adapter = operation["adapter"]
-        if adapter == "data":
-            rollback_data_operation(data_client, brain_id, operation)
-        elif adapter == "vector" and vector_client is not None:
-            rollback_vector_operation(vector_client, brain_id, operation)
-        elif adapter == "graph" and graph_client is not None:
-            rollback_graph_operation(graph_client, brain_id, operation)
-        else:
-            raise ValueError(f"Unsupported staged rollback {adapter}")
-
-    for unit in reversed(units_to_unpublish(brain_id, root_id)):
+def _rollback_steps(brain_id, root_id):
+    ledger = graph_touches(brain_id, root_id)
+    steps = []
+    for cursor, unit in reversed(list(enumerate(units_to_unpublish(brain_id, root_id)))):
         operations = load_output(brain_id, root_id, unit["output_ref"])
-        for operation in reversed(operations):
-            undo(operation)
+        base = publication_operation_id(root_id, cursor)
+        for index, operation in reversed(list(enumerate(operations))):
+            operation_id = f"{base}:{index}"
+            steps.append((operation, ledger.get(operation_id), operation_id))
+    return steps
+
+
+def rollback_published_run(brain_id, root_id, data_client, vector_client, graph_client=None):
+    steps = _rollback_steps(brain_id, root_id)
+    ledger = graph_touches(brain_id, root_id)
+    owned_edges = _owned_created_edge_uuids(ledger)
+    try:
+        for operation, touches, _operation_id in steps:
+            if operation.get("adapter") != "graph":
+                continue
+            if graph_client is None:
+                raise GraphRollbackUnsafe("Staged graph rollback requires a graph client")
+            _precheck_graph_step(graph_client, operation, touches)
+    except GraphRollbackUnsafe as exc:
+        abort_publish_rollback(brain_id, root_id, str(exc))
+        return
+
+    done = set(rollback_done_ids(brain_id, root_id))
+
+    def persist(item_ids):
+        mark_rollback_done(brain_id, root_id, item_ids)
+        done.update(item_ids)
+
+    for operation, touches, operation_id in steps:
+        adapter = operation["adapter"]
+        try:
+            if adapter == "data":
+                if operation_id in done:
+                    continue
+                rollback_data_operation(data_client, brain_id, operation)
+                persist([operation_id])
+            elif adapter == "vector" and vector_client is not None:
+                if operation_id in done:
+                    continue
+                rollback_vector_operation(vector_client, brain_id, operation)
+                persist([operation_id])
+            elif adapter == "graph" and graph_client is not None:
+                rollback_graph_operation(
+                    graph_client, brain_id, operation, touches,
+                    owned_edge_uuids=owned_edges, done=done, mark_done=persist,
+                )
+            else:
+                raise ValueError(f"Unsupported staged rollback {adapter}")
+        except GraphRollbackUnsafe as exc:
+            set_rollback_reason(brain_id, root_id, str(exc))
+            raise
+        except Exception:
+            set_rollback_reason(brain_id, root_id, "rollback_apply_failed")
+            raise

@@ -436,6 +436,41 @@ class Neo4jClient(GraphClient):
             return coerced
         return None
 
+    def _node_from_stored(self, payload: Any) -> Node:
+        raw = payload or {}
+        if not isinstance(raw, dict):
+            items = getattr(raw, "items", None)
+            raw = dict(items()) if callable(items) else {}
+        properties = self._python_properties(raw.get("properties") or {})
+        polarity = raw.get("polarity") or properties.get("polarity") or "neutral"
+        if polarity not in {"positive", "negative", "neutral"}:
+            polarity = "neutral"
+        kwargs: dict[str, Any] = {
+            "uuid": str(raw.get("uuid") or properties.get("uuid") or ""),
+            "name": str(raw.get("name") or properties.get("name") or ""),
+            "labels": list(raw.get("labels") or []),
+            "description": raw.get("description") or "",
+            "properties": properties,
+            "polarity": polarity,
+        }
+        happened_at = raw.get("happened_at")
+        if happened_at not in (None, ""):
+            kwargs["happened_at"] = happened_at
+        last_updated = raw.get("last_updated")
+        if last_updated not in (None, ""):
+            kwargs["last_updated"] = self._python_datetime(last_updated)
+        observations = self._decode_observations(raw.get("observations"))
+        if observations is None and "observations" in properties:
+            observations = self._decode_observations(properties.get("observations"))
+        if observations is not None:
+            kwargs["observations"] = observations
+        metadata = raw.get("metadata")
+        if metadata not in (None, ""):
+            kwargs["metadata"] = self._python_properties(metadata)
+        elif properties.get("metadata") not in (None, ""):
+            kwargs["metadata"] = self._python_properties(properties.get("metadata"))
+        return Node(**kwargs)
+
     def add_nodes(
         self,
         nodes: list[Node],
@@ -2359,7 +2394,23 @@ class Neo4jClient(GraphClient):
             "RETURN node"
         )
         result = self._run_query(cypher_query, brain_id, {"uuids": list(uuids)})
-        return [Node(**record.get("node", {})) for record in result.records]
+        return [self._node_from_stored(record.get("node", {})) for record in result.records]
+
+    def list_incident_relationship_uuids(self, uuids: list[str], brain_id: str) -> dict[str, list[str]]:
+        result = self._run_query(
+            "UNWIND $uuids AS uuid "
+            "OPTIONAL MATCH (n) WHERE n['uuid'] = uuid "
+            "OPTIONAL MATCH (n)-[r]-() "
+            "RETURN uuid AS uuid, collect(DISTINCT r['uuid']) AS rels",
+            brain_id,
+            {"uuids": list(uuids)},
+        )
+        found = {str(uuid): [] for uuid in uuids}
+        for record in result.records:
+            node_uuid = str(record.get("uuid") or "")
+            if node_uuid:
+                found[node_uuid] = [str(item) for item in (record.get("rels") or []) if item]
+        return found
 
     def remove_relationships(
         self,

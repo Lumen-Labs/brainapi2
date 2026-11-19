@@ -1,3 +1,4 @@
+import json
 import os
 import unittest
 from unittest.mock import MagicMock
@@ -574,6 +575,54 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
         missing = _client(records=[])
         with self.assertRaises(ValueError):
             missing.add_relationship(subject, pred, obj, "braina")
+
+    def test_remove_nodes_decodes_json_observations_and_temporals(self):
+        from datetime import datetime as dt
+        from neo4j.time import DateTime
+
+        observations = json.dumps([{"text": "seen", "resource_id": "res-1"}])
+        neo4j_dt = DateTime(2026, 11, 18, 12, 0, 0)
+        payload = {
+            "uuid": "node-1",
+            "name": "Alice",
+            "labels": ["PERSON"],
+            "description": "person",
+            "properties": {
+                "uuid": "node-1",
+                "name": "Alice",
+                "note": "ok",
+                "observations": observations,
+                "last_updated": neo4j_dt,
+            },
+            "polarity": "neutral",
+            "metadata": {"source": "ingest"},
+            "happened_at": None,
+            "last_updated": neo4j_dt,
+            "observations": observations,
+        }
+        client = _client(records=[_Record({"node": payload})])
+        removed = client.remove_nodes(["node-1"], "braina")
+        self.assertEqual(len(removed), 1)
+        node = removed[0]
+        self.assertEqual(node.uuid, "node-1")
+        self.assertEqual(node.name, "Alice")
+        self.assertEqual(node.observations[0].text, "seen")
+        self.assertEqual(node.observations[0].resource_id, "res-1")
+        self.assertIsInstance(node.last_updated, dt)
+        self.assertEqual(node.properties["note"], "ok")
+        query, params, _db = client.driver.calls[0]
+        self.assertIn("DELETE n", query)
+        self.assertEqual(params["uuids"], ["node-1"])
+
+    def test_list_incident_relationship_uuids_uses_params(self):
+        payload = "'; MATCH (n) DETACH DELETE n //"
+        client = _client(records=[_Record({"uuid": payload, "rels": [payload, None]})])
+        found = client.list_incident_relationship_uuids([payload, "other"], "braina")
+        self.assertEqual(found[payload], [payload])
+        self.assertEqual(found["other"], [])
+        query, params, _db = client.driver.calls[0]
+        self.assertNotIn(payload, query)
+        self.assertEqual(params["uuids"], [payload, "other"])
 
     def test_add_nodes_skips_uuid_property_and_encodes_observations(self):
         client = _client(records=[_Record({"n": 1})])
