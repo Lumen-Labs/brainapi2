@@ -11,7 +11,7 @@ Academic memory/search leaderboards stay in [`benchmarks/`](../benchmarks/). Thi
 | Id | What it tests | BrainAPI on current main |
 | --- | --- | --- |
 | `versioned_rules` | As-of clause text and changelogs over dated regulation versions | Adapter is **pluggable**. A native `as_of`/`point_in_time`/`valid_at` field is used when OpenAPI (or `EVAL_AS_OF_FIELD`) exposes it. Until then, versioned-rule questions send `include_history=true` (interim; **not** a date filter) and record `as_of_mode`. |
-| `policy_conflicts` | Precision/recall of contradicting statement pairs | Adapter is **pluggable** (`EVAL_CONFLICT_PATH` / `temporal_conflicts` sidecar). Graph hub/entity UUIDs are mapped back to ingested statement/doc ids before scoring; if mapping is impossible the pair metric is **unsupported**, not 0. |
+| `policy_conflicts` | Precision/recall of contradicting statement pairs | Default path is **scan-then-list**: `POST /retrieve/conflicts/scan`, wait for the job, then `GET /retrieve/conflicts`. Results map to ingested statement/doc ids before scoring. Scan/list failures are recorded as **error** or **skipped**; they do not fall back to the `temporal_conflicts` sidecar. |
 | `expert_knowhow` | Multi-hop procedural QA over runbooks | **Runnable on current main.** |
 | `decision_precedent` | Optional: prior incident decisions | Same path as know-how. |
 
@@ -104,8 +104,9 @@ Do **not** hardcode or commit secrets. Staging keys are expected to already exis
 | `EVAL_EMBEDDING_API_KEY` / `EVAL_EMBEDDING_BASE_URL` / `EVAL_EMBEDDING_MODEL` | optional | OpenAI embeddings, or override the dense model name. |
 | `EVAL_RERANKER` / `EVAL_CROSS_ENCODER_MODEL` | optional | Default `cross-encoder` (`BAAI/bge-reranker-v2-m3`). `lexical` is smoke-only. |
 | `EVAL_AS_OF_FIELD` | optional | If OpenAPI `GetContextRequestBody` grows an as-of field, set its name (e.g. `as_of`). That native field takes precedence. Until then the adapter sends `include_history=true` for as-of/changelog questions when that flag exists; `include_history` is not a date filter. |
-| `EVAL_CONFLICT_PATH` | optional | Future pair-conflict endpoint, e.g. `/retrieve/conflicts`. |
-| `EVAL_CONFLICT_PLUGIN` | optional | Default `temporal_conflicts` (sidecar on `/retrieve/context`). Results are mapped to ingested statement/doc ids before pair F1 is scored. |
+| `EVAL_CONFLICT_PATH` | optional | GET list path. Default `/retrieve/conflicts`. Never POSTed. |
+| `EVAL_CONFLICT_SCAN_PATH` | optional | POST scan path. Default `/retrieve/conflicts/scan`. Conflict evals scan, wait, then list. Failures are error/skipped, not a silent sidecar fallback. Sidecar-only mode needs both `EVAL_CONFLICT_SCAN_PATH=off` and `EVAL_CONFLICT_PATH=off`; turning off only the scan path still uses scan-then-list because the list path default remains. |
+| `EVAL_CONFLICT_PLUGIN` | optional | Default `temporal_conflicts` (sidecar on `/retrieve/context`) when scan-then-list is disabled. Results are mapped to ingested statement/doc ids before pair F1 is scored. |
 | `EVAL_RUNS_DIR` / `EVAL_SCALE` / `EVAL_BRAIN_PREFIX` | optional | Defaults: `evals/runs`, `local/small-scale`, `evaluc`. |
 
 The harness **never** writes locomo/beam/searchbench/demorecsys brains.

@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import unittest
 
-from evals.baseline.dates import filter_as_of, in_force, parse_date
+from evals.baseline.dates import (
+    filter_as_of,
+    in_force,
+    parse_date,
+    require_document_source_timestamp,
+)
 from evals.baseline.index import HASH_INDEX_CONFIG, build_index
 from evals.datasets.loader import load_corpus, load_questions
 from evals.metrics import must_include
@@ -24,6 +29,23 @@ class AsOfTests(unittest.TestCase):
         self.assertFalse(in_force({}, "2024-01-10"))
         self.assertFalse(in_force({"valid_to": "2025-01-01"}, "2024-01-10"))
         self.assertTrue(in_force({}, None))
+
+    def test_versioned_ingest_timestamp_must_parse(self) -> None:
+        self.assertEqual(
+            require_document_source_timestamp({"id": "d", "valid_at": "2021-06-15"}),
+            "2021-06-15",
+        )
+        self.assertEqual(
+            require_document_source_timestamp(
+                {"id": "d", "source_timestamp": "2021-06-15T12:00:00Z"}
+            ),
+            "2021-06-15T12:00:00Z",
+        )
+        with self.assertRaises(ValueError):
+            require_document_source_timestamp({"id": "d", "valid_from": "0000-00-00"})
+        with self.assertRaises(ValueError) as ctx:
+            require_document_source_timestamp({"id": "d", "valid_from": "2021-06-15xyz"})
+        self.assertIn("unparseable", str(ctx.exception))
 
     def test_versioned_rules_filter_picks_v1_payment(self) -> None:
         docs = load_corpus("versioned_rules")

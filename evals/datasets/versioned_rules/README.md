@@ -29,4 +29,4 @@ Short answers use exact match plus `must_include` phrases. Changelog items requi
 
 ## BrainAPI note
 
-Current main has no `as_of` query parameter. The BrainAPI adapter feature-detects a native as-of field when OpenAPI/`EVAL_AS_OF_FIELD` exposes one and uses that first. Until that lands it sends `include_history=true` for as-of and changelog questions (`include_history` is not a date filter) and records `as_of_mode` on each result.
+Every ingested versioned document must send a parseable `source_timestamp` / `valid_from` / `valid_at`. The loader rejects missing or unparseable dates so as-of lookups are not fail-closed as undated. The adapter feature-detects a native as-of field when OpenAPI/`EVAL_AS_OF_FIELD` exposes one and uses that first. Until then it sends `include_history=true` for as-of and changelog questions (`include_history` is not a date filter) and records `as_of_mode` on each result.

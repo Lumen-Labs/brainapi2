@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import unittest
 
-from evals.baseline.dates import filter_as_of
+from evals.baseline.dates import (
+    filter_as_of,
+    require_document_source_timestamp,
+)
 from evals.baseline.index import DEFAULT_HYBRID_CONFIG
 from evals.config import (
     CHEAP_CROSS_ENCODER,
@@ -55,6 +58,44 @@ class DatasetTests(unittest.TestCase):
         for doc in bundle["corpus"]:
             self.assertTrue(doc.get("valid_from"), doc["id"])
             self.assertTrue(doc.get("clause_id"), doc["id"])
+            stamp = require_document_source_timestamp(doc, doc["id"])
+            self.assertTrue(stamp)
+
+    def test_versioned_loader_rejects_missing_or_unparseable_dates(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            require_document_source_timestamp(
+                {"id": "famr-x", "text": "hello", "clause_id": "FAMR 1"},
+                "corpus.jsonl",
+            )
+        self.assertIn("missing parseable", str(ctx.exception))
+        with self.assertRaises(ValueError) as ctx:
+            require_document_source_timestamp(
+                {
+                    "id": "famr-x",
+                    "text": "hello",
+                    "valid_from": "not-a-date",
+                },
+                "corpus.jsonl",
+            )
+        self.assertIn("unparseable", str(ctx.exception))
+        stamp = require_document_source_timestamp(
+            {
+                "id": "famr-ok",
+                "text": "hello",
+                "source_timestamp": "2021-06-15",
+            }
+        )
+        self.assertEqual(stamp, "2021-06-15")
+        with self.assertRaises(ValueError) as ctx:
+            require_document_source_timestamp(
+                {
+                    "id": "famr-x",
+                    "text": "hello",
+                    "valid_from": "2021-06-15xyz",
+                },
+                "corpus.jsonl",
+            )
+        self.assertIn("unparseable", str(ctx.exception))
 
     def test_versioned_test_gold_is_in_force_text(self) -> None:
         bundle = load_use_case("versioned_rules")

@@ -102,6 +102,37 @@ class CompareSystemsTests(unittest.TestCase):
         self.assertIsNone(scored["correct"])
         self.assertEqual(scored["scoring"], "conflict_pairs_unsupported")
 
+    def test_score_one_marks_scan_failure_as_error(self) -> None:
+        result = QueryResult(
+            answer="",
+            conflict_pairs=[],
+            notes=["conflict_scan_error"],
+        )
+        scored = _score_one(
+            {"task": "conflict_audit"},
+            result,
+            gold_pairs=[("stmt-a", "stmt-b")],
+        )
+        self.assertFalse(scored.get("unsupported"))
+        self.assertEqual(scored["scoring"], "conflict_scan_error")
+        self.assertEqual(scored["correct"], False)
+        self.assertIn("scan failed", scored["error"])
+
+    def test_score_one_marks_scan_unavailable_as_skipped(self) -> None:
+        result = QueryResult(
+            answer="",
+            conflict_pairs=[],
+            notes=["conflict_scan_unavailable"],
+        )
+        scored = _score_one(
+            {"task": "conflict_audit"},
+            result,
+            gold_pairs=[("stmt-a", "stmt-b")],
+        )
+        self.assertTrue(scored["unsupported"])
+        self.assertIsNone(scored["correct"])
+        self.assertIn("not available", scored["reason"])
+
     def test_score_one_marks_unavailable_producer_unsupported(self) -> None:
         result = QueryResult(
             answer="",

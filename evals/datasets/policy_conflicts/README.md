@@ -25,4 +25,4 @@ Gold pairs are mostly **seeded** (one documented numeric or required/optional mu
 
 ## BrainAPI note
 
-Current main may return `temporal_conflicts` on `/retrieve/context` as graph hub/entity UUIDs, which are not statement-pair gold. The adapter maps those ids back to ingested `statement_id` / document ids (headers at ingest, `meta_keys`, retrieve metadata) before scoring. If mapping is impossible, pair F1 is marked **unsupported** rather than 0. A future `EVAL_CONFLICT_PATH` is still used when present.
+The BrainAPI arm defaults to `POST /retrieve/conflicts/scan`, waits for the job, then `GET /retrieve/conflicts`. Side `source_key` / chunk ids are mapped back to ingested `statement_id` / document ids before scoring. Scan or list failures are recorded as error or skipped and do not fall back to `temporal_conflicts` on `/retrieve/context`. Sidecar-only mode requires both `EVAL_CONFLICT_SCAN_PATH=off` and `EVAL_CONFLICT_PATH=off`.

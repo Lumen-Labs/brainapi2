@@ -1,6 +1,18 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from typing import Any
+
+TIMESTAMP_FIELDS = ("source_timestamp", "valid_from", "valid_at")
+
+
+_TIMESTAMP_FORMATS = (
+    "%Y-%m-%d",
+    "%Y/%m/%d",
+    "%d/%m/%Y",
+    "%Y-%m-%dT%H:%M:%S",
+    "%Y-%m-%dT%H:%M:%S.%f",
+)
 
 
 def parse_date(value: str | None) -> date | None:
@@ -17,6 +29,20 @@ def parse_date(value: str | None) -> date | None:
         return date.fromisoformat(raw[:10])
     except ValueError:
         return None
+
+
+def parse_timestamp(value: str | None) -> str | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    cleaned = raw[:-1] if raw.endswith("Z") else raw
+    for fmt in _TIMESTAMP_FORMATS:
+        try:
+            datetime.strptime(cleaned, fmt)
+            return raw
+        except ValueError:
+            continue
+    return None
 
 
 def in_force(doc: dict, as_of: str | None) -> bool:
@@ -40,3 +66,43 @@ def filter_as_of(docs: list[dict], as_of: str | None) -> list[dict]:
     if not as_of:
         return list(docs)
     return [doc for doc in docs if in_force(doc, as_of)]
+
+
+def document_source_timestamp(doc: dict[str, Any] | None) -> str | None:
+    if not isinstance(doc, dict):
+        return None
+    for field in TIMESTAMP_FIELDS:
+        raw = doc.get(field)
+        if raw is None:
+            continue
+        text = str(raw).strip()
+        if text:
+            return text
+    return None
+
+
+def is_versioned_document(doc: dict[str, Any] | None) -> bool:
+    if not isinstance(doc, dict):
+        return False
+    if doc.get("clause_id") or doc.get("version"):
+        return True
+    return any(doc.get(field) not in (None, "") for field in TIMESTAMP_FIELDS)
+
+
+def require_document_source_timestamp(
+    doc: dict[str, Any] | None, path: str = ""
+) -> str:
+    loc = f"{path}: " if path else ""
+    payload = doc if isinstance(doc, dict) else {}
+    doc_id = payload.get("id")
+    stamp = document_source_timestamp(payload)
+    if not stamp:
+        raise ValueError(
+            f"{loc}document {doc_id} missing parseable "
+            "source_timestamp/valid_from/valid_at"
+        )
+    if parse_timestamp(stamp) is None:
+        raise ValueError(
+            f"{loc}document {doc_id} has unparseable source timestamp {stamp!r}"
+        )
+    return stamp

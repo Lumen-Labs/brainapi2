@@ -6,7 +6,11 @@ from pathlib import Path
 from typing import Any
 
 from evals.adapters.base import QueryResult, SystemAdapter
-from evals.adapters.brainapi import BrainAPIAdapter
+from evals.adapters.brainapi import (
+    CONFLICT_ERROR_NOTES,
+    CONFLICT_SKIP_NOTES,
+    BrainAPIAdapter,
+)
 from evals.adapters.hybrid import HybridAdapter
 from evals.baseline.dense import make_embedder
 from evals.baseline.rerank import CrossEncoderReranker
@@ -97,17 +101,37 @@ def _score_one(
         }
     if question.get("task") == "conflict_audit":
         notes = result.notes or []
-        mapping_unsupported = (
-            "conflict_mapping_unsupported" in notes
-            or "conflict_capability_pending" in notes
-        )
         gold = question.get("gold_pairs")
         if gold is None and gold_pairs is not None:
             gold = gold_pairs
         gold_t = [pair_key(str(a), str(b)) for a, b in (gold or [])]
         pred_t = [pair_key(str(a), str(b)) for a, b in result.conflict_pairs]
+        error_note = next((item for item in notes if item in CONFLICT_ERROR_NOTES), None)
+        if error_note:
+            reasons = {
+                "conflict_scan_error": "BrainAPI conflict scan failed",
+                "conflict_scan_task_failed": "BrainAPI conflict scan task did not complete",
+                "conflict_list_error": "BrainAPI conflict list failed after scan",
+            }
+            return {
+                "unsupported": False,
+                "error": reasons.get(error_note, error_note),
+                "exact_match": False,
+                "must_include": False,
+                "token_f1": None,
+                "correct": False,
+                "scoring": "conflict_scan_error",
+                "non_pair_leaks": 0,
+                "n_gold": len(gold_t),
+                "n_predicted": 0,
+                "reason": reasons.get(error_note, error_note),
+            }
+        mapping_unsupported = any(item in CONFLICT_SKIP_NOTES for item in notes)
         if mapping_unsupported:
-            pending = "conflict_capability_pending" in notes
+            pending = (
+                "conflict_capability_pending" in notes
+                or "conflict_scan_unavailable" in notes
+            )
             return {
                 "unsupported": True,
                 "exact_match": False,
@@ -119,9 +143,13 @@ def _score_one(
                 "n_gold": len(gold_t),
                 "n_predicted": 0,
                 "reason": (
-                    "BrainAPI conflict pair producer is not available on this deployment"
-                    if pending
-                    else "BrainAPI conflict identifiers could not be mapped to statement/doc gold ids"
+                    "BrainAPI conflict scan/list is not available on this deployment"
+                    if "conflict_scan_unavailable" in notes
+                    else (
+                        "BrainAPI conflict pair producer is not available on this deployment"
+                        if pending
+                        else "BrainAPI conflict identifiers could not be mapped to statement/doc gold ids"
+                    )
                 ),
             }
         prf = conflict_prf(pred_t, gold_t)
@@ -255,13 +283,26 @@ def _conflict_headline_unsupported(records: list[dict[str, Any]]) -> bool:
     return any(
         row.get("unsupported")
         or row.get("scoring") == "conflict_pairs_unsupported"
-        or "conflict_mapping_unsupported" in (row.get("notes") or [])
-        or "conflict_capability_pending" in (row.get("notes") or [])
+        or any(item in CONFLICT_SKIP_NOTES for item in (row.get("notes") or []))
+        for row in records
+    )
+
+
+def _conflict_headline_error(records: list[dict[str, Any]]) -> bool:
+    return any(
+        row.get("scoring") == "conflict_scan_error"
+        or any(item in CONFLICT_ERROR_NOTES for item in (row.get("notes") or []))
         for row in records
     )
 
 
 def _conflict_headline_reason(records: list[dict[str, Any]]) -> str:
+    if any("conflict_scan_unavailable" in (row.get("notes") or []) for row in records):
+        for row in records:
+            reason = str(row.get("reason") or "").strip()
+            if reason:
+                return reason
+        return "BrainAPI conflict scan/list is not available on this deployment"
     pending = any(
         "conflict_capability_pending" in (row.get("notes") or []) for row in records
     )
@@ -278,6 +319,28 @@ def _conflict_headline_reason(records: list[dict[str, Any]]) -> str:
 
 
 def _conflict_headline(records: list[dict[str, Any]], gold_pairs: list[tuple[str, str]]) -> dict[str, Any]:
+    if _conflict_headline_error(records):
+        reason = next(
+            (
+                str(row.get("error") or row.get("reason") or "").strip()
+                for row in records
+                if row.get("error") or row.get("reason")
+            ),
+            "BrainAPI conflict scan failed",
+        )
+        return {
+            "unsupported": False,
+            "error": reason or "BrainAPI conflict scan failed",
+            "f1": None,
+            "precision": None,
+            "recall": None,
+            "tp": 0,
+            "fp": 0,
+            "fn": 0,
+            "n_predicted": 0,
+            "n_gold": len(gold_pairs),
+            "scoring": "conflict_scan_error",
+        }
     if _conflict_headline_unsupported(records):
         return {
             "unsupported": True,
@@ -524,16 +587,17 @@ def compare_systems(
             "reason": "Both systems must complete the same items before a win is claimed.",
         }
     caps = (system_runs.get("brainapi") or {}).get("capabilities") or {}
-    for cap in REQUIRED_BRAINAPI_CAPS.get(use_case or "", ()):
-        if not caps.get(cap):
-            return {
-                "verdict": "capability_pending",
-                "reason": (
-                    f"BrainAPI {cap} is not available on this run; "
-                    "not scored as a loss."
-                ),
-                "missing_capability": cap,
-            }
+    if not caps.get("conflict_error"):
+        for cap in REQUIRED_BRAINAPI_CAPS.get(use_case or "", ()):
+            if not caps.get(cap):
+                return {
+                    "verdict": "capability_pending",
+                    "reason": (
+                        f"BrainAPI {cap} is not available on this run; "
+                        "not scored as a loss."
+                    ),
+                    "missing_capability": cap,
+                }
     if use_case == "versioned_rules":
         mode = str(caps.get("as_of_mode") or "")
         if mode not in {"api_field", "api_schema"}:
