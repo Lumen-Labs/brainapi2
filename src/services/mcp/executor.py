@@ -64,6 +64,11 @@ async def execute_mcp_tool(
             result = await search_semantically(
                 query=str(params.get("query") or ""),
                 brain_id=str(params.get("brain_id") or ""),
+                include_rejected=bool(params.get("include_rejected") or False),
+                as_of=str(params.get("as_of") or "") or None,
+                include_validity_unknown=bool(
+                    params.get("include_validity_unknown") or False
+                ),
             )
             return result if isinstance(result, str) else json.dumps(result, default=str)
         if tool_name == "traverse_graph":

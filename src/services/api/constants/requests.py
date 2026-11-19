@@ -314,6 +314,8 @@ class RetrieveRequestResponse(BaseModel):
     data: List[TextChunk]
     observations: List[Observation]
     relationships: List[dict]
+    validity_unknown_count: Optional[int] = None
+    validity_unknown: Optional[List[dict[str, Any]]] = None
 
     @field_serializer("relationships", when_used="json")
     def _serialize_relationships(self, value: List[Any]):
@@ -624,6 +626,10 @@ class GetContextRequestBody(BaseModel):
         default=None,
         description="ISO-8601 datetime. When set, return the knowledge state valid at that instant.",
     )
+    include_validity_unknown: bool = Field(
+        default=False,
+        description="When as_of is set, include undated facts in validity_unknown.",
+    )
     annotate_conflicts: bool = Field(
         default=False,
         description="When true, mark retrieved facts that are in an open cross-source conflict.",
@@ -666,6 +672,8 @@ class GetContextResponse(BaseModel):
     paths: Optional[List[dict[str, Any]]] = None
     topics: Optional[List[dict[str, Any]]] = None
     stage_timings: Optional[dict[str, Any]] = None
+    validity_unknown_count: Optional[int] = None
+    validity_unknown: Optional[List[dict[str, Any]]] = None
 
 
 class ConflictResolveRequest(BaseModel):
@@ -688,6 +696,10 @@ class SearchRequestBody(BaseModel):
     as_of: Optional[str] = Field(
         default=None,
         description="ISO-8601 datetime. When set, search the knowledge state valid at that instant.",
+    )
+    include_validity_unknown: bool = Field(
+        default=False,
+        description="When as_of is set, include undated hits in validity_unknown.",
     )
     k: int = Field(10, ge=1, le=200)
     channels: List[str] = Field(default_factory=lambda: ["passages"])
@@ -759,3 +771,5 @@ class SearchResponse(BaseModel):
     channel_lists: Optional[dict[str, list[str]]] = None
     facets: Optional[dict[str, dict[str, int]]] = None
     node_ids: List[str] = Field(default_factory=list)
+    validity_unknown_count: Optional[int] = None
+    validity_unknown: Optional[List[dict[str, Any]]] = None

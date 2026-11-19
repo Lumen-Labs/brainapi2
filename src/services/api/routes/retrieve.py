@@ -123,6 +123,10 @@ async def retrieve(
         None,
         description="ISO-8601 datetime. When set, return the knowledge state valid at that instant.",
     ),
+    include_validity_unknown: bool = Query(
+        False,
+        description="When as_of is set, include undated facts in validity_unknown.",
+    ),
     brain_id: str = Depends(get_brain_id),
 ):
     """
@@ -135,6 +139,7 @@ async def retrieve(
         brain_id,
         include_rejected=include_rejected,
         as_of=as_of,
+        include_validity_unknown=include_validity_unknown,
     )
 
 
@@ -774,6 +779,10 @@ async def get_search(
         None,
         description="ISO-8601 datetime. When set, search the knowledge state valid at that instant.",
     ),
+    include_validity_unknown: bool = Query(
+        False,
+        description="When as_of is set, include undated hits in validity_unknown.",
+    ),
     channels: Optional[str] = Query(
         "passages",
         description=(
@@ -826,6 +835,7 @@ async def get_search(
         query=query,
         k=k,
         as_of=as_of,
+        include_validity_unknown=include_validity_unknown,
         channels=channel_list,
         node_labels=node_label_list,
         community_labels=community_label_list,

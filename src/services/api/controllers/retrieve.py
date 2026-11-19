@@ -408,15 +408,19 @@ async def retrieve_data(
     brain_id: str = "default",
     include_rejected: bool = False,
     as_of: Optional[str] = None,
+    include_validity_unknown: bool = False,
 ) -> RetrieveRequestResponse:
     """
     Retrieve data from the knowledge graph and data store.
     """
     from src.core.saving.validity import (
         InvalidAsOf,
-        chunk_is_valid_at,
-        is_valid_at,
+        VALIDITY_UNKNOWN,
+        VALIDITY_VALID,
+        chunk_validity_status,
         optional_instant,
+        unknown_fact,
+        validity_status,
     )
 
     try:
@@ -512,38 +516,71 @@ async def retrieve_data(
         ts_text_chunks, ts_observations, v_text_chunks, v_observations, nodes = (
             await asyncio.to_thread(_get_data)
         )
+    unknown_items: list[dict] = []
     if as_of_dt is not None:
-        excluded_chunk_ids = {
-            chunk.id
-            for chunk in [*ts_text_chunks, *v_text_chunks]
-            if not chunk_is_valid_at(chunk, as_of_dt)
-        }
-        ts_text_chunks = [
-            chunk for chunk in ts_text_chunks if chunk_is_valid_at(chunk, as_of_dt)
-        ]
-        v_text_chunks = [
-            chunk for chunk in v_text_chunks if chunk_is_valid_at(chunk, as_of_dt)
-        ]
+        unknown_chunk_ids: set[str] = set()
+        excluded_chunk_ids: set[str] = set()
+        kept_ts: list = []
+        for chunk in ts_text_chunks:
+            status = chunk_validity_status(chunk, as_of_dt)
+            if status == VALIDITY_UNKNOWN:
+                if chunk.id not in unknown_chunk_ids:
+                    unknown_chunk_ids.add(chunk.id)
+                    unknown_items.append(_unknown_chunk_item(chunk, unknown_fact))
+            elif status == VALIDITY_VALID:
+                kept_ts.append(chunk)
+            else:
+                excluded_chunk_ids.add(chunk.id)
+        kept_v: list = []
+        for chunk in v_text_chunks:
+            status = chunk_validity_status(chunk, as_of_dt)
+            if status == VALIDITY_UNKNOWN:
+                if chunk.id not in unknown_chunk_ids:
+                    unknown_chunk_ids.add(chunk.id)
+                    unknown_items.append(_unknown_chunk_item(chunk, unknown_fact))
+            elif status == VALIDITY_VALID:
+                kept_v.append(chunk)
+            else:
+                excluded_chunk_ids.add(chunk.id)
+        drop_chunk_ids = unknown_chunk_ids | excluded_chunk_ids
+        ts_text_chunks = kept_ts
+        v_text_chunks = kept_v
         ts_observations = [
             obs
             for obs in ts_observations
-            if getattr(obs, "resource_id", None) not in excluded_chunk_ids
+            if getattr(obs, "resource_id", None) not in drop_chunk_ids
         ]
         v_observations = [
             obs
             for obs in v_observations
-            if getattr(obs, "resource_id", None) not in excluded_chunk_ids
+            if getattr(obs, "resource_id", None) not in drop_chunk_ids
         ]
-        nodes = [
-            hit
-            for hit in nodes
-            if _retrieve_hit_valid_at(hit, as_of_dt, is_valid_at)
-        ]
+        kept_nodes = []
+        for hit in nodes:
+            status = _retrieve_hit_validity_status(hit, as_of_dt, validity_status)
+            if status == VALIDITY_UNKNOWN:
+                unknown_items.append(
+                    unknown_fact(
+                        target="relationship",
+                        item_id=_retrieve_hit_id(hit),
+                        payload=hit,
+                    )
+                )
+            elif status == VALIDITY_VALID:
+                kept_nodes.append(hit)
+        nodes = kept_nodes
+
+    envelope = {}
+    if as_of_dt is not None:
+        envelope["validity_unknown_count"] = len(unknown_items)
+        if include_validity_unknown:
+            envelope["validity_unknown"] = unknown_items
 
     return RetrieveRequestResponse(
         data=[*ts_text_chunks, *v_text_chunks],
         observations=[*ts_observations, *v_observations],
         relationships=nodes,
+        **envelope,
     )
 
 
@@ -1417,6 +1454,52 @@ def _retrieve_hit_valid_at(hit: Any, as_of, is_valid_at) -> bool:
     )
 
 
+def _retrieve_hit_validity_status(hit: Any, as_of, validity_status) -> str:
+    if not isinstance(hit, dict):
+        return "valid"
+    rels = hit.get("relationships")
+    if rels is None:
+        predicate = hit.get("predicate")
+        if predicate is None:
+            return "valid"
+        return validity_status(_relationship_fields(predicate), as_of)
+    items = rels if isinstance(rels, (list, tuple)) else [rels]
+    statuses = [
+        validity_status(_relationship_fields(rel), as_of)
+        for rel in items
+        if rel is not None
+    ]
+    if not statuses:
+        return "valid"
+    if any(status == "invalid" for status in statuses):
+        return "invalid"
+    if any(status == "unknown" for status in statuses):
+        return "unknown"
+    return "valid"
+
+
+def _retrieve_hit_id(hit: Any) -> str:
+    if not isinstance(hit, dict):
+        return ""
+    rels = hit.get("relationships")
+    if isinstance(rels, dict):
+        return str(rels.get("uuid") or rels.get("name") or "")
+    predicate = hit.get("predicate")
+    if isinstance(predicate, dict):
+        return str(predicate.get("uuid") or predicate.get("name") or "")
+    uuid = getattr(predicate, "uuid", None) if predicate is not None else None
+    return str(uuid or "")
+
+
+def _unknown_chunk_item(chunk: Any, unknown_fact) -> dict:
+    payload = chunk.model_dump(mode="json") if hasattr(chunk, "model_dump") else chunk
+    return unknown_fact(
+        target="chunk",
+        item_id=str(getattr(chunk, "id", "") or ""),
+        payload=payload,
+    )
+
+
 def _is_currently_valid(
     predicate: Predicate, as_of: datetime | None = None
 ) -> bool:
@@ -2062,6 +2145,8 @@ async def _build_context(
 
     query_vector: list[float] | None = None
     explicit_history = request.include_history
+    unknown_facts: list[dict[str, Any]] = []
+    unknown_passages: list[dict[str, Any]] = []
     if as_of is not None:
         include_history = False
     elif explicit_history is None:
@@ -2104,13 +2189,40 @@ async def _build_context(
             with profile_stage(
                 "graph.event_neighbors", seed_uuids=len(seed_uuids)
             ) as neighbors_detail:
+                as_of_stamp = None
+                if as_of is not None:
+                    from src.core.saving.validity import format_instant
+
+                    as_of_stamp = format_instant(as_of)
                 neighbors = graph_adapter.get_event_centric_neighbors(
-                    seed_uuids, brain_id=request.brain_id
+                    seed_uuids, brain_id=request.brain_id, as_of=as_of_stamp
                 )
                 neighbors_detail["rows"] = len(neighbors)
             local: list[dict[str, Any]] = []
             with profile_stage("facts.assemble"):
                 for n, r, m, r2, b in neighbors:
+                    if as_of is not None:
+                        from src.core.saving.validity import (
+                            VALIDITY_UNKNOWN,
+                            predicate_validity_status,
+                            unknown_fact,
+                        )
+
+                        status_r = predicate_validity_status(r, as_of)
+                        status_r2 = predicate_validity_status(r2, as_of)
+                        if status_r == VALIDITY_UNKNOWN or status_r2 == VALIDITY_UNKNOWN:
+                            unknown_facts.append(
+                                unknown_fact(
+                                    target="relationship",
+                                    item_id=str(
+                                        getattr(r, "uuid", "")
+                                        or getattr(r2, "uuid", "")
+                                        or ""
+                                    ),
+                                    payload=_format_event_fact(n, r, m, r2, b),
+                                )
+                            )
+                            continue
                     if not _fact_predicates_allowed(
                         r, r2, include_history=include_history, as_of=as_of
                     ):
@@ -2355,13 +2467,25 @@ async def _build_context(
         screen_passage_hits,
     )
 
+    unknown_passage_hits: list = []
     passage_hits = screen_passage_hits(
         data_adapter,
         request.brain_id,
         passage_hits,
         include_history=include_history,
         as_of=as_of,
+        unknown_out=unknown_passage_hits if as_of is not None else None,
     )
+    if as_of is not None:
+        from src.core.saving.validity import unknown_fact
+
+        for chunk_id, _score, body, chunk in unknown_passage_hits:
+            payload = (
+                chunk.model_dump(mode="json") if hasattr(chunk, "model_dump") else body
+            )
+            unknown_passages.append(
+                unknown_fact(target="chunk", item_id=str(chunk_id), payload=payload)
+            )
     ranked = current_fact_candidates(
         data_adapter,
         request.brain_id,
@@ -2525,13 +2649,29 @@ async def _build_context(
                 )
                 seed_hits.extend(seeds)
                 extra_variant_lists.append(local)
+            extra_unknown: list = []
             extra_passages = screen_passage_hits(
                 data_adapter,
                 request.brain_id,
                 extra_passages,
                 include_history=include_history,
                 as_of=as_of,
+                unknown_out=extra_unknown if as_of is not None else None,
             )
+            if as_of is not None:
+                from src.core.saving.validity import unknown_fact
+
+                for chunk_id, _score, body, chunk in extra_unknown:
+                    payload = (
+                        chunk.model_dump(mode="json")
+                        if hasattr(chunk, "model_dump")
+                        else body
+                    )
+                    unknown_passages.append(
+                        unknown_fact(
+                            target="chunk", item_id=str(chunk_id), payload=payload
+                        )
+                    )
             for chunk_id, _, body in extra_passages:
                 if body and body not in source_passages:
                     source_passages.append(body)
@@ -2599,6 +2739,13 @@ async def _build_context(
         passage_block = [f"[passage] {p}" for p in source_passages]
         text_context = "\n".join(topic_block + passage_block + text_lines)
 
+    unknown_items = unknown_passages + unknown_facts
+    envelope: dict[str, Any] = {}
+    if as_of is not None:
+        envelope["validity_unknown_count"] = len(unknown_items)
+        if getattr(request, "include_validity_unknown", False):
+            envelope["validity_unknown"] = unknown_items
+
     return GetContextResponse(
         text_context=text_context,
         triples=triples,
@@ -2608,4 +2755,5 @@ async def _build_context(
         temporal_conflicts=temporal_conflicts or None,
         paths=response_paths or None,
         topics=response_topics or None,
+        **envelope,
     )

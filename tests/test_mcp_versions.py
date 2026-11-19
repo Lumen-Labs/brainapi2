@@ -141,6 +141,10 @@ class ChangelogToolTests(unittest.TestCase):
         self.assertIn('tool_name == "conflict_report"', executor)
         instructions = (root / "src/services/mcp/main.py").read_text(encoding="utf-8")
         self.assertIn("HISTORY_NAVIGATION_GUIDE", instructions)
+        spec = next(item for item in MCP_TOOL_SPECS if item["name"] == "search_semantically")
+        self.assertIn("as_of", spec["parameters"])
+        self.assertIn("include_validity_unknown", spec["parameters"])
+        self.assertIn("include_validity_unknown", executor)
 
 
 class SourceVersionToolTests(unittest.TestCase):

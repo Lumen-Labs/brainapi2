@@ -428,11 +428,15 @@ async def _search(request: SearchRequestBody) -> SearchResponse:
             for item_id in ranked_ids
             if hit_matches_extras(extras_by_id.get(item_id), request.extras)
         ]
+    unknown_items: list[dict[str, Any]] = []
     if as_of is not None:
+        from src.core.saving.validity import unknown_fact
+
         passage_ids = [
             item_id for item_id in ranked_ids if item_id not in graph_by_id
         ]
         if passage_ids:
+            unknown_hits: list = []
             screened = screen_passage_hits(
                 data_adapter,
                 brain_id,
@@ -442,6 +446,7 @@ async def _search(request: SearchRequestBody) -> SearchResponse:
                 ],
                 include_history=False,
                 as_of=as_of,
+                unknown_out=unknown_hits,
             )
             allowed = {item_id for item_id, _, _ in screened}
             ranked_ids = [
@@ -450,6 +455,19 @@ async def _search(request: SearchRequestBody) -> SearchResponse:
                 if item_id in graph_by_id or item_id in allowed
             ]
             ranked_ids = ranked_ids[: retrieve_k_for_mode(request.mode, k)]
+            for chunk_id, _score, body, chunk in unknown_hits:
+                payload = (
+                    chunk.model_dump(mode="json")
+                    if hasattr(chunk, "model_dump")
+                    else body
+                )
+                unknown_items.append(
+                    unknown_fact(
+                        target="chunk",
+                        item_id=str(chunk_id),
+                        payload=payload,
+                    )
+                )
     node_id_by_hit: dict[str, str | None] = {}
     for item_id in ranked_ids:
         graph_hit = graph_by_id.get(item_id)
@@ -531,6 +549,11 @@ async def _search(request: SearchRequestBody) -> SearchResponse:
             continue
         seen_nodes.add(hit.node_id)
         node_ids.append(hit.node_id)
+    envelope: dict[str, Any] = {}
+    if as_of is not None:
+        envelope["validity_unknown_count"] = len(unknown_items)
+        if getattr(request, "include_validity_unknown", False):
+            envelope["validity_unknown"] = unknown_items
     return SearchResponse(
         hits=hits,
         facets=facet_counts_from_extras([hit.extras for hit in hits]),
@@ -544,4 +567,5 @@ async def _search(request: SearchRequestBody) -> SearchResponse:
             "literal": list(literal_ids),
         },
         node_ids=node_ids,
+        **envelope,
     )

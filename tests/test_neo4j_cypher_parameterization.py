@@ -557,6 +557,67 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
         self.assertEqual(params["limit"], 5)
         self.assertNotIn(payload, query)
 
+    def test_list_validity_relationships_pushes_window_into_cypher(self):
+        client = _client()
+        client.list_validity_relationships(
+            "braina",
+            skip=10,
+            limit=5,
+            since="2024-01-01T00:00:00Z",
+            until="2025-01-01T00:00:00Z",
+        )
+        query, params, _db = client.driver.calls[0]
+        self.assertIn("WHERE", query)
+        self.assertIn("$since", query)
+        self.assertIn("$until", query)
+        self.assertIn(">= $since", query)
+        self.assertIn("< $until", query)
+        self.assertIn("SKIP $skip LIMIT $limit", query)
+        self.assertNotIn("MATCH (n)-[r]->(m)\nRETURN", query)
+        self.assertEqual(params["since"], "2024-01-01T00:00:00Z")
+        self.assertEqual(params["until"], "2025-01-01T00:00:00Z")
+        self.assertEqual(params["skip"], 10)
+        self.assertEqual(params["limit"], 5)
+        count_query, count_params, _count_db = client.driver.calls[1]
+        self.assertIn("WHERE", count_query)
+        self.assertIn("$since", count_query)
+        self.assertIn("until", count_params)
+        self.assertEqual(count_params["since"], "2024-01-01T00:00:00Z")
+
+    def test_get_event_centric_neighbors_as_of_uses_valid_at_helper(self):
+        client = _client()
+        client.get_event_centric_neighbors(
+            ["alice"], "braina", as_of="2024-06-01T00:00:00Z"
+        )
+        query, params, _db = client.driver.calls[0]
+        self.assertIn("$as_of", query)
+        self.assertIn("valid_from", query)
+        self.assertIn("valid_at", query)
+        self.assertEqual(params["as_of"], "2024-06-01T00:00:00Z")
+
+    def test_ensure_database_creates_validity_range_indexes(self):
+        client = Neo4jClient.__new__(Neo4jClient)
+        client.driver = _Driver()
+        client._verify_database_accessible = MagicMock(return_value=True)
+        client.ensure_database("braina")
+        queries = [query for query, _params, _db in client.driver.calls]
+        self.assertTrue(queries)
+        self.assertTrue(
+            all("CREATE RANGE INDEX" in query for query in queries),
+            queries,
+        )
+        joined = "\n".join(queries)
+        for key in (
+            "valid_from",
+            "valid_to",
+            "recorded_at",
+            "valid_at",
+            "inserted_at",
+            "invalid_at",
+            "superseded_at",
+        ):
+            self.assertIn(key, joined)
+
     def test_execute_operation_rejects_injected_database_name(self):
         client = _client()
         with self.assertRaises(InvalidCypherIdentifier):

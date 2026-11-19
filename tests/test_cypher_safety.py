@@ -44,8 +44,10 @@ from src.lib.cypher_safety import (
     quote_labels,
     quote_rel_type,
     quote_rel_types_pattern,
+    relationship_as_of_match_clause,
     relationship_changed_in_window_clause,
     relationship_valid_at_clause,
+    relationship_validity_unknown_clause,
     require_database_name,
     require_int,
     require_limit,
@@ -153,10 +155,14 @@ class CypherSafetyHelperTests(unittest.TestCase):
         self.assertIn("r['recorded_at']", window)
         self.assertIn("r['valid_at']", window)
         self.assertIn("r['inserted_at']", window)
+        self.assertIn("r['valid_from']", window)
+        self.assertIn("r['superseded_at']", window)
         self.assertIn("IS NOT NULL", window)
-        self.assertNotIn("$since", window)
-        self.assertNotIn("$until", window)
-        self.assertNotIn(">=", window)
+        self.assertIn("$since", window)
+        self.assertIn("$until", window)
+        self.assertIn(">= $since", window)
+        self.assertIn("< $until", window)
+        self.assertNotIn("MATCH", window)
         combined = window + " AND n['uuid'] IN $subject_uuids"
         self.assertTrue(combined.startswith("("))
         self.assertIn(") AND n['uuid'] IN $subject_uuids", combined)
@@ -164,6 +170,10 @@ class CypherSafetyHelperTests(unittest.TestCase):
             relationship_valid_at_clause("r`", "as_of")
         with self.assertRaises(InvalidCypherIdentifier):
             relationship_changed_in_window_clause("r", "since; MATCH", "until")
+        as_of_match = relationship_as_of_match_clause("r", "as_of")
+        self.assertIn(relationship_valid_at_clause("r", "as_of"), as_of_match)
+        self.assertIn(relationship_validity_unknown_clause("r"), as_of_match)
+        self.assertIn("$as_of", as_of_match)
 
     def test_bound_integers(self):
         self.assertEqual(require_limit(10), 10)

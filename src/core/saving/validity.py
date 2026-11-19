@@ -4,10 +4,13 @@ Canonical stored timestamps are ISO-8601 UTC (``YYYY-MM-DDTHH:MM:SSZ``).
 Readers still accept historical ``invalid_at`` / ``superseded_at`` /
 ``valid_at`` stamps so existing brains keep answering without a backfill.
 ``as_of`` lookups fail closed: a copy with no valid-time start
-(``valid_from`` / ``valid_at``) is omitted. Ingest/transaction time
-(``recorded_at`` / ``inserted_at``) is not a valid-time start. Default
-retrieve (no ``as_of``) still hides superseded and invalidated copies
-unless ``include_history`` is on, and still returns undated live copies.
+(``valid_from`` / ``valid_at``) is omitted from the snapshot. Callers
+may report those omitted copies via ``validity_unknown_count`` and, when
+opted in, a separate ``validity_unknown`` list flagged
+``validity: "unknown"``. Ingest/transaction time (``recorded_at`` /
+``inserted_at``) is not a valid-time start. Default retrieve (no
+``as_of``) still hides superseded and invalidated copies unless
+``include_history`` is on, and still returns undated live copies.
 """
 
 from __future__ import annotations
@@ -21,6 +24,9 @@ VALID_FROM = "valid_from"
 VALID_TO = "valid_to"
 SUPERSEDED_BY = "superseded_by"
 RECORDED_AT = "recorded_at"
+VALIDITY_VALID = "valid"
+VALIDITY_INVALID = "invalid"
+VALIDITY_UNKNOWN = "unknown"
 VALIDITY_PROPERTY_KEYS = (VALID_FROM, VALID_TO, SUPERSEDED_BY)
 
 _AS_OF_FORMATS = (
@@ -176,6 +182,34 @@ def _valid_to_of(fields: Mapping[str, Any]) -> datetime | None:
     )
 
 
+def has_valid_time_start(fields: Mapping[str, Any] | None) -> bool:
+    return _valid_from_of(_mapping(fields)) is not None
+
+
+def validity_status(
+    fields: Mapping[str, Any] | None,
+    as_of: datetime | None,
+    *,
+    inserted_at: Any = None,
+    deprecated: bool = False,
+) -> str:
+    """Classify a copy for an as-of snapshot.
+
+    Live retrieve (``as_of is None``) never reports unknown; undated current
+    copies stay ``valid``. A snapshot without a valid-time start is
+    ``unknown`` and is omitted from the fail-closed result.
+    """
+    if as_of is None:
+        return VALIDITY_VALID if is_valid_at(
+            fields, None, inserted_at=inserted_at, deprecated=deprecated
+        ) else VALIDITY_INVALID
+    if not has_valid_time_start(fields):
+        return VALIDITY_UNKNOWN
+    if is_valid_at(fields, as_of, inserted_at=inserted_at, deprecated=deprecated):
+        return VALIDITY_VALID
+    return VALIDITY_INVALID
+
+
 def is_valid_at(
     fields: Mapping[str, Any] | None,
     as_of: datetime | None,
@@ -212,10 +246,35 @@ def chunk_is_valid_at(chunk: Any, as_of: datetime | None) -> bool:
     return is_valid_at(meta, as_of)
 
 
+def chunk_validity_status(chunk: Any, as_of: datetime | None) -> str:
+    meta = _mapping(getattr(chunk, "metadata", None))
+    return validity_status(meta, as_of)
+
+
 def predicate_is_valid_at(predicate: Any, as_of: datetime | None) -> bool:
     props = _mapping(getattr(predicate, "properties", None))
     deprecated = bool(getattr(predicate, "deprecated", False) or props.get("deprecated"))
     return is_valid_at(props, as_of, deprecated=deprecated)
+
+
+def predicate_validity_status(predicate: Any, as_of: datetime | None) -> str:
+    props = _mapping(getattr(predicate, "properties", None))
+    deprecated = bool(getattr(predicate, "deprecated", False) or props.get("deprecated"))
+    return validity_status(props, as_of, deprecated=deprecated)
+
+
+def unknown_fact(
+    *,
+    target: str,
+    item_id: str = "",
+    payload: Any = None,
+) -> dict[str, Any]:
+    row: dict[str, Any] = {"validity": VALIDITY_UNKNOWN, "target": target}
+    if item_id:
+        row["id"] = item_id
+    if payload is not None:
+        row["payload"] = payload
+    return row
 
 
 def interval_overlaps(

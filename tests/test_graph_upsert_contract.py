@@ -232,6 +232,21 @@ class Neo4jUpsertContractTests(unittest.TestCase):
         self.assertEqual(params["object_uuid"], "b")
         self.assertEqual(params["predicate_uuid"], "rel-1")
 
+    def test_relationship_timestamp_indexes_are_declared(self):
+        from src.lib.postgresql.graph_store import PostgreSQLGraphStore
+
+        ddl = PostgreSQLGraphStore._DDL
+        for key in (
+            "valid_from",
+            "valid_to",
+            "recorded_at",
+            "valid_at",
+            "inserted_at",
+            "invalid_at",
+            "superseded_at",
+        ):
+            self.assertIn(f"idx_kg_relationships_{key}", ddl)
+
 
 if __name__ == "__main__":
     unittest.main()
