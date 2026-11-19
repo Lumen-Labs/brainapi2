@@ -162,6 +162,12 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
         self.assertIsNone(client._python_datetime("not-a-timestamp"))
         parsed = client._python_datetime("2024-01-02T03:04:05+00:00")
         self.assertIsInstance(parsed, dt)
+        self.assertIsNone(client._stored_happened_at("unknown"))
+        self.assertIsNone(client._stored_happened_at(""))
+        self.assertEqual(
+            client._stored_happened_at("2024-01-02T03:04:05+00:00"),
+            parsed.isoformat(),
+        )
 
     def test_node_accepts_neo4j_datetime_last_updated(self):
         from datetime import datetime as dt

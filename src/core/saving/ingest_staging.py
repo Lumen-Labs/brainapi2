@@ -246,9 +246,16 @@ def seal_units(brain_id, root_id):
 
 
 def _completed_units(run):
+    units = (run or {}).get("units") or {}
+    if not isinstance(units, dict):
+        return []
     return sorted(
-        (unit for unit in run["units"].values() if unit["state"] == "complete"),
-        key=lambda unit: unit["ordinal"],
+        (
+            unit
+            for unit in units.values()
+            if isinstance(unit, dict) and unit.get("state") == "complete"
+        ),
+        key=lambda unit: unit.get("ordinal", 0),
     )
 
 
@@ -282,6 +289,16 @@ def advance_publication(brain_id, root_id, cursor):
         return {"publication_cursor": cursor + 1}
 
     return ingest_cancellation._change(brain_id, root_id, transition)
+
+
+def published_units_before_cursor(brain_id, root_id):
+    """Completed units already applied before the current publication cursor."""
+    run = ingest_cancellation._runs(brain_id).find_one({"_id": root_id})
+    if not run or run.get("status") != "publishing":
+        return []
+    units = _completed_units(run)
+    cursor = int(run.get("publication_cursor") or 0)
+    return units[: max(0, min(len(units), cursor))]
 
 
 def units_to_unpublish(brain_id, root_id):

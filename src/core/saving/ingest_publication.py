@@ -1,6 +1,7 @@
 """Replay a staged unit after the caller has acquired the brain publication gate."""
 
 import json
+import logging
 
 from src.constants.data import Observation, StructuredData, TextChunk
 from src.constants.embeddings import Vector
@@ -22,6 +23,8 @@ from src.core.saving.ingest_staging import (
     units_to_unpublish,
 )
 
+
+logger = logging.getLogger(__name__)
 
 _DATA_OPERATIONS = {
     "save_text_chunk": ("text_chunks", "text_chunk", TextChunk),
@@ -620,6 +623,30 @@ def _conflict_touches(operation):
     return fact_id, subject_uuid
 
 
+def _collect_prior_conflict_touches(brain_id, root_id, fact_ids, subject_uuids):
+    """Add already-published units to ingest conflict scope. True if a read failed."""
+    incomplete = False
+    for unit in ingest_staging.published_units_before_cursor(brain_id, root_id):
+        try:
+            prior = load_output(brain_id, root_id, unit["output_ref"])
+        except Exception:
+            logger.exception(
+                "failed to load prior staged output for conflict scope brain_id=%s root_id=%s ref=%s",
+                brain_id,
+                root_id,
+                unit.get("output_ref"),
+            )
+            incomplete = True
+            continue
+        for operation in prior:
+            fact_id, subject_uuid = _conflict_touches(operation)
+            if fact_id:
+                fact_ids.append(str(fact_id))
+            if subject_uuid:
+                subject_uuids.append(str(subject_uuid))
+    return incomplete
+
+
 def publish_staged_run(brain_id, root_id, acquire_gate, data_client, vector_client, graph_client=None):
     """Apply staged units while the caller's exclusive brain gate is held."""
     fact_ids = []
@@ -648,6 +675,9 @@ def publish_staged_run(brain_id, root_id, acquire_gate, data_client, vector_clie
             raise ValueError(f"Unsupported staged operation {operation_id}")
 
     with acquire_gate(brain_id, root_id):
+        prior_incomplete = _collect_prior_conflict_touches(
+            brain_id, root_id, fact_ids, subject_uuids
+        )
         while publish_next_unit(brain_id, root_id, replay):
             pass
         run = ingest_cancellation._runs(brain_id).find_one({"_id": root_id})
@@ -658,12 +688,23 @@ def publish_staged_run(brain_id, root_id, acquire_gate, data_client, vector_clie
             return
         discard_outputs(brain_id, root_id)
         ingest_staging.mark_cleanup_complete(brain_id, root_id)
+        if prior_incomplete:
+            logger.warning(
+                "skipping ingest conflict scan after incomplete prior-unit read brain_id=%s root_id=%s",
+                brain_id,
+                root_id,
+            )
+            return finished
         try:
             from src.core.saving.conflicts import maybe_detect_after_ingest
 
             maybe_detect_after_ingest(brain_id, fact_ids, subject_uuids=subject_uuids)
         except Exception:
-            pass
+            logger.exception(
+                "conflict detection after staged publish failed brain_id=%s root_id=%s",
+                brain_id,
+                root_id,
+            )
         return finished
 
 

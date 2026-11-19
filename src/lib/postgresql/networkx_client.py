@@ -714,7 +714,7 @@ class NetworkXGraphClient(GraphClient):
         until_dt = parse_instant(until) if until else None
         subject_filter = set(subject_uuids) if subject_uuids else None
         relationship_filter = set(relationship_uuids) if relationship_uuids else None
-        matched: list[tuple[Node, Predicate, Node]] = []
+        matched: list[tuple[str, str, Any, dict]] = []
         for source, target, key, edge_data in brain.graph.edges(keys=True, data=True):
             if subject_filter is not None and source not in subject_filter:
                 continue
@@ -726,7 +726,11 @@ class NetworkXGraphClient(GraphClient):
             if since_dt is not None and until_dt is not None:
                 if not change_kind(props, since_dt, until_dt):
                     continue
-            matched.append(
+            matched.append((source, target, key, props))
+        total = len(matched)
+        page = []
+        for source, target, key, props in matched[skip : skip + limit]:
+            page.append(
                 (
                     Node(
                         uuid=source,
@@ -736,11 +740,11 @@ class NetworkXGraphClient(GraphClient):
                         properties=brain.node_data(source),
                     ),
                     Predicate(
-                        uuid=str(edge_data.get("uuid") or key or ""),
-                        name=str(edge_data.get("rel_type") or ""),
-                        description=edge_data.get("description") or "",
+                        uuid=str(props.get("uuid") or key or ""),
+                        name=str(props.get("rel_type") or ""),
+                        description=props.get("description") or "",
                         properties=props,
-                        deprecated=edge_data.get("deprecated", False),
+                        deprecated=props.get("deprecated", False),
                     ),
                     Node(
                         uuid=target,
@@ -751,8 +755,7 @@ class NetworkXGraphClient(GraphClient):
                     ),
                 )
             )
-        total = len(matched)
-        return matched[skip : skip + limit], total
+        return page, total
 
     def search_entities(
         self,

@@ -46,6 +46,7 @@ from src.lib.cypher_safety import (
     relationship_as_of_match_clause,
     relationship_changed_in_window_clause,
     require_database_name,
+    require_int,
     require_limit,
     require_path_depth,
     static_property_key,
@@ -659,7 +660,10 @@ class Neo4jClient(GraphClient):
     def _stored_happened_at(self, value: Any) -> str | None:
         if value in (None, ""):
             return None
-        return self._python_datetime(value).isoformat()
+        parsed = self._python_datetime(value)
+        if parsed is None:
+            return None
+        return parsed.isoformat()
 
     def _record_field(self, record: Any, key: str, default: Any = None) -> Any:
         if record is None:
@@ -1627,7 +1631,7 @@ class Neo4jClient(GraphClient):
         relationship_uuids: list[str] | None = None,
     ) -> tuple[list[tuple[Node, Predicate, Node]], int]:
         params: dict[str, Any] = {
-            "skip": require_limit(skip, name="skip"),
+            "skip": require_int(skip, name="skip", minimum=0, maximum=10_000_000),
             "limit": require_limit(limit),
         }
         filters: list[str] = []

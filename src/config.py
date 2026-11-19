@@ -720,6 +720,9 @@ class Config:
         self.conflict_detect_llm_max_pairs = int(
             os.getenv("CONFLICT_DETECT_LLM_MAX_PAIRS", "20")
         )
+        self.conflict_detect_max_relationships = int(
+            os.getenv("CONFLICT_DETECT_MAX_RELATIONSHIPS", "10000")
+        )
         self.graph_raw_write_enabled = (
             os.getenv("GRAPH_RAW_WRITE_ENABLED", "false") == "true"
         )

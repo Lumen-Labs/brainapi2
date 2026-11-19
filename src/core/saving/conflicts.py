@@ -8,6 +8,7 @@ is gated by ``CONFLICT_DETECT_ON_INGEST`` (default off).
 from __future__ import annotations
 
 import hashlib
+import inspect
 import logging
 import math
 import os
@@ -208,6 +209,39 @@ def conflict_detect_llm_max_pairs() -> int:
     return int(getattr(config, "conflict_detect_llm_max_pairs", 20) or 20)
 
 
+def conflict_detect_max_relationships() -> int:
+    """Relationship cap for a conflict scan.
+
+    Default is 10000. ``0`` means unlimited (load every relationship).
+    Unset env falls through to ``config.conflict_detect_max_relationships``.
+    """
+    raw = os.getenv("CONFLICT_DETECT_MAX_RELATIONSHIPS")
+    if raw is not None and str(raw).strip() != "":
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            return 10_000
+    try:
+        from src.config import config
+
+        return max(
+            0, int(getattr(config, "conflict_detect_max_relationships", 10_000) or 0)
+        )
+    except Exception:
+        return 10_000
+
+
+def _effective_max_relationships(max_relationships: int | None) -> int | None:
+    cap = (
+        conflict_detect_max_relationships()
+        if max_relationships is None
+        else int(max_relationships)
+    )
+    if cap <= 0:
+        return None
+    return cap
+
+
 class ConflictScanResult:
     """Conflicts plus scan completeness metadata.
 
@@ -223,7 +257,9 @@ class ConflictScanResult:
         total_relationships: int | None = None,
         llm_truncated: bool = False,
         llm_pairs_total: int = 0,
+        llm_pairs_attempted: int = 0,
         llm_pairs_judged: int = 0,
+        llm_pairs_failed: int = 0,
         stale_resolved: int = 0,
     ):
         self.conflicts = list(conflicts or [])
@@ -234,7 +270,9 @@ class ConflictScanResult:
         )
         self.llm_truncated = bool(llm_truncated)
         self.llm_pairs_total = int(llm_pairs_total)
+        self.llm_pairs_attempted = int(llm_pairs_attempted)
         self.llm_pairs_judged = int(llm_pairs_judged)
+        self.llm_pairs_failed = int(llm_pairs_failed)
         self.stale_resolved = int(stale_resolved)
 
     def __iter__(self):
@@ -258,7 +296,9 @@ class ConflictScanResult:
             "total_relationships": self.total_relationships,
             "llm_truncated": self.llm_truncated,
             "llm_pairs_total": self.llm_pairs_total,
+            "llm_pairs_attempted": self.llm_pairs_attempted,
             "llm_pairs_judged": self.llm_pairs_judged,
+            "llm_pairs_failed": self.llm_pairs_failed,
             "stale_resolved": self.stale_resolved,
         }
 
@@ -399,15 +439,44 @@ def _date_key(value) -> tuple[int, int, int] | None:
         return None
 
 
+_TIME_RE = re.compile(
+    r"T(?:\d{1,2}:\d{2}(?::\d{2}(?:[.,]\d+)?)?|\d{4,6}(?:[.,]\d+)?)"
+    r"|\d{1,2}:\d{2}(?::\d{2})?(?:\s*[APap][Mm])?"
+)
+
+
+def _has_clock_time(text: str | None) -> bool:
+    return bool(_TIME_RE.search(str(text or "")))
+
+
+def _instant_key(value) -> tuple | None:
+    if value is None:
+        return None
+    naive = value.replace(tzinfo=None) if getattr(value, "tzinfo", None) else value
+    try:
+        return (
+            naive.year,
+            naive.month,
+            naive.day,
+            naive.hour,
+            naive.minute,
+            naive.second,
+        )
+    except Exception:
+        return None
+
+
 def values_equivalent(left: str, right: str) -> bool:
     a = normalize_value(left)
     b = normalize_value(right)
     if a == b:
         return True
-    date_a = _date_key(parse_date_value(left))
-    date_b = _date_key(parse_date_value(right))
+    date_a = parse_date_value(left)
+    date_b = parse_date_value(right)
     if date_a is not None and date_b is not None:
-        return date_a == date_b
+        if _has_clock_time(left) and _has_clock_time(right):
+            return _instant_key(date_a) == _instant_key(date_b)
+        return _date_key(date_a) == _date_key(date_b)
     qa = parse_quantity(a)
     qb = parse_quantity(b)
     if qa and qb and qa[1] == qb[1]:
@@ -544,10 +613,16 @@ def classify_disagreement(left: dict[str, Any], right: dict[str, Any]) -> tuple[
         return "polarity_conflict", 0.94
     if opposite_polarity(left.get("polarity") or "neutral", right.get("polarity") or "neutral"):
         return "polarity_conflict", 0.95
-    date_a = parse_date_value(left.get("value") or "")
-    date_b = parse_date_value(right.get("value") or "")
-    if date_a is not None and date_b is not None and _date_key(date_a) != _date_key(date_b):
-        return "value_mismatch", 0.96
+    left_value = left.get("value") or ""
+    right_value = right.get("value") or ""
+    date_a = parse_date_value(left_value)
+    date_b = parse_date_value(right_value)
+    if date_a is not None and date_b is not None:
+        if _has_clock_time(left_value) and _has_clock_time(right_value):
+            if _instant_key(date_a) != _instant_key(date_b):
+                return "value_mismatch", 0.96
+        elif _date_key(date_a) != _date_key(date_b):
+            return "value_mismatch", 0.96
     qty_a = parse_quantity(left.get("value") or "")
     qty_b = parse_quantity(right.get("value") or "")
     if qty_a and qty_b and qty_a[1] == qty_b[1] and not math.isclose(qty_a[0], qty_b[0], rel_tol=0.02, abs_tol=0.05):
@@ -563,6 +638,56 @@ def classify_disagreement(left: dict[str, Any], right: dict[str, Any]) -> tuple[
     return "value_mismatch", 0.8
 
 
+def _triple_subject_uuid(triple: Any) -> str:
+    if not triple:
+        return ""
+    return str(getattr(triple[0], "uuid", "") or "")
+
+
+def _triple_relationship_uuid(triple: Any) -> str:
+    if not triple or len(triple) < 2:
+        return ""
+    predicate = triple[1]
+    props = _props(predicate)
+    return str(getattr(predicate, "uuid", None) or props.get("uuid") or "")
+
+
+def _filter_validity_triples(
+    triples: Iterable[Any],
+    subject_uuids: list[str] | None = None,
+    relationship_uuids: list[str] | None = None,
+) -> list[Any]:
+    items = list(triples or [])
+    if subject_uuids:
+        allowed = set(subject_uuids)
+        items = [item for item in items if _triple_subject_uuid(item) in allowed]
+    if relationship_uuids:
+        allowed_rels = set(relationship_uuids)
+        items = [
+            item
+            for item in items
+            if _triple_relationship_uuid(item) in allowed_rels
+        ]
+    return items
+
+
+def _bind_supported_kwargs(method: Callable[..., Any], kwargs: dict[str, Any]) -> dict[str, Any]:
+    try:
+        signature = inspect.signature(method)
+    except (TypeError, ValueError):
+        return dict(kwargs)
+    if any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    ):
+        return dict(kwargs)
+    return {
+        key: value
+        for key, value in kwargs.items()
+        if key in signature.parameters
+    }
+
+
 def _call_list_validity_relationships(
     method: Callable[..., Any],
     brain_id: str,
@@ -572,24 +697,45 @@ def _call_list_validity_relationships(
     subject_uuids: list[str] | None = None,
     relationship_uuids: list[str] | None = None,
 ):
-    try:
-        return method(
-            brain_id,
-            skip=skip,
-            limit=limit,
-            subject_uuids=subject_uuids,
-            relationship_uuids=relationship_uuids,
-        )
-    except TypeError:
-        try:
-            return method(
-                brain_id,
-                skip=skip,
-                limit=limit,
-                subject_uuids=subject_uuids,
-            )
-        except TypeError:
-            return method(brain_id, skip=skip, limit=limit)
+    requested = {"skip": skip, "limit": limit}
+    if subject_uuids:
+        requested["subject_uuids"] = subject_uuids
+    if relationship_uuids:
+        requested["relationship_uuids"] = relationship_uuids
+    accepted = _bind_supported_kwargs(method, requested)
+    missing_filters = [
+        key
+        for key in ("subject_uuids", "relationship_uuids")
+        if key in requested and key not in accepted
+    ]
+    if not missing_filters:
+        return method(brain_id, **accepted)
+    collected: list[Any] = []
+    cursor = 0
+    page = max(int(limit or _REL_PAGE), _REL_PAGE)
+    reported_total = None
+    while True:
+        page_kwargs = dict(accepted)
+        page_kwargs["skip"] = cursor
+        page_kwargs["limit"] = page
+        triples, total = method(brain_id, **page_kwargs)
+        if total is not None:
+            reported_total = int(total)
+        batch = list(triples or [])
+        if not batch:
+            break
+        collected.extend(batch)
+        cursor += len(batch)
+        if reported_total is not None and cursor >= reported_total:
+            break
+        if len(batch) < page:
+            break
+    filtered = _filter_validity_triples(
+        collected,
+        subject_uuids=subject_uuids,
+        relationship_uuids=relationship_uuids,
+    )
+    return filtered[skip : skip + limit], len(filtered)
 
 
 def _load_triples(
@@ -884,6 +1030,8 @@ def find_conflict_candidates(
                     right.get("predicate") or ""
                 ):
                     continue
+                if left.get("deprecated") or right.get("deprecated"):
+                    continue
                 if same_source_revision(left, right):
                     continue
                 if not intervals_overlap(left, right):
@@ -939,7 +1087,7 @@ def detect_conflicts(
         graph,
         brain_id,
         subjects or None,
-        max_relationships=max_relationships,
+        max_relationships=_effective_max_relationships(max_relationships),
     )
     snapshots: list[dict[str, Any]] = []
     chunk_ids: list[str] = []
@@ -974,12 +1122,17 @@ def detect_conflicts(
         if pair_key_for(pair[0]["fact_id"], pair[1]["fact_id"]) not in found
     ]
     llm_pairs_total = len(pending)
+    llm_pairs_attempted = 0
     llm_pairs_judged = 0
+    llm_pairs_failed = 0
     llm_truncated = False
+    judged_pair_keys: set[str] = set()
+    compatible_pair_keys: set[str] = set()
     if llm_on and pending:
         budget = conflict_detect_llm_max_pairs()
         limit = len(pending) if budget <= 0 else min(len(pending), budget)
         llm_truncated = budget > 0 and len(pending) > budget
+        llm_pairs_attempted = limit
         judged: dict[int, tuple[bool, float, str]] = {}
         for start in range(0, limit, _LLM_BATCH):
             batch = pending[start : start + _LLM_BATCH]
@@ -988,21 +1141,26 @@ def detect_conflicts(
             )
             for index, verdict in batch_results.items():
                 judged[start + index] = verdict
-        llm_pairs_judged = limit
         for index, (left, right) in enumerate(pending[:limit]):
+            pair = pair_key_for(left["fact_id"], right["fact_id"])
             verdict = judged.get(index)
             if verdict is None:
                 continue
+            judged_pair_keys.add(pair)
             contradicts, confidence, kind = verdict
             if not contradicts:
+                compatible_pair_keys.add(pair)
                 continue
             conflict = _build_conflict(left, right, kind, confidence, "llm")
             found[conflict.pair_key] = conflict
+        llm_pairs_judged = len(judged_pair_keys)
+        llm_pairs_failed = max(0, llm_pairs_attempted - llm_pairs_judged)
         if llm_truncated:
             logger.warning(
-                "conflict LLM judging truncated brain_id=%s judged=%s total=%s",
+                "conflict LLM judging truncated brain_id=%s judged=%s attempted=%s total=%s",
                 brain_id,
                 llm_pairs_judged,
+                llm_pairs_attempted,
                 llm_pairs_total,
             )
     stored: list[FactConflict] = []
@@ -1019,6 +1177,11 @@ def detect_conflicts(
             live_pair_keys=set(found),
             fact_ids=list(wanted) or None,
             scoped=bool(subjects or wanted),
+            graph=graph,
+            llm_on=llm_on,
+            llm_truncated=llm_truncated,
+            judged_pair_keys=judged_pair_keys,
+            compatible_pair_keys=compatible_pair_keys,
         )
         stored.extend(stale)
     if scan_stats.get("truncated"):
@@ -1035,7 +1198,9 @@ def detect_conflicts(
         total_relationships=scan_stats.get("total"),
         llm_truncated=llm_truncated,
         llm_pairs_total=llm_pairs_total,
+        llm_pairs_attempted=llm_pairs_attempted,
         llm_pairs_judged=llm_pairs_judged,
+        llm_pairs_failed=llm_pairs_failed,
         stale_resolved=len(stale),
     )
 
@@ -1053,19 +1218,24 @@ def _iter_open_conflicts(
     brain_id: str,
     fact_ids: list[str] | None = None,
 ):
-    if fact_ids:
+    collected: list[FactConflict] = []
+    if fact_ids is not None:
+        if not fact_ids:
+            return
         getter = getattr(adapter, "get_open_conflicts_for_facts", None)
         if callable(getter):
             for row in getter(fact_ids, brain_id) or []:
                 conflict = _conflict_from_row(row)
                 if conflict is not None and conflict.status == "open":
-                    yield conflict
+                    collected.append(conflict)
+            for conflict in collected:
+                yield conflict
             return
-    skip = 0
-    page = 200
     listing = getattr(adapter, "get_conflicts_list", None)
     if not callable(listing):
         return
+    skip = 0
+    page = 200
     while True:
         rows, total = listing(brain_id, limit=page, skip=skip, status="open")
         batch = list(rows or [])
@@ -1074,19 +1244,35 @@ def _iter_open_conflicts(
         for row in batch:
             conflict = _conflict_from_row(row)
             if conflict is not None and conflict.status == "open":
-                yield conflict
+                collected.append(conflict)
         skip += len(batch)
         if total is not None and skip >= int(total):
             break
         if len(batch) < page:
             break
+    if fact_ids is not None:
+        wanted = set(fact_ids)
+        collected = [
+            conflict
+            for conflict in collected
+            if wanted.intersection(conflict.fact_ids())
+        ]
+    for conflict in collected:
+        yield conflict
 
 
 def _stale_reason(
     conflict: FactConflict,
     snapshots_by_id: dict[str, dict[str, Any]],
     live_pair_keys: set[str],
+    compatible_pair_keys: set[str] | None = None,
 ) -> str | None:
+    """Return a concrete stale reason, or None.
+
+    Allowed reasons: a side was removed/deprecated, a side was superseded,
+    validity windows no longer overlap, or the values are now compatible.
+    Remaining disagreement is not stale; callers must not invent a catch-all.
+    """
     sides = list(conflict.sides or [])
     if len(sides) < 2:
         return "side_removed:incomplete_sides"
@@ -1127,7 +1313,38 @@ def _stale_reason(
         return "no_longer_holds:validity_no_overlap"
     if classify_disagreement(left, right) is None:
         return "no_longer_holds:values_compatible"
-    return "no_longer_holds"
+    if compatible_pair_keys and pair in compatible_pair_keys:
+        return "no_longer_holds:llm_compatible"
+    return None
+
+
+def _skip_llm_stale(
+    conflict: FactConflict,
+    reason: str,
+    *,
+    llm_on: bool,
+    llm_truncated: bool,
+    judged_pair_keys: set[str],
+) -> bool:
+    """LLM conflicts stay open unless this scan could re-judge them.
+
+    Concrete graph evidence (removed/deprecated/superseded sides, or
+    non-overlapping validity) still closes. Heuristic ``values_compatible``
+    does not close an LLM conflict when the LLM was off, the pair budget
+    truncated the scan, or this pair got no verdict.
+    """
+    if (conflict.detection_method or "") != "llm":
+        return False
+    if reason.startswith("side_removed") or reason.startswith("side_superseded"):
+        return False
+    if reason.startswith("no_longer_holds:validity_no_overlap"):
+        return False
+    pair = pair_key_for(*conflict.fact_ids()[:2]) if len(conflict.fact_ids()) >= 2 else ""
+    if pair and pair in judged_pair_keys:
+        return False
+    if not llm_on or llm_truncated:
+        return True
+    return True
 
 
 def _stale_open_conflicts(
@@ -1138,6 +1355,11 @@ def _stale_open_conflicts(
     live_pair_keys: set[str],
     fact_ids: list[str] | None = None,
     scoped: bool = False,
+    graph: Any | None = None,
+    llm_on: bool = False,
+    llm_truncated: bool = False,
+    judged_pair_keys: set[str] | None = None,
+    compatible_pair_keys: set[str] | None = None,
 ) -> list[FactConflict]:
     snapshots_by_id = {
         str(item.get("fact_id")): item
@@ -1147,6 +1369,8 @@ def _stale_open_conflicts(
     lookup_ids = list(
         dict.fromkeys([*(fact_ids or []), *snapshots_by_id.keys()])
     )
+    if scoped and not lookup_ids:
+        return []
     stale: list[FactConflict] = []
     seen: set[str] = set()
     for conflict in _iter_open_conflicts(
@@ -1155,20 +1379,121 @@ def _stale_open_conflicts(
         if conflict.id in seen or conflict.pair_key in live_pair_keys:
             continue
         seen.add(conflict.id)
-        reason = _stale_reason(conflict, snapshots_by_id, live_pair_keys)
+        unknown = [
+            side.fact_id
+            for side in conflict.sides
+            if side.fact_id and side.fact_id not in snapshots_by_id
+        ]
+        if unknown and graph is not None:
+            triples, _stats = _load_triples(
+                graph,
+                brain_id,
+                relationship_uuids=unknown,
+                max_relationships=len(unknown),
+            )
+            for triple in triples:
+                snapshot = snapshot_from_triple(triple)
+                fact_id = str((snapshot or {}).get("fact_id") or "")
+                if fact_id:
+                    snapshots_by_id[fact_id] = snapshot
+        if conflict.status != "open":
+            continue
+        reason = _stale_reason(
+            conflict,
+            snapshots_by_id,
+            live_pair_keys,
+            compatible_pair_keys=compatible_pair_keys,
+        )
         if not reason:
             continue
-        conflict.status = "resolved"
-        conflict.resolution = ConflictResolution(
+        if _skip_llm_stale(
+            conflict,
+            reason,
+            llm_on=llm_on,
+            llm_truncated=llm_truncated,
+            judged_pair_keys=judged_pair_keys or set(),
+        ):
+            continue
+        updated = conflict.model_copy(deep=True)
+        updated.status = "resolved"
+        updated.resolution = ConflictResolution(
             method="stale",
             notes=reason,
             resolved_at=format_instant(utc_now()),
             resolved_by="conflict_scan",
         )
         updater = getattr(adapter, "update_conflict", None)
-        saved = updater(conflict, brain_id) if callable(updater) else conflict
-        stale.append(saved or conflict)
+        saved = None
+        if callable(updater):
+            try:
+                saved = updater(updated, brain_id, if_status="open")
+            except TypeError:
+                current = None
+                getter = getattr(adapter, "get_conflict_by_id", None)
+                if callable(getter):
+                    current = getter(conflict.id, brain_id)
+                current = _conflict_from_row(current) if current is not None else None
+                if current is not None and current.status != "open":
+                    continue
+                saved = updater(updated, brain_id)
+        else:
+            saved = updated
+        if saved is None:
+            continue
+        stale.append(saved)
     return stale
+
+
+def _reload_conflict(adapter: Any, brain_id: str, conflict_id: str) -> FactConflict | None:
+    getter = getattr(adapter, "get_conflict_by_id", None)
+    if not callable(getter):
+        return None
+    return _conflict_from_row(getter(conflict_id, brain_id))
+
+
+def _save_conflict_if_unchanged(
+    adapter: Any,
+    brain_id: str,
+    conflict: FactConflict,
+    current: FactConflict | None,
+) -> FactConflict | None:
+    if current is None:
+        saver = getattr(adapter, "save_conflict", None)
+        if not callable(saver):
+            return conflict
+        saved = saver(conflict, brain_id)
+        if isinstance(saved, FactConflict):
+            return saved
+        if isinstance(saved, dict):
+            return conflict_from_document(saved)
+        return conflict
+    updater = getattr(adapter, "update_conflict", None)
+    expected_status = current.status
+    expected_method = None
+    if expected_status == "resolved":
+        expected_method = current.resolution.method or ""
+    saved = None
+    if callable(updater):
+        try:
+            kwargs: dict[str, Any] = {"if_status": expected_status}
+            if expected_method is not None:
+                kwargs["if_resolution_method"] = expected_method
+            saved = updater(conflict, brain_id, **kwargs)
+        except TypeError:
+            try:
+                saved = updater(conflict, brain_id, if_status=expected_status)
+            except TypeError:
+                saved = updater(conflict, brain_id)
+    else:
+        saver = getattr(adapter, "save_conflict", None)
+        saved = saver(conflict, brain_id) if callable(saver) else conflict
+    if saved is None:
+        return _reload_conflict(adapter, brain_id, conflict.id)
+    if isinstance(saved, FactConflict):
+        return saved
+    if isinstance(saved, dict):
+        return conflict_from_document(saved)
+    return conflict
 
 
 def upsert_conflict(adapter: Any, brain_id: str, conflict: FactConflict) -> FactConflict | None:
@@ -1181,21 +1506,19 @@ def upsert_conflict(adapter: Any, brain_id: str, conflict: FactConflict) -> Fact
         if callable(by_id):
             existing = by_id(conflict.id, brain_id)
     current = conflict_from_document(existing) if isinstance(existing, dict) else existing
-    if isinstance(current, FactConflict) and current.status in {"resolved", "dismissed"}:
+    if isinstance(current, FactConflict) and current.status == "dismissed":
         return current
-    if isinstance(current, FactConflict):
+    if (
+        isinstance(current, FactConflict)
+        and current.status == "resolved"
+        and (current.resolution.method or "") != "stale"
+    ):
+        return current
+    if isinstance(current, FactConflict) and current.status == "open":
         conflict.detected_at = current.detected_at
         conflict.status = current.status
         conflict.resolution = current.resolution
-    saver = getattr(adapter, "save_conflict", None)
-    if not callable(saver):
-        return conflict
-    saved = saver(conflict, brain_id)
-    if isinstance(saved, FactConflict):
-        return saved
-    if isinstance(saved, dict):
-        return conflict_from_document(saved)
-    return conflict
+    return _save_conflict_if_unchanged(adapter, brain_id, conflict, current)
 
 
 def _optional_graph(graph: Any | None = None) -> Any | None:

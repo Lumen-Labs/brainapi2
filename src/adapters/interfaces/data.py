@@ -369,7 +369,9 @@ class DataClient(ABC):
         raise NotImplementedError("get_conflicts_list method not implemented")
 
     @abstractmethod
-    def update_conflict(self, conflict: FactConflict, brain_id: str) -> FactConflict:
+    def update_conflict(
+        self, conflict: FactConflict, brain_id: str, **kwargs
+    ) -> FactConflict:
         raise NotImplementedError("update_conflict method not implemented")
 
     @abstractmethod
