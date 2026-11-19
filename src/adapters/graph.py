@@ -353,11 +353,32 @@ class GraphAdapter:
         self,
         nodes: list[Node | str],
         brain_id: str = "default",
+        as_of: str | None = None,
     ) -> List[Tuple[Node, Predicate, Node, Predicate, Node]]:
         """
         Get the event-centric neighbors of a node.
         """
-        triples = self.graph.get_event_centric_neighbors(nodes, brain_id)
+        from src.core.saving.validity import format_instant, parse_instant
+
+        as_of_dt = parse_instant(as_of) if as_of is not None else None
+        as_of_stamp = format_instant(as_of_dt) if as_of_dt is not None else None
+        try:
+            triples = self.graph.get_event_centric_neighbors(
+                nodes, brain_id, as_of=as_of_stamp
+            )
+        except TypeError:
+            triples = self.graph.get_event_centric_neighbors(nodes, brain_id)
+        if as_of_dt is not None:
+            from src.core.saving.validity import predicate_validity_status
+
+            kept = []
+            for triple in triples:
+                status_r = predicate_validity_status(triple[1], as_of_dt)
+                status_r2 = predicate_validity_status(triple[3], as_of_dt)
+                if status_r == "invalid" or status_r2 == "invalid":
+                    continue
+                kept.append(triple)
+            triples = kept
         if include_rejected_enabled():
             return triples
         return [

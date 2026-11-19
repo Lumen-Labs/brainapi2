@@ -16,7 +16,10 @@ from src.core.saving.history_intent import cosine
 from src.core.saving.validity import (
     RECORDED_AT,
     VALID_FROM,
+    VALIDITY_UNKNOWN,
+    VALIDITY_VALID,
     chunk_is_valid_at,
+    chunk_validity_status,
     format_instant,
     parse_instant,
     stamp_valid_from,
@@ -301,6 +304,7 @@ def screen_passage_hits(
     *,
     include_history: bool,
     as_of: datetime.datetime | None = None,
+    unknown_out: list | None = None,
 ) -> list[tuple[str, float, str]]:
     ids = [str(chunk_id) for chunk_id, _, _ in hits if chunk_id]
     if not ids:
@@ -318,7 +322,12 @@ def screen_passage_hits(
                 screened.append((chunk_id, score, body))
             continue
         if as_of is not None:
-            if not chunk_is_valid_at(chunk, as_of):
+            status = chunk_validity_status(chunk, as_of)
+            if status == VALIDITY_UNKNOWN:
+                if unknown_out is not None:
+                    unknown_out.append((chunk_id, score, body, chunk))
+                continue
+            if status != VALIDITY_VALID:
                 continue
             screened.append((chunk_id, score, body or getattr(chunk, "text", None) or ""))
             continue
@@ -653,6 +662,7 @@ def screened_passage_texts(
     include_history: bool,
     limit: int,
     as_of: datetime.datetime | None = None,
+    unknown_out: list | None = None,
 ) -> list[str]:
     screened = screen_passage_hits(
         adapter,
@@ -660,6 +670,7 @@ def screened_passage_texts(
         passages,
         include_history=include_history,
         as_of=as_of,
+        unknown_out=unknown_out,
     )
     return [text for _, _, text in screened if text][: max(0, limit)]
 

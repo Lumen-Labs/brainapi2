@@ -8,6 +8,8 @@ class ChatbotMcpPromptTests(unittest.TestCase):
         text = build_mcp_tools_instructions("my-brain")
         self.assertIn("my-brain", text)
         self.assertIn("search_semantically", text)
+        self.assertIn("as_of", text)
+        self.assertIn("include_validity_unknown", text)
         self.assertIn("traverse_graph", text)
         self.assertIn("list_changelogs", text)
         self.assertIn("list_source_versions", text)

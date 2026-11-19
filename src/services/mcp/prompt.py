@@ -17,6 +17,9 @@ MCP_TOOL_SPECS: list[dict[str, object]] = [
         "parameters": {
             "query": "str",
             "brain_id": "str — use the active brain_id for this session",
+            "include_rejected": "bool (optional, default false)",
+            "as_of": "str ISO-8601 (optional): knowledge state valid at that instant",
+            "include_validity_unknown": "bool (optional, default false): include undated facts in validity_unknown",
         },
     },
     {

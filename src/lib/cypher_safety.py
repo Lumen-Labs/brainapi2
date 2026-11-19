@@ -75,6 +75,7 @@ _STATIC_PROPERTY_KEYS = frozenset(
         "polarity",
         "properties",
         "source_chunk_ids",
+        "superseded_at",
         "superseded_by",
         "uuid",
         "v_id",
@@ -404,32 +405,90 @@ def relationship_valid_at_clause(alias: str = "r", param: str = "as_of") -> str:
     return start_ok + " AND " + end_ok
 
 
+def relationship_validity_unknown_clause(alias: str = "r") -> str:
+    """Cypher predicate: alias has no valid-time start."""
+    rel = require_identifier(alias, kind="identifier")
+    start = static_property_key("valid_from")
+    legacy_start = static_property_key("valid_at")
+    return (
+        "("
+        + rel
+        + "['"
+        + start
+        + "'] IS NULL AND "
+        + rel
+        + "['"
+        + legacy_start
+        + "'] IS NULL)"
+    )
+
+
+def relationship_as_of_match_clause(alias: str = "r", param: str = "as_of") -> str:
+    """Valid at $param, or undated so Python can count it as unknown."""
+    return (
+        "(("
+        + relationship_valid_at_clause(alias, param)
+        + ") OR "
+        + relationship_validity_unknown_clause(alias)
+        + ")"
+    )
+
+
+def _timestamp_in_window_term(
+    rel: str, key: str, since_param: str, until_param: str
+) -> str:
+    prop = rel + "['" + static_property_key(key) + "']"
+    canonical = prop + " =~ '^[0-9]{4}-.*Z$'"
+    return (
+        "("
+        + prop
+        + " IS NOT NULL AND (("
+        + canonical
+        + " AND "
+        + prop
+        + " >= $"
+        + since_param
+        + " AND "
+        + prop
+        + " < $"
+        + until_param
+        + ") OR NOT "
+        + canonical
+        + "))"
+    )
+
+
 def relationship_changed_in_window_clause(
     alias: str = "r",
     since_param: str = "since",
     until_param: str = "until",
 ) -> str:
-    """Cypher predicate: alias has a validity stamp Python can window-filter.
+    """Cypher predicate: an indexed ISO timestamp falls in [$since, $until).
 
-    Do not compare stamp strings to $since/$until here. Historical
-    ``invalid_at`` values are day-first (``DD/MM/YYYY``) and lose the
-    window under lexicographic ISO compares. Callers pass since/until
-    through ``change_kind`` after parse_instant.
+    Lexicographic compares are safe for canonical ``YYYY-MM-DDTHH:MM:SSZ``
+    stamps. Non-canonical values (``+00:00`` offsets, day-first
+    ``invalid_at``) are still selected and classified in Python by
+    ``change_kind``.
     """
     rel = require_identifier(alias, kind="identifier")
-    require_identifier(since_param, kind="identifier")
-    require_identifier(until_param, kind="identifier")
-    keys = (
+    since_name = require_identifier(since_param, kind="identifier")
+    until_name = require_identifier(until_param, kind="identifier")
+    iso_keys = (
         "valid_from",
         "valid_to",
-        "invalid_at",
         "recorded_at",
         "valid_at",
         "inserted_at",
+        "superseded_at",
     )
-    return "(" + " OR ".join(
-        rel + "['" + static_property_key(key) + "'] IS NOT NULL" for key in keys
-    ) + ")"
+    terms = [
+        _timestamp_in_window_term(rel, key, since_name, until_name)
+        for key in iso_keys
+    ]
+    terms.append(
+        _timestamp_in_window_term(rel, "invalid_at", since_name, until_name)
+    )
+    return "(" + " OR ".join(terms) + ")"
 
 
 def create_database_query(database: str) -> str:

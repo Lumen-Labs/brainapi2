@@ -43,15 +43,21 @@ from src.constants.embeddings import Vector
 from src.constants.kg import Node, Predicate
 from src.core.saving.validity import (
     InvalidAsOf,
+    VALIDITY_UNKNOWN,
+    VALIDITY_VALID,
     change_kind,
     chunk_is_valid_at,
     close_validity,
+    dedupe_unknown_items,
     format_instant,
     is_valid_at,
     optional_instant,
     parse_instant,
     predicate_is_valid_at,
     stamp_valid_from,
+    unknown_fact,
+    unknown_relationship_id,
+    validity_status,
 )
 from src.core.saving.validity_backfill import (
     backfill_brain_validity,
@@ -110,6 +116,46 @@ class ValidityIntervalTests(unittest.TestCase):
         pred = Predicate(uuid="r-undated", name="WORKS_WITH", description="", properties={})
         self.assertTrue(predicate_is_valid_at(pred, None))
         self.assertFalse(predicate_is_valid_at(pred, as_of))
+        self.assertEqual(validity_status({}, None), "valid")
+        self.assertEqual(validity_status({}, as_of), VALIDITY_UNKNOWN)
+        self.assertEqual(
+            validity_status({"recorded_at": "2024-01-01T00:00:00Z"}, as_of),
+            VALIDITY_UNKNOWN,
+        )
+        self.assertEqual(
+            unknown_fact(target="chunk", item_id="plain")["validity"],
+            VALIDITY_UNKNOWN,
+        )
+        dated = Predicate(
+            uuid="r-dated",
+            name="REQUIRES",
+            description="",
+            properties={"valid_from": "2024-01-01T00:00:00Z"},
+        )
+        undated = Predicate(
+            uuid="r-undated",
+            name="MENTIONS",
+            description="",
+            properties={},
+        )
+        self.assertEqual(
+            unknown_relationship_id(
+                dated, undated, VALIDITY_VALID, VALIDITY_UNKNOWN
+            ),
+            "r-undated",
+        )
+        self.assertEqual(
+            unknown_relationship_id(
+                undated, undated, VALIDITY_UNKNOWN, VALIDITY_UNKNOWN
+            ),
+            "r-undated|r-undated",
+        )
+        duplicated = [
+            unknown_fact(target="chunk", item_id="plain", payload="a"),
+            unknown_fact(target="chunk", item_id="plain", payload="a"),
+            unknown_fact(target="chunk", item_id="plain", payload="b"),
+        ]
+        self.assertEqual(len(dedupe_unknown_items(duplicated)), 2)
 
     def test_as_of_before_ingest_uses_valid_from_not_recorded_at(self):
         fields = {
@@ -575,6 +621,55 @@ class ValidityChangesTests(unittest.TestCase):
         self.assertEqual(payload["count"], 10)
         self.assertEqual(payload["changes"][0]["id"], "chg-200")
 
+    def test_relationship_window_is_passed_through_and_pages(self):
+        calls = []
+        rels = [
+            (
+                Node(uuid="a", name="Org", labels=["ORG"]),
+                Predicate(
+                    uuid=f"rel-{index}",
+                    name="REQUIRES",
+                    description="",
+                    properties={"valid_from": "2025-01-01T00:00:00Z"},
+                ),
+                Node(uuid="b", name="Retention", labels=["CLAUSE"]),
+            )
+            for index in range(3)
+        ]
+
+        class Adapter:
+            def get_text_chunks(self, brain_id, limit=10, skip=0, order="desc"):
+                return [], 0
+
+            def get_changelogs_list(self, *args, **kwargs):
+                return []
+
+        class Graph:
+            def list_validity_relationships(
+                self, brain_id, skip=0, limit=100, since=None, until=None
+            ):
+                calls.append(
+                    {"skip": skip, "limit": limit, "since": since, "until": until}
+                )
+                return rels[skip : skip + limit], len(rels)
+
+        payload = collect_validity_changes(
+            Adapter(),
+            Graph(),
+            "brain",
+            since=_utc("2024-12-01T00:00:00Z"),
+            until=_utc("2025-02-01T00:00:00Z"),
+            limit=1,
+            skip=1,
+        )
+        self.assertEqual(payload["total"], 3)
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["changes"][0]["id"], "rel-1")
+        self.assertTrue(calls)
+        self.assertIsNotNone(calls[0]["since"])
+        self.assertIsNotNone(calls[0]["until"])
+        self.assertEqual(calls[0]["skip"], 0)
+
     def test_changelog_typeerror_fallback_stays_inside_the_window(self):
         class Adapter:
             def get_text_chunks(self, brain_id, limit=10, skip=0, order="desc"):
@@ -725,6 +820,23 @@ class AsOfRetrieveTests(unittest.IsolatedAsyncioTestCase):
             ),
             Node(uuid="tip", name="FiveYears", labels=["CLAUSE"]),
         )
+        undated = (
+            Node(uuid="tail", name="Org", labels=["ORG"]),
+            Predicate(
+                uuid="r-undated",
+                name="MENTIONS",
+                description="",
+                properties={},
+            ),
+            Node(uuid="mid", name="Clause12", labels=["EVENT"]),
+            Predicate(
+                uuid="r-undated-2",
+                name="FOR",
+                description="",
+                properties={},
+            ),
+            Node(uuid="tip", name="UndatedNote", labels=["NOTE"]),
+        )
         mock_embeddings = MagicMock()
         mock_embeddings.embed_text.return_value = Vector(
             id="q", embeddings=[0.1, 0.2, 0.3], metadata={}
@@ -741,7 +853,7 @@ class AsOfRetrieveTests(unittest.IsolatedAsyncioTestCase):
         mock_vs.search_relationships.return_value = []
         mock_vs.search_data.return_value = []
         mock_graph = MagicMock()
-        mock_graph.get_event_centric_neighbors.return_value = [live, old]
+        mock_graph.get_event_centric_neighbors.return_value = [live, old, undated]
         mock_graph.get_hub_bridges.return_value = []
         mock_graph.list_topic_memberships.return_value = []
         mock_data = MagicMock()
@@ -772,12 +884,28 @@ class AsOfRetrieveTests(unittest.IsolatedAsyncioTestCase):
                     as_of="2024-06-01T00:00:00Z",
                 )
             )
+            as_of_shown = await retrieve_mod.get_context(
+                GetContextRequestBody(
+                    text="retention clause",
+                    brain_id="brain",
+                    as_of="2024-06-01T00:00:00Z",
+                    include_validity_unknown=True,
+                )
+            )
             bad = await self._bad_as_of(retrieve_mod)
         self.assertIn("SevenYears", live_response.text_context)
         self.assertNotIn("FiveYears", live_response.text_context)
+        self.assertIn("UndatedNote", live_response.text_context)
+        self.assertIsNone(live_response.validity_unknown_count)
         self.assertIn("FiveYears", as_of_response.text_context)
         self.assertNotIn("SevenYears", as_of_response.text_context)
+        self.assertNotIn("UndatedNote", as_of_response.text_context)
         self.assertNotIn("[superseded]", as_of_response.text_context)
+        self.assertEqual(as_of_response.validity_unknown_count, 1)
+        self.assertIsNone(as_of_response.validity_unknown)
+        self.assertEqual(as_of_shown.validity_unknown_count, 1)
+        self.assertEqual(as_of_shown.validity_unknown[0]["validity"], "unknown")
+        self.assertEqual(as_of_shown.validity_unknown[0]["id"], "r-undated|r-undated-2")
         self.assertEqual(bad.status_code, 400)
 
     async def _bad_as_of(self, retrieve_mod):
@@ -810,6 +938,7 @@ class AsOfRetrieveTests(unittest.IsolatedAsyncioTestCase):
             text="seven years",
             metadata={"valid_from": "2025-01-01T00:00:00Z"},
         )
+        undated = TextChunk(id="plain", text="no dates", metadata={})
         mock_embeddings = MagicMock()
         mock_embeddings.embed_text.return_value = Vector(
             id="q", embeddings=[0.1], metadata={}
@@ -819,7 +948,7 @@ class AsOfRetrieveTests(unittest.IsolatedAsyncioTestCase):
         mock_vs.search_triplets.return_value = []
         mock_data = MagicMock()
         mock_data.search.return_value = SearchResult(
-            text_chunks=[v1, v2],
+            text_chunks=[v1, v2, undated],
             observations=[
                 Observation(id="o1", text="five", resource_id="v1"),
                 Observation(id="o2", text="seven", resource_id="v2"),
@@ -853,10 +982,18 @@ class AsOfRetrieveTests(unittest.IsolatedAsyncioTestCase):
             as_of = await retrieve_mod.retrieve_data(
                 "years", 10, "", "brain", as_of="2024-06-01T00:00:00Z"
             )
+            as_of_shown = await retrieve_mod.retrieve_data(
+                "years",
+                10,
+                "",
+                "brain",
+                as_of="2024-06-01T00:00:00Z",
+                include_validity_unknown=True,
+            )
             later = await retrieve_mod.retrieve_data(
                 "years", 10, "", "brain", as_of="2025-06-01T00:00:00Z"
             )
-        self.assertEqual({chunk.id for chunk in current.data}, {"v1", "v2"})
+        self.assertEqual({chunk.id for chunk in current.data}, {"v1", "v2", "plain"})
         self.assertEqual({chunk.id for chunk in as_of.data}, {"v1"})
         self.assertEqual({chunk.id for chunk in later.data}, {"v2"})
         self.assertEqual({obs.resource_id for obs in current.observations}, {"v1", "v2"})
@@ -865,6 +1002,241 @@ class AsOfRetrieveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(current.relationships), 2)
         self.assertEqual(as_of.relationships, [])
         self.assertEqual(len(later.relationships), 1)
+        self.assertIsNone(current.validity_unknown_count)
+        self.assertEqual(as_of.validity_unknown_count, 2)
+        self.assertIsNone(as_of.validity_unknown)
+        self.assertEqual(as_of_shown.validity_unknown_count, 2)
+        unknown_ids = {item["id"] for item in as_of_shown.validity_unknown}
+        self.assertEqual(unknown_ids, {"plain", "MENTIONS"})
+        self.assertTrue(
+            all(item["validity"] == "unknown" for item in as_of_shown.validity_unknown)
+        )
+
+
+class McpAsOfUnknownTests(unittest.TestCase):
+    def test_search_semantically_as_of_reports_unknown(self):
+        from src.constants.embeddings import Vector
+        from src.services.mcp import main as mcp_mod
+
+        dated = (
+            Node(uuid="tail", name="Org", labels=["ORG"]),
+            Predicate(
+                uuid="r-dated",
+                name="REQUIRES",
+                description="",
+                properties={"valid_from": "2024-01-01T00:00:00Z"},
+            ),
+            Node(uuid="mid", name="Clause12", labels=["EVENT"]),
+            Predicate(
+                uuid="r-dated-2",
+                name="FOR",
+                description="",
+                properties={"valid_from": "2024-01-01T00:00:00Z"},
+            ),
+            Node(uuid="tip", name="FiveYears", labels=["CLAUSE"]),
+        )
+        undated = (
+            Node(uuid="tail", name="Org", labels=["ORG"]),
+            Predicate(
+                uuid="r-undated",
+                name="MENTIONS",
+                description="",
+                properties={},
+            ),
+            Node(uuid="mid", name="Clause12", labels=["EVENT"]),
+            Predicate(
+                uuid="r-undated-2",
+                name="FOR",
+                description="",
+                properties={},
+            ),
+            Node(uuid="tip", name="UndatedNote", labels=["NOTE"]),
+        )
+        mock_embeddings = MagicMock()
+        mock_embeddings.embed_text.return_value = Vector(
+            id="q", embeddings=[0.1], metadata={}
+        )
+        mock_vs = MagicMock()
+        mock_vs.search_nodes.return_value = [
+            Vector(id="n1", embeddings=[0.1], metadata={"uuid": "tail"})
+        ]
+        mock_graph = MagicMock()
+        mock_graph.get_event_centric_neighbors.return_value = [dated, undated]
+        with (
+            patch.object(mcp_mod, "guard_brainpat", return_value=True),
+            patch.object(mcp_mod, "embeddings_adapter", mock_embeddings),
+            patch.object(mcp_mod, "vector_search", mock_vs),
+            patch.object(mcp_mod, "graph_adapter", mock_graph),
+        ):
+            live = mcp_mod._search_semantically_sync("q", "brain", False)
+            hidden = mcp_mod._search_semantically_sync(
+                "q", "brain", False, as_of="2024-06-01T00:00:00Z"
+            )
+            shown = mcp_mod._search_semantically_sync(
+                "q",
+                "brain",
+                False,
+                as_of="2024-06-01T00:00:00Z",
+                include_validity_unknown=True,
+            )
+        self.assertEqual(len(live), 2)
+        self.assertEqual(len(hidden["results"]), 1)
+        self.assertEqual(hidden["results"][0][1].uuid, "r-dated")
+        self.assertEqual(hidden["validity_unknown_count"], 1)
+        self.assertNotIn("validity_unknown", hidden)
+        self.assertEqual(shown["validity_unknown_count"], 1)
+        self.assertEqual(shown["validity_unknown"][0]["validity"], "unknown")
+        self.assertEqual(shown["validity_unknown"][0]["id"], "r-undated|r-undated-2")
+        self.assertIsInstance(shown["validity_unknown"][0]["payload"], list)
+
+    def test_search_semantically_as_of_uses_unknown_rel_uuid(self):
+        from src.constants.embeddings import Vector
+        from src.services.mcp import main as mcp_mod
+
+        mixed = (
+            Node(uuid="tail", name="Org", labels=["ORG"]),
+            Predicate(
+                uuid="r-dated",
+                name="REQUIRES",
+                description="",
+                properties={"valid_from": "2024-01-01T00:00:00Z"},
+            ),
+            Node(uuid="mid", name="Clause12", labels=["EVENT"]),
+            Predicate(
+                uuid="r-undated",
+                name="MENTIONS",
+                description="",
+                properties={},
+            ),
+            Node(uuid="tip", name="UndatedNote", labels=["NOTE"]),
+        )
+        mock_embeddings = MagicMock()
+        mock_embeddings.embed_text.return_value = Vector(
+            id="q", embeddings=[0.1], metadata={}
+        )
+        mock_vs = MagicMock()
+        mock_vs.search_nodes.return_value = [
+            Vector(id="n1", embeddings=[0.1], metadata={"uuid": "tail"})
+        ]
+        mock_graph = MagicMock()
+        mock_graph.get_event_centric_neighbors.return_value = [mixed]
+        with (
+            patch.object(mcp_mod, "guard_brainpat", return_value=True),
+            patch.object(mcp_mod, "embeddings_adapter", mock_embeddings),
+            patch.object(mcp_mod, "vector_search", mock_vs),
+            patch.object(mcp_mod, "graph_adapter", mock_graph),
+        ):
+            shown = mcp_mod._search_semantically_sync(
+                "q",
+                "brain",
+                False,
+                as_of="2024-06-01T00:00:00Z",
+                include_validity_unknown=True,
+            )
+        self.assertEqual(shown["validity_unknown_count"], 1)
+        self.assertEqual(shown["validity_unknown"][0]["id"], "r-undated")
+
+
+class RetrieveUnknownJsonTests(unittest.TestCase):
+    def test_retrieve_response_json_encodes_unknown_payloads(self):
+        from src.services.api.constants.requests import RetrieveRequestResponse
+
+        class _Blob:
+            def __str__(self):
+                return "blob"
+
+        response = RetrieveRequestResponse(
+            data=[],
+            observations=[],
+            relationships=[],
+            validity_unknown_count=1,
+            validity_unknown=[
+                {
+                    "validity": "unknown",
+                    "target": "relationship",
+                    "id": "r1",
+                    "payload": {"relationships": _Blob()},
+                }
+            ],
+        )
+        dumped = response.model_dump(mode="json")
+        self.assertEqual(
+            dumped["validity_unknown"][0]["payload"]["relationships"],
+            "blob",
+        )
+
+
+class BridgeUnknownAsOfTests(unittest.TestCase):
+    def test_bridge_expand_reports_undated_facts(self):
+        from src.core.saving.hub_bridges import HubBridge
+        from src.services.api.controllers import retrieve as retrieve_mod
+
+        seed = {
+            "identified_entity": "q",
+            "triple": (
+                Node(uuid="n", name="n", labels=["PERSON"], properties={}),
+                Predicate(
+                    uuid="r1",
+                    name="MADE",
+                    description="",
+                    properties={"valid_from": "2024-01-01T00:00:00Z"},
+                ),
+                Node(
+                    uuid="event-seed",
+                    name="event-seed",
+                    labels=["EVENT"],
+                    properties={},
+                ),
+                Predicate(
+                    uuid="r2",
+                    name="TARGETED",
+                    description="",
+                    properties={"valid_from": "2024-01-01T00:00:00Z"},
+                ),
+                Node(uuid="b", name="b", labels=["PERSON"], properties={}),
+            ),
+            "score": 0.1,
+            "key": ("r1", "r2"),
+            "text": "fact-event-seed",
+            "chunk_ids": [],
+        }
+        bridged = (
+            Node(uuid="actor2", name="actor2", labels=["PERSON"], properties={}),
+            Predicate(uuid="r3", name="MADE", description="", properties={}),
+            Node(
+                uuid="event-bridge",
+                name="event-bridge",
+                labels=["EVENT"],
+                properties={},
+            ),
+            Predicate(uuid="r4", name="TARGETED", description="", properties={}),
+            Node(uuid="obj2", name="obj2", labels=["PERSON"], properties={}),
+        )
+        mock_adapter = MagicMock()
+        mock_adapter.get_hub_bridges.return_value = [
+            HubBridge(
+                event_a="event-bridge",
+                event_b="event-seed",
+                shared_entity="actor",
+                shared_entity_name="actor",
+                weight=1.0,
+            )
+        ]
+        mock_adapter.get_event_hub_facts.return_value = [bridged]
+        unknown = []
+        with patch.object(retrieve_mod, "graph_adapter", mock_adapter):
+            expanded, _paths = retrieve_mod._expand_cross_event_bridges(
+                [seed],
+                "brain",
+                max_per_hub=3,
+                as_of=_utc("2024-06-01T00:00:00Z"),
+                unknown_out=unknown,
+            )
+        self.assertEqual(len(expanded), 1)
+        self.assertEqual(expanded[0]["key"], ("r1", "r2"))
+        self.assertEqual(len(unknown), 1)
+        self.assertEqual(unknown[0]["validity"], "unknown")
+        self.assertEqual(unknown[0]["id"], "r3|r4")
 
 
 class ChangelogWindowControllerTests(unittest.IsolatedAsyncioTestCase):

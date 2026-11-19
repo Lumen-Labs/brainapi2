@@ -372,28 +372,95 @@ async def search_memory(
     )
 
 
-def _search_semantically_sync(query: str, brain_id: str, include_rejected: bool) -> Any:
+def _search_semantically_sync(
+    query: str,
+    brain_id: str,
+    include_rejected: bool,
+    as_of: str | None = None,
+    include_validity_unknown: bool = False,
+) -> Any:
     try:
         if not guard_brainpat(auth_token_var.get(), brain_id):
             return "Unauthorized"
+        from src.core.saving.validity import (
+            InvalidAsOf,
+            VALIDITY_UNKNOWN,
+            VALIDITY_VALID,
+            dedupe_unknown_items,
+            format_instant,
+            optional_instant,
+            predicate_validity_status,
+            unknown_fact,
+            unknown_relationship_id,
+        )
+        from src.services.api.constants.requests import jsonable_graph_value
+
+        try:
+            as_of_dt = optional_instant(as_of)
+        except InvalidAsOf as exc:
+            return f"Error: {exc}"
         query_embedding = embeddings_adapter.embed_text(query)
         data_vectors = vector_search.search_nodes(
             query_embedding.embeddings,
             brain_id=brain_id,
             k=5,
         )
+        as_of_stamp = format_instant(as_of_dt) if as_of_dt is not None else None
+        seed_uuids = [v.metadata.get("uuid") for v in data_vectors]
         with verification_scope(include_rejected=include_rejected):
-            triplets = graph_adapter.get_event_centric_neighbors(
-                [v.metadata.get("uuid") for v in data_vectors], brain_id=brain_id
-            )
-        return triplets
+            try:
+                triplets = graph_adapter.get_event_centric_neighbors(
+                    seed_uuids, brain_id=brain_id, as_of=as_of_stamp
+                )
+            except TypeError:
+                triplets = graph_adapter.get_event_centric_neighbors(
+                    seed_uuids, brain_id=brain_id
+                )
+        if as_of_dt is None:
+            return triplets
+        kept = []
+        unknown_items: list[dict[str, Any]] = []
+        for triple in triplets or []:
+            if not isinstance(triple, (list, tuple)) or len(triple) < 4:
+                kept.append(triple)
+                continue
+            rel = triple[1]
+            rel2 = triple[3]
+            status_r = predicate_validity_status(rel, as_of_dt)
+            status_r2 = predicate_validity_status(rel2, as_of_dt)
+            if status_r == VALIDITY_UNKNOWN or status_r2 == VALIDITY_UNKNOWN:
+                unknown_items.append(
+                    unknown_fact(
+                        target="relationship",
+                        item_id=unknown_relationship_id(
+                            rel, rel2, status_r, status_r2
+                        ),
+                        payload=jsonable_graph_value(triple),
+                    )
+                )
+                continue
+            if status_r != VALIDITY_VALID or status_r2 != VALIDITY_VALID:
+                continue
+            kept.append(triple)
+        unknown_items = dedupe_unknown_items(unknown_items)
+        envelope: dict[str, Any] = {
+            "results": kept,
+            "validity_unknown_count": len(unknown_items),
+        }
+        if include_validity_unknown:
+            envelope["validity_unknown"] = unknown_items
+        return envelope
     except Exception as e:
         return f"Error executing graph operation: {e}"
 
 
 @mcp.tool()
 async def search_semantically(
-    query: str, brain_id: str, include_rejected: bool = False
+    query: str,
+    brain_id: str,
+    include_rejected: bool = False,
+    as_of: str | None = None,
+    include_validity_unknown: bool = False,
 ) -> Any:
     """
     Search information semantically, given a query and a brain to search in,
@@ -405,9 +472,17 @@ async def search_semantically(
     - query: str: the query to search for.
     - brain_id: str: the brain to search in.
     - include_rejected: bool: include expert-rejected facts (default false).
+    - as_of: str ISO-8601 (optional): return the knowledge state valid at that instant.
+    - include_validity_unknown: bool: when as_of is set, include undated facts
+      in validity_unknown (default false).
     """
     return await asyncio.to_thread(
-        _search_semantically_sync, query, brain_id, include_rejected
+        _search_semantically_sync,
+        query,
+        brain_id,
+        include_rejected,
+        as_of,
+        include_validity_unknown,
     )
 
 

@@ -954,6 +954,30 @@ class AsOfPassageTests(unittest.TestCase):
             )],
             ["plain", "dated"],
         )
+        unknown_out = []
+        screened = screen_passage_hits(
+            store,
+            "brain",
+            hits,
+            include_history=False,
+            as_of=as_of,
+            unknown_out=unknown_out,
+        )
+        self.assertEqual([item[0] for item in screened], ["dated"])
+        self.assertEqual([item[0] for item in unknown_out], ["plain"])
+        self.assertEqual(unknown_out[0][3].id, "plain")
+        texts_unknown = []
+        texts = screened_passage_texts(
+            store,
+            "brain",
+            hits,
+            include_history=False,
+            limit=10,
+            as_of=as_of,
+            unknown_out=texts_unknown,
+        )
+        self.assertEqual(texts, [dated.text])
+        self.assertEqual([item[0] for item in texts_unknown], ["plain"])
 
 
 class SourceRevisionStampTests(unittest.TestCase):

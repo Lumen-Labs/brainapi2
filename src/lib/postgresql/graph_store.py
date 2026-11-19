@@ -172,6 +172,20 @@ class PostgreSQLGraphStore:
     );
     CREATE INDEX IF NOT EXISTS idx_kg_relationships_endpoints
         ON kg_relationships(source_uuid, target_uuid);
+    CREATE INDEX IF NOT EXISTS idx_kg_relationships_valid_from
+        ON kg_relationships ((data->>'valid_from'));
+    CREATE INDEX IF NOT EXISTS idx_kg_relationships_valid_to
+        ON kg_relationships ((data->>'valid_to'));
+    CREATE INDEX IF NOT EXISTS idx_kg_relationships_recorded_at
+        ON kg_relationships ((data->>'recorded_at'));
+    CREATE INDEX IF NOT EXISTS idx_kg_relationships_valid_at
+        ON kg_relationships ((data->>'valid_at'));
+    CREATE INDEX IF NOT EXISTS idx_kg_relationships_inserted_at
+        ON kg_relationships ((data->>'inserted_at'));
+    CREATE INDEX IF NOT EXISTS idx_kg_relationships_invalid_at
+        ON kg_relationships ((data->>'invalid_at'));
+    CREATE INDEX IF NOT EXISTS idx_kg_relationships_superseded_at
+        ON kg_relationships ((data->>'superseded_at'));
     CREATE TABLE IF NOT EXISTS kg_hub_bridges (
         event_a TEXT NOT NULL,
         event_b TEXT NOT NULL,

@@ -34,6 +34,60 @@ from src.core.saving.ingest_groups import InvalidGroupTracking, normalize_group_
 from src.core.search.entity_info import MatchPath
 
 
+def jsonable_graph_value(obj: Any) -> Any:
+    try:
+        from neo4j.graph import Node as NeoNode
+        from neo4j.graph import Path as NeoPath
+        from neo4j.graph import Relationship as NeoRel
+    except Exception:
+        NeoNode = NeoRel = NeoPath = tuple()
+    from src.constants.kg import Node as KGNode
+
+    if obj is None:
+        return None
+    if isinstance(obj, (str, int, float, bool)):
+        return obj
+    if isinstance(obj, KGNode):
+        return obj.model_dump(mode="json")
+    dump = getattr(obj, "model_dump", None)
+    if callable(dump):
+        try:
+            return dump(mode="json")
+        except Exception:
+            pass
+    if isinstance(obj, dict):
+        return {k: jsonable_graph_value(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, set)):
+        return [jsonable_graph_value(v) for v in obj]
+    if NeoNode and isinstance(obj, NeoNode):
+        d = dict(obj)
+        labels = getattr(obj, "labels", None)
+        if labels is not None:
+            d["_labels"] = list(labels)
+        return d
+    if NeoRel and isinstance(obj, NeoRel):
+        d = dict(obj)
+        rel_type = getattr(obj, "type", None)
+        if rel_type is not None:
+            d["_type"] = rel_type
+        try:
+            nodes_attr = getattr(obj, "nodes", None)
+            if nodes_attr:
+                d["_start_id"] = getattr(nodes_attr[0], "id", None)
+                d["_end_id"] = getattr(nodes_attr[1], "id", None)
+        except Exception:
+            pass
+        return d
+    if NeoPath and isinstance(obj, NeoPath):
+        return {
+            "nodes": [jsonable_graph_value(n) for n in obj.nodes],
+            "relationships": [
+                jsonable_graph_value(r) for r in obj.relationships
+            ],
+        }
+    return str(obj)
+
+
 class IngestionRequestBody(IngestionTaskArgs):
     """
     Request body for the ingestion endpoint.
@@ -314,61 +368,16 @@ class RetrieveRequestResponse(BaseModel):
     data: List[TextChunk]
     observations: List[Observation]
     relationships: List[dict]
+    validity_unknown_count: Optional[int] = None
+    validity_unknown: Optional[List[dict[str, Any]]] = None
 
     @field_serializer("relationships", when_used="json")
     def _serialize_relationships(self, value: List[Any]):
-        try:
-            from neo4j.graph import (
-                Node as NeoNode,
-            )
-            from neo4j.graph import (
-                Path as NeoPath,
-            )
-            from neo4j.graph import (
-                Relationship as NeoRel,
-            )
-        except Exception:
-            NeoNode = NeoRel = NeoPath = tuple()
-        from src.constants.kg import Node as KGNode
+        return [jsonable_graph_value(v) for v in value] if value is not None else []
 
-        def _ser(obj):
-            if obj is None:
-                return None
-            if isinstance(obj, (str, int, float, bool)):
-                return obj
-            if isinstance(obj, KGNode):
-                return obj.model_dump(mode="json")
-            if isinstance(obj, dict):
-                return {k: _ser(v) for k, v in obj.items()}
-            if isinstance(obj, (list, tuple, set)):
-                return [_ser(v) for v in obj]
-            if NeoNode and isinstance(obj, NeoNode):
-                d = dict(obj)
-                labels = getattr(obj, "labels", None)
-                if labels is not None:
-                    d["_labels"] = list(labels)
-                return d
-            if NeoRel and isinstance(obj, NeoRel):
-                d = dict(obj)
-                rel_type = getattr(obj, "type", None)
-                if rel_type is not None:
-                    d["_type"] = rel_type
-                try:
-                    nodes_attr = getattr(obj, "nodes", None)
-                    if nodes_attr:
-                        d["_start_id"] = getattr(nodes_attr[0], "id", None)
-                        d["_end_id"] = getattr(nodes_attr[1], "id", None)
-                except Exception:
-                    pass
-                return d
-            if NeoPath and isinstance(obj, NeoPath):
-                return {
-                    "nodes": [_ser(n) for n in obj.nodes],
-                    "relationships": [_ser(r) for r in obj.relationships],
-                }
-            return str(obj)
-
-        return [_ser(v) for v in value] if value is not None else []
+    @field_serializer("validity_unknown", when_used="json")
+    def _serialize_validity_unknown(self, value: Optional[List[Any]]):
+        return [jsonable_graph_value(v) for v in value] if value is not None else value
 
 
 class RetrievedNeighborNode(BaseModel):
@@ -624,6 +633,10 @@ class GetContextRequestBody(BaseModel):
         default=None,
         description="ISO-8601 datetime. When set, return the knowledge state valid at that instant.",
     )
+    include_validity_unknown: bool = Field(
+        default=False,
+        description="When as_of is set, include undated facts in validity_unknown.",
+    )
     annotate_conflicts: bool = Field(
         default=False,
         description="When true, mark retrieved facts that are in an open cross-source conflict.",
@@ -666,6 +679,12 @@ class GetContextResponse(BaseModel):
     paths: Optional[List[dict[str, Any]]] = None
     topics: Optional[List[dict[str, Any]]] = None
     stage_timings: Optional[dict[str, Any]] = None
+    validity_unknown_count: Optional[int] = None
+    validity_unknown: Optional[List[dict[str, Any]]] = None
+
+    @field_serializer("validity_unknown", when_used="json")
+    def _serialize_validity_unknown(self, value: Optional[List[Any]]):
+        return [jsonable_graph_value(v) for v in value] if value is not None else value
 
 
 class ConflictResolveRequest(BaseModel):
@@ -688,6 +707,10 @@ class SearchRequestBody(BaseModel):
     as_of: Optional[str] = Field(
         default=None,
         description="ISO-8601 datetime. When set, search the knowledge state valid at that instant.",
+    )
+    include_validity_unknown: bool = Field(
+        default=False,
+        description="When as_of is set, include undated hits in validity_unknown.",
     )
     k: int = Field(10, ge=1, le=200)
     channels: List[str] = Field(default_factory=lambda: ["passages"])
@@ -759,3 +782,9 @@ class SearchResponse(BaseModel):
     channel_lists: Optional[dict[str, list[str]]] = None
     facets: Optional[dict[str, dict[str, int]]] = None
     node_ids: List[str] = Field(default_factory=list)
+    validity_unknown_count: Optional[int] = None
+    validity_unknown: Optional[List[dict[str, Any]]] = None
+
+    @field_serializer("validity_unknown", when_used="json")
+    def _serialize_validity_unknown(self, value: Optional[List[Any]]):
+        return [jsonable_graph_value(v) for v in value] if value is not None else value
