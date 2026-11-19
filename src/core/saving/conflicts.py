@@ -808,7 +808,7 @@ def _read_scan_cursor(adapter: Any, brain_id: str) -> dict[str, str] | None:
     if not isinstance(row, dict):
         return None
     subject = str(row.get("after_subject") or "").strip()
-    predicate = str(row.get("after_predicate") or "").strip()
+    predicate = normalize_predicate(str(row.get("after_predicate") or "").strip())
     if not subject and not predicate:
         return None
     return {"after_subject": subject, "after_predicate": predicate}
@@ -823,7 +823,9 @@ def _write_scan_cursor(
     payload = None
     if cursor:
         subject = str(cursor.get("after_subject") or "").strip()
-        predicate = str(cursor.get("after_predicate") or "").strip()
+        predicate = normalize_predicate(
+            str(cursor.get("after_predicate") or "").strip()
+        )
         if subject or predicate:
             payload = {"after_subject": subject, "after_predicate": predicate}
     try:
@@ -972,20 +974,18 @@ def _load_triples(
     method = getattr(graph, "list_validity_relationships", None)
     start_cursor = _cursor_group(after_subject_uuid, after_predicate)
     after_s = after_subject_uuid or None
-    after_p = after_predicate or None
+    after_p = normalize_predicate(after_predicate) if after_predicate else None
     after_r: str | None = None
     skip = 0
     scanned: list[Any] = []
     scanned_groups: list[tuple[str, str]] = []
     seen_groups: set[tuple[str, str]] = set()
     last_group: tuple[str, str] | None = None
-    last_predicate_raw = ""
     reported_total = None
     truncated = False
     wrapped = False
     pending: list[Any] = []
     pending_key: tuple[str, str] | None = None
-    pending_raw = ""
     keyset = True
     stopped_for_cap = False
     search_ordered: tuple[list[Any], Any] | None = None
@@ -1050,16 +1050,14 @@ def _load_triples(
         return sliced[:page_limit], total
 
     def flush_pending() -> bool:
-        nonlocal pending, pending_key, pending_raw, last_group, last_predicate_raw, truncated
+        nonlocal pending, pending_key, last_group, truncated
         if not pending or pending_key is None:
             pending = []
             pending_key = None
-            pending_raw = ""
             return True
         if pending_key in seen_groups:
             pending = []
             pending_key = None
-            pending_raw = ""
             return True
         size = len(pending)
         if (
@@ -1084,14 +1082,12 @@ def _load_triples(
         scanned_groups.append(pending_key)
         seen_groups.add(pending_key)
         last_group = pending_key
-        last_predicate_raw = pending_raw
         pending = []
         pending_key = None
-        pending_raw = ""
         return True
 
     def add_triple(triple: Any) -> bool:
-        nonlocal pending, pending_key, pending_raw
+        nonlocal pending, pending_key
         key = _triple_group_key(triple)
         if not key[0]:
             return True
@@ -1104,7 +1100,6 @@ def _load_triples(
         if pending_key is None:
             pending_key = key
             pending = [triple]
-            pending_raw = _triple_predicate_name(triple)
             return True
         if key == pending_key:
             pending.append(triple)
@@ -1113,7 +1108,6 @@ def _load_triples(
             return False
         pending_key = key
         pending = [triple]
-        pending_raw = _triple_predicate_name(triple)
         return True
 
     while True:
@@ -1141,8 +1135,6 @@ def _load_triples(
             break
         last = batch[-1]
         after_s, after_p = _triple_group_key(last)
-        after_p = _triple_predicate_name(last)
-        after_s = _triple_subject_uuid(last)
         after_r = _triple_relationship_uuid(last)
         skip += len(batch)
         if len(batch) < page_limit:
@@ -1178,7 +1170,7 @@ def _load_triples(
     if last_group is not None:
         cursor_out = {
             "after_subject": last_group[0],
-            "after_predicate": last_predicate_raw or last_group[1],
+            "after_predicate": last_group[1],
         }
     stats = {
         "scanned": len(scanned),

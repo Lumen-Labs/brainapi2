@@ -72,6 +72,27 @@ VALIDITY_INDEX_FAIL_BACKOFF_INITIAL_SECONDS = 30.0
 VALIDITY_INDEX_FAIL_BACKOFF_MAX_SECONDS = 600.0
 
 
+def normalized_rel_type_cypher(rel_alias: str = "r") -> str:
+    """Cypher expression matching ``normalize_predicate`` for relationship types.
+
+    ``clean_label`` already uppercases and maps punctuation to underscore, so
+    remaining work is collapsing repeated underscores and stripping edges.
+    ``toUpper`` covers mixed-case types created outside that path.
+    """
+    rel_type = f"type({rel_alias})"
+    source = f"toUpper(coalesce({rel_type}, ''))"
+    length = f"size(coalesce({rel_type}, ''))"
+    collapsed = (
+        f"reduce(t = {source}, i IN range(0, {length}) | replace(t, '__', '_'))"
+    )
+    return (
+        f"reduce(s = {collapsed}, j IN range(0, {length}) | "
+        "CASE WHEN s STARTS WITH '_' THEN substring(s, 1) "
+        "WHEN s ENDS WITH '_' THEN substring(s, 0, size(s) - 1) "
+        "ELSE s END)"
+    )
+
+
 def _validity_index_now() -> float:
     return time.monotonic()
 
@@ -1649,36 +1670,47 @@ class Neo4jClient(GraphClient):
             params["relationship_uuids"] = list(relationship_uuids)
             filters.append("r['uuid'] IN $relationship_uuids")
         count_filters = list(filters)
+        pred_key = normalized_rel_type_cypher("r")
+        cursor_filters: list[str] = []
         if after_subject_uuid or after_predicate or after_relationship_uuid:
+            from src.core.saving.conflicts import normalize_predicate
+
             params["after_subject_uuid"] = after_subject_uuid or ""
-            params["after_predicate"] = after_predicate or ""
+            params["after_predicate"] = normalize_predicate(after_predicate or "")
             if after_relationship_uuid:
                 params["after_relationship_uuid"] = after_relationship_uuid
-                filters.append(
+                cursor_filters.append(
                     "(n['uuid'] > $after_subject_uuid OR "
-                    "(n['uuid'] = $after_subject_uuid AND type(r) > $after_predicate) OR "
-                    "(n['uuid'] = $after_subject_uuid AND type(r) = $after_predicate "
+                    "(n['uuid'] = $after_subject_uuid AND pred_key > $after_predicate) OR "
+                    "(n['uuid'] = $after_subject_uuid AND pred_key = $after_predicate "
                     "AND r['uuid'] > $after_relationship_uuid))"
                 )
             else:
-                filters.append(
+                cursor_filters.append(
                     "(n['uuid'] > $after_subject_uuid OR "
-                    "(n['uuid'] = $after_subject_uuid AND type(r) > $after_predicate))"
+                    "(n['uuid'] = $after_subject_uuid AND pred_key > $after_predicate))"
                 )
         where_str = ("WHERE " + " AND ".join(filters) + "\n") if filters else ""
+        cursor_where = (
+            ("WHERE " + " AND ".join(cursor_filters) + "\n") if cursor_filters else ""
+        )
         count_where = (
             ("WHERE " + " AND ".join(count_filters) + "\n") if count_filters else ""
         )
         cypher_query = (
             "MATCH (n)-[r]->(m)\n"
             + where_str
+            + "WITH n, r, m, "
+            + pred_key
+            + " AS pred_key\n"
+            + cursor_where
             + "RETURN n['uuid'] AS n_uuid, n['name'] AS n_name, labels(n) AS n_labels,\n"
             "    n['description'] AS n_description, properties(n) AS n_properties,\n"
             "    type(r) AS rel_type, r['description'] AS rel_description,\n"
             "    properties(r) AS rel_properties, r['uuid'] AS rel_uuid,\n"
             "    m['uuid'] AS m_uuid, m['name'] AS m_name, labels(m) AS m_labels,\n"
             "    m['description'] AS m_description, properties(m) AS m_properties\n"
-            "ORDER BY n['uuid'], type(r), r['uuid'], elementId(r)\n"
+            "ORDER BY n['uuid'], pred_key, r['uuid'], elementId(r)\n"
             "SKIP $skip LIMIT $limit"
         )
         count_query = (

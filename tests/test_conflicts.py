@@ -2875,8 +2875,9 @@ class ConflictScanCursorTests(unittest.TestCase):
             named("s", "b1", "HAS_B", "7 days"),
             named("s", "a2", "HAS__A", "30 days"),
         ]
+        store = MemoryConflictStore()
         result = detect_conflicts(
-            MemoryConflictStore(),
+            store,
             FakeGraph(triples),
             "brain",
             max_relationships=2,
@@ -2884,6 +2885,21 @@ class ConflictScanCursorTests(unittest.TestCase):
         self.assertEqual(result.scanned_relationships, 2)
         self.assertEqual(
             set(result.scanned_claim_keys), {claim_key_for("s", "HAS_A")}
+        )
+        self.assertEqual(result.scan_cursor["after_predicate"], "HAS_A")
+        self.assertEqual(store.cursors["brain"]["after_predicate"], "HAS_A")
+
+    def test_stored_raw_alias_cursor_is_normalized_on_read(self):
+        from src.core.saving.conflicts import _read_scan_cursor
+
+        store = MemoryConflictStore()
+        store.cursors["brain"] = {
+            "after_subject": "s",
+            "after_predicate": "HAS__A",
+        }
+        self.assertEqual(
+            _read_scan_cursor(store, "brain"),
+            {"after_subject": "s", "after_predicate": "HAS_A"},
         )
 
     def test_cursor_write_failure_is_raised(self):
