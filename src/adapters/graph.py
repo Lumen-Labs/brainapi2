@@ -470,6 +470,7 @@ class GraphAdapter:
         method = getattr(self.graph, "list_validity_relationships", None)
         if method is None:
             from src.core.saving.conflicts import (
+                _collect_search_relationship_triples,
                 _filter_validity_triples,
                 _sort_validity_triples,
                 _triples_after_cursor,
@@ -478,47 +479,13 @@ class GraphAdapter:
             search = getattr(self.graph, "search_relationships", None)
             if not callable(search):
                 return [], 0
-            collected = []
-            cursor = 0
-            page = max(int(limit or 200), 200)
-            keyed = bool(
-                after_subject_uuid or after_predicate or after_relationship_uuid
+
+            collected, reported_total = _collect_search_relationship_triples(
+                self.graph,
+                brain_id,
+                search=search,
+                stop_relationship_uuids=relationship_uuids,
             )
-            fetch_cap = None if keyed else skip + limit
-            reported_total = None
-            while True:
-                remaining = page if fetch_cap is None else max(fetch_cap - cursor, 0)
-                if remaining <= 0:
-                    break
-                result = search(brain_id, min(page, remaining), cursor)
-                items = getattr(result, "results", None) or []
-                total = getattr(result, "total", None)
-                if total is not None:
-                    reported_total = int(total)
-                batch = [
-                    (item.subject, item.predicate, item.object)
-                    for item in items
-                ]
-                if not batch:
-                    break
-                collected.extend(batch)
-                cursor += len(batch)
-                if reported_total is not None and cursor >= reported_total:
-                    break
-                if len(batch) < min(page, remaining):
-                    break
-                if not subject_uuids and not relationship_uuids:
-                    if keyed:
-                        ordered_so_far = _triples_after_cursor(
-                            _sort_validity_triples(collected),
-                            after_subject_uuid=after_subject_uuid,
-                            after_predicate=after_predicate,
-                            after_relationship_uuid=after_relationship_uuid,
-                        )
-                        if len(ordered_so_far) >= skip + limit:
-                            break
-                    elif fetch_cap is not None and cursor >= fetch_cap:
-                        break
             filtered = _filter_validity_triples(
                 collected,
                 subject_uuids=subject_uuids,
@@ -533,11 +500,13 @@ class GraphAdapter:
             total = reported_total
             if subject_uuids or relationship_uuids:
                 total = len(filtered)
+            elif after_subject_uuid or after_predicate or after_relationship_uuid:
+                total = reported_total
             elif total is None:
-                total = len(ordered) if not (
-                    after_subject_uuid or after_predicate or after_relationship_uuid
-                ) else reported_total
-            return ordered[skip : skip + limit], int(total if total is not None else len(filtered))
+                total = len(ordered)
+            return ordered[skip : skip + limit], int(
+                total if total is not None else len(filtered)
+            )
         from src.core.saving.conflicts import _call_list_validity_relationships
 
         return _call_list_validity_relationships(

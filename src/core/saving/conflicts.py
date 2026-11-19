@@ -673,9 +673,24 @@ def _triple_group_key(triple: Any) -> tuple[str, str]:
     return _group_key_for(_triple_subject_uuid(triple), _triple_predicate_name(triple))
 
 
+def _relationship_sort_key(
+    subject_uuid: str | None,
+    predicate: str | None,
+    relationship_uuid: str | None,
+) -> tuple[str, str, str]:
+    return (
+        str(subject_uuid or ""),
+        normalize_predicate(predicate or ""),
+        str(relationship_uuid or ""),
+    )
+
+
 def _triple_sort_key(triple: Any) -> tuple[str, str, str]:
-    subject, predicate = _triple_group_key(triple)
-    return (subject, predicate, _triple_relationship_uuid(triple))
+    return _relationship_sort_key(
+        _triple_subject_uuid(triple),
+        _triple_predicate_name(triple),
+        _triple_relationship_uuid(triple),
+    )
 
 
 def _cursor_group(
@@ -714,6 +729,63 @@ def _triples_after_cursor(
     return [item for item in items if _triple_group_key(item) > group]
 
 
+def _search_relationship_rows(result: Any) -> list[Any]:
+    if result is None:
+        return []
+    if hasattr(result, "results"):
+        return list(getattr(result, "results") or [])
+    if isinstance(result, (list, tuple)):
+        return list(result)
+    return []
+
+
+def _collect_search_relationship_triples(
+    graph: Any,
+    brain_id: str,
+    *,
+    search: Callable[..., Any] | None = None,
+    page: int | None = None,
+    stop_relationship_uuids: Iterable[str] | None = None,
+) -> tuple[list[Any], int]:
+    method = search or getattr(graph, "search_relationships", None)
+    if not callable(method):
+        return [], 0
+    collected: list[Any] = []
+    cursor = 0
+    batch_size = max(int(page or _REL_PAGE), _REL_PAGE)
+    reported_total = None
+    wanted = {str(item) for item in (stop_relationship_uuids or []) if item}
+    found: set[str] = set()
+    while True:
+        result = method(brain_id, batch_size, cursor)
+        rows = _search_relationship_rows(result)
+        total = getattr(result, "total", None) if result is not None else None
+        if total is not None:
+            reported_total = int(total)
+        batch = [
+            (item.subject, item.predicate, item.object) for item in rows
+        ]
+        if not batch:
+            break
+        collected.extend(batch)
+        cursor += len(batch)
+        if wanted:
+            found.update(
+                _triple_relationship_uuid(item)
+                for item in batch
+                if _triple_relationship_uuid(item) in wanted
+            )
+            if wanted <= found:
+                break
+        if reported_total is not None and cursor >= reported_total:
+            break
+        if len(batch) < batch_size:
+            break
+    return collected, (
+        reported_total if reported_total is not None else len(collected)
+    )
+
+
 def _read_scan_cursor(adapter: Any, brain_id: str) -> dict[str, str] | None:
     getter = getattr(adapter, "get_conflict_scan_cursor", None)
     if not callable(getter):
@@ -723,10 +795,16 @@ def _read_scan_cursor(adapter: Any, brain_id: str) -> dict[str, str] | None:
     except TypeError:
         try:
             row = getter(brain_id=brain_id)
-        except Exception:
+        except TypeError:
             return None
+        except Exception:
+            logger.exception(
+                "conflict scan cursor read failed brain_id=%s", brain_id
+            )
+            raise
     except Exception:
-        return None
+        logger.exception("conflict scan cursor read failed brain_id=%s", brain_id)
+        raise
     if not isinstance(row, dict):
         return None
     subject = str(row.get("after_subject") or "").strip()
@@ -750,13 +828,23 @@ def _write_scan_cursor(
             payload = {"after_subject": subject, "after_predicate": predicate}
     try:
         setter(brain_id, payload)
-    except TypeError:
-        try:
-            setter(brain_id=brain_id, cursor=payload)
-        except Exception:
-            return
-    except Exception:
         return
+    except TypeError:
+        pass
+    except Exception:
+        logger.exception(
+            "conflict scan cursor write failed brain_id=%s", brain_id
+        )
+        raise
+    try:
+        setter(brain_id=brain_id, cursor=payload)
+    except TypeError:
+        return
+    except Exception:
+        logger.exception(
+            "conflict scan cursor write failed brain_id=%s", brain_id
+        )
+        raise
 
 
 def _filter_validity_triples(
@@ -900,9 +988,10 @@ def _load_triples(
     pending_raw = ""
     keyset = True
     stopped_for_cap = False
+    search_ordered: tuple[list[Any], Any] | None = None
 
     def fetch(page_limit: int):
-        nonlocal keyset
+        nonlocal keyset, search_ordered
         if callable(method):
             requested = {
                 "skip": 0 if keyset else skip,
@@ -934,14 +1023,22 @@ def _load_triples(
                 after_relationship_uuid=after_r if keyset else None,
             )
         keyset = False
-        result = graph.search_relationships(
-            brain_id, limit=page_limit, skip=skip
+        if search_ordered is None:
+            collected, search_total = _collect_search_relationship_triples(
+                graph, brain_id
+            )
+            search_ordered = (
+                _sort_validity_triples(collected),
+                search_total,
+            )
+        triples, total = search_ordered
+        sliced = _triples_after_cursor(
+            triples,
+            after_subject_uuid=after_s,
+            after_predicate=after_p,
+            after_relationship_uuid=after_r,
         )
-        items = getattr(result, "results", None) or result or []
-        triples = _sort_validity_triples(
-            [(item.subject, item.predicate, item.object) for item in items]
-        )
-        return triples, getattr(result, "total", None)
+        return sliced[:page_limit], total
 
     def flush_pending() -> bool:
         nonlocal pending, pending_key, pending_raw, last_group, last_predicate_raw, truncated
@@ -956,6 +1053,17 @@ def _load_triples(
             pending_raw = ""
             return True
         size = len(pending)
+        if (
+            max_relationships is not None
+            and size > max_relationships
+            and not scanned
+        ):
+            logger.warning(
+                "conflict scan including oversized group brain_id=%s size=%s cap=%s",
+                brain_id,
+                size,
+                max_relationships,
+            )
         if (
             max_relationships is not None
             and scanned
@@ -1652,26 +1760,30 @@ def _stale_open_conflicts(
     claim_scoped = scanned_claim_keys is not None
     if scoped and not lookup_ids and not claim_scoped:
         return []
-    if claim_scoped and not scanned_claim_keys:
-        return []
-    candidates: list[FactConflict] = []
+    window_candidates: list[FactConflict] = []
+    removed_group_candidates: list[FactConflict] = []
     seen: set[str] = set()
-    unknown_ids: list[str] = []
+    refresh_ids: list[str] = []
     for conflict in _iter_open_conflicts(
         adapter, brain_id, lookup_ids if scoped and not claim_scoped else None
     ):
         if conflict.id in seen or conflict.pair_key in live_pair_keys:
             continue
-        if claim_scoped and conflict.claim_key not in scanned_claim_keys:
-            continue
         seen.add(conflict.id)
-        candidates.append(conflict)
-        unknown_ids.extend(
-            side.fact_id
-            for side in conflict.sides
-            if side.fact_id and side.fact_id not in snapshots_by_id
+        side_ids = [
+            side.fact_id for side in conflict.sides if side.fact_id
+        ]
+        in_window = (not claim_scoped) or (
+            conflict.claim_key in scanned_claim_keys
         )
-    wanted_unknown = [item for item in dict.fromkeys(unknown_ids) if item]
+        if in_window:
+            window_candidates.append(conflict)
+            if any(item not in snapshots_by_id for item in side_ids):
+                refresh_ids.extend(side_ids)
+        elif graph is not None:
+            removed_group_candidates.append(conflict)
+            refresh_ids.extend(side_ids)
+    wanted_unknown = [item for item in dict.fromkeys(refresh_ids) if item]
     if wanted_unknown and graph is not None:
         triples, _stats = _load_triples(
             graph,
@@ -1684,6 +1796,12 @@ def _stale_open_conflicts(
             fact_id = str((snapshot or {}).get("fact_id") or "")
             if fact_id:
                 snapshots_by_id[fact_id] = snapshot
+    candidates = list(window_candidates)
+    for conflict in removed_group_candidates:
+        side_ids = [side.fact_id for side in conflict.sides if side.fact_id]
+        if side_ids and any(item in snapshots_by_id for item in side_ids):
+            continue
+        candidates.append(conflict)
     stale: list[FactConflict] = []
     for conflict in candidates:
         if conflict.status != "open":
