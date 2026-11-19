@@ -256,6 +256,7 @@ CURRENT_VALUE_NEGATIVES = (
     "what library is currently used to do response caching",
     "what is the current timeout that was changed yesterday",
     "what is the current timeout which was updated yesterday",
+    "What is the TTL for the cache which was changed?",
     "did I use postgres or mysql",
     "have I turned on TLS",
     "what timezone is set",
@@ -292,6 +293,8 @@ HISTORY_POSITIVES = (
     "what was the timeout before it changed",
     "which settings were removed from the policy",
     "show me the settings that were removed",
+    "show me the TTL settings which were updated",
+    "which TTL settings were updated",
     "which fields were changed in the last revision",
     "which rules were updated last quarter",
     "did I already complete this",
@@ -330,6 +333,8 @@ class EverydayHistoryIntentTests(unittest.TestCase):
             "which fields were changed",
             "which rules were updated",
             "show me the settings that were removed",
+            "show me the TTL settings which were updated",
+            "which TTL settings were updated",
         ):
             with self.subTest(text=text):
                 self.assertTrue(_wants(text), text)
@@ -344,6 +349,7 @@ class EverydayHistoryIntentTests(unittest.TestCase):
             "what library is currently used to do response caching",
             "what is the current timeout that was changed yesterday",
             "what is the current timeout which was updated yesterday",
+            "What is the TTL for the cache which was changed?",
         ):
             with self.subTest(text=text):
                 self.assertFalse(_wants(text), text)

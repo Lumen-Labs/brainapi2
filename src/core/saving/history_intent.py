@@ -150,6 +150,8 @@ _STRONG_HISTORY_RE = re.compile(
     r"|\bbefore (?:the |that )?(?:update|change|extension|deletion|it was)"
     r"|\bbefore it (?:was )?(?:changed|updated|removed|deleted|replaced)\b"
     r"|(?<!that )(?<!which )\b(?:was|were) (?:deleted|removed|changed|updated)\b"
+    r"|\b(?:show|list|give|tell).{0,80}\b(?:that|which) (?:was|were) (?:deleted|removed|changed|updated)\b"
+    r"|\bwhich \w+(?:\s+\w+){0,5} (?:was|were) (?:deleted|removed|changed|updated)\b"
     r"|\b(?:deleted|removed) from\b"
     r"|\bfirst (?:said|stated|mentioned)\b"
     r"|\bhow many (?:days|weeks|months).{0,80}\bbetween\b"
