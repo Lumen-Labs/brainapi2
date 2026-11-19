@@ -457,7 +457,23 @@ def _candidate_vectors(
     return vectors
 
 
-def _superseded_chunks_for_key(adapter: Any, brain_id: str, key: str, needed: int) -> list:
+def _chunk_identity(chunk: Any) -> str:
+    chunk_id = getattr(chunk, "id", None)
+    if chunk_id:
+        return str(chunk_id)
+    meta = getattr(chunk, "metadata", None) or {}
+    recency = str(meta.get("superseded_at") or "") if isinstance(meta, dict) else ""
+    return f"{getattr(chunk, 'text', None) or ''}|{recency}"
+
+
+def _superseded_page(
+    adapter: Any,
+    brain_id: str,
+    key: str,
+    needed: int,
+    *,
+    order: str,
+) -> list:
     collected: list = []
     skip = 0
     page = min(_PAGE, max(needed + _FETCH_BUFFER, needed, 1))
@@ -470,7 +486,7 @@ def _superseded_chunks_for_key(adapter: Any, brain_id: str, key: str, needed: in
             "metadata_eq": {"source_key": key},
         }
         try:
-            stored, total = adapter.get_text_chunks(**kwargs, order="desc")
+            stored, total = adapter.get_text_chunks(**kwargs, order=order)
         except TypeError:
             try:
                 stored, total = adapter.get_text_chunks(**kwargs)
@@ -491,6 +507,67 @@ def _superseded_chunks_for_key(adapter: Any, brain_id: str, key: str, needed: in
     return collected
 
 
+def _superseded_chunks_for_key(adapter: Any, brain_id: str, key: str, needed: int) -> list:
+    if needed <= 0:
+        return []
+    newest = _superseded_page(adapter, brain_id, key, needed, order="desc")
+    earliest = _superseded_page(adapter, brain_id, key, 1, order="asc")
+    pinned = earliest[0] if earliest else None
+    merged: list = []
+    seen: set[str] = set()
+    if pinned is not None:
+        merged.append(pinned)
+        seen.add(_chunk_identity(pinned))
+    for chunk in newest:
+        identity = _chunk_identity(chunk)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        merged.append(chunk)
+        if len(merged) >= needed:
+            break
+    return merged
+
+
+def _select_revision_candidates(
+    collected: list[tuple[tuple[float, str], str, str, list[float] | None, str]],
+    embed_cap: int,
+) -> list[tuple[tuple[float, str], str, str, list[float] | None, str]]:
+    if embed_cap <= 0 or not collected:
+        return []
+    newest_of_body: dict[str, tuple[tuple[float, str], str, str, list[float] | None, str]] = {}
+    earliest_when: dict[str, tuple[float, str]] = {}
+    earliest_body_by_key: dict[str, str] = {}
+    for item in collected:
+        body = item[2]
+        current = newest_of_body.get(body)
+        if current is None or item[0] > current[0]:
+            newest_of_body[body] = item
+        key = item[4]
+        if key not in earliest_when or item[0] < earliest_when[key]:
+            earliest_when[key] = item[0]
+            earliest_body_by_key[key] = body
+    pinned: list[tuple[tuple[float, str], str, str, list[float] | None, str]] = []
+    seen: set[str] = set()
+    for body in earliest_body_by_key.values():
+        if body in seen:
+            continue
+        seen.add(body)
+        pinned.append(newest_of_body[body])
+    newest_first = sorted(newest_of_body.values(), key=lambda item: item[0], reverse=True)
+    selected: list[tuple[tuple[float, str], str, str, list[float] | None, str]] = []
+    selected_bodies: set[str] = set()
+    for item in pinned + newest_first:
+        body = item[2]
+        if body in selected_bodies:
+            continue
+        selected_bodies.add(body)
+        selected.append(item)
+        if len(selected) >= embed_cap:
+            break
+    return selected
+
+
 def prior_revision_texts(
     adapter: Any,
     brain_id: str,
@@ -506,7 +583,8 @@ def prior_revision_texts(
 
     Search does not have to rank the older copy. The key on a current hit is enough.
     When a query is provided, older copies are ordered by relevance, then recency.
-    Embedding is capped to the newest copies and prefers stored vectors.
+    Embedding is capped to the earliest copy per source_key plus the newest
+    remaining copies, and prefers stored vectors.
     """
     cap = max(0, limit)
     if cap == 0:
@@ -524,7 +602,7 @@ def prior_revision_texts(
         if key and key not in keys:
             keys.append(key)
     embed_cap = embed_candidate_cap(cap)
-    collected: list[tuple[tuple[float, str], str, str, list[float] | None]] = []
+    collected: list[tuple[tuple[float, str], str, str, list[float] | None, str]] = []
     for key in keys:
         older = _superseded_chunks_for_key(adapter, brain_id, key, embed_cap)
         for chunk in older:
@@ -538,22 +616,13 @@ def prior_revision_texts(
                 continue
             recency = str(meta.get("superseded_at") or "") if isinstance(meta, dict) else ""
             collected.append(
-                (_recency_sort_key(recency), recency, body, _stored_embedding(chunk))
+                (_recency_sort_key(recency), recency, body, _stored_embedding(chunk), key)
             )
-    collected.sort(key=lambda item: item[0], reverse=True)
-    unique: list[tuple[tuple[float, str], str, str, list[float] | None]] = []
-    seen: set[str] = set()
-    for item in collected:
-        body = item[2]
-        if body in seen:
-            continue
-        seen.add(body)
-        unique.append(item)
-    candidates = unique[:embed_cap]
-    bodies = [body for _key, _recency, body, _vector in candidates]
+    candidates = _select_revision_candidates(collected, embed_cap)
+    bodies = [body for _key, _recency, body, _vector, _source in candidates]
     vectors = _candidate_vectors(
         bodies,
-        [vector for _key, _recency, _body, vector in candidates],
+        [vector for _key, _recency, _body, vector, _source in candidates],
         embed,
         embed_many,
         query_vector,
@@ -569,7 +638,7 @@ def prior_revision_texts(
             recency,
             body,
         )
-        for (_key, recency, body, _stored), vector in zip(candidates, vectors)
+        for (_key, recency, body, _stored, _source), vector in zip(candidates, vectors)
     ]
     ranked.sort(key=lambda item: _recency_sort_key(item[1]), reverse=True)
     ranked.sort(key=lambda item: item[0], reverse=True)

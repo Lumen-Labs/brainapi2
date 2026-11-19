@@ -252,6 +252,11 @@ CURRENT_VALUE_NEGATIVES = (
     "what is the status of the job",
     "tell me the latest count",
     "what value is in the config now",
+    "what is currently used to cache responses",
+    "what library is currently used to do response caching",
+    "what is the current timeout that was changed yesterday",
+    "what is the current timeout which was updated yesterday",
+    "What is the TTL for the cache which was changed?",
     "did I use postgres or mysql",
     "have I turned on TLS",
     "what timezone is set",
@@ -280,6 +285,18 @@ HISTORY_POSITIVES = (
     "Did I use this library last year?",
     "What is the difference between the timeout before the change and the one we use today?",
     "What was the TTL before the change?",
+    "what was previously configured for the timeout",
+    "what was originally the cache TTL",
+    "what was the original value of the cedar signal",
+    "what was first said about the timeout",
+    "what did the cedar code used to be",
+    "what was the timeout before it changed",
+    "which settings were removed from the policy",
+    "show me the settings that were removed",
+    "show me the TTL settings which were updated",
+    "which TTL settings were updated",
+    "which fields were changed in the last revision",
+    "which rules were updated last quarter",
     "did I already complete this",
     "did I say I finished this or that I never started it",
     "how many days are there between these two deadlines",
@@ -304,6 +321,38 @@ class EverydayHistoryIntentTests(unittest.TestCase):
     def test_history_questions_still_trigger(self):
         misses = [text for text in HISTORY_POSITIVES if not _wants(text)]
         self.assertEqual(misses, [])
+
+    def test_past_version_cues_trigger_history(self):
+        for text in (
+            "what was previously the current timeout",
+            "what was originally the current TTL",
+            "what was first said about the current setting",
+            "what did the timeout used to be",
+            "what was the timeout before it changed",
+            "which settings were removed",
+            "which fields were changed",
+            "which rules were updated",
+            "show me the settings that were removed",
+            "show me the TTL settings which were updated",
+            "which TTL settings were updated",
+        ):
+            with self.subTest(text=text):
+                self.assertTrue(_wants(text), text)
+
+    def test_current_value_questions_still_skip_history(self):
+        for text in (
+            "what is the current timeout",
+            "what is the current TTL",
+            "what is the current value",
+            "What is the TTL for the cache that was changed?",
+            "what is currently used to cache responses",
+            "what library is currently used to do response caching",
+            "what is the current timeout that was changed yesterday",
+            "what is the current timeout which was updated yesterday",
+            "What is the TTL for the cache which was changed?",
+        ):
+            with self.subTest(text=text):
+                self.assertFalse(_wants(text), text)
 
     def test_include_history_flag_still_wins(self):
         self.assertTrue(_wants("what did I set the port to", explicit=True))
