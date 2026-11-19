@@ -27,7 +27,7 @@ DisagreementType = Literal[
 ]
 DetectionMethod = Literal["deterministic", "llm"]
 VerificationState = Literal["unverified", "verified", "rejected"]
-ResolutionMethod = Literal["dismissed", "verified_side", "manual"]
+ResolutionMethod = Literal["dismissed", "verified_side", "manual", "stale"]
 
 
 class ConflictSource(BaseModel):

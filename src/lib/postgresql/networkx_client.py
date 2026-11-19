@@ -7,7 +7,6 @@ Author: Christian Nonis <alch.infoemail@gmail.com>
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import os
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
@@ -426,8 +425,8 @@ class NetworkXGraphClient(GraphClient):
                     else {}
                 ),
                 **(
-                    {"last_updated": record.get("last_updated", datetime.now(timezone.utc))}
-                    if record.get("last_updated") is not None
+                    {"last_updated": record.get("last_updated")}
+                    if record.get("last_updated") not in (None, "")
                     else {}
                 ),
                 **(
@@ -705,6 +704,7 @@ class NetworkXGraphClient(GraphClient):
         since: str | None = None,
         until: str | None = None,
         subject_uuids: list[str] | None = None,
+        relationship_uuids: list[str] | None = None,
     ) -> tuple[list[tuple[Node, Predicate, Node]], int]:
         from src.core.saving.validity import change_kind, parse_instant
 
@@ -713,10 +713,15 @@ class NetworkXGraphClient(GraphClient):
         since_dt = parse_instant(since) if since else None
         until_dt = parse_instant(until) if until else None
         subject_filter = set(subject_uuids) if subject_uuids else None
+        relationship_filter = set(relationship_uuids) if relationship_uuids else None
         matched: list[tuple[Node, Predicate, Node]] = []
         for source, target, key, edge_data in brain.graph.edges(keys=True, data=True):
             if subject_filter is not None and source not in subject_filter:
                 continue
+            if relationship_filter is not None:
+                rel_uuid = str(edge_data.get("uuid") or key or "")
+                if rel_uuid not in relationship_filter:
+                    continue
             props = dict(edge_data)
             if since_dt is not None and until_dt is not None:
                 if not change_kind(props, since_dt, until_dt):

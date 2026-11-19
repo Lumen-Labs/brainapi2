@@ -14,6 +14,8 @@ import os
 import re
 from typing import Any, Callable, Iterable
 
+logger = logging.getLogger(__name__)
+
 from src.constants.conflicts import (
     ConflictEntity,
     ConflictResolution,
@@ -37,7 +39,6 @@ from src.core.saving.validity import (
 logger = logging.getLogger(__name__)
 
 _REL_PAGE = 200
-_MAX_SCAN = 10000
 _LLM_BATCH = 10
 
 
@@ -207,6 +208,61 @@ def conflict_detect_llm_max_pairs() -> int:
     return int(getattr(config, "conflict_detect_llm_max_pairs", 20) or 20)
 
 
+class ConflictScanResult:
+    """Conflicts plus scan completeness metadata.
+
+    Iterates like the stored conflict list so existing callers keep working.
+    """
+
+    def __init__(
+        self,
+        conflicts: list[FactConflict] | None = None,
+        *,
+        truncated: bool = False,
+        scanned_relationships: int = 0,
+        total_relationships: int | None = None,
+        llm_truncated: bool = False,
+        llm_pairs_total: int = 0,
+        llm_pairs_judged: int = 0,
+        stale_resolved: int = 0,
+    ):
+        self.conflicts = list(conflicts or [])
+        self.truncated = bool(truncated)
+        self.scanned_relationships = int(scanned_relationships)
+        self.total_relationships = (
+            None if total_relationships is None else int(total_relationships)
+        )
+        self.llm_truncated = bool(llm_truncated)
+        self.llm_pairs_total = int(llm_pairs_total)
+        self.llm_pairs_judged = int(llm_pairs_judged)
+        self.stale_resolved = int(stale_resolved)
+
+    def __iter__(self):
+        return iter(self.conflicts)
+
+    def __len__(self):
+        return len(self.conflicts)
+
+    def __getitem__(self, index):
+        return self.conflicts[index]
+
+    def __bool__(self):
+        return bool(self.conflicts)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "count": len(self.conflicts),
+            "conflict_ids": [item.id for item in self.conflicts],
+            "truncated": self.truncated,
+            "scanned_relationships": self.scanned_relationships,
+            "total_relationships": self.total_relationships,
+            "llm_truncated": self.llm_truncated,
+            "llm_pairs_total": self.llm_pairs_total,
+            "llm_pairs_judged": self.llm_pairs_judged,
+            "stale_resolved": self.stale_resolved,
+        }
+
+
 def normalize_predicate(name: str | None) -> str:
     return re.sub(r"[^A-Z0-9]+", "_", (name or "").upper()).strip("_")
 
@@ -286,6 +342,8 @@ def _amount_of(predicate: Any, props: dict[str, Any], value_text: str) -> float 
         raw = props.get("amount")
     if isinstance(raw, (int, float)) and not isinstance(raw, bool):
         return float(raw)
+    if parse_date_value(value_text) is not None:
+        return None
     parsed = parse_quantity(value_text)
     if parsed is None:
         return None
@@ -319,11 +377,37 @@ def normalize_value(text: str | None) -> str:
     return re.sub(r"\s+", " ", (text or "").strip().lower())
 
 
+def parse_date_value(text: str | None):
+    if not text or not str(text).strip():
+        return None
+    from src.core.saving.validity import parse_instant
+    from src.utils.dates import parse_date_string
+
+    parsed = parse_instant(text)
+    if parsed is not None:
+        return parsed
+    return parse_date_string(str(text).strip())
+
+
+def _date_key(value) -> tuple[int, int, int] | None:
+    if value is None:
+        return None
+    naive = value.replace(tzinfo=None) if getattr(value, "tzinfo", None) else value
+    try:
+        return (naive.year, naive.month, naive.day)
+    except Exception:
+        return None
+
+
 def values_equivalent(left: str, right: str) -> bool:
     a = normalize_value(left)
     b = normalize_value(right)
     if a == b:
         return True
+    date_a = _date_key(parse_date_value(left))
+    date_b = _date_key(parse_date_value(right))
+    if date_a is not None and date_b is not None:
+        return date_a == date_b
     qa = parse_quantity(a)
     qb = parse_quantity(b)
     if qa and qb and qa[1] == qb[1]:
@@ -429,6 +513,20 @@ def snapshot_from_triple(triple: Any) -> dict[str, Any] | None:
     }
 
 
+def _structurally_incompatible(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    left_value = left.get("value") or ""
+    right_value = right.get("value") or ""
+    if parse_quantity(left_value) and parse_quantity(right_value):
+        return True
+    if parse_date_value(left_value) and parse_date_value(right_value):
+        return True
+    if antonym_or_negation(left_value, right_value):
+        return True
+    amount_a = left.get("amount")
+    amount_b = right.get("amount")
+    return isinstance(amount_a, (int, float)) and isinstance(amount_b, (int, float))
+
+
 def classify_disagreement(left: dict[str, Any], right: dict[str, Any]) -> tuple[str, float] | None:
     if values_equivalent(left.get("value") or "", right.get("value") or ""):
         if opposite_polarity(left.get("polarity") or "neutral", right.get("polarity") or "neutral"):
@@ -446,6 +544,10 @@ def classify_disagreement(left: dict[str, Any], right: dict[str, Any]) -> tuple[
         return "polarity_conflict", 0.94
     if opposite_polarity(left.get("polarity") or "neutral", right.get("polarity") or "neutral"):
         return "polarity_conflict", 0.95
+    date_a = parse_date_value(left.get("value") or "")
+    date_b = parse_date_value(right.get("value") or "")
+    if date_a is not None and date_b is not None and _date_key(date_a) != _date_key(date_b):
+        return "value_mismatch", 0.96
     qty_a = parse_quantity(left.get("value") or "")
     qty_b = parse_quantity(right.get("value") or "")
     if qty_a and qty_b and qty_a[1] == qty_b[1] and not math.isclose(qty_a[0], qty_b[0], rel_tol=0.02, abs_tol=0.05):
@@ -461,34 +563,105 @@ def classify_disagreement(left: dict[str, Any], right: dict[str, Any]) -> tuple[
     return "value_mismatch", 0.8
 
 
-def _iter_triples(graph: Any, brain_id: str, subject_uuids: list[str] | None = None):
+def _call_list_validity_relationships(
+    method: Callable[..., Any],
+    brain_id: str,
+    *,
+    skip: int,
+    limit: int,
+    subject_uuids: list[str] | None = None,
+    relationship_uuids: list[str] | None = None,
+):
+    try:
+        return method(
+            brain_id,
+            skip=skip,
+            limit=limit,
+            subject_uuids=subject_uuids,
+            relationship_uuids=relationship_uuids,
+        )
+    except TypeError:
+        try:
+            return method(
+                brain_id,
+                skip=skip,
+                limit=limit,
+                subject_uuids=subject_uuids,
+            )
+        except TypeError:
+            return method(brain_id, skip=skip, limit=limit)
+
+
+def _load_triples(
+    graph: Any,
+    brain_id: str,
+    subject_uuids: list[str] | None = None,
+    relationship_uuids: list[str] | None = None,
+    *,
+    max_relationships: int | None = None,
+) -> tuple[list[Any], dict[str, Any]]:
     method = getattr(graph, "list_validity_relationships", None)
     skip = 0
-    while skip < _MAX_SCAN:
+    scanned: list[Any] = []
+    reported_total = None
+    truncated = False
+    while True:
+        if max_relationships is not None and len(scanned) >= max_relationships:
+            truncated = True
+            break
+        page_limit = _REL_PAGE
+        if max_relationships is not None:
+            page_limit = min(page_limit, max(0, max_relationships - len(scanned)))
+            if page_limit <= 0:
+                truncated = True
+                break
         if callable(method):
-            try:
-                triples, total = method(
-                    brain_id,
-                    skip=skip,
-                    limit=_REL_PAGE,
-                    subject_uuids=subject_uuids,
-                )
-            except TypeError:
-                triples, total = method(brain_id, skip=skip, limit=_REL_PAGE)
+            triples, total = _call_list_validity_relationships(
+                method,
+                brain_id,
+                skip=skip,
+                limit=page_limit,
+                subject_uuids=subject_uuids,
+                relationship_uuids=relationship_uuids,
+            )
         else:
-            result = graph.search_relationships(brain_id, limit=_REL_PAGE, skip=skip)
+            result = graph.search_relationships(brain_id, limit=page_limit, skip=skip)
             items = getattr(result, "results", None) or result or []
             triples = [
                 (item.subject, item.predicate, item.object) for item in items
             ]
             total = getattr(result, "total", None)
+        if total is not None:
+            reported_total = int(total)
         if not triples:
             break
-        for triple in triples:
-            yield triple
+        remaining = None
+        if max_relationships is not None:
+            remaining = max_relationships - len(scanned)
+            if remaining <= 0:
+                truncated = True
+                break
+            triples = list(triples)[:remaining]
+        scanned.extend(triples)
         skip += len(triples)
+        if max_relationships is not None and len(scanned) >= max_relationships:
+            truncated = reported_total is None or reported_total > len(scanned)
+            break
         if total is not None and skip >= int(total):
             break
+        if len(triples) < page_limit:
+            break
+    if max_relationships is not None:
+        if reported_total is not None and reported_total > len(scanned):
+            truncated = True
+        elif reported_total is None and len(scanned) >= max_relationships:
+            truncated = True
+    stats = {
+        "scanned": len(scanned),
+        "total": reported_total,
+        "truncated": bool(truncated),
+    }
+    return scanned, stats
 
 
 def _load_chunk_map(adapter: Any, brain_id: str, chunk_ids: list[str]) -> dict[str, Any]:
@@ -686,7 +859,11 @@ def find_conflict_candidates(
 ) -> tuple[list[tuple[dict[str, Any], dict[str, Any], str, float]], list[tuple[dict[str, Any], dict[str, Any]]]]:
     grouped: dict[str, list[dict[str, Any]]] = {}
     for snapshot in snapshots:
-        key = claim_key_for(snapshot.get("subject_uuid") or "", snapshot.get("predicate") or "")
+        subject_uuid = str(snapshot.get("subject_uuid") or "").strip()
+        predicate = str(snapshot.get("predicate") or "").strip()
+        if not subject_uuid or not predicate:
+            continue
+        key = claim_key_for(subject_uuid, predicate)
         grouped.setdefault(key, []).append(snapshot)
     definite: list[tuple[dict[str, Any], dict[str, Any], str, float]] = []
     semantic: list[tuple[dict[str, Any], dict[str, Any]]] = []
@@ -701,6 +878,12 @@ def find_conflict_candidates(
             for right in members[i + 1 :]:
                 if left.get("fact_id") == right.get("fact_id"):
                     continue
+                if (left.get("subject_uuid") or "") != (right.get("subject_uuid") or ""):
+                    continue
+                if normalize_predicate(left.get("predicate") or "") != normalize_predicate(
+                    right.get("predicate") or ""
+                ):
+                    continue
                 if same_source_revision(left, right):
                     continue
                 if not intervals_overlap(left, right):
@@ -709,11 +892,31 @@ def find_conflict_candidates(
                 if classified is None:
                     continue
                 kind, confidence = classified
-                if kind == "value_mismatch" and not parse_quantity(left.get("value") or "") and not parse_quantity(right.get("value") or ""):
+                if kind == "value_mismatch" and not _structurally_incompatible(left, right):
                     semantic.append((left, right))
                 else:
                     definite.append((left, right, kind, confidence))
     return definite, semantic
+
+
+def _subjects_for_fact_ids(graph: Any, brain_id: str, fact_ids: list[str]) -> list[str]:
+    wanted = [item for item in dict.fromkeys(fact_ids) if item]
+    if not wanted:
+        return []
+    triples, _stats = _load_triples(
+        graph, brain_id, relationship_uuids=wanted, max_relationships=len(wanted)
+    )
+    subjects: list[str] = []
+    seen: set[str] = set()
+    for triple in triples:
+        snapshot = snapshot_from_triple(triple)
+        if snapshot is None or snapshot.get("fact_id") not in set(wanted):
+            continue
+        subject = str(snapshot.get("subject_uuid") or "").strip()
+        if subject and subject not in seen:
+            seen.add(subject)
+            subjects.append(subject)
+    return subjects
 
 
 def detect_conflicts(
@@ -726,12 +929,21 @@ def detect_conflicts(
     use_llm: bool | None = None,
     llm_client: Any | None = None,
     llm_client_factory: Callable[[], Any | None] | None = None,
-) -> list[FactConflict]:
-    snapshots: list[dict[str, Any]] = []
+    max_relationships: int | None = None,
+) -> ConflictScanResult:
     wanted = {str(item) for item in (fact_ids or []) if item}
+    subjects = [item for item in dict.fromkeys(subject_uuids or []) if item]
+    if wanted and not subjects:
+        subjects = _subjects_for_fact_ids(graph, brain_id, list(wanted))
+    triples, scan_stats = _load_triples(
+        graph,
+        brain_id,
+        subjects or None,
+        max_relationships=max_relationships,
+    )
+    snapshots: list[dict[str, Any]] = []
     chunk_ids: list[str] = []
-    subjects = list(subject_uuids or [])
-    for triple in _iter_triples(graph, brain_id, subjects or None):
+    for triple in triples:
         snapshot = snapshot_from_triple(triple)
         if snapshot is None:
             continue
@@ -761,39 +973,202 @@ def detect_conflicts(
         for pair in semantic
         if pair_key_for(pair[0]["fact_id"], pair[1]["fact_id"]) not in found
     ]
+    llm_pairs_total = len(pending)
+    llm_pairs_judged = 0
+    llm_truncated = False
     if llm_on and pending:
         budget = conflict_detect_llm_max_pairs()
+        limit = len(pending) if budget <= 0 else min(len(pending), budget)
+        llm_truncated = budget > 0 and len(pending) > budget
         judged: dict[int, tuple[bool, float, str]] = {}
-        for start in range(0, min(len(pending), budget), _LLM_BATCH):
+        for start in range(0, limit, _LLM_BATCH):
             batch = pending[start : start + _LLM_BATCH]
             batch_results = judge_semantic_pairs(
                 batch, client=llm_client, client_factory=llm_client_factory
             )
             for index, verdict in batch_results.items():
                 judged[start + index] = verdict
-        for index, (left, right) in enumerate(pending):
-            if index >= budget:
-                break
+        llm_pairs_judged = limit
+        for index, (left, right) in enumerate(pending[:limit]):
             verdict = judged.get(index)
             if verdict is None:
-                conflict = _build_conflict(left, right, "value_mismatch", 0.7, "deterministic")
-                found[conflict.pair_key] = conflict
                 continue
             contradicts, confidence, kind = verdict
             if not contradicts:
                 continue
             conflict = _build_conflict(left, right, kind, confidence, "llm")
             found[conflict.pair_key] = conflict
-    elif pending:
-        for left, right in pending:
-            conflict = _build_conflict(left, right, "value_mismatch", 0.7, "deterministic")
-            found[conflict.pair_key] = conflict
+        if llm_truncated:
+            logger.warning(
+                "conflict LLM judging truncated brain_id=%s judged=%s total=%s",
+                brain_id,
+                llm_pairs_judged,
+                llm_pairs_total,
+            )
     stored: list[FactConflict] = []
     for conflict in found.values():
         saved = upsert_conflict(adapter, brain_id, conflict)
         if saved is not None:
             stored.append(saved)
-    return stored
+    stale: list[FactConflict] = []
+    if not scan_stats.get("truncated"):
+        stale = _stale_open_conflicts(
+            adapter,
+            brain_id,
+            snapshots,
+            live_pair_keys=set(found),
+            fact_ids=list(wanted) or None,
+            scoped=bool(subjects or wanted),
+        )
+        stored.extend(stale)
+    if scan_stats.get("truncated"):
+        logger.warning(
+            "conflict relationship scan truncated brain_id=%s scanned=%s total=%s",
+            brain_id,
+            scan_stats.get("scanned"),
+            scan_stats.get("total"),
+        )
+    return ConflictScanResult(
+        stored,
+        truncated=bool(scan_stats.get("truncated")),
+        scanned_relationships=int(scan_stats.get("scanned") or 0),
+        total_relationships=scan_stats.get("total"),
+        llm_truncated=llm_truncated,
+        llm_pairs_total=llm_pairs_total,
+        llm_pairs_judged=llm_pairs_judged,
+        stale_resolved=len(stale),
+    )
+
+
+def _conflict_from_row(row: Any) -> FactConflict | None:
+    if isinstance(row, FactConflict):
+        return row
+    if isinstance(row, dict):
+        return conflict_from_document(row)
+    return None
+
+
+def _iter_open_conflicts(
+    adapter: Any,
+    brain_id: str,
+    fact_ids: list[str] | None = None,
+):
+    if fact_ids:
+        getter = getattr(adapter, "get_open_conflicts_for_facts", None)
+        if callable(getter):
+            for row in getter(fact_ids, brain_id) or []:
+                conflict = _conflict_from_row(row)
+                if conflict is not None and conflict.status == "open":
+                    yield conflict
+            return
+    skip = 0
+    page = 200
+    listing = getattr(adapter, "get_conflicts_list", None)
+    if not callable(listing):
+        return
+    while True:
+        rows, total = listing(brain_id, limit=page, skip=skip, status="open")
+        batch = list(rows or [])
+        if not batch:
+            break
+        for row in batch:
+            conflict = _conflict_from_row(row)
+            if conflict is not None and conflict.status == "open":
+                yield conflict
+        skip += len(batch)
+        if total is not None and skip >= int(total):
+            break
+        if len(batch) < page:
+            break
+
+
+def _stale_reason(
+    conflict: FactConflict,
+    snapshots_by_id: dict[str, dict[str, Any]],
+    live_pair_keys: set[str],
+) -> str | None:
+    sides = list(conflict.sides or [])
+    if len(sides) < 2:
+        return "side_removed:incomplete_sides"
+    live = [snapshots_by_id.get(side.fact_id) for side in sides]
+    missing = [side.fact_id for side, snap in zip(sides, live) if snap is None]
+    if missing:
+        return "side_removed:" + ",".join(missing)
+    deprecated = [
+        snap["fact_id"] for snap in live if snap is not None and snap.get("deprecated")
+    ]
+    if deprecated:
+        return "side_removed:" + ",".join(deprecated)
+    pair = pair_key_for(sides[0].fact_id, sides[1].fact_id)
+    if pair in live_pair_keys:
+        return None
+    left, right = live[0], live[1]
+    if left is None or right is None:
+        return "side_removed"
+    successor_ids = {
+        str(snap.get(SUPERSEDED_BY) or "")
+        for snap in live
+        if snap.get(SUPERSEDED_BY)
+    }
+    successor_ids.discard("")
+    if successor_ids:
+        other = right if left.get(SUPERSEDED_BY) else left
+        successors = [snapshots_by_id.get(item) for item in successor_ids]
+        if any(
+            snap is not None
+            and other is not None
+            and classify_disagreement(snap, other) is None
+            for snap in successors
+        ):
+            return "side_superseded:" + ",".join(sorted(successor_ids))
+    if same_source_revision(left, right):
+        return "side_superseded:same_source_revision"
+    if not intervals_overlap(left, right):
+        return "no_longer_holds:validity_no_overlap"
+    if classify_disagreement(left, right) is None:
+        return "no_longer_holds:values_compatible"
+    return "no_longer_holds"
+
+
+def _stale_open_conflicts(
+    adapter: Any,
+    brain_id: str,
+    snapshots: list[dict[str, Any]],
+    *,
+    live_pair_keys: set[str],
+    fact_ids: list[str] | None = None,
+    scoped: bool = False,
+) -> list[FactConflict]:
+    snapshots_by_id = {
+        str(item.get("fact_id")): item
+        for item in snapshots
+        if item.get("fact_id")
+    }
+    lookup_ids = list(
+        dict.fromkeys([*(fact_ids or []), *snapshots_by_id.keys()])
+    )
+    stale: list[FactConflict] = []
+    seen: set[str] = set()
+    for conflict in _iter_open_conflicts(
+        adapter, brain_id, lookup_ids if scoped else None
+    ):
+        if conflict.id in seen or conflict.pair_key in live_pair_keys:
+            continue
+        seen.add(conflict.id)
+        reason = _stale_reason(conflict, snapshots_by_id, live_pair_keys)
+        if not reason:
+            continue
+        conflict.status = "resolved"
+        conflict.resolution = ConflictResolution(
+            method="stale",
+            notes=reason,
+            resolved_at=format_instant(utc_now()),
+            resolved_by="conflict_scan",
+        )
+        updater = getattr(adapter, "update_conflict", None)
+        saved = updater(conflict, brain_id) if callable(updater) else conflict
+        stale.append(saved or conflict)
+    return stale
 
 
 def upsert_conflict(adapter: Any, brain_id: str, conflict: FactConflict) -> FactConflict | None:
@@ -1113,7 +1488,11 @@ def annotation_payload(conflict: FactConflict, fact_id: str) -> dict[str, Any]:
     }
 
 
-def maybe_detect_after_ingest(brain_id: str, fact_ids: list[str]) -> None:
+def maybe_detect_after_ingest(
+    brain_id: str,
+    fact_ids: list[str],
+    subject_uuids: list[str] | None = None,
+) -> None:
     if not conflict_detect_on_ingest_enabled():
         return
     try:
@@ -1124,13 +1503,20 @@ def maybe_detect_after_ingest(brain_id: str, fact_ids: list[str]) -> None:
     except Exception:
         pass
     ids = [item for item in fact_ids if item]
-    if not ids:
+    subjects = [item for item in (subject_uuids or []) if item]
+    if not ids and not subjects:
         return
     try:
         from src.workers.tasks.conflicts import detect_conflicts_incremental
 
         detect_conflicts_incremental.apply_async(
-            args=[{"brain_id": brain_id, "fact_ids": ids}]
+            args=[
+                {
+                    "brain_id": brain_id,
+                    "fact_ids": ids,
+                    "subject_uuids": subjects,
+                }
+            ]
         )
         return
     except Exception:
@@ -1138,4 +1524,10 @@ def maybe_detect_after_ingest(brain_id: str, fact_ids: list[str]) -> None:
     from src.services.data.main import data_adapter
     from src.services.kg_agent.main import graph_adapter
 
-    detect_conflicts(data_adapter, graph_adapter, brain_id, fact_ids=ids)
+    detect_conflicts(
+        data_adapter,
+        graph_adapter,
+        brain_id,
+        fact_ids=ids or None,
+        subject_uuids=subjects or None,
+    )

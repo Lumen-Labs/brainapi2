@@ -153,6 +153,16 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
         self.assertEqual(dumped["properties"]["note"], "x")
         self.assertIsInstance(dumped["properties"]["last_updated"], str)
 
+    def test_python_datetime_does_not_invent_now(self):
+        from datetime import datetime as dt
+
+        client = _client()
+        self.assertIsNone(client._python_datetime(None))
+        self.assertIsNone(client._python_datetime(""))
+        self.assertIsNone(client._python_datetime("not-a-timestamp"))
+        parsed = client._python_datetime("2024-01-02T03:04:05+00:00")
+        self.assertIsInstance(parsed, dt)
+
     def test_node_accepts_neo4j_datetime_last_updated(self):
         from datetime import datetime as dt
         from neo4j.time import DateTime
@@ -306,7 +316,18 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
         self.assertEqual(extra.get("v_id"), "v1")
         self.assertEqual(extra.get("valid_from"), "2026-01-01T00:00:00Z")
         self.assertEqual(extra.get("source"), "structured_deterministic")
-        self.assertIsInstance(extra.get("last_updated"), str)
+        self.assertIsNone(extra.get("last_updated"))
+
+        stamped = Predicate(
+            uuid="rel-2",
+            name="OWNS",
+            description="owns",
+            last_updated="2026-01-02T03:04:05+00:00",
+            properties={"v_id": "v2"},
+        )
+        client.add_relationship(_person("a"), stamped, _person("b", "Widget"), "braina")
+        stamped_extra = client.driver.calls[1][1]["extra_props"]
+        self.assertIsInstance(stamped_extra.get("last_updated"), str)
 
     def test_add_relationship_keeps_zero_amount_and_omits_endpoint_uuid(self):
         client = _client(records=[_Record({"a": 1})])
@@ -652,6 +673,20 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
         ):
             self.assertIn(key, joined)
             self.assertIn("rel_REQUIRES_" + key, joined)
+
+    def test_list_validity_relationships_parameterizes_relationship_uuids(self):
+        client = _client()
+        payload = "'; MATCH (n) DETACH DELETE n //"
+        client.list_validity_relationships(
+            "braina",
+            skip=1,
+            limit=4,
+            relationship_uuids=[payload],
+        )
+        query, params, _db = client.driver.calls[0]
+        self.assertIn("r['uuid'] IN $relationship_uuids", query)
+        self.assertEqual(params["relationship_uuids"], [payload])
+        self.assertNotIn(payload, query)
 
     def test_execute_operation_rejects_injected_database_name(self):
         client = _client()

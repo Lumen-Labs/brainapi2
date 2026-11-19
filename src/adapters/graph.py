@@ -462,6 +462,7 @@ class GraphAdapter:
         since: str | None = None,
         until: str | None = None,
         subject_uuids: list[str] | None = None,
+        relationship_uuids: list[str] | None = None,
     ):
         method = getattr(self.graph, "list_validity_relationships", None)
         if method is None:
@@ -479,11 +480,22 @@ class GraphAdapter:
                 since=since,
                 until=until,
                 subject_uuids=subject_uuids,
+                relationship_uuids=relationship_uuids,
             )
         except TypeError:
-            return method(
-                brain_id, skip=skip, limit=limit, since=since, until=until
-            )
+            try:
+                return method(
+                    brain_id,
+                    skip=skip,
+                    limit=limit,
+                    since=since,
+                    until=until,
+                    subject_uuids=subject_uuids,
+                )
+            except TypeError:
+                return method(
+                    brain_id, skip=skip, limit=limit, since=since, until=until
+                )
 
     def search_entities(
         self,

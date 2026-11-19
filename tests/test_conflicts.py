@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
-from src.constants.kg import Node, Predicate
+from src.constants.kg import Node, Predicate, _coerce_datetime
 from src.core.auth.scopes import VERIFICATION_PERMISSION_DENIED
 from src.core.saving.conflicts import (
     VerificationPermissionDenied,
@@ -17,6 +17,7 @@ from src.core.saving.conflicts import (
     maybe_detect_after_ingest,
     open_conflicts_by_fact_ids,
     pair_key_for,
+    parse_date_value,
     parse_quantity,
     resolve_by_verified_fact,
     resolve_conflict,
@@ -118,6 +119,7 @@ class MemoryConflictStore:
 class FakeGraph:
     def __init__(self, triples):
         self.triples = triples
+        self.calls = []
 
     def list_validity_relationships(
         self,
@@ -127,11 +129,26 @@ class FakeGraph:
         since=None,
         until=None,
         subject_uuids=None,
+        relationship_uuids=None,
     ):
+        self.calls.append(
+            {
+                "brain_id": brain_id,
+                "skip": skip,
+                "limit": limit,
+                "subject_uuids": list(subject_uuids) if subject_uuids else None,
+                "relationship_uuids": (
+                    list(relationship_uuids) if relationship_uuids else None
+                ),
+            }
+        )
         items = self.triples
         if subject_uuids:
             allowed = set(subject_uuids)
             items = [item for item in items if item[0].uuid in allowed]
+        if relationship_uuids:
+            allowed_rels = set(relationship_uuids)
+            items = [item for item in items if item[1].uuid in allowed_rels]
         return items[skip : skip + limit], len(items)
 
 
@@ -468,8 +485,16 @@ class DetectionEngineTests(unittest.TestCase):
         fake_tasks = MagicMock()
         with patch.dict("os.environ", {"CONFLICT_DETECT_ON_INGEST": "true"}):
             with patch.dict("sys.modules", {"src.workers.tasks.conflicts": fake_tasks}):
-                maybe_detect_after_ingest("brain", ["fact-1"])
+                maybe_detect_after_ingest(
+                    "brain", ["fact-1"], subject_uuids=["policy-1"]
+                )
         fake_tasks.detect_conflicts_incremental.apply_async.assert_called_once()
+        args = fake_tasks.detect_conflicts_incremental.apply_async.call_args.kwargs.get(
+            "args"
+        ) or fake_tasks.detect_conflicts_incremental.apply_async.call_args[0][0]
+        payload = args[0] if args else {}
+        self.assertEqual(payload["fact_ids"], ["fact-1"])
+        self.assertEqual(payload["subject_uuids"], ["policy-1"])
 
     def test_verified_side_asks_verification_adapter(self):
         from src.core.saving.conflict_verification import (
@@ -1308,6 +1333,513 @@ class RestConflictResolveAuthTests(unittest.TestCase):
         self.assertEqual(body["status"], "resolved")
         self.assertEqual(body["resolution"]["resolved_by"], "brainpat:brain")
         self.assertEqual(apply_mock.call_args.kwargs.get("actor"), "brainpat:brain")
+
+
+class ReviewGapTests(unittest.TestCase):
+    def test_ingest_scan_is_scoped_to_touched_subjects(self):
+        policy = _node("policy-1", "RefundPolicy")
+        other = _node("other-1", "OtherPolicy")
+        triples = [
+            _triple(
+                policy,
+                _pred(
+                    "a",
+                    "HAS_WINDOW",
+                    {
+                        "valid_from": "2024-01-01T00:00:00Z",
+                        "source_key": "s1",
+                    },
+                ),
+                _node("x", "14 days"),
+            ),
+            _triple(
+                policy,
+                _pred(
+                    "b",
+                    "HAS_WINDOW",
+                    {
+                        "valid_from": "2024-01-01T00:00:00Z",
+                        "source_key": "s2",
+                    },
+                ),
+                _node("y", "30 days"),
+            ),
+            _triple(
+                other,
+                _pred(
+                    "c",
+                    "HAS_WINDOW",
+                    {
+                        "valid_from": "2024-01-01T00:00:00Z",
+                        "source_key": "s3",
+                    },
+                ),
+                _node("z", "7 days"),
+            ),
+            _triple(
+                other,
+                _pred(
+                    "d",
+                    "HAS_WINDOW",
+                    {
+                        "valid_from": "2024-01-01T00:00:00Z",
+                        "source_key": "s4",
+                    },
+                ),
+                _node("w", "90 days"),
+            ),
+        ]
+        graph = FakeGraph(triples)
+        found = detect_conflicts(
+            MemoryConflictStore(),
+            graph,
+            "brain",
+            fact_ids=["a"],
+            subject_uuids=["policy-1"],
+        )
+        self.assertTrue(graph.calls)
+        self.assertEqual(graph.calls[0]["subject_uuids"], ["policy-1"])
+        pairs = {tuple(sorted(item.fact_ids())) for item in found}
+        self.assertEqual(pairs, {("a", "b")})
+        self.assertFalse(found.truncated)
+        self.assertEqual(found.scanned_relationships, 2)
+
+    def test_ingest_scan_looks_up_subjects_from_fact_ids(self):
+        policy = _node("policy-1", "RefundPolicy")
+        other = _node("other-1", "OtherPolicy")
+        triples = [
+            _triple(
+                policy,
+                _pred(
+                    "a",
+                    "HAS_WINDOW",
+                    {
+                        "valid_from": "2024-01-01T00:00:00Z",
+                        "source_key": "s1",
+                    },
+                ),
+                _node("x", "14 days"),
+            ),
+            _triple(
+                policy,
+                _pred(
+                    "b",
+                    "HAS_WINDOW",
+                    {
+                        "valid_from": "2024-01-01T00:00:00Z",
+                        "source_key": "s2",
+                    },
+                ),
+                _node("y", "30 days"),
+            ),
+            _triple(
+                other,
+                _pred(
+                    "c",
+                    "HAS_WINDOW",
+                    {
+                        "valid_from": "2024-01-01T00:00:00Z",
+                        "source_key": "s3",
+                    },
+                ),
+                _node("z", "7 days"),
+            ),
+            _triple(
+                other,
+                _pred(
+                    "d",
+                    "HAS_WINDOW",
+                    {
+                        "valid_from": "2024-01-01T00:00:00Z",
+                        "source_key": "s4",
+                    },
+                ),
+                _node("w", "90 days"),
+            ),
+        ]
+        graph = FakeGraph(triples)
+        found = detect_conflicts(
+            MemoryConflictStore(),
+            graph,
+            "brain",
+            fact_ids=["a"],
+        )
+        self.assertTrue(
+            any(call.get("relationship_uuids") == ["a"] for call in graph.calls)
+        )
+        self.assertTrue(
+            any(call.get("subject_uuids") == ["policy-1"] for call in graph.calls)
+        )
+        pairs = {tuple(sorted(item.fact_ids())) for item in found}
+        self.assertEqual(pairs, {("a", "b")})
+
+    def test_scan_pages_all_relationships_and_reports_cap(self):
+        policy = _node("policy-1", "RefundPolicy")
+        triples = [
+            _triple(
+                policy,
+                _pred(
+                    f"f{i}",
+                    "HAS_WINDOW",
+                    {
+                        "valid_from": "2024-01-01T00:00:00Z",
+                        "source_key": f"s{i}",
+                    },
+                ),
+                _node(f"v{i}", f"{i} days"),
+            )
+            for i in range(5)
+        ]
+        uncapped = detect_conflicts(
+            MemoryConflictStore(), FakeGraph(triples), "brain"
+        )
+        self.assertEqual(uncapped.scanned_relationships, 5)
+        self.assertEqual(uncapped.total_relationships, 5)
+        self.assertFalse(uncapped.truncated)
+        capped = detect_conflicts(
+            MemoryConflictStore(),
+            FakeGraph(triples),
+            "brain",
+            max_relationships=2,
+        )
+        self.assertTrue(capped.truncated)
+        self.assertEqual(capped.scanned_relationships, 2)
+        self.assertEqual(capped.total_relationships, 5)
+
+    def test_heuristic_requires_incompatible_value_and_normalizes(self):
+        self.assertTrue(values_equivalent("Warehouse A", "warehouse a"))
+        self.assertTrue(values_equivalent("30 Days", "30 days"))
+        self.assertTrue(values_equivalent("2024-01-01", "January 1, 2024"))
+        self.assertFalse(values_equivalent("2024-01-01", "2024-06-01"))
+        self.assertIsNotNone(parse_date_value("January 1, 2024"))
+        snapshots = [
+            snapshot_from_triple(item)
+            for item in [
+                _triple(
+                    _node("p", "Policy"),
+                    _pred(
+                        "a",
+                        "HAS_POLICY",
+                        {
+                            "valid_from": "2024-01-01T00:00:00Z",
+                            "source_key": "s1",
+                        },
+                    ),
+                    _node("full", "full refund"),
+                ),
+                _triple(
+                    _node("p", "Policy"),
+                    _pred(
+                        "b",
+                        "HAS_POLICY",
+                        {
+                            "valid_from": "2024-01-01T00:00:00Z",
+                            "source_key": "s2",
+                        },
+                    ),
+                    _node("credit", "store credit only"),
+                ),
+            ]
+        ]
+        definite, semantic = find_conflict_candidates(snapshots)
+        self.assertEqual(definite, [])
+        self.assertEqual(len(semantic), 1)
+        found = detect_conflicts(
+            MemoryConflictStore(),
+            FakeGraph(
+                [
+                    _triple(
+                        _node("p", "Policy"),
+                        _pred(
+                            "a",
+                            "HAS_POLICY",
+                            {
+                                "valid_from": "2024-01-01T00:00:00Z",
+                                "source_key": "s1",
+                            },
+                        ),
+                        _node("full", "full refund"),
+                    ),
+                    _triple(
+                        _node("p", "Policy"),
+                        _pred(
+                            "b",
+                            "HAS_POLICY",
+                            {
+                                "valid_from": "2024-01-01T00:00:00Z",
+                                "source_key": "s2",
+                            },
+                        ),
+                        _node("credit", "store credit only"),
+                    ),
+                ]
+            ),
+            "brain",
+            use_llm=False,
+        )
+        self.assertEqual(len(found), 0)
+        dates = detect_conflicts(
+            MemoryConflictStore(),
+            FakeGraph(
+                [
+                    _triple(
+                        _node("p", "Policy"),
+                        _pred(
+                            "a",
+                            "DEADLINE",
+                            {
+                                "valid_from": "2024-01-01T00:00:00Z",
+                                "source_key": "s1",
+                            },
+                        ),
+                        _node("d1", "2024-01-01"),
+                    ),
+                    _triple(
+                        _node("p", "Policy"),
+                        _pred(
+                            "b",
+                            "DEADLINE",
+                            {
+                                "valid_from": "2024-01-01T00:00:00Z",
+                                "source_key": "s2",
+                            },
+                        ),
+                        _node("d2", "January 1, 2024"),
+                    ),
+                    _triple(
+                        _node("p", "Policy"),
+                        _pred(
+                            "c",
+                            "DEADLINE",
+                            {
+                                "valid_from": "2024-01-01T00:00:00Z",
+                                "source_key": "s3",
+                            },
+                        ),
+                        _node("d3", "2024-06-01"),
+                    ),
+                ]
+            ),
+            "brain",
+            use_llm=False,
+        )
+        pairs = {tuple(sorted(item.fact_ids())) for item in dates}
+        self.assertIn(("a", "c"), pairs)
+        self.assertIn(("b", "c"), pairs)
+        self.assertNotIn(("a", "b"), pairs)
+
+    def test_llm_truncation_is_reported(self):
+        triples = []
+        policy = _node("p", "Policy")
+        values = ("full refund", "store credit only", "exchange only")
+        for i, value in enumerate(values):
+            triples.append(
+                _triple(
+                    policy,
+                    _pred(
+                        f"a{i}",
+                        "HAS_POLICY",
+                        {
+                            "valid_from": "2024-01-01T00:00:00Z",
+                            "source_key": f"s{i}",
+                        },
+                    ),
+                    _node(f"v{i}", value),
+                )
+            )
+        client = MagicMock()
+        client.generate_json.return_value = {"results": []}
+        with patch.dict("os.environ", {"CONFLICT_DETECT_LLM_MAX_PAIRS": "1"}):
+            found = detect_conflicts(
+                MemoryConflictStore(),
+                FakeGraph(triples),
+                "brain",
+                use_llm=True,
+                llm_client=client,
+            )
+        self.assertTrue(found.llm_truncated)
+        self.assertEqual(found.llm_pairs_total, 3)
+        self.assertEqual(found.llm_pairs_judged, 1)
+        self.assertEqual(client.generate_json.call_count, 1)
+
+    def test_llm_unlimited_budget_batches_all_pairs(self):
+        triples = []
+        policy = _node("p", "Policy")
+        values = ("full refund", "store credit only", "exchange only")
+        for i, value in enumerate(values):
+            triples.append(
+                _triple(
+                    policy,
+                    _pred(
+                        f"a{i}",
+                        "HAS_POLICY",
+                        {
+                            "valid_from": "2024-01-01T00:00:00Z",
+                            "source_key": f"s{i}",
+                        },
+                    ),
+                    _node(f"v{i}", value),
+                )
+            )
+        client = MagicMock()
+        client.generate_json.return_value = {"results": []}
+        with patch.dict("os.environ", {"CONFLICT_DETECT_LLM_MAX_PAIRS": "0"}):
+            found = detect_conflicts(
+                MemoryConflictStore(),
+                FakeGraph(triples),
+                "brain",
+                use_llm=True,
+                llm_client=client,
+            )
+        self.assertFalse(found.llm_truncated)
+        self.assertEqual(found.llm_pairs_total, 3)
+        self.assertEqual(found.llm_pairs_judged, 3)
+        self.assertEqual(client.generate_json.call_count, 1)
+
+    def test_stale_conflicts_auto_resolve(self):
+        store = MemoryConflictStore()
+        live = [
+            _triple(
+                _node("p", "Policy"),
+                _pred(
+                    "a",
+                    "HAS_WINDOW",
+                    {
+                        "valid_from": "2024-01-01T00:00:00Z",
+                        "source_key": "s1",
+                    },
+                ),
+                _node("x", "14 days"),
+            ),
+            _triple(
+                _node("p", "Policy"),
+                _pred(
+                    "b",
+                    "HAS_WINDOW",
+                    {
+                        "valid_from": "2024-01-01T00:00:00Z",
+                        "source_key": "s2",
+                    },
+                ),
+                _node("y", "30 days"),
+            ),
+        ]
+        found = detect_conflicts(store, FakeGraph(live), "brain")
+        self.assertEqual(len(found), 1)
+        conflict_id = found[0].id
+        remaining = [live[0]]
+        again = detect_conflicts(store, FakeGraph(remaining), "brain")
+        self.assertEqual(store.rows[conflict_id].status, "resolved")
+        self.assertEqual(store.rows[conflict_id].resolution.method, "stale")
+        self.assertIn("side_removed", store.rows[conflict_id].resolution.notes)
+        self.assertEqual(again.stale_resolved, 1)
+
+    def test_stale_conflicts_when_values_become_compatible(self):
+        store = MemoryConflictStore()
+        live = [
+            _triple(
+                _node("p", "Policy"),
+                _pred(
+                    "a",
+                    "HAS_WINDOW",
+                    {
+                        "valid_from": "2024-01-01T00:00:00Z",
+                        "source_key": "s1",
+                    },
+                ),
+                _node("x", "14 days"),
+            ),
+            _triple(
+                _node("p", "Policy"),
+                _pred(
+                    "b",
+                    "HAS_WINDOW",
+                    {
+                        "valid_from": "2024-01-01T00:00:00Z",
+                        "source_key": "s2",
+                    },
+                ),
+                _node("y", "30 days"),
+            ),
+        ]
+        found = detect_conflicts(store, FakeGraph(live), "brain")
+        conflict_id = found[0].id
+        reconciled = [
+            live[0],
+            _triple(
+                _node("p", "Policy"),
+                _pred(
+                    "b",
+                    "HAS_WINDOW",
+                    {
+                        "valid_from": "2024-01-01T00:00:00Z",
+                        "source_key": "s2",
+                    },
+                ),
+                _node("y", "14 days"),
+            ),
+        ]
+        again = detect_conflicts(store, FakeGraph(reconciled), "brain")
+        self.assertEqual(store.rows[conflict_id].status, "resolved")
+        self.assertEqual(store.rows[conflict_id].resolution.method, "stale")
+        self.assertIn("no_longer_holds", store.rows[conflict_id].resolution.notes)
+        self.assertEqual(again.stale_resolved, 1)
+
+    def test_truncated_scan_does_not_auto_resolve_missing_sides(self):
+        store = MemoryConflictStore()
+        live = [
+            _triple(
+                _node("p", "Policy"),
+                _pred(
+                    "a",
+                    "HAS_WINDOW",
+                    {
+                        "valid_from": "2024-01-01T00:00:00Z",
+                        "source_key": "s1",
+                    },
+                ),
+                _node("x", "14 days"),
+            ),
+            _triple(
+                _node("p", "Policy"),
+                _pred(
+                    "b",
+                    "HAS_WINDOW",
+                    {
+                        "valid_from": "2024-01-01T00:00:00Z",
+                        "source_key": "s2",
+                    },
+                ),
+                _node("y", "30 days"),
+            ),
+        ]
+        found = detect_conflicts(store, FakeGraph(live), "brain")
+        conflict_id = found[0].id
+        truncated = detect_conflicts(
+            store, FakeGraph(live), "brain", max_relationships=1
+        )
+        self.assertTrue(truncated.truncated)
+        self.assertEqual(store.rows[conflict_id].status, "open")
+        self.assertEqual(truncated.stale_resolved, 0)
+
+    def test_coerce_datetime_does_not_invent_now(self):
+        from datetime import datetime
+
+        self.assertIsNone(_coerce_datetime(None))
+        self.assertIsNone(_coerce_datetime(""))
+        self.assertIsNone(_coerce_datetime("not-a-timestamp"))
+        self.assertIsNone(_coerce_datetime(object()))
+        parsed = _coerce_datetime("2024-01-02T03:04:05+00:00")
+        self.assertIsInstance(parsed, datetime)
+        node = Node(
+            uuid="n1",
+            name="N",
+            labels=["ENTITY"],
+            last_updated="bogus",
+        )
+        self.assertIsNone(node.last_updated)
+        pred = Predicate(uuid="p1", name="HAS", description="", last_updated="")
+        self.assertIsNone(pred.last_updated)
 
 
 class ConfigDefaultTests(unittest.TestCase):

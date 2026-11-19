@@ -9,7 +9,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 import json
 import logging
 import os
@@ -628,9 +628,9 @@ class Neo4jClient(GraphClient):
 
     def _python_datetime(
         self, value: Any, *, default: datetime | None = None
-    ) -> datetime:
+    ) -> datetime | None:
         if value is None or value == "":
-            return default if default is not None else datetime.now(timezone.utc)
+            return default
         coerced = self._python_value(value)
         if isinstance(coerced, datetime):
             return coerced
@@ -638,8 +638,8 @@ class Neo4jClient(GraphClient):
             try:
                 return datetime.fromisoformat(coerced.replace("Z", "+00:00"))
             except ValueError:
-                return default if default is not None else datetime.now(timezone.utc)
-        return default if default is not None else datetime.now(timezone.utc)
+                return default
+        return default
 
     def _decode_observations(self, value: Any) -> list | None:
         if value is None:
@@ -1624,6 +1624,7 @@ class Neo4jClient(GraphClient):
         since: str | None = None,
         until: str | None = None,
         subject_uuids: list[str] | None = None,
+        relationship_uuids: list[str] | None = None,
     ) -> tuple[list[tuple[Node, Predicate, Node]], int]:
         params: dict[str, Any] = {
             "skip": require_limit(skip, name="skip"),
@@ -1637,6 +1638,9 @@ class Neo4jClient(GraphClient):
         if subject_uuids:
             params["subject_uuids"] = list(subject_uuids)
             filters.append("n['uuid'] IN $subject_uuids")
+        if relationship_uuids:
+            params["relationship_uuids"] = list(relationship_uuids)
+            filters.append("r['uuid'] IN $relationship_uuids")
         where_str = ("WHERE " + " AND ".join(filters) + "\n") if filters else ""
         cypher_query = (
             "MATCH (n)-[r]->(m)\n"

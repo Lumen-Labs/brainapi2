@@ -1628,6 +1628,11 @@ def process_architect_relationships(self, args: dict):
                     for rel in relationships
                     if getattr(rel, "uuid", None)
                 ],
+                subject_uuids=[
+                    str(getattr(getattr(rel, "tail", None), "uuid", "") or "")
+                    for rel in relationships
+                    if getattr(getattr(rel, "tail", None), "uuid", None)
+                ],
             )
         except Exception as exc:
             print(f"[!] Incremental conflict detection skipped: {exc}")

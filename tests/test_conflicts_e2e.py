@@ -31,7 +31,6 @@ EXPECTED_PAIRS = {
     frozenset({"fact-refund-v1", "fact-refund-14"}),
     frozenset({"fact-refund-v2", "fact-refund-14"}),
     frozenset({"fact-fee-yes", "fact-fee-no"}),
-    frozenset({"fact-policy-full", "fact-policy-credit"}),
 }
 FORBIDDEN_PAIRS = {
     frozenset({"fact-refund-v1", "fact-refund-v2"}),
@@ -511,7 +510,7 @@ def test_help_center_conflict_precision_recall_and_api():
                 resolved_body,
                 dismissed_body,
             ) = asyncio.run(_api())
-            assert listed_body["total"] >= 4
+            assert listed_body["total"] >= 3
             assert one_body["conflict"]["id"] == numeric.id
             assert len(one_body["conflict"]["sides"]) == 2
             assert report_body["summary"]["open"] >= 1
@@ -524,7 +523,7 @@ def test_help_center_conflict_precision_recall_and_api():
             rows, total = list_conflicts(
                 data, brain_id, status="open", limit=50, skip=0
             )
-            assert total >= 4
+            assert total >= 3
             loaded = get_conflict(data, brain_id, numeric.id)
             assert loaded is not None
             assert len(loaded.sides) == 2

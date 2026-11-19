@@ -18,7 +18,7 @@ from src.constants.data import Observation
 
 def _coerce_datetime(value):
     if value in (None, ""):
-        return datetime.now()
+        return None
     if isinstance(value, datetime):
         return value
     to_native = getattr(value, "to_native", None)
@@ -28,20 +28,20 @@ def _coerce_datetime(value):
             if isinstance(native, datetime):
                 return native
         except Exception:
-            pass
+            return None
     iso = getattr(value, "isoformat", None)
     if callable(iso) and not isinstance(value, str):
         try:
             value = iso()
         except TypeError:
-            return datetime.now()
+            return None
     if isinstance(value, str):
         text = value.replace("Z", "+00:00")
         try:
             return datetime.fromisoformat(text)
         except ValueError:
-            return datetime.now()
-    return datetime.now()
+            return None
+    return None
 
 
 class Node(BaseModel):
@@ -69,8 +69,8 @@ class Node(BaseModel):
         description="The date and time the node happened at if known otherwise None. Mostly used for event nodes.",
     )
 
-    last_updated: datetime = Field(
-        default_factory=datetime.now,
+    last_updated: Optional[datetime] = Field(
+        default=None,
         description="The date and time the node was last updated.",
     )
 
@@ -126,8 +126,8 @@ class Predicate(BaseModel):
         default=None,
         description="Unique identitier for contextualizing the predicate into the context flow",
     )
-    last_updated: datetime = Field(
-        default_factory=datetime.now,
+    last_updated: Optional[datetime] = Field(
+        default=None,
         description="The date and time the predicate was last updated.",
     )
 
