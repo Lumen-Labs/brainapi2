@@ -472,7 +472,10 @@ class DetectionEngineTests(unittest.TestCase):
         fake_tasks.detect_conflicts_incremental.apply_async.assert_called_once()
 
     def test_verified_side_asks_verification_adapter(self):
-        from src.core.saving.conflict_verification import apply_verified_side_to_facts
+        from src.core.saving.conflict_verification import (
+            VerificationSnapshot,
+            apply_verified_side_to_facts,
+        )
 
         actions: list[tuple[str, str]] = []
 
@@ -489,6 +492,9 @@ class DetectionEngineTests(unittest.TestCase):
             losing_fact_ids=["b"],
             actor="brainpat:demo",
             apply_action=fake_apply,
+            read_snapshot=lambda fact_id, **kwargs: VerificationSnapshot(
+                "unverified", kind="relationship"
+            ),
         )
         self.assertEqual(applied, "applied")
         self.assertEqual(
@@ -497,7 +503,10 @@ class DetectionEngineTests(unittest.TestCase):
         )
 
     def test_verified_side_skips_reject_when_verify_fails(self):
-        from src.core.saving.conflict_verification import apply_verified_side_to_facts
+        from src.core.saving.conflict_verification import (
+            VerificationSnapshot,
+            apply_verified_side_to_facts,
+        )
 
         actions: list[tuple[str, str]] = []
 
@@ -513,6 +522,9 @@ class DetectionEngineTests(unittest.TestCase):
             winning_fact_id="a",
             losing_fact_ids=["b"],
             apply_action=fake_apply,
+            read_snapshot=lambda fact_id, **kwargs: VerificationSnapshot(
+                "unverified", kind="relationship"
+            ),
         )
         self.assertEqual(result, "failed")
         self.assertEqual(actions, [("a", "verify")])
@@ -860,9 +872,17 @@ class AuthorizedResolveTests(unittest.TestCase):
         self.assertEqual(resolved.resolution.resolved_by, "oauth:client-1")
 
     def test_reject_failure_resets_winner_and_keeps_conflict_open(self):
-        from src.core.saving.conflict_verification import apply_verified_side_to_facts
+        from src.core.saving.conflict_verification import (
+            VerificationSnapshot,
+            apply_verified_side_to_facts,
+        )
 
         actions: list[tuple[str, str]] = []
+        restores: list[tuple[str, VerificationSnapshot]] = []
+        snapshots = {
+            "a": VerificationSnapshot("unverified", kind="relationship"),
+            "b": VerificationSnapshot("unverified", kind="relationship"),
+        }
 
         def fake_apply(
             graph, *, fact_id, brain_id, action, actor=None, verified_by=None, note=None
@@ -872,6 +892,12 @@ class AuthorizedResolveTests(unittest.TestCase):
                 return "failed"
             return "applied"
 
+        def fake_restore(
+            graph, *, fact_id, brain_id, snapshot, from_state=None, actor=None
+        ):
+            restores.append((fact_id, snapshot))
+            return "applied"
+
         result = apply_verified_side_to_facts(
             object(),
             "brain",
@@ -879,11 +905,13 @@ class AuthorizedResolveTests(unittest.TestCase):
             losing_fact_ids=["b"],
             actor="brainpat:demo",
             apply_action=fake_apply,
-            read_state=lambda fact_id, **kwargs: "unverified",
+            read_snapshot=lambda fact_id, **kwargs: snapshots[fact_id],
+            restore_snapshot=fake_restore,
         )
         self.assertEqual(result, "failed")
         self.assertFalse(result.rollback_failed)
-        self.assertEqual(actions, [("a", "verify"), ("b", "reject"), ("a", "reset")])
+        self.assertEqual(actions, [("a", "verify"), ("b", "reject")])
+        self.assertEqual(restores, [("a", snapshots["a"])])
 
         store = MemoryConflictStore()
         found = detect_conflicts(store, FakeGraph(DetectionEngineTests()._refund_triples()), "brain")
@@ -905,11 +933,26 @@ class AuthorizedResolveTests(unittest.TestCase):
                 )
         self.assertEqual(store.rows[numeric.id].status, "open")
 
-    def test_reject_failure_restores_already_verified_winner(self):
-        from src.core.saving.conflict_verification import apply_verified_side_to_facts
+    def test_reject_failure_restores_expert_verified_winner(self):
+        from src.core.saving.conflict_verification import (
+            VerificationSnapshot,
+            apply_verified_side_to_facts,
+        )
 
         actions: list[tuple[str, str]] = []
-        priors = {"a": "verified", "b": "unverified"}
+        restores: list[tuple[str, VerificationSnapshot, str | None, str | None]] = []
+        expert = VerificationSnapshot(
+            "verified",
+            verified_by="expert:alice",
+            verified_at="2024-06-01T12:00:00Z",
+            verification_source="manual",
+            reason="checked against source",
+            kind="relationship",
+        )
+        snapshots = {
+            "a": expert,
+            "b": VerificationSnapshot("unverified", kind="relationship"),
+        }
 
         def fake_apply(
             graph, *, fact_id, brain_id, action, actor=None, verified_by=None, note=None
@@ -919,6 +962,12 @@ class AuthorizedResolveTests(unittest.TestCase):
                 return "failed"
             return "applied"
 
+        def fake_restore(
+            graph, *, fact_id, brain_id, snapshot, from_state=None, actor=None
+        ):
+            restores.append((fact_id, snapshot, from_state, actor))
+            return "applied"
+
         result = apply_verified_side_to_facts(
             object(),
             "brain",
@@ -926,17 +975,34 @@ class AuthorizedResolveTests(unittest.TestCase):
             losing_fact_ids=["b"],
             actor="brainpat:demo",
             apply_action=fake_apply,
-            read_state=lambda fact_id, **kwargs: priors[fact_id],
+            read_snapshot=lambda fact_id, **kwargs: snapshots[fact_id],
+            restore_snapshot=fake_restore,
         )
         self.assertEqual(result, "failed")
         self.assertFalse(result.rollback_failed)
-        self.assertEqual(actions, [("a", "verify"), ("b", "reject"), ("a", "verify")])
+        self.assertEqual(actions, [("a", "verify"), ("b", "reject")])
+        self.assertEqual(len(restores), 1)
+        self.assertEqual(restores[0][0], "a")
+        self.assertEqual(restores[0][1].verified_by, "expert:alice")
+        self.assertEqual(restores[0][1].verified_at, "2024-06-01T12:00:00Z")
+        self.assertEqual(restores[0][1].verification_source, "manual")
+        self.assertEqual(restores[0][1].reason, "checked against source")
+        self.assertEqual(restores[0][2], "verified")
+        self.assertNotEqual(restores[0][1].verified_by, "brainpat:demo")
 
     def test_reject_failure_restores_earlier_losers_when_later_reject_fails(self):
-        from src.core.saving.conflict_verification import apply_verified_side_to_facts
+        from src.core.saving.conflict_verification import (
+            VerificationSnapshot,
+            apply_verified_side_to_facts,
+        )
 
         actions: list[tuple[str, str]] = []
-        priors = {"w": "unverified", "l1": "unverified", "l2": "rejected"}
+        restores: list[str] = []
+        snapshots = {
+            "w": VerificationSnapshot("unverified", kind="relationship"),
+            "l1": VerificationSnapshot("unverified", kind="relationship"),
+            "l2": VerificationSnapshot("rejected", kind="relationship"),
+        }
 
         def fake_apply(
             graph, *, fact_id, brain_id, action, actor=None, verified_by=None, note=None
@@ -946,6 +1012,12 @@ class AuthorizedResolveTests(unittest.TestCase):
                 return "failed"
             return "applied"
 
+        def fake_restore(
+            graph, *, fact_id, brain_id, snapshot, from_state=None, actor=None
+        ):
+            restores.append(fact_id)
+            return "applied"
+
         result = apply_verified_side_to_facts(
             object(),
             "brain",
@@ -953,20 +1025,62 @@ class AuthorizedResolveTests(unittest.TestCase):
             losing_fact_ids=["l1", "l2"],
             actor="brainpat:demo",
             apply_action=fake_apply,
-            read_state=lambda fact_id, **kwargs: priors[fact_id],
+            read_snapshot=lambda fact_id, **kwargs: snapshots[fact_id],
+            restore_snapshot=fake_restore,
         )
         self.assertEqual(result, "failed")
         self.assertFalse(result.rollback_failed)
-        self.assertEqual(
-            actions,
-            [
-                ("w", "verify"),
-                ("l1", "reject"),
-                ("l2", "reject"),
-                ("l1", "reset"),
-                ("w", "reset"),
-            ],
+        self.assertEqual(actions, [("w", "verify"), ("l1", "reject"), ("l2", "reject")])
+        self.assertEqual(restores, ["l1", "w"])
+
+    def test_preread_none_aborts_before_writes(self):
+        from src.core.saving.conflict_verification import apply_verified_side_to_facts
+
+        actions: list[tuple[str, str]] = []
+        restores: list[str] = []
+
+        def fake_apply(
+            graph, *, fact_id, brain_id, action, actor=None, verified_by=None, note=None
+        ):
+            actions.append((fact_id, action))
+            return "applied"
+
+        result = apply_verified_side_to_facts(
+            object(),
+            "brain",
+            winning_fact_id="a",
+            losing_fact_ids=["b"],
+            actor="brainpat:demo",
+            apply_action=fake_apply,
+            read_snapshot=lambda fact_id, **kwargs: None,
+            restore_snapshot=lambda **kwargs: restores.append(kwargs["fact_id"]) or "applied",
         )
+        self.assertEqual(result, "failed")
+        self.assertFalse(result.rollback_failed)
+        self.assertEqual(result.rollback_errors, ("a pre-read returned none",))
+        self.assertEqual(actions, [])
+        self.assertEqual(restores, [])
+
+        store = MemoryConflictStore()
+        found = detect_conflicts(store, FakeGraph(DetectionEngineTests()._refund_triples()), "brain")
+        numeric = next(
+            item for item in found if item.disagreement_type == "numeric_mismatch"
+        )
+        with patch(
+            "src.core.saving.conflict_verification.apply_verified_side_to_facts",
+            return_value=result,
+        ):
+            with self.assertRaises(ValueError) as raised:
+                resolve_conflict(
+                    store,
+                    "brain",
+                    numeric.id,
+                    winning_fact_id=numeric.sides[0].fact_id,
+                    method="verified_side",
+                    resolved_by="brainpat:demo",
+                )
+        self.assertIn("pre-read returned none", str(raised.exception))
+        self.assertEqual(store.rows[numeric.id].status, "open")
 
     def test_rollback_failure_is_surfaced_and_conflict_stays_open(self):
         from src.core.saving.conflict_verification import VerifiedSideApplyResult
@@ -981,7 +1095,7 @@ class AuthorizedResolveTests(unittest.TestCase):
             return_value=VerifiedSideApplyResult(
                 "failed",
                 rollback_failed=True,
-                rollback_errors=("a verify returned failed",),
+                rollback_errors=("a restore returned failed",),
             ),
         ):
             with self.assertRaises(ValueError) as raised:
@@ -994,11 +1108,14 @@ class AuthorizedResolveTests(unittest.TestCase):
                     resolved_by="brainpat:demo",
                 )
         self.assertIn("rollback failed", str(raised.exception))
-        self.assertIn("a verify returned failed", str(raised.exception))
+        self.assertIn("a restore returned failed", str(raised.exception))
         self.assertEqual(store.rows[numeric.id].status, "open")
 
     def test_restore_checks_each_result_when_rollback_fails(self):
-        from src.core.saving.conflict_verification import apply_verified_side_to_facts
+        from src.core.saving.conflict_verification import (
+            VerificationSnapshot,
+            apply_verified_side_to_facts,
+        )
 
         actions: list[tuple[str, str]] = []
 
@@ -1006,7 +1123,7 @@ class AuthorizedResolveTests(unittest.TestCase):
             graph, *, fact_id, brain_id, action, actor=None, verified_by=None, note=None
         ):
             actions.append((fact_id, action))
-            if action == "reject" or action == "reset":
+            if action == "reject":
                 return "failed"
             return "applied"
 
@@ -1017,12 +1134,92 @@ class AuthorizedResolveTests(unittest.TestCase):
             losing_fact_ids=["l1", "l2"],
             actor="brainpat:demo",
             apply_action=fake_apply,
-            read_state=lambda fact_id, **kwargs: "unverified",
+            read_snapshot=lambda fact_id, **kwargs: VerificationSnapshot(
+                "unverified", kind="relationship"
+            ),
+            restore_snapshot=lambda *args, **kwargs: "failed",
         )
         self.assertEqual(result, "failed")
         self.assertTrue(result.rollback_failed)
-        self.assertEqual(result.rollback_errors, ("w reset returned failed",))
-        self.assertEqual(actions, [("w", "verify"), ("l1", "reject"), ("w", "reset")])
+        self.assertEqual(result.rollback_errors, ("w restore returned failed",))
+        self.assertEqual(actions, [("w", "verify"), ("l1", "reject")])
+
+    def test_graph_restore_keeps_original_verifier(self):
+        from src.core.saving.conflict_verification import apply_verified_side_to_facts
+        from src.core.verification.facts import parse_history
+
+        class MemoryVerificationGraph:
+            def __init__(self, rows):
+                self.rows = {row["uuid"]: row for row in rows}
+                self.fail_on = None
+
+            def get_fact_record(self, fact_id, brain_id):
+                return self.rows.get(fact_id)
+
+            def set_fact_verification(
+                self, fact_id, brain_id, *, kind, properties, history_entry=None
+            ):
+                from src.core.verification.facts import serialize_history_entry
+
+                if self.fail_on == fact_id:
+                    raise RuntimeError("injected write failure")
+                row = self.rows[fact_id]
+                props = dict(row.get("properties") or {})
+                props.update(properties)
+                entry = serialize_history_entry(history_entry)
+                if entry:
+                    history = list(props.get("verification_history") or [])
+                    history.append(entry)
+                    props["verification_history"] = history
+                row["properties"] = props
+                row["kind"] = kind
+                return row
+
+        winner = {
+            "kind": "relationship",
+            "uuid": "a",
+            "name": "HAS_WINDOW",
+            "description": "",
+            "properties": {
+                "uuid": "a",
+                "verification_state": "verified",
+                "verified_by": "expert:alice",
+                "verified_at": "2024-06-01T12:00:00Z",
+                "verification_source": "manual",
+                "verification_note": "checked against source",
+            },
+            "labels": [],
+        }
+        loser = {
+            "kind": "relationship",
+            "uuid": "b",
+            "name": "HAS_WINDOW",
+            "description": "",
+            "properties": {"uuid": "b", "verification_state": "unverified"},
+            "labels": [],
+        }
+        graph = MemoryVerificationGraph([winner, loser])
+        graph.fail_on = "b"
+        result = apply_verified_side_to_facts(
+            graph,
+            "brain",
+            winning_fact_id="a",
+            losing_fact_ids=["b"],
+            actor="brainpat:demo",
+        )
+        self.assertEqual(result, "failed")
+        self.assertFalse(result.rollback_failed)
+        restored = graph.rows["a"]["properties"]
+        self.assertEqual(restored["verification_state"], "verified")
+        self.assertEqual(restored["verified_by"], "expert:alice")
+        self.assertEqual(restored["verified_at"], "2024-06-01T12:00:00Z")
+        self.assertEqual(restored["verification_source"], "manual")
+        self.assertEqual(restored["verification_note"], "checked against source")
+        history = parse_history(restored.get("verification_history"))
+        self.assertEqual(history[-1].verification_source, "rollback")
+        self.assertEqual(history[-1].note, "rollback")
+        self.assertEqual(history[-1].to_state, "verified")
+        self.assertNotEqual(restored["verified_by"], "brainpat:demo")
 
 
 class RestConflictResolveAuthTests(unittest.TestCase):

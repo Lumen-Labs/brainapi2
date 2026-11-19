@@ -18,6 +18,16 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
+class VerificationSnapshot:
+    state: str
+    verified_by: str | None = None
+    verified_at: str | None = None
+    verification_source: str | None = None
+    reason: str | None = None
+    kind: str | None = None
+
+
+@dataclass(frozen=True)
 class VerifiedSideApplyResult:
     status: VerificationApplyResult
     rollback_failed: bool = False
@@ -111,13 +121,99 @@ def apply_fact_verification_action(
     return "applied"
 
 
-def _restore_action_for_prior_state(state: str | None) -> str:
-    normalized = str(state or "").strip().lower()
-    if normalized == "verified":
-        return "verify"
-    if normalized == "rejected":
-        return "reject"
-    return "reset"
+def read_fact_verification_snapshot(
+    fact_id: str,
+    *,
+    graph: Any | None = None,
+    brain_id: str | None = None,
+) -> VerificationSnapshot | None:
+    """Return the full #113 verification record for a fact.
+
+    Unlike ``read_fact_verification_state``, this does not swallow errors.
+    ``None`` means the graph is absent or the fact has no record.
+    """
+    if graph is None or not brain_id or not fact_id:
+        return None
+    from src.core.verification.service import get_fact_record
+
+    record = get_fact_record(graph, fact_id, brain_id)
+    verification = getattr(record, "verification", None)
+    if verification is None:
+        return None
+    state = str(getattr(verification, "state", "") or "").strip().lower()
+    if not state:
+        return None
+    return VerificationSnapshot(
+        state=state,
+        verified_by=getattr(verification, "verified_by", None),
+        verified_at=getattr(verification, "verified_at", None),
+        verification_source=getattr(verification, "verification_source", None),
+        reason=getattr(verification, "note", None),
+        kind=getattr(record, "kind", None),
+    )
+
+
+def restore_fact_verification_snapshot(
+    graph: Any | None,
+    *,
+    fact_id: str,
+    brain_id: str,
+    snapshot: VerificationSnapshot,
+    from_state: str | None = None,
+    actor: str | None = None,
+) -> VerificationApplyResult:
+    """Write a snapshot back through ``graph.set_fact_verification``.
+
+    Adds one history entry tagged ``rollback`` and restores the original
+    verifier, timestamp, source, and reason instead of re-applying verify/reject/reset.
+    """
+    if graph is None:
+        return "absent"
+    setter = getattr(graph, "set_fact_verification", None)
+    if not callable(setter):
+        return "failed"
+    try:
+        from src.core.verification.facts import (
+            UNVERIFIED,
+            FactHistoryEntry,
+            normalize_state,
+            utc_now_iso,
+            verification_write_properties,
+        )
+    except ImportError:
+        return "absent"
+    target = normalize_state(snapshot.state)
+    unverified = target == UNVERIFIED
+    properties = verification_write_properties(
+        state=target,
+        verified_by=None if unverified else snapshot.verified_by,
+        verified_at=None if unverified else snapshot.verified_at,
+        verification_source=None if unverified else snapshot.verification_source,
+        note=None if unverified else snapshot.reason,
+        history=[],
+    )
+    properties.pop("verification_history", None)
+    history_entry = FactHistoryEntry(
+        from_state=normalize_state(from_state),
+        to_state=target,
+        verified_by=(actor or "").strip() or None,
+        verified_at=utc_now_iso(),
+        verification_source="rollback",
+        note="rollback",
+    )
+    try:
+        updated = setter(
+            fact_id,
+            brain_id,
+            kind=snapshot.kind or "relationship",
+            properties=properties,
+            history_entry=history_entry,
+        )
+    except Exception:
+        return "failed"
+    if updated is None:
+        return "failed"
+    return "applied"
 
 
 def apply_verified_side_to_facts(
@@ -130,16 +226,19 @@ def apply_verified_side_to_facts(
     verified_by: str | None = None,
     note: str | None = None,
     apply_action: Callable[..., VerificationApplyResult] | None = None,
-    read_state: Callable[..., str | None] | None = None,
+    read_snapshot: Callable[..., VerificationSnapshot | None] | None = None,
+    restore_snapshot: Callable[..., VerificationApplyResult] | None = None,
 ) -> VerifiedSideApplyResult:
     """Verify the winning fact and reject the other conflict side via #113.
 
-    Snapshot prior verification states before writing. If a later write fails,
-    restore every mutated fact to that snapshot. The caller must not mark the
-    conflict resolved unless this returns ``applied``.
+    Snapshot full verification properties before writing. If a later write
+    fails, restore those exact properties. If the graph is present and any
+    pre-read is missing or errors, abort before writing. The caller must not
+    mark the conflict resolved unless this returns ``applied``.
     """
     apply = apply_action or apply_fact_verification_action
-    reader = read_state or read_fact_verification_state
+    reader = read_snapshot or read_fact_verification_snapshot
+    restorer = restore_snapshot or restore_fact_verification_snapshot
     principal = (actor or verified_by or "").strip() or None
     touched: list[str] = []
     seen: set[str] = set()
@@ -147,9 +246,30 @@ def apply_verified_side_to_facts(
         if fact_id and fact_id not in seen:
             seen.add(fact_id)
             touched.append(fact_id)
-    prior_states = {
-        fact_id: reader(fact_id, graph=graph, brain_id=brain_id) for fact_id in touched
-    }
+
+    snapshots: dict[str, VerificationSnapshot] = {}
+    if graph is not None:
+        for fact_id in touched:
+            try:
+                snapshot = reader(fact_id, graph=graph, brain_id=brain_id)
+            except Exception as exc:
+                detail = f"{fact_id} pre-read error: {exc}"
+                logger.error(
+                    "verified_side pre-read failed brain_id=%s fact_id=%s error=%s",
+                    brain_id,
+                    fact_id,
+                    exc,
+                )
+                return VerifiedSideApplyResult("failed", rollback_errors=(detail,))
+            if snapshot is None:
+                detail = f"{fact_id} pre-read returned none"
+                logger.error(
+                    "verified_side pre-read missing brain_id=%s fact_id=%s",
+                    brain_id,
+                    fact_id,
+                )
+                return VerifiedSideApplyResult("failed", rollback_errors=(detail,))
+            snapshots[fact_id] = snapshot
 
     def _call(action: str, fact_id: str) -> VerificationApplyResult:
         return apply(
@@ -165,16 +285,32 @@ def apply_verified_side_to_facts(
     def _rollback(mutated: list[str]) -> VerifiedSideApplyResult:
         errors: list[str] = []
         for fact_id in reversed(mutated):
-            action = _restore_action_for_prior_state(prior_states.get(fact_id))
-            restored = _call(action, fact_id)
-            if restored != "applied":
-                detail = f"{fact_id} {action} returned {restored}"
+            snapshot = snapshots.get(fact_id)
+            if snapshot is None:
+                detail = f"{fact_id} missing snapshot"
                 errors.append(detail)
                 logger.error(
-                    "verified_side rollback failed brain_id=%s fact_id=%s action=%s result=%s",
+                    "verified_side rollback missing snapshot brain_id=%s fact_id=%s",
                     brain_id,
                     fact_id,
-                    action,
+                )
+                continue
+            from_state = "verified" if fact_id == winning_fact_id else "rejected"
+            restored = restorer(
+                graph,
+                fact_id=fact_id,
+                brain_id=brain_id,
+                snapshot=snapshot,
+                from_state=from_state,
+                actor=principal,
+            )
+            if restored != "applied":
+                detail = f"{fact_id} restore returned {restored}"
+                errors.append(detail)
+                logger.error(
+                    "verified_side rollback failed brain_id=%s fact_id=%s result=%s",
+                    brain_id,
+                    fact_id,
                     restored,
                 )
         if errors:

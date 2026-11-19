@@ -930,15 +930,18 @@ def _apply_resolution(
             )
             apply_status = getattr(outcome, "status", outcome)
             if apply_status != "applied":
+                details = "; ".join(
+                    getattr(outcome, "rollback_errors", ()) or ()
+                )
                 message = "fact verification failed"
                 if getattr(outcome, "rollback_failed", False):
-                    details = "; ".join(
-                        getattr(outcome, "rollback_errors", ()) or ()
-                    )
                     message = (
                         f"{message}; rollback failed"
                         + (f": {details}" if details else "")
                     )
+                elif details:
+                    message = f"{message}: {details}"
+                if details or getattr(outcome, "rollback_failed", False):
                     logger.error(
                         "%s brain_id=%s conflict_id=%s",
                         message,
