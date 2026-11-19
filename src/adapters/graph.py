@@ -466,36 +466,57 @@ class GraphAdapter:
     ):
         method = getattr(self.graph, "list_validity_relationships", None)
         if method is None:
-            result = self.graph.search_relationships(brain_id, limit, skip)
-            triples = [
-                (item.subject, item.predicate, item.object)
-                for item in (getattr(result, "results", None) or [])
-            ]
-            return triples, int(getattr(result, "total", len(triples)) or 0)
-        try:
-            return method(
-                brain_id,
-                skip=skip,
-                limit=limit,
-                since=since,
-                until=until,
+            from src.core.saving.conflicts import _filter_validity_triples
+
+            search = getattr(self.graph, "search_relationships", None)
+            if not callable(search):
+                return [], 0
+            if not subject_uuids and not relationship_uuids:
+                result = search(brain_id, limit, skip)
+                triples = [
+                    (item.subject, item.predicate, item.object)
+                    for item in (getattr(result, "results", None) or [])
+                ]
+                total = getattr(result, "total", None)
+                return triples, int(total if total is not None else len(triples))
+            collected = []
+            cursor = 0
+            page = max(int(limit or 200), 200)
+            reported_total = None
+            while True:
+                result = search(brain_id, page, cursor)
+                items = getattr(result, "results", None) or []
+                total = getattr(result, "total", None)
+                if total is not None:
+                    reported_total = int(total)
+                batch = [
+                    (item.subject, item.predicate, item.object)
+                    for item in items
+                ]
+                if not batch:
+                    break
+                collected.extend(batch)
+                cursor += len(batch)
+                if reported_total is not None and cursor >= reported_total:
+                    break
+                if len(batch) < page:
+                    break
+            filtered = _filter_validity_triples(
+                collected,
                 subject_uuids=subject_uuids,
                 relationship_uuids=relationship_uuids,
             )
-        except TypeError:
-            try:
-                return method(
-                    brain_id,
-                    skip=skip,
-                    limit=limit,
-                    since=since,
-                    until=until,
-                    subject_uuids=subject_uuids,
-                )
-            except TypeError:
-                return method(
-                    brain_id, skip=skip, limit=limit, since=since, until=until
-                )
+            return filtered[skip : skip + limit], len(filtered)
+        from src.core.saving.conflicts import _call_list_validity_relationships
+
+        return _call_list_validity_relationships(
+            method,
+            brain_id,
+            skip=skip,
+            limit=limit,
+            subject_uuids=subject_uuids,
+            relationship_uuids=relationship_uuids,
+        )
 
     def search_entities(
         self,

@@ -624,6 +624,17 @@ def publish_staged_run(brain_id, root_id, acquire_gate, data_client, vector_clie
     """Apply staged units while the caller's exclusive brain gate is held."""
     fact_ids = []
     subject_uuids = []
+    for unit in ingest_staging.published_units_before_cursor(brain_id, root_id):
+        try:
+            prior = load_output(brain_id, root_id, unit["output_ref"])
+        except Exception:
+            continue
+        for operation in prior:
+            fact_id, subject_uuid = _conflict_touches(operation)
+            if fact_id:
+                fact_ids.append(str(fact_id))
+            if subject_uuid:
+                subject_uuids.append(str(subject_uuid))
 
     def replay(target, operation_id, operation):
         fact_id, subject_uuid = _conflict_touches(operation)

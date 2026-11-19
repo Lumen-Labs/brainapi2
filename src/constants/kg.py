@@ -28,7 +28,7 @@ def _coerce_datetime(value):
             if isinstance(native, datetime):
                 return native
         except Exception:
-            return None
+            pass
     iso = getattr(value, "isoformat", None)
     if callable(iso) and not isinstance(value, str):
         try:

@@ -415,9 +415,11 @@ class DataAdapter:
         )
 
     def update_conflict(
-        self, conflict: FactConflict, brain_id: str = "default"
+        self, conflict: FactConflict, brain_id: str = "default", **kwargs
     ) -> FactConflict:
-        return self.data.update_conflict(conflict=conflict, brain_id=brain_id)
+        return self.data.update_conflict(
+            conflict=conflict, brain_id=brain_id, **kwargs
+        )
 
     def get_open_conflicts_for_facts(
         self, fact_ids: list[str], brain_id: str = "default"
