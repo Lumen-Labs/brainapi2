@@ -427,3 +427,15 @@ class DataAdapter:
         return self.data.get_open_conflicts_for_facts(
             fact_ids=fact_ids, brain_id=brain_id
         )
+
+    def get_conflict_scan_cursor(self, brain_id: str = "default"):
+        getter = getattr(self.data, "get_conflict_scan_cursor", None)
+        if not callable(getter):
+            return None
+        return getter(brain_id)
+
+    def set_conflict_scan_cursor(self, brain_id: str, cursor=None) -> None:
+        setter = getattr(self.data, "set_conflict_scan_cursor", None)
+        if not callable(setter):
+            return
+        setter(brain_id, cursor)

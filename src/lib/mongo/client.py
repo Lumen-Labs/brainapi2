@@ -809,6 +809,41 @@ class MongoClient(DataClient):
                 conflicts.append(parsed)
         return conflicts
 
+    def get_conflict_scan_cursor(self, brain_id: str) -> dict[str, str] | None:
+        collection = self.get_collection("conflict_scan_state", database=brain_id)
+        row = collection.find_one({"id": "full_scan"})
+        if not row:
+            return None
+        subject = str(row.get("after_subject") or "").strip()
+        predicate = str(row.get("after_predicate") or "").strip()
+        if not subject and not predicate:
+            return None
+        return {"after_subject": subject, "after_predicate": predicate}
+
+    def set_conflict_scan_cursor(
+        self, brain_id: str, cursor: dict[str, str] | None
+    ) -> None:
+        collection = self.get_collection("conflict_scan_state", database=brain_id)
+        if not cursor:
+            collection.delete_one({"id": "full_scan"})
+            return
+        subject = str(cursor.get("after_subject") or "").strip()
+        predicate = str(cursor.get("after_predicate") or "").strip()
+        if not subject and not predicate:
+            collection.delete_one({"id": "full_scan"})
+            return
+        collection.update_one(
+            {"id": "full_scan"},
+            {
+                "$set": {
+                    "id": "full_scan",
+                    "after_subject": subject,
+                    "after_predicate": predicate,
+                }
+            },
+            upsert=True,
+        )
+
     def get_ingest_group(
         self, brain_id: str, group_tracking: str
     ) -> Optional[dict[str, Any]]:

@@ -705,7 +705,14 @@ class NetworkXGraphClient(GraphClient):
         until: str | None = None,
         subject_uuids: list[str] | None = None,
         relationship_uuids: list[str] | None = None,
+        after_subject_uuid: str | None = None,
+        after_predicate: str | None = None,
+        after_relationship_uuid: str | None = None,
     ) -> tuple[list[tuple[Node, Predicate, Node]], int]:
+        from src.core.saving.conflicts import (
+            _sort_validity_triples,
+            _triples_after_cursor,
+        )
         from src.core.saving.validity import change_kind, parse_instant
 
         self._store.ensure_database(brain_id)
@@ -728,9 +735,9 @@ class NetworkXGraphClient(GraphClient):
                     continue
             matched.append((source, target, key, props))
         total = len(matched)
-        page = []
-        for source, target, key, props in matched[skip : skip + limit]:
-            page.append(
+        triples: list[tuple[Node, Predicate, Node]] = []
+        for source, target, key, props in matched:
+            triples.append(
                 (
                     Node(
                         uuid=source,
@@ -755,7 +762,13 @@ class NetworkXGraphClient(GraphClient):
                     ),
                 )
             )
-        return page, total
+        ordered = _triples_after_cursor(
+            _sort_validity_triples(triples),
+            after_subject_uuid=after_subject_uuid,
+            after_predicate=after_predicate,
+            after_relationship_uuid=after_relationship_uuid,
+        )
+        return ordered[skip : skip + limit], total
 
     def search_entities(
         self,

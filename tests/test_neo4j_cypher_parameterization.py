@@ -680,6 +680,33 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
             self.assertIn(key, joined)
             self.assertIn("rel_REQUIRES_" + key, joined)
 
+    def test_list_validity_relationships_orders_by_subject_and_predicate(self):
+        client = _client()
+        client.list_validity_relationships("braina", skip=0, limit=5)
+        query, _params, _db = client.driver.calls[0]
+        self.assertIn("ORDER BY n['uuid'], type(r), r['uuid'], elementId(r)", query)
+        self.assertNotIn("ORDER BY r['uuid'], elementId(r)\n", query)
+
+    def test_list_validity_relationships_parameterizes_after_cursor(self):
+        client = _client()
+        payload = "'; MATCH (n) DETACH DELETE n //"
+        client.list_validity_relationships(
+            "braina",
+            skip=0,
+            limit=5,
+            after_subject_uuid=payload,
+            after_predicate="HAS_WINDOW",
+        )
+        query, params, _db = client.driver.calls[0]
+        self.assertIn("$after_subject_uuid", query)
+        self.assertIn("$after_predicate", query)
+        self.assertEqual(params["after_subject_uuid"], payload)
+        self.assertEqual(params["after_predicate"], "HAS_WINDOW")
+        self.assertNotIn(payload, query)
+        count_query, count_params, _count_db = client.driver.calls[1]
+        self.assertNotIn("$after_subject_uuid", count_query)
+        self.assertNotIn("after_subject_uuid", count_params)
+
     def test_list_validity_relationships_parameterizes_relationship_uuids(self):
         client = _client()
         payload = "'; MATCH (n) DETACH DELETE n //"

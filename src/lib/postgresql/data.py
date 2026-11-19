@@ -258,6 +258,14 @@ CREATE INDEX IF NOT EXISTS idx_data_conflicts_subject ON data_conflicts (subject
 CREATE INDEX IF NOT EXISTS idx_data_conflicts_detected ON data_conflicts (detected_at DESC);
 CREATE INDEX IF NOT EXISTS idx_data_conflicts_fact_ids ON data_conflicts USING gin (fact_ids);
 CREATE INDEX IF NOT EXISTS idx_data_conflicts_source_keys ON data_conflicts USING gin (source_keys);
+
+CREATE TABLE IF NOT EXISTS data_conflict_scan_state (
+    id TEXT PRIMARY KEY,
+    after_subject TEXT,
+    after_predicate TEXT,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    document JSONB NOT NULL
+);
 """
 
 
@@ -1395,6 +1403,58 @@ class PostgreSQLDataClient(DataClient):
             if parsed is not None:
                 conflicts.append(parsed)
         return conflicts
+
+    def get_conflict_scan_cursor(self, brain_id: str) -> Optional[dict[str, str]]:
+        with self._brain_connection(brain_id) as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT after_subject, after_predicate
+                    FROM data_conflict_scan_state
+                    WHERE id = %s
+                    """,
+                    ("full_scan",),
+                )
+                row = cur.fetchone()
+        if not row:
+            return None
+        subject = str(row.get("after_subject") or "").strip()
+        predicate = str(row.get("after_predicate") or "").strip()
+        if not subject and not predicate:
+            return None
+        return {"after_subject": subject, "after_predicate": predicate}
+
+    def set_conflict_scan_cursor(
+        self, brain_id: str, cursor: dict[str, str] | None
+    ) -> None:
+        subject = str((cursor or {}).get("after_subject") or "").strip()
+        predicate = str((cursor or {}).get("after_predicate") or "").strip()
+        with self._brain_connection(brain_id) as conn:
+            with conn.cursor() as cur:
+                if not cursor or (not subject and not predicate):
+                    cur.execute(
+                        "DELETE FROM data_conflict_scan_state WHERE id = %s",
+                        ("full_scan",),
+                    )
+                else:
+                    document = json.dumps(
+                        {"after_subject": subject, "after_predicate": predicate}
+                    )
+                    cur.execute(
+                        """
+                        INSERT INTO data_conflict_scan_state (
+                            id, after_subject, after_predicate, document, updated_at
+                        )
+                        VALUES (%s, %s, %s, %s::jsonb, NOW())
+                        ON CONFLICT (id) DO UPDATE SET
+                            after_subject = EXCLUDED.after_subject,
+                            after_predicate = EXCLUDED.after_predicate,
+                            document = EXCLUDED.document,
+                            updated_at = NOW()
+                        """,
+                        ("full_scan", subject, predicate, document),
+                    )
+            conn.commit()
 
     def get_ingest_group(
         self, brain_id: str, group_tracking: str

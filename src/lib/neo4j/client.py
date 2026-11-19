@@ -1629,6 +1629,9 @@ class Neo4jClient(GraphClient):
         until: str | None = None,
         subject_uuids: list[str] | None = None,
         relationship_uuids: list[str] | None = None,
+        after_subject_uuid: str | None = None,
+        after_predicate: str | None = None,
+        after_relationship_uuid: str | None = None,
     ) -> tuple[list[tuple[Node, Predicate, Node]], int]:
         params: dict[str, Any] = {
             "skip": require_int(skip, name="skip", minimum=0, maximum=10_000_000),
@@ -1645,7 +1648,27 @@ class Neo4jClient(GraphClient):
         if relationship_uuids:
             params["relationship_uuids"] = list(relationship_uuids)
             filters.append("r['uuid'] IN $relationship_uuids")
+        count_filters = list(filters)
+        if after_subject_uuid or after_predicate or after_relationship_uuid:
+            params["after_subject_uuid"] = after_subject_uuid or ""
+            params["after_predicate"] = after_predicate or ""
+            if after_relationship_uuid:
+                params["after_relationship_uuid"] = after_relationship_uuid
+                filters.append(
+                    "(n['uuid'] > $after_subject_uuid OR "
+                    "(n['uuid'] = $after_subject_uuid AND type(r) > $after_predicate) OR "
+                    "(n['uuid'] = $after_subject_uuid AND type(r) = $after_predicate "
+                    "AND r['uuid'] > $after_relationship_uuid))"
+                )
+            else:
+                filters.append(
+                    "(n['uuid'] > $after_subject_uuid OR "
+                    "(n['uuid'] = $after_subject_uuid AND type(r) > $after_predicate))"
+                )
         where_str = ("WHERE " + " AND ".join(filters) + "\n") if filters else ""
+        count_where = (
+            ("WHERE " + " AND ".join(count_filters) + "\n") if count_filters else ""
+        )
         cypher_query = (
             "MATCH (n)-[r]->(m)\n"
             + where_str
@@ -1655,14 +1678,26 @@ class Neo4jClient(GraphClient):
             "    properties(r) AS rel_properties, r['uuid'] AS rel_uuid,\n"
             "    m['uuid'] AS m_uuid, m['name'] AS m_name, labels(m) AS m_labels,\n"
             "    m['description'] AS m_description, properties(m) AS m_properties\n"
-            "ORDER BY r['uuid'], elementId(r)\n"
+            "ORDER BY n['uuid'], type(r), r['uuid'], elementId(r)\n"
             "SKIP $skip LIMIT $limit"
         )
         count_query = (
-            "MATCH (n)-[r]->(m)\n" + where_str + "RETURN count(r) AS total"
+            "MATCH (n)-[r]->(m)\n" + count_where + "RETURN count(r) AS total"
         )
+        count_params = {
+            key: value
+            for key, value in params.items()
+            if key
+            not in {
+                "after_subject_uuid",
+                "after_predicate",
+                "after_relationship_uuid",
+            }
+        }
         result = self._run_query(cypher_query, brain_id, params)
-        count_result = self._run_query(count_query, brain_id, params, ensure=False)
+        count_result = self._run_query(
+            count_query, brain_id, count_params, ensure=False
+        )
         total = 0
         if count_result and count_result.records:
             total = count_result.records[0].get("total") or 0
