@@ -700,6 +700,10 @@ class MongoClient(DataClient):
         collection.create_index("sides.source.source_key", name="conflict_source_keys")
         self._conflicts_ready.add(brain_id)
 
+    def _ensure_conflict_scan_state_indexes(self, brain_id: str) -> None:
+        collection = self.get_collection("conflict_scan_state", database=brain_id)
+        collection.create_index("id", unique=True, name="uniq_conflict_scan_state_id")
+
     def _conflict_document(self, conflict: FactConflict) -> dict[str, Any]:
         document = conflict_to_document(conflict)
         document["id"] = conflict.id
@@ -808,6 +812,45 @@ class MongoClient(DataClient):
             if parsed is not None:
                 conflicts.append(parsed)
         return conflicts
+
+    def get_conflict_scan_cursor(self, brain_id: str) -> dict[str, str] | None:
+        self._ensure_conflict_scan_state_indexes(brain_id)
+        collection = self.get_collection("conflict_scan_state", database=brain_id)
+        row = collection.find_one({"id": "full_scan"})
+        if not row:
+            return None
+        subject = str(row.get("after_subject") or "").strip()
+        predicate = str(row.get("after_predicate") or "").strip()
+        if not subject and not predicate:
+            return None
+        return {"after_subject": subject, "after_predicate": predicate}
+
+    def set_conflict_scan_cursor(
+        self, brain_id: str, cursor: dict[str, str] | None
+    ) -> None:
+        self._ensure_conflict_scan_state_indexes(brain_id)
+        collection = self.get_collection("conflict_scan_state", database=brain_id)
+        if not cursor:
+            collection.delete_one({"id": "full_scan"})
+            return
+        subject = str(cursor.get("after_subject") or "").strip()
+        predicate = str(cursor.get("after_predicate") or "").strip()
+        if not subject and not predicate:
+            collection.delete_one({"id": "full_scan"})
+            return
+        payload = {
+            "id": "full_scan",
+            "after_subject": subject,
+            "after_predicate": predicate,
+        }
+        try:
+            collection.update_one(
+                {"id": "full_scan"},
+                {"$set": payload},
+                upsert=True,
+            )
+        except DuplicateKeyError:
+            collection.update_one({"id": "full_scan"}, {"$set": payload})
 
     def get_ingest_group(
         self, brain_id: str, group_tracking: str

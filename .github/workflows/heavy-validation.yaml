@@ -19,8 +19,61 @@ jobs:
   start-heavy-runner:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 60
     steps:
+      # Keep the self-hosted VM off until Quality has published the candidate
+      # image. The runner host is auto-stopped ~27 minutes after start, which
+      # is not enough time if this job boots it and then heavy-smoke spends
+      # that window waiting on Quality.
+      - name: Wait for Quality candidate image
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const shas = [...new Set([
+              context.payload.pull_request?.head?.sha,
+              context.sha,
+            ].filter(Boolean))];
+            const deadline = Date.now() + 50 * 60 * 1000;
+            while (Date.now() < deadline) {
+              let run;
+              for (const sha of shas) {
+                const response = await github.rest.actions.listWorkflowRuns({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  workflow_id: "quality.yaml",
+                  head_sha: sha,
+                  status: "completed",
+                  per_page: 20,
+                });
+                run = response.data.workflow_runs[0];
+                if (run) break;
+              }
+              if (run) {
+                if (run.conclusion !== "success") {
+                  core.setFailed(`Quality workflow ${run.id} concluded ${run.conclusion}`);
+                  return;
+                }
+                const artifacts = await github.paginate(
+                  github.rest.actions.listWorkflowRunArtifacts,
+                  {
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    run_id: run.id,
+                    per_page: 100,
+                  }
+                );
+                const artifact = artifacts.find(
+                  (item) => item.name === "light-production-validation" && !item.expired
+                );
+                if (artifact) {
+                  core.info(`Quality artifact ready from workflow ${run.id}`);
+                  return;
+                }
+                core.info(`Quality workflow ${run.id} succeeded without a candidate image yet`);
+              }
+              await new Promise((resolve) => setTimeout(resolve, 30000));
+            }
+            core.setFailed(`Timed out waiting for Quality artifacts for ${shas.join(" or ")}`);
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_HEAVY_RUNNER_ROLE_ARN }}

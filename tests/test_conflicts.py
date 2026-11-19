@@ -6,6 +6,7 @@ from src.core.auth.scopes import VERIFICATION_PERMISSION_DENIED
 from src.core.saving.conflicts import (
     VerificationPermissionDenied,
     annotation_payload,
+    claim_key_for,
     classify_disagreement,
     conflict_detect_max_relationships,
     conflict_detect_on_ingest_enabled,
@@ -61,6 +62,7 @@ class MemoryConflictStore:
     def __init__(self, chunks=None):
         self.rows = {}
         self.chunks = chunks or {}
+        self.cursors = {}
 
     def save_conflict(self, conflict, brain_id):
         self.rows[conflict.id] = conflict
@@ -127,6 +129,15 @@ class MemoryConflictStore:
     def get_text_chunks_by_ids(self, ids, with_observations, brain_id):
         return [self.chunks[item] for item in ids if item in self.chunks], []
 
+    def get_conflict_scan_cursor(self, brain_id):
+        return self.cursors.get(brain_id)
+
+    def set_conflict_scan_cursor(self, brain_id, cursor):
+        if not cursor:
+            self.cursors.pop(brain_id, None)
+        else:
+            self.cursors[brain_id] = dict(cursor)
+
 
 class FakeGraph:
     def __init__(self, triples):
@@ -142,7 +153,15 @@ class FakeGraph:
         until=None,
         subject_uuids=None,
         relationship_uuids=None,
+        after_subject_uuid=None,
+        after_predicate=None,
+        after_relationship_uuid=None,
     ):
+        from src.core.saving.conflicts import (
+            _sort_validity_triples,
+            _triples_after_cursor,
+        )
+
         self.calls.append(
             {
                 "brain_id": brain_id,
@@ -152,6 +171,9 @@ class FakeGraph:
                 "relationship_uuids": (
                     list(relationship_uuids) if relationship_uuids else None
                 ),
+                "after_subject_uuid": after_subject_uuid,
+                "after_predicate": after_predicate,
+                "after_relationship_uuid": after_relationship_uuid,
             }
         )
         items = self.triples
@@ -161,7 +183,35 @@ class FakeGraph:
         if relationship_uuids:
             allowed_rels = set(relationship_uuids)
             items = [item for item in items if item[1].uuid in allowed_rels]
-        return items[skip : skip + limit], len(items)
+        ordered = _triples_after_cursor(
+            _sort_validity_triples(items),
+            after_subject_uuid=after_subject_uuid,
+            after_predicate=after_predicate,
+            after_relationship_uuid=after_relationship_uuid,
+        )
+        return ordered[skip : skip + limit], len(items)
+
+
+class SearchOnlyGraph:
+    def __init__(self, triples):
+        self.triples = triples
+
+    def search_relationships(self, brain_id, limit=100, skip=0):
+        class Item:
+            def __init__(self, triple):
+                self.subject, self.predicate, self.object = triple
+
+        class Result:
+            def __init__(self, results, total=None):
+                self.results = results
+                if total is not None:
+                    self.total = total
+
+        items = [Item(item) for item in self.triples]
+        kwargs = {}
+        if getattr(self, "include_total", True):
+            kwargs["total"] = len(items)
+        return Result(items[skip : skip + limit], **kwargs)
 
 
 class QuantityAndMatchTests(unittest.TestCase):
@@ -1489,10 +1539,9 @@ class ReviewGapTests(unittest.TestCase):
         self.assertEqual(pairs, {("a", "b")})
 
     def test_scan_pages_all_relationships_and_reports_cap(self):
-        policy = _node("policy-1", "RefundPolicy")
         triples = [
             _triple(
-                policy,
+                _node(f"policy-{i}", f"Policy{i}"),
                 _pred(
                     f"f{i}",
                     "HAS_WINDOW",
@@ -1834,8 +1883,34 @@ class ReviewGapTests(unittest.TestCase):
         ]
         found = detect_conflicts(store, FakeGraph(live), "brain")
         conflict_id = found[0].id
+        extra = [
+            _triple(
+                _node("q", "Other"),
+                _pred(
+                    "c",
+                    "HAS_WINDOW",
+                    {
+                        "valid_from": "2024-01-01T00:00:00Z",
+                        "source_key": "s3",
+                    },
+                ),
+                _node("z", "7 days"),
+            ),
+            _triple(
+                _node("q", "Other"),
+                _pred(
+                    "d",
+                    "HAS_WINDOW",
+                    {
+                        "valid_from": "2024-01-01T00:00:00Z",
+                        "source_key": "s4",
+                    },
+                ),
+                _node("w", "90 days"),
+            ),
+        ]
         truncated = detect_conflicts(
-            store, FakeGraph(live), "brain", max_relationships=1
+            store, FakeGraph(live + extra), "brain", max_relationships=2
         )
         self.assertTrue(truncated.truncated)
         self.assertEqual(store.rows[conflict_id].status, "open")
@@ -2125,7 +2200,11 @@ class ReviewGapTests(unittest.TestCase):
         ]
         graph = FakeGraph(triples)
         found = detect_conflicts(MemoryConflictStore(), graph, "brain")
-        self.assertTrue(any(call["skip"] == 200 for call in graph.calls))
+        self.assertGreaterEqual(len(graph.calls), 2)
+        self.assertTrue(
+            any(call.get("after_relationship_uuid") for call in graph.calls)
+        )
+        self.assertTrue(all(call["skip"] == 0 for call in graph.calls))
         self.assertEqual(found.scanned_relationships, 250)
         pairs = {tuple(sorted(item.fact_ids())) for item in found}
         self.assertIn(("f0", "f249"), pairs)
@@ -2497,10 +2576,9 @@ class ReviewGapTests(unittest.TestCase):
         self.assertEqual(again.stale_resolved, 1)
 
     def test_config_max_relationships_caps_full_scan(self):
-        policy = _node("policy-1", "RefundPolicy")
         triples = [
             _triple(
-                policy,
+                _node(f"policy-{i}", f"Policy{i}"),
                 _pred(
                     f"f{i}",
                     "HAS_WINDOW",
@@ -2524,6 +2602,329 @@ class ReviewGapTests(unittest.TestCase):
         self.assertFalse(unlimited.truncated)
         self.assertEqual(unlimited.scanned_relationships, 5)
         self.assertEqual(conflict_detect_max_relationships(), 10000)
+
+
+def _window_triple(subject, fact_id, value, source=None):
+    return _triple(
+        _node(subject, subject),
+        _pred(
+            fact_id,
+            "HAS_WINDOW",
+            {
+                "valid_from": "2024-01-01T00:00:00Z",
+                "source_key": source or fact_id,
+            },
+        ),
+        _node(fact_id + "-obj", value),
+    )
+
+
+class ConflictScanCursorTests(unittest.TestCase):
+    def test_repeated_capped_scans_cover_every_relationship(self):
+        triples = [
+            _window_triple(f"s{i}", f"f{i}", f"{i + 1} days") for i in range(5)
+        ]
+        store = MemoryConflictStore()
+        graph = FakeGraph(triples)
+        seen = set()
+        for _ in range(4):
+            result = detect_conflicts(store, graph, "brain", max_relationships=2)
+            snapshots = [
+                snapshot_from_triple(item) for item in graph.triples
+            ]
+            scanned_ids = {
+                item["fact_id"]
+                for item in snapshots
+                if claim_key_for(item["subject_uuid"], item["predicate"])
+                in set(result.scanned_claim_keys)
+            }
+            seen.update(scanned_ids)
+        self.assertEqual(seen, {f"f{i}" for i in range(5)})
+
+    def test_group_at_the_cut_is_never_split(self):
+        triples = [
+            _window_triple("a", "a1", "14 days"),
+            _window_triple("a", "a2", "30 days"),
+            _window_triple("b", "b1", "7 days"),
+            _window_triple("b", "b2", "14 days"),
+            _window_triple("b", "b3", "21 days"),
+        ]
+        store = MemoryConflictStore()
+        first = detect_conflicts(
+            store, FakeGraph(triples), "brain", max_relationships=4
+        )
+        self.assertTrue(first.truncated)
+        self.assertEqual(first.scanned_relationships, 2)
+        self.assertEqual(
+            set(first.scanned_claim_keys), {claim_key_for("a", "HAS_WINDOW")}
+        )
+        second = detect_conflicts(
+            store, FakeGraph(triples), "brain", max_relationships=4
+        )
+        self.assertEqual(second.scanned_relationships, 3)
+        self.assertEqual(
+            set(second.scanned_claim_keys), {claim_key_for("b", "HAS_WINDOW")}
+        )
+
+    def test_cursor_wraparound_restarts_at_first_group(self):
+        triples = [
+            _window_triple("a", "a1", "14 days"),
+            _window_triple("b", "b1", "30 days"),
+            _window_triple("c", "c1", "7 days"),
+        ]
+        store = MemoryConflictStore()
+        graph = FakeGraph(triples)
+        first = detect_conflicts(store, graph, "brain", max_relationships=2)
+        self.assertTrue(first.truncated)
+        self.assertEqual(store.cursors["brain"]["after_subject"], "b")
+        second = detect_conflicts(store, graph, "brain", max_relationships=2)
+        self.assertTrue(second.truncated)
+        scanned = set(second.scanned_claim_keys)
+        self.assertIn(claim_key_for("c", "HAS_WINDOW"), scanned)
+        self.assertIn(claim_key_for("a", "HAS_WINDOW"), scanned)
+        self.assertNotIn(claim_key_for("b", "HAS_WINDOW"), scanned)
+        third = detect_conflicts(store, graph, "brain", max_relationships=2)
+        scanned = set(third.scanned_claim_keys)
+        self.assertIn(claim_key_for("b", "HAS_WINDOW"), scanned)
+
+    def test_stale_close_only_applies_to_scanned_groups(self):
+        live = [
+            _window_triple("a", "a1", "14 days"),
+            _window_triple("a", "a2", "30 days"),
+            _window_triple("b", "b1", "14 days"),
+            _window_triple("b", "b2", "30 days"),
+        ]
+        store = MemoryConflictStore()
+        found = detect_conflicts(store, FakeGraph(live), "brain")
+        self.assertEqual(len(found), 2)
+        by_subject = {item.subject.uuid: item for item in found}
+        reconciled = [
+            live[0],
+            live[1],
+            _window_triple("b", "b1", "14 days"),
+            _window_triple("b", "b2", "14 days"),
+        ]
+        truncated = detect_conflicts(
+            store, FakeGraph(reconciled), "brain", max_relationships=2
+        )
+        self.assertTrue(truncated.truncated)
+        self.assertEqual(store.rows[by_subject["a"].id].status, "open")
+        self.assertEqual(store.rows[by_subject["b"].id].status, "open")
+        self.assertEqual(truncated.stale_resolved, 0)
+        again = detect_conflicts(
+            store, FakeGraph(reconciled), "brain", max_relationships=2
+        )
+        self.assertEqual(store.rows[by_subject["a"].id].status, "open")
+        self.assertEqual(store.rows[by_subject["b"].id].status, "resolved")
+        self.assertEqual(again.stale_resolved, 1)
+
+    def test_truncated_scan_can_stale_close_within_scanned_group(self):
+        live = [
+            _window_triple("a", "a1", "14 days"),
+            _window_triple("a", "a2", "30 days"),
+            _window_triple("b", "b1", "14 days"),
+            _window_triple("b", "b2", "30 days"),
+        ]
+        store = MemoryConflictStore()
+        found = detect_conflicts(store, FakeGraph(live), "brain")
+        by_subject = {item.subject.uuid: item for item in found}
+        remaining = [live[0], live[2], live[3]]
+        truncated = detect_conflicts(
+            store, FakeGraph(remaining), "brain", max_relationships=1
+        )
+        self.assertTrue(truncated.truncated)
+        self.assertEqual(store.rows[by_subject["a"].id].status, "resolved")
+        self.assertEqual(store.rows[by_subject["b"].id].status, "open")
+        self.assertEqual(truncated.stale_resolved, 1)
+
+    def test_search_relationships_fallback_respects_cap(self):
+        triples = [
+            _window_triple(f"s{i}", f"f{i}", f"{i + 1} days") for i in range(5)
+        ]
+        result = detect_conflicts(
+            MemoryConflictStore(),
+            SearchOnlyGraph(triples),
+            "brain",
+            max_relationships=2,
+        )
+        self.assertTrue(result.truncated)
+        self.assertEqual(result.scanned_relationships, 2)
+        self.assertEqual(result.total_relationships, 5)
+
+    def test_search_fallback_keeps_interleaved_group_together(self):
+        triples = (
+            [_window_triple("a", "a1", "14 days")]
+            + [
+                _window_triple("b", f"b{i}", f"{i + 1} days")
+                for i in range(199)
+            ]
+            + [_window_triple("a", "a2", "30 days")]
+        )
+        result = detect_conflicts(
+            MemoryConflictStore(),
+            SearchOnlyGraph(triples),
+            "brain",
+            max_relationships=2,
+        )
+        self.assertEqual(result.scanned_relationships, 2)
+        self.assertEqual(
+            set(result.scanned_claim_keys),
+            {claim_key_for("a", "HAS_WINDOW")},
+        )
+
+    def test_search_fallback_treats_empty_results_as_end(self):
+        triples = [
+            _window_triple(f"s{i}", f"f{i}", f"{i + 1} days") for i in range(200)
+        ]
+        graph = SearchOnlyGraph(triples)
+        graph.include_total = False
+        result = detect_conflicts(MemoryConflictStore(), graph, "brain")
+        self.assertEqual(result.scanned_relationships, 200)
+        self.assertFalse(result.truncated)
+
+    def test_graph_adapter_fallback_finds_uuid_past_first_page(self):
+        from src.adapters.graph import GraphAdapter
+
+        triples = [
+            _window_triple(f"s{i}", f"f{i}", f"{i + 1} days") for i in range(201)
+        ]
+        adapter = GraphAdapter()
+        adapter.graph = SearchOnlyGraph(triples)
+        found, _total = adapter.list_validity_relationships(
+            "brain", skip=0, limit=2, relationship_uuids=["f200"]
+        )
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0][1].uuid, "f200")
+
+    def test_search_fallback_stale_lookup_honors_uuid_filter(self):
+        live = [
+            _window_triple("a", "a1", "14 days"),
+            _window_triple("a", "a2", "30 days"),
+            _window_triple("b", "b1", "14 days"),
+            _window_triple("b", "b2", "30 days"),
+            _window_triple("c", "c1", "7 days"),
+            _window_triple("c", "c2", "21 days"),
+        ]
+        store = MemoryConflictStore()
+        found = detect_conflicts(store, SearchOnlyGraph(live), "brain")
+        by_subject = {item.subject.uuid: item for item in found}
+        truncated = detect_conflicts(
+            store, SearchOnlyGraph(live), "brain", max_relationships=2
+        )
+        self.assertTrue(truncated.truncated)
+        self.assertEqual(store.rows[by_subject["a"].id].status, "open")
+        self.assertEqual(store.rows[by_subject["b"].id].status, "open")
+        self.assertEqual(store.rows[by_subject["c"].id].status, "open")
+        self.assertEqual(truncated.stale_resolved, 0)
+
+    def test_legacy_list_validity_without_cursor_still_pages(self):
+        from src.adapters.graph import GraphAdapter
+
+        triples = [
+            _window_triple(f"s{i}", f"f{i}", f"{i + 1} days") for i in range(250)
+        ]
+
+        class SkipOnlyGraph:
+            def list_validity_relationships(self, brain_id, skip=0, limit=100):
+                return triples[skip : skip + limit], len(triples)
+
+        adapter = GraphAdapter()
+        adapter.graph = SkipOnlyGraph()
+        found = detect_conflicts(MemoryConflictStore(), adapter, "brain")
+        self.assertEqual(found.scanned_relationships, 250)
+        self.assertFalse(found.truncated)
+
+    def test_truncated_scan_stale_closes_removed_group(self):
+        live = [
+            _window_triple("a", "a1", "14 days"),
+            _window_triple("a", "a2", "30 days"),
+            _window_triple("b", "b1", "14 days"),
+            _window_triple("b", "b2", "30 days"),
+            _window_triple("c", "c1", "7 days"),
+            _window_triple("c", "c2", "21 days"),
+        ]
+        store = MemoryConflictStore()
+        found = detect_conflicts(store, FakeGraph(live), "brain")
+        by_subject = {item.subject.uuid: item for item in found}
+        remaining = live[2:]
+        truncated = detect_conflicts(
+            store, FakeGraph(remaining), "brain", max_relationships=2
+        )
+        self.assertTrue(truncated.truncated)
+        self.assertEqual(store.rows[by_subject["a"].id].status, "resolved")
+        self.assertEqual(store.rows[by_subject["b"].id].status, "open")
+        self.assertEqual(store.rows[by_subject["c"].id].status, "open")
+
+    def test_normalized_predicate_aliases_stay_in_one_group(self):
+        def named(subject, fact_id, predicate, value):
+            return _triple(
+                _node(subject, subject),
+                _pred(
+                    fact_id,
+                    predicate,
+                    {
+                        "valid_from": "2024-01-01T00:00:00Z",
+                        "source_key": fact_id,
+                    },
+                ),
+                _node(fact_id + "-obj", value),
+            )
+
+        triples = [
+            named("s", "a1", "HAS_A", "14 days"),
+            named("s", "b1", "HAS_B", "7 days"),
+            named("s", "a2", "HAS__A", "30 days"),
+        ]
+        store = MemoryConflictStore()
+        result = detect_conflicts(
+            store,
+            FakeGraph(triples),
+            "brain",
+            max_relationships=2,
+        )
+        self.assertEqual(result.scanned_relationships, 2)
+        self.assertEqual(
+            set(result.scanned_claim_keys), {claim_key_for("s", "HAS_A")}
+        )
+        self.assertEqual(result.scan_cursor["after_predicate"], "HAS_A")
+        self.assertEqual(store.cursors["brain"]["after_predicate"], "HAS_A")
+
+    def test_stored_raw_alias_cursor_is_normalized_on_read(self):
+        from src.core.saving.conflicts import _read_scan_cursor
+
+        store = MemoryConflictStore()
+        store.cursors["brain"] = {
+            "after_subject": "s",
+            "after_predicate": "HAS__A",
+        }
+        self.assertEqual(
+            _read_scan_cursor(store, "brain"),
+            {"after_subject": "s", "after_predicate": "HAS_A"},
+        )
+
+    def test_cursor_write_failure_is_raised(self):
+        class BrokenStore(MemoryConflictStore):
+            def set_conflict_scan_cursor(self, brain_id, cursor):
+                raise RuntimeError("disk full")
+
+        triples = [
+            _window_triple(f"s{i}", f"f{i}", f"{i + 1} days") for i in range(3)
+        ]
+        with self.assertRaises(RuntimeError):
+            detect_conflicts(
+                BrokenStore(),
+                FakeGraph(triples),
+                "brain",
+                max_relationships=1,
+            )
+
+    def test_rest_scan_request_cannot_override_cap(self):
+        from src.services.api.constants.requests import ConflictScanRequest
+
+        self.assertNotIn("max_relationships", ConflictScanRequest.model_fields)
+        self.assertEqual(
+            set(ConflictScanRequest.model_fields), {"use_llm"}
+        )
 
 
 class ConfigDefaultTests(unittest.TestCase):

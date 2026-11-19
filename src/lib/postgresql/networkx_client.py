@@ -705,7 +705,14 @@ class NetworkXGraphClient(GraphClient):
         until: str | None = None,
         subject_uuids: list[str] | None = None,
         relationship_uuids: list[str] | None = None,
+        after_subject_uuid: str | None = None,
+        after_predicate: str | None = None,
+        after_relationship_uuid: str | None = None,
     ) -> tuple[list[tuple[Node, Predicate, Node]], int]:
+        from src.core.saving.conflicts import (
+            _cursor_group,
+            _relationship_sort_key,
+        )
         from src.core.saving.validity import change_kind, parse_instant
 
         self._store.ensure_database(brain_id)
@@ -728,9 +735,32 @@ class NetworkXGraphClient(GraphClient):
                     continue
             matched.append((source, target, key, props))
         total = len(matched)
-        page = []
-        for source, target, key, props in matched[skip : skip + limit]:
-            page.append(
+
+        def record_key(item: tuple[str, str, Any, dict]) -> tuple[str, str, str]:
+            source, _target, key, props = item
+            return _relationship_sort_key(
+                source,
+                str(props.get("rel_type") or ""),
+                str(props.get("uuid") or key or ""),
+            )
+
+        matched.sort(key=record_key)
+        rel = str(after_relationship_uuid or "").strip()
+        if rel:
+            cursor = _relationship_sort_key(
+                after_subject_uuid, after_predicate, rel
+            )
+            matched = [item for item in matched if record_key(item) > cursor]
+        else:
+            group = _cursor_group(after_subject_uuid, after_predicate)
+            if group is not None:
+                matched = [
+                    item for item in matched if record_key(item)[:2] > group
+                ]
+        page = matched[skip : skip + limit]
+        triples: list[tuple[Node, Predicate, Node]] = []
+        for source, target, key, props in page:
+            triples.append(
                 (
                     Node(
                         uuid=source,
@@ -755,7 +785,7 @@ class NetworkXGraphClient(GraphClient):
                     ),
                 )
             )
-        return page, total
+        return triples, total
 
     def search_entities(
         self,
