@@ -195,6 +195,7 @@ class GraphClient(ABC):
         self,
         nodes: list[Node | str],
         brain_id: str,
+        as_of: str | None = None,
     ) -> List[Tuple[Node, Predicate, Node, Predicate, Node]]:
         """
         Get the event-centric neighbors of a node.

@@ -39,12 +39,23 @@ from src.lib.cypher_safety import (
     original_type_properties,
     quote_identifier,
     quote_rel_types_pattern,
+    relationship_as_of_match_clause,
     relationship_changed_in_window_clause,
     require_database_name,
     require_limit,
     require_path_depth,
     static_property_key,
     validate_raw_cypher,
+)
+
+_VALIDITY_REL_INDEX_KEYS = (
+    "valid_from",
+    "valid_to",
+    "recorded_at",
+    "valid_at",
+    "inserted_at",
+    "invalid_at",
+    "superseded_at",
 )
 from src.utils.logging import log
 from src.utils.serialization.data import always_dict
@@ -101,6 +112,7 @@ class Neo4jClient(GraphClient):
             warn_notification_severity="OFF",
             notifications_min_severity="OFF",
         )
+        self._validity_indexes_ready: set[str] = set()
 
     def execute_operation(self, operation: str, brain_id: str) -> Any:
         """
@@ -142,6 +154,7 @@ class Neo4jClient(GraphClient):
         """
         database = require_database_name(database)
         if self._verify_database_accessible(database):
+            self._ensure_validity_indexes(database)
             return
 
         try:
@@ -162,6 +175,7 @@ class Neo4jClient(GraphClient):
         max_wait_retries = 30
         while retries < max_wait_retries:
             if self._verify_database_accessible(database):
+                self._ensure_validity_indexes(database)
                 return
             time.sleep(0.2)
             retries += 1
@@ -171,6 +185,30 @@ class Neo4jClient(GraphClient):
                 f"Database '{database}' could not be created or is not accessible. "
                 "If using Neo4j Community Edition, you can only use the default 'neo4j' database."
             )
+        self._ensure_validity_indexes(database)
+
+    def _ensure_validity_indexes(self, database: str) -> None:
+        ready = getattr(self, "_validity_indexes_ready", None)
+        if ready is None:
+            self._validity_indexes_ready = set()
+            ready = self._validity_indexes_ready
+        if database in ready:
+            return
+        for key in _VALIDITY_REL_INDEX_KEYS:
+            name = quote_identifier("rel_" + key)
+            prop = static_property_key(key)
+            query = (
+                "CREATE RANGE INDEX "
+                + name
+                + " IF NOT EXISTS FOR ()-[r]-() ON (r."
+                + prop
+                + ")"
+            )
+            try:
+                self.driver.execute_query(query, database_=database)
+            except Exception:
+                continue
+        ready.add(database)
 
     def clear_brain_data(self, brain_id: str) -> None:
         if not self._verify_database_accessible(brain_id):
@@ -1389,6 +1427,8 @@ class Neo4jClient(GraphClient):
         filters: list[str] = []
         if since and until:
             filters.append(relationship_changed_in_window_clause("r"))
+            params["since"] = since
+            params["until"] = until
         if subject_uuids:
             params["subject_uuids"] = list(subject_uuids)
             filters.append("n['uuid'] IN $subject_uuids")
@@ -2056,6 +2096,7 @@ class Neo4jClient(GraphClient):
         self,
         nodes: list[Node | str],
         brain_id: str,
+        as_of: str | None = None,
     ) -> List[Tuple[Node, Predicate, Node, Predicate, Node]]:
         """
         Retrieve the event-centric neighbors of a node.
@@ -2066,13 +2107,25 @@ class Neo4jClient(GraphClient):
             node_uuids = nodes
         else:
             node_uuids = [node.uuid for node in nodes]
+        params: dict[str, Any] = {"node_uuids": list(node_uuids)}
+        as_of_filter = ""
+        if as_of:
+            params["as_of"] = as_of
+            as_of_filter = (
+                "AND "
+                + relationship_as_of_match_clause("r")
+                + "\nAND "
+                + relationship_as_of_match_clause("r2")
+                + "\n"
+            )
         cypher_query = (
             "MATCH (n)-[r]-(m)-[r2]-(b)\n"
             "WHERE n['uuid'] IN $node_uuids\n"
             "AND r2['flow_key'] = r['flow_key']\n"
             "AND type(r) <> 'HUB_BRIDGE'\n"
             "AND type(r2) <> 'HUB_BRIDGE'\n"
-            "RETURN\n"
+            + as_of_filter
+            + "RETURN\n"
             "    n['uuid'] as n_uuid, n['name'] as n_name, labels(n) as n_labels, n['description'] as n_description, properties(n) as n_properties, n['polarity'] as n_polarity, n['metadata'] as n_metadata, n['happened_at'] as n_happened_at, n['last_updated'] as n_last_updated, n['observations'] as n_observations,\n"
             "    r['uuid'] as r_uuid, type(r) as r_type, r['description'] as r_description, properties(r) as r_properties, r['flow_key'] as r_flow_key, r['last_updated'] as r_last_updated, r['observations'] as r_observations, r['amount'] as r_amount,\n"
             "    CASE WHEN startNode(r) = n THEN 'out' ELSE 'in' END AS r_direction,\n"
@@ -2081,9 +2134,7 @@ class Neo4jClient(GraphClient):
             "    CASE WHEN startNode(r2) = m THEN 'out' ELSE 'in' END AS r2_direction,\n"
             "    b['uuid'] as b_uuid, b['name'] as b_name, labels(b) as b_labels, b['description'] as b_description, properties(b) as b_properties, b['polarity'] as b_polarity, b['metadata'] as b_metadata, b['happened_at'] as b_happened_at, b['last_updated'] as b_last_updated, b['observations'] as b_observations"
         )
-        result = self._run_query(
-            cypher_query, brain_id, {"node_uuids": list(node_uuids)}
-        )
+        result = self._run_query(cypher_query, brain_id, params)
         return [
             (
                 Node(

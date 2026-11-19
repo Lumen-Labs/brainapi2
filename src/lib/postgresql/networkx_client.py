@@ -1181,6 +1181,7 @@ class NetworkXGraphClient(GraphClient):
         self,
         nodes: list[Node | str],
         brain_id: str,
+        as_of: str | None = None,
     ) -> List[Tuple[Node, Predicate, Node, Predicate, Node]]:
         if len(nodes) == 0:
             return []
@@ -1188,7 +1189,19 @@ class NetworkXGraphClient(GraphClient):
         self._store.ensure_database(brain_id)
         brain = self._store.get_brain(brain_id)
         results = []
+        as_of_dt = None
+        if as_of:
+            from src.core.saving.validity import parse_instant
+
+            as_of_dt = parse_instant(as_of)
         for n_uuid, m_uuid, b_uuid, r1_data, r2_data, r_direction, r2_direction in self._event_path_records(brain, node_uuids):
+            if as_of_dt is not None:
+                from src.core.saving.validity import validity_status
+
+                status_r = validity_status(r1_data, as_of_dt)
+                status_r2 = validity_status(r2_data, as_of_dt)
+                if status_r == "invalid" or status_r2 == "invalid":
+                    continue
             results.append(
                 (
                     self._node_from_brain(brain, n_uuid),
