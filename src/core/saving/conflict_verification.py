@@ -55,15 +55,18 @@ def apply_fact_verification_action(
     fact_id: str,
     brain_id: str,
     action: str,
+    actor: str | None = None,
     verified_by: str | None = None,
     note: str | None = None,
 ) -> VerificationApplyResult:
-    """Ask #113 to verify or reject a fact.
+    """Ask #113 to verify, reject, or reset a fact.
 
     ``absent`` means the verification package is not imported or there is no
     graph to call. ``failed`` means #113 is present and the action raised.
+    Identity comes from ``actor`` (the authenticated principal). ``verified_by``
+    is only a fallback for older internal callers.
     """
-    if action not in {"verify", "reject"}:
+    if action not in {"verify", "reject", "reset"}:
         return "failed"
     if graph is None:
         return "absent"
@@ -71,13 +74,14 @@ def apply_fact_verification_action(
         from src.core.verification.service import apply_verification_action
     except ImportError:
         return "absent"
+    principal = (actor or verified_by or "").strip() or None
     try:
         apply_verification_action(
             graph,
             fact_id=fact_id,
             brain_id=brain_id,
             action=action,  # type: ignore[arg-type]
-            verified_by=verified_by or "conflict",
+            actor=principal,
             verification_source="conflict",
             note=note,
         )
@@ -92,32 +96,38 @@ def apply_verified_side_to_facts(
     *,
     winning_fact_id: str,
     losing_fact_ids: list[str],
+    actor: str | None = None,
     verified_by: str | None = None,
     note: str | None = None,
     apply_action: Callable[..., VerificationApplyResult] | None = None,
 ) -> VerificationApplyResult:
-    """Verify the winning fact and reject the other conflict side via #113."""
+    """Verify the winning fact and reject the other conflict side via #113.
+
+    Writes verification first. If a later write fails, reset the winner so the
+    conflict is not left half-updated. The caller must not mark the conflict
+    resolved unless this returns ``applied``.
+    """
     apply = apply_action or apply_fact_verification_action
-    applied = apply(
-        graph,
-        fact_id=winning_fact_id,
-        brain_id=brain_id,
-        action="verify",
-        verified_by=verified_by,
-        note=note,
-    )
-    if applied != "applied":
-        return applied
-    for fact_id in losing_fact_ids:
-        rejected = apply(
+    principal = (actor or verified_by or "").strip() or None
+
+    def _call(action: str, fact_id: str) -> VerificationApplyResult:
+        return apply(
             graph,
             fact_id=fact_id,
             brain_id=brain_id,
-            action="reject",
-            verified_by=verified_by,
+            action=action,
+            actor=principal,
+            verified_by=principal,
             note=note,
         )
+
+    applied = _call("verify", winning_fact_id)
+    if applied != "applied":
+        return applied
+    for fact_id in losing_fact_ids:
+        rejected = _call("reject", fact_id)
         if rejected != "applied":
+            _call("reset", winning_fact_id)
             return "failed"
     return "applied"
 

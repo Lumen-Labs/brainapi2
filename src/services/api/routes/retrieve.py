@@ -12,7 +12,12 @@ import json
 from typing import List, Literal, Optional
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
-from src.services.api.dependencies import get_brain_id
+from src.core.auth.scopes import has_verification_scope
+from src.services.api.dependencies import (
+    get_auth_principal,
+    get_auth_scopes,
+    get_brain_id,
+)
 from src.services.api.constants.requests import (
     ConflictDismissRequest,
     ConflictResolveRequest,
@@ -529,9 +534,17 @@ async def resolve_conflict_by_id(
     id: str,
     request: ConflictResolveRequest = Body(default_factory=ConflictResolveRequest),
     brain_id: str = Depends(get_brain_id),
+    actor: Optional[str] = Depends(get_auth_principal),
+    scopes: list[str] = Depends(get_auth_scopes),
 ):
     return await resolve_conflict_by_id_controller(
-        id, brain_id, request.winning_fact_id, request.notes, request.method or "manual"
+        id,
+        brain_id,
+        request.winning_fact_id,
+        request.notes,
+        request.method or "manual",
+        actor=actor,
+        has_verification=has_verification_scope(scopes),
     )
 
 

@@ -61,6 +61,7 @@ from src.core.verification.service import apply_verification_action
 from src.lib.neo4j.client import Neo4jClient
 from src.services.mcp.main import (
     _mutate_fact_sync,
+    _resolve_conflict_sync,
     _search_memory_sync,
     auth_principal_var,
     auth_scopes_var,
@@ -358,6 +359,27 @@ class McpVerificationPermissionTests(unittest.TestCase):
                 "doc",
                 "note",
             )
+        finally:
+            auth_token_var.reset(token)
+            auth_scopes_var.reset(scopes)
+            auth_principal_var.reset(principal)
+        self.assertIn("VERIFICATION_PERMISSION_DENIED", result)
+
+    def test_mcp_verified_side_denied_without_verification_scope(self):
+        from unittest.mock import patch
+
+        token = auth_token_var.set("test-token")
+        scopes = auth_scopes_var.set((DEFAULT_SCOPE,))
+        principal = auth_principal_var.set("brainpat:demo")
+        try:
+            with patch("src.services.mcp.main.guard_brainpat", return_value=True):
+                result = _resolve_conflict_sync(
+                    "demo",
+                    "c-1",
+                    "rel-1",
+                    "note",
+                    "verified_side",
+                )
         finally:
             auth_token_var.reset(token)
             auth_scopes_var.reset(scopes)

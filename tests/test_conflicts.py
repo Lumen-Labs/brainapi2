@@ -2,7 +2,9 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from src.constants.kg import Node, Predicate
+from src.core.auth.scopes import VERIFICATION_PERMISSION_DENIED
 from src.core.saving.conflicts import (
+    VerificationPermissionDenied,
     annotation_payload,
     classify_disagreement,
     conflict_detect_on_ingest_enabled,
@@ -18,6 +20,7 @@ from src.core.saving.conflicts import (
     parse_quantity,
     resolve_by_verified_fact,
     resolve_conflict,
+    resolve_conflict_authorized,
     same_source_revision,
     snapshot_from_triple,
     values_equivalent,
@@ -418,13 +421,17 @@ class DetectionEngineTests(unittest.TestCase):
         numeric = next(
             item for item in found if item.disagreement_type == "numeric_mismatch"
         )
-        resolved = resolve_conflict(
-            store,
-            "brain",
-            numeric.id,
-            winning_fact_id=numeric.sides[0].fact_id,
-            method="verified_side",
-        )
+        with patch(
+            "src.core.saving.conflict_verification.apply_verified_side_to_facts",
+            return_value="applied",
+        ):
+            resolved = resolve_conflict(
+                store,
+                "brain",
+                numeric.id,
+                winning_fact_id=numeric.sides[0].fact_id,
+                method="verified_side",
+            )
         self.assertEqual(resolved.status, "resolved")
         self.assertEqual(resolved.resolution.method, "verified_side")
         self.assertEqual(resolved.sides[0].verification_state, "unverified")
@@ -469,8 +476,10 @@ class DetectionEngineTests(unittest.TestCase):
 
         actions: list[tuple[str, str]] = []
 
-        def fake_apply(graph, *, fact_id, brain_id, action, verified_by=None, note=None):
-            actions.append((fact_id, action))
+        def fake_apply(
+            graph, *, fact_id, brain_id, action, actor=None, verified_by=None, note=None
+        ):
+            actions.append((fact_id, action, actor or verified_by))
             return "applied"
 
         applied = apply_verified_side_to_facts(
@@ -478,17 +487,23 @@ class DetectionEngineTests(unittest.TestCase):
             "brain",
             winning_fact_id="a",
             losing_fact_ids=["b"],
+            actor="brainpat:demo",
             apply_action=fake_apply,
         )
         self.assertEqual(applied, "applied")
-        self.assertEqual(actions, [("a", "verify"), ("b", "reject")])
+        self.assertEqual(
+            actions,
+            [("a", "verify", "brainpat:demo"), ("b", "reject", "brainpat:demo")],
+        )
 
     def test_verified_side_skips_reject_when_verify_fails(self):
         from src.core.saving.conflict_verification import apply_verified_side_to_facts
 
         actions: list[tuple[str, str]] = []
 
-        def fake_apply(graph, *, fact_id, brain_id, action, verified_by=None, note=None):
+        def fake_apply(
+            graph, *, fact_id, brain_id, action, actor=None, verified_by=None, note=None
+        ):
             actions.append((fact_id, action))
             return "failed"
 
@@ -675,18 +690,31 @@ class McpConflictToolTests(unittest.TestCase):
         self.assertEqual(detail["conflict"]["id"], conflict_id)
         self.assertEqual(len(detail["conflict"]["sides"]), 2)
         missing_winner = resolve_conflict_tool(
-            store, "brain", conflict_id, authorized=True, method="verified_side"
-        )
-        self.assertIn("winning_fact_id", str(missing_winner))
-        resolved = resolve_conflict_tool(
             store,
             "brain",
             conflict_id,
             authorized=True,
-            winning_fact_id="a",
             method="verified_side",
+            actor="brainpat:brain",
+            has_verification=True,
         )
+        self.assertIn("winning_fact_id", str(missing_winner))
+        with patch(
+            "src.core.saving.conflict_verification.apply_verified_side_to_facts",
+            return_value="applied",
+        ):
+            resolved = resolve_conflict_tool(
+                store,
+                "brain",
+                conflict_id,
+                authorized=True,
+                winning_fact_id="a",
+                method="verified_side",
+                actor="brainpat:brain",
+                has_verification=True,
+            )
         self.assertEqual(resolved["conflict"]["status"], "resolved")
+        self.assertEqual(resolved["conflict"]["resolution"]["resolved_by"], "brainpat:brain")
         report = conflict_report_tool(
             store, "brain", authorized=True, fmt="markdown"
         )
@@ -740,6 +768,228 @@ class McpConflictToolTests(unittest.TestCase):
             store, "brain", conflict_id, authorized=True, notes="noise"
         )
         self.assertEqual(dismissed["conflict"]["status"], "dismissed")
+
+    def test_verified_side_denied_without_verification_scope(self):
+        store = MemoryConflictStore()
+        detect_conflicts(
+            store,
+            FakeGraph(
+                [
+                    _triple(
+                        _node("p", "RefundPolicy"),
+                        _pred("a", "HAS_WINDOW", {"source_key": "s1"}),
+                        _node("x", "14 days"),
+                    ),
+                    _triple(
+                        _node("p", "RefundPolicy"),
+                        _pred("b", "HAS_WINDOW", {"source_key": "s2"}),
+                        _node("y", "30 days"),
+                    ),
+                ]
+            ),
+            "brain",
+        )
+        conflict_id = next(iter(store.rows))
+        denied = resolve_conflict_tool(
+            store,
+            "brain",
+            conflict_id,
+            authorized=True,
+            winning_fact_id="a",
+            method="verified_side",
+            actor="brainpat:brain",
+            has_verification=False,
+        )
+        self.assertIn(VERIFICATION_PERMISSION_DENIED, str(denied))
+        self.assertEqual(store.rows[conflict_id].status, "open")
+        manual = resolve_conflict_tool(
+            store,
+            "brain",
+            conflict_id,
+            authorized=True,
+            winning_fact_id="a",
+            method="manual",
+            actor="brainpat:brain",
+            has_verification=False,
+        )
+        self.assertEqual(manual["conflict"]["status"], "resolved")
+        self.assertEqual(manual["conflict"]["resolution"]["resolved_by"], "brainpat:brain")
+
+
+class AuthorizedResolveTests(unittest.TestCase):
+    def test_authorized_resolve_requires_scope_for_verified_side(self):
+        store = MemoryConflictStore()
+        found = detect_conflicts(store, FakeGraph(DetectionEngineTests()._refund_triples()), "brain")
+        numeric = next(
+            item for item in found if item.disagreement_type == "numeric_mismatch"
+        )
+        with self.assertRaises(VerificationPermissionDenied):
+            resolve_conflict_authorized(
+                store,
+                "brain",
+                numeric.id,
+                authorized=True,
+                actor="brainpat:brain",
+                has_verification=False,
+                winning_fact_id=numeric.sides[0].fact_id,
+                method="verified_side",
+            )
+        self.assertEqual(store.rows[numeric.id].status, "open")
+
+    def test_authorized_resolve_records_actor_when_allowed(self):
+        store = MemoryConflictStore()
+        found = detect_conflicts(store, FakeGraph(DetectionEngineTests()._refund_triples()), "brain")
+        numeric = next(
+            item for item in found if item.disagreement_type == "numeric_mismatch"
+        )
+        with patch(
+            "src.core.saving.conflict_verification.apply_verified_side_to_facts",
+            return_value="applied",
+        ):
+            resolved = resolve_conflict_authorized(
+                store,
+                "brain",
+                numeric.id,
+                authorized=True,
+                actor="oauth:client-1",
+                has_verification=True,
+                winning_fact_id=numeric.sides[0].fact_id,
+                method="verified_side",
+            )
+        self.assertEqual(resolved.status, "resolved")
+        self.assertEqual(resolved.resolution.resolved_by, "oauth:client-1")
+
+    def test_reject_failure_resets_winner_and_keeps_conflict_open(self):
+        from src.core.saving.conflict_verification import apply_verified_side_to_facts
+
+        actions: list[tuple[str, str]] = []
+
+        def fake_apply(
+            graph, *, fact_id, brain_id, action, actor=None, verified_by=None, note=None
+        ):
+            actions.append((fact_id, action))
+            if action == "reject":
+                return "failed"
+            return "applied"
+
+        result = apply_verified_side_to_facts(
+            object(),
+            "brain",
+            winning_fact_id="a",
+            losing_fact_ids=["b"],
+            actor="brainpat:demo",
+            apply_action=fake_apply,
+        )
+        self.assertEqual(result, "failed")
+        self.assertEqual(actions, [("a", "verify"), ("b", "reject"), ("a", "reset")])
+
+        store = MemoryConflictStore()
+        found = detect_conflicts(store, FakeGraph(DetectionEngineTests()._refund_triples()), "brain")
+        numeric = next(
+            item for item in found if item.disagreement_type == "numeric_mismatch"
+        )
+        with patch(
+            "src.core.saving.conflict_verification.apply_verified_side_to_facts",
+            return_value="failed",
+        ):
+            with self.assertRaises(ValueError):
+                resolve_conflict(
+                    store,
+                    "brain",
+                    numeric.id,
+                    winning_fact_id=numeric.sides[0].fact_id,
+                    method="verified_side",
+                    resolved_by="brainpat:demo",
+                )
+        self.assertEqual(store.rows[numeric.id].status, "open")
+
+
+class RestConflictResolveAuthTests(unittest.TestCase):
+    def _seed(self):
+        store = MemoryConflictStore()
+        found = detect_conflicts(store, FakeGraph(DetectionEngineTests()._refund_triples()), "brain")
+        numeric = next(
+            item for item in found if item.disagreement_type == "numeric_mismatch"
+        )
+        return store, numeric
+
+    def test_rest_verified_side_denied_without_scope(self):
+        from fastapi import FastAPI, Request
+        from fastapi.testclient import TestClient
+
+        from src.core.auth.scopes import VERIFICATION_PERMISSION_DENIED
+        from src.services.api.errors import install_error_handlers
+        from src.services.api.routes.retrieve import retrieve_router
+
+        store, numeric = self._seed()
+        app = FastAPI()
+        install_error_handlers(app)
+
+        @app.middleware("http")
+        async def inject_brain(request: Request, call_next):
+            request.state.brain_id = "brain"
+            request.state.principal = "brainpat:brain"
+            request.state.scopes = ["brainapi"]
+            return await call_next(request)
+
+        app.include_router(retrieve_router)
+        api = TestClient(app)
+        with patch(
+            "src.services.api.controllers.conflicts.data_adapter", store
+        ), patch(
+            "src.core.saving.conflict_verification.apply_verified_side_to_facts",
+            return_value="applied",
+        ):
+            denied = api.post(
+                f"/retrieve/conflicts/{numeric.id}/resolve",
+                json={
+                    "winning_fact_id": numeric.sides[0].fact_id,
+                    "method": "verified_side",
+                },
+            )
+        self.assertEqual(denied.status_code, 403)
+        self.assertEqual(denied.json()["error"]["code"], VERIFICATION_PERMISSION_DENIED)
+        self.assertEqual(store.rows[numeric.id].status, "open")
+
+    def test_rest_verified_side_allowed_with_scope_records_actor(self):
+        from fastapi import FastAPI, Request
+        from fastapi.testclient import TestClient
+
+        from src.services.api.errors import install_error_handlers
+        from src.services.api.routes.retrieve import retrieve_router
+
+        store, numeric = self._seed()
+        app = FastAPI()
+        install_error_handlers(app)
+
+        @app.middleware("http")
+        async def inject_brain(request: Request, call_next):
+            request.state.brain_id = "brain"
+            request.state.principal = "brainpat:brain"
+            request.state.scopes = ["brainapi", "verification"]
+            return await call_next(request)
+
+        app.include_router(retrieve_router)
+        api = TestClient(app)
+        with patch(
+            "src.services.api.controllers.conflicts.data_adapter", store
+        ), patch(
+            "src.core.saving.conflict_verification.apply_verified_side_to_facts",
+            return_value="applied",
+        ) as apply_mock:
+            allowed = api.post(
+                f"/retrieve/conflicts/{numeric.id}/resolve",
+                json={
+                    "winning_fact_id": numeric.sides[0].fact_id,
+                    "method": "verified_side",
+                    "verified_by": "attacker",
+                },
+            )
+        self.assertEqual(allowed.status_code, 200, allowed.text)
+        body = allowed.json()["conflict"]
+        self.assertEqual(body["status"], "resolved")
+        self.assertEqual(body["resolution"]["resolved_by"], "brainpat:brain")
+        self.assertEqual(apply_mock.call_args.kwargs.get("actor"), "brainpat:brain")
 
 
 class ConfigDefaultTests(unittest.TestCase):

@@ -22,6 +22,7 @@ from src.constants.conflicts import (
     conflict_from_document,
     conflict_to_document,
 )
+from src.core.auth.scopes import VERIFICATION_PERMISSION_DENIED
 from src.core.saving.source_passages import source_key_from_meta
 from src.core.saving.validity import (
     SUPERSEDED_BY,
@@ -35,6 +36,11 @@ from src.core.saving.validity import (
 _REL_PAGE = 200
 _MAX_SCAN = 10000
 _LLM_BATCH = 10
+
+
+class VerificationPermissionDenied(PermissionError):
+    code = VERIFICATION_PERMISSION_DENIED
+
 
 MULTI_VALUED_PREDICATES = frozenset(
     {
@@ -916,10 +922,10 @@ def _apply_resolution(
                     for side in conflict.sides
                     if side.fact_id != winning_fact_id
                 ],
-                verified_by=resolved_by,
+                actor=resolved_by,
                 note=notes,
             )
-            if outcome == "failed":
+            if outcome != "applied":
                 raise ValueError("fact verification failed")
     conflict.status = status  # type: ignore[assignment]
     conflict.resolution = ConflictResolution(
@@ -958,6 +964,44 @@ def resolve_conflict(
         resolved_by=resolved_by,
         graph=graph,
         apply_facts=apply_facts,
+    )
+
+
+def resolve_changes_verification(method: str | None) -> bool:
+    return (method or "manual") == "verified_side"
+
+
+def resolve_conflict_authorized(
+    adapter: Any,
+    brain_id: str,
+    conflict_id: str,
+    *,
+    authorized: bool,
+    actor: str | None,
+    has_verification: bool,
+    winning_fact_id: str | None = None,
+    notes: str | None = None,
+    method: str = "manual",
+    graph: Any | None = None,
+) -> FactConflict:
+    """REST/MCP entry: require verification scope when the resolve writes fact state."""
+    if not authorized:
+        raise PermissionError("Unauthorized")
+    method = method or "manual"
+    principal = (actor or "").strip() or None
+    if resolve_changes_verification(method):
+        if not has_verification or not principal:
+            raise VerificationPermissionDenied("verification scope is required")
+    return resolve_conflict(
+        adapter,
+        brain_id,
+        conflict_id,
+        winning_fact_id=winning_fact_id,
+        notes=notes,
+        method=method,
+        resolved_by=principal or "system",
+        graph=graph,
+        apply_facts=True,
     )
 
 
