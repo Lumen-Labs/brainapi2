@@ -365,19 +365,73 @@ class CurrentFactTests(unittest.TestCase):
             embed=embed,
         )
         cap = embed_candidate_cap(limit)
+        original = "[superseded] revision body 0 unique snack"
         newest = {
-            f"[superseded] cedar signal {index}" for index in range(34, 40)
+            f"[superseded] cedar signal {index}" for index in range(35, 40)
         }
         self.assertEqual(cap, 6)
         self.assertEqual(embed_candidate_cap(200), 500)
         self.assertLessEqual(len(calls), cap)
         self.assertGreater(len(calls), 0)
-        self.assertEqual(set(calls), newest)
+        self.assertIn(original, calls)
+        self.assertTrue(newest <= set(calls))
         self.assertEqual(len(loaded), limit)
         self.assertTrue(all("cedar" in body for body in loaded))
         self.assertTrue(store.limits)
-        self.assertLess(store.limits[-1], 500)
-        self.assertLessEqual(store.limits[-1], cap + 16)
+        self.assertLess(max(store.limits), 500)
+        self.assertLessEqual(max(store.limits), cap + 16)
+
+    def test_prior_revision_keeps_original_when_over_cap(self):
+        older = []
+        for index in range(40):
+            text = (
+                "The original cedar signal code is 4410-OTTER."
+                if index == 0
+                else f"revision body {index} unique snack"
+            )
+            older.append(
+                TextChunk(
+                    id=f"old-{index}",
+                    text=text,
+                    metadata={
+                        "source_key": "src-1",
+                        "superseded_at": f"2026-11-16T12:{index:02d}:00",
+                    },
+                    inserted_at=datetime.datetime(2026, 11, 16, 12, index, 0),
+                )
+            )
+        live = TextChunk(
+            id="new",
+            text="live copy",
+            metadata={"source_key": "src-1"},
+            inserted_at=datetime.datetime(2026, 11, 17, 0, 0, 0),
+        )
+        store = _Store(older + [live])
+        calls: list[str] = []
+
+        def embed(text: str) -> list[float]:
+            calls.append(text)
+            return [1.0, 0.0] if "4410-OTTER" in text else [0.0, 1.0]
+
+        limit = 1
+        loaded = prior_revision_texts(
+            store,
+            "brain",
+            [("new", 0.2, live.text)],
+            limit=limit,
+            query_text="what was the original cedar signal code",
+            query_vector=[1.0, 0.0],
+            embed=embed,
+        )
+        cap = embed_candidate_cap(limit)
+        original = "[superseded] The original cedar signal code is 4410-OTTER."
+        self.assertEqual(cap, 3)
+        self.assertLess(len(older), 500)
+        self.assertGreater(len(older), cap)
+        self.assertLessEqual(len(calls), cap)
+        self.assertIn(original, calls)
+        self.assertEqual(loaded, [original])
+        self.assertLess(max(store.limits), 500)
 
     def test_prior_revision_pages_past_current_chunks(self):
         currents = [
