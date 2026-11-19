@@ -530,25 +530,21 @@ def _superseded_chunks_for_key(adapter: Any, brain_id: str, key: str, needed: in
 
 
 def _select_revision_candidates(
-    unique: list[tuple[tuple[float, str], str, str, list[float] | None, str]],
+    collected: list[tuple[tuple[float, str], str, str, list[float] | None, str]],
     embed_cap: int,
 ) -> list[tuple[tuple[float, str], str, str, list[float] | None, str]]:
-    if embed_cap <= 0 or not unique:
+    if embed_cap <= 0 or not collected:
         return []
-    if len(unique) <= embed_cap:
-        return unique
     earliest_by_key: dict[str, tuple[tuple[float, str], str, str, list[float] | None, str]] = {}
-    for item in unique:
+    for item in collected:
         key = item[4]
         current = earliest_by_key.get(key)
         if current is None or item[0] < current[0]:
             earliest_by_key[key] = item
-    pinned = list(earliest_by_key.values())
-    pinned_ids = {id(item) for item in pinned}
-    newest = [item for item in unique if id(item) not in pinned_ids]
+    newest_first = sorted(collected, key=lambda item: item[0], reverse=True)
     selected: list[tuple[tuple[float, str], str, str, list[float] | None, str]] = []
     seen: set[str] = set()
-    for item in pinned + newest:
+    for item in list(earliest_by_key.values()) + newest_first:
         body = item[2]
         if body in seen:
             continue
@@ -609,16 +605,7 @@ def prior_revision_texts(
             collected.append(
                 (_recency_sort_key(recency), recency, body, _stored_embedding(chunk), key)
             )
-    collected.sort(key=lambda item: item[0], reverse=True)
-    unique: list[tuple[tuple[float, str], str, str, list[float] | None, str]] = []
-    seen: set[str] = set()
-    for item in collected:
-        body = item[2]
-        if body in seen:
-            continue
-        seen.add(body)
-        unique.append(item)
-    candidates = _select_revision_candidates(unique, embed_cap)
+    candidates = _select_revision_candidates(collected, embed_cap)
     bodies = [body for _key, _recency, body, _vector, _source in candidates]
     vectors = _candidate_vectors(
         bodies,

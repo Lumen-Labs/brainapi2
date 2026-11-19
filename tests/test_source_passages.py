@@ -433,6 +433,87 @@ class CurrentFactTests(unittest.TestCase):
         self.assertEqual(loaded, [original])
         self.assertLess(max(store.limits), 500)
 
+    def test_prior_revision_pins_original_before_shared_body_dedup(self):
+        original_a = TextChunk(
+            id="a-orig",
+            text="shared original body X",
+            metadata={
+                "source_key": "src-a",
+                "superseded_at": "2026-11-16T10:00:00",
+            },
+            inserted_at=datetime.datetime(2026, 11, 16, 10, 0, 0),
+        )
+        later_a = TextChunk(
+            id="a-later",
+            text="later body A2",
+            metadata={
+                "source_key": "src-a",
+                "superseded_at": "2026-11-16T11:00:00",
+            },
+            inserted_at=datetime.datetime(2026, 11, 16, 11, 0, 0),
+        )
+        original_b = TextChunk(
+            id="b-orig",
+            text="original body B0",
+            metadata={
+                "source_key": "src-b",
+                "superseded_at": "2026-11-16T09:00:00",
+            },
+            inserted_at=datetime.datetime(2026, 11, 16, 9, 0, 0),
+        )
+        shared_b = TextChunk(
+            id="b-shared",
+            text="shared original body X",
+            metadata={
+                "source_key": "src-b",
+                "superseded_at": "2026-11-16T12:00:00",
+            },
+            inserted_at=datetime.datetime(2026, 11, 16, 12, 0, 0),
+        )
+        newest_b = TextChunk(
+            id="b-new",
+            text="newest body B5",
+            metadata={
+                "source_key": "src-b",
+                "superseded_at": "2026-11-16T13:00:00",
+            },
+            inserted_at=datetime.datetime(2026, 11, 16, 13, 0, 0),
+        )
+        live_a = TextChunk(
+            id="live-a",
+            text="live a",
+            metadata={"source_key": "src-a"},
+            inserted_at=datetime.datetime(2026, 11, 17, 0, 0, 0),
+        )
+        live_b = TextChunk(
+            id="live-b",
+            text="live b",
+            metadata={"source_key": "src-b"},
+            inserted_at=datetime.datetime(2026, 11, 17, 0, 1, 0),
+        )
+        store = _Store(
+            [original_a, later_a, original_b, shared_b, newest_b, live_a, live_b]
+        )
+        calls: list[str] = []
+
+        def embed(text: str) -> list[float]:
+            calls.append(text)
+            return [1.0, 0.0] if "shared original body X" in text else [0.0, 1.0]
+
+        loaded = prior_revision_texts(
+            store,
+            "brain",
+            [("live-a", 0.2, live_a.text), ("live-b", 0.2, live_b.text)],
+            limit=1,
+            query_text="what was the original shared body",
+            query_vector=[1.0, 0.0],
+            embed=embed,
+        )
+        original = "[superseded] shared original body X"
+        self.assertLessEqual(len(calls), embed_candidate_cap(1))
+        self.assertIn(original, calls)
+        self.assertEqual(loaded, [original])
+
     def test_prior_revision_pages_past_current_chunks(self):
         currents = [
             TextChunk(
