@@ -456,8 +456,12 @@ def _owned_created_edge_uuids(ledger):
     return owned
 
 
-def _touch_item_id(touch):
-    return f"{touch.get('kind') or 'node'}:{touch.get('uuid')}"
+def _touch_item_id(touch, operation_id=None):
+    kind = touch.get("kind") or "node"
+    uuid = touch.get("uuid")
+    if operation_id:
+        return f"{operation_id}:{kind}:{uuid}"
+    return f"{kind}:{uuid}"
 
 
 def _require_touches(operation, touches):
@@ -504,6 +508,7 @@ def rollback_graph_operation(
     owned_edge_uuids=None,
     done=None,
     mark_done=None,
+    operation_id=None,
 ):
     method = operation["method"]
     args = operation["args"]
@@ -519,11 +524,14 @@ def rollback_graph_operation(
         if mark_done is not None:
             mark_done([item_id])
 
+    def item_id_for(touch):
+        return _touch_item_id(touch, operation_id)
+
     owned = set(owned_edge_uuids or [])
     if method == "add_nodes":
         created = []
         for touch in marked:
-            item_id = _touch_item_id(touch)
+            item_id = item_id_for(touch)
             if item_id in skipped:
                 continue
             if touch.get("created"):
@@ -532,7 +540,7 @@ def rollback_graph_operation(
                 _restore_entity(client, brain_id, "node", touch["uuid"], touch.get("prior"), touch.get("changed"))
                 finish(item_id)
         for touch in created:
-            item_id = _touch_item_id(touch)
+            item_id = item_id_for(touch)
             incident = _incident_edge_uuids(client, touch["uuid"], brain_id)
             foreign = [
                 edge for edge in (incident or [])
@@ -550,7 +558,7 @@ def rollback_graph_operation(
     if method == "add_relationship":
         created = []
         for touch in marked:
-            item_id = _touch_item_id(touch)
+            item_id = item_id_for(touch)
             if item_id in skipped:
                 continue
             if touch.get("created"):
@@ -571,11 +579,11 @@ def rollback_graph_operation(
                     )],
                     brain_id,
                 )
-                finish(_touch_item_id(touch))
+                finish(item_id_for(touch))
         return completed
     if method in {"update_properties", "set_fact_verification", "deprecate_relationship"}:
         for touch in marked:
-            item_id = _touch_item_id(touch)
+            item_id = item_id_for(touch)
             if item_id in skipped:
                 continue
             _restore_entity(
@@ -683,6 +691,7 @@ def rollback_published_run(brain_id, root_id, data_client, vector_client, graph_
                 rollback_graph_operation(
                     graph_client, brain_id, operation, touches,
                     owned_edge_uuids=owned_edges, done=done, mark_done=persist,
+                    operation_id=operation_id,
                 )
             else:
                 raise ValueError(f"Unsupported staged rollback {adapter}")
