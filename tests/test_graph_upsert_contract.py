@@ -223,8 +223,14 @@ class Neo4jUpsertContractTests(unittest.TestCase):
             flow_key="flow-1",
         )
         client.add_relationship(subject, predicate, obj, "brain-a")
-        query = client.driver.execute_query.call_args.args[0]
-        params = client.driver.execute_query.call_args.kwargs["parameters_"]
+        merge_calls = [
+            call
+            for call in client.driver.execute_query.call_args_list
+            if call.args and "MERGE (a)-[r:" in str(call.args[0])
+        ]
+        self.assertTrue(merge_calls)
+        query = merge_calls[0].args[0]
+        params = merge_calls[0].kwargs["parameters_"]
         self.assertIn("WHERE a['uuid'] = $subject_uuid", query)
         self.assertIn("WHERE b['uuid'] = $object_uuid", query)
         self.assertIn("MERGE (a)-[r:`OWNS` {uuid: $predicate_uuid}]->(b)", query)
