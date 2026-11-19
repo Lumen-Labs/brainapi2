@@ -207,3 +207,41 @@ class BrainAPIClient:
             params=params,
             allow_http_error=allow_http_error,
         )
+
+    def start_conflict_scan(
+        self,
+        brain_id: str,
+        *,
+        path: str = "/retrieve/conflicts/scan",
+        use_llm: bool = False,
+    ) -> TimedResult:
+        return self.request_path(
+            "POST",
+            path,
+            json={"use_llm": bool(use_llm)},
+            params={"brain_id": brain_id},
+            allow_http_error=True,
+        )
+
+    def list_conflicts(
+        self,
+        brain_id: str,
+        *,
+        path: str = "/retrieve/conflicts",
+        status: str = "open",
+        limit: int = 100,
+        skip: int = 0,
+    ) -> TimedResult:
+        params: dict[str, Any] = {
+            "brain_id": brain_id,
+            "limit": limit,
+            "skip": skip,
+        }
+        if status:
+            params["status"] = status
+        return self.request_path(
+            "GET",
+            path,
+            params=params,
+            allow_http_error=True,
+        )

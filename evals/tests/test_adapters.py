@@ -18,6 +18,7 @@ from evals.datasets.loader import docs_for_run, load_corpus, load_questions
 def _settings() -> Settings:
     settings = Settings.load()
     settings.conflict_path = None
+    settings.conflict_scan_path = None
     return settings
 
 
@@ -201,6 +202,47 @@ class AdapterTests(unittest.TestCase):
         self.assertIn("Statement id: stmt-refund-14", client.ingest_text.call_args.args[0])
         self.assertEqual(adapter._canonical("chunk-abc"), "stmt-refund-14")
         self.assertEqual(ingest_meta_keys({"id": "d1", "clause_id": "FAR 13"})["source_key"], "FAR 13")
+        self.assertIsNone(kwargs["source_timestamp"])
+
+    def test_ingest_sends_parseable_source_timestamp(self) -> None:
+        adapter = _adapter_with_client()
+        adapter.client.ingest_text.return_value = MagicMock(
+            data={"task_id": "task-1"},
+            latency_ms=1.0,
+        )
+        adapter.client.wait_for_task.return_value = MagicMock(
+            data={"status": "completed"},
+            latency_ms=2.0,
+        )
+        adapter.ingest(
+            [
+                {
+                    "id": "famr-12-4-v1",
+                    "clause_id": "FAMR 12.4",
+                    "version": "2018.4",
+                    "valid_from": "2018-04-01",
+                    "text": "Net 30 days",
+                }
+            ]
+        )
+        kwargs = adapter.client.ingest_text.call_args.kwargs
+        self.assertEqual(kwargs["source_timestamp"], "2018-04-01")
+
+    def test_ingest_rejects_versioned_doc_without_date(self) -> None:
+        adapter = _adapter_with_client()
+        with self.assertRaises(ValueError) as ctx:
+            adapter.ingest(
+                [
+                    {
+                        "id": "famr-missing-date",
+                        "clause_id": "FAMR 12.4",
+                        "version": "2018.4",
+                        "text": "Net 30 days",
+                    }
+                ]
+            )
+        self.assertIn("missing parseable", str(ctx.exception))
+        adapter.client.ingest_text.assert_not_called()
 
     def test_query_sends_include_history_for_as_of_questions(self) -> None:
         adapter = _adapter_with_client()
@@ -564,27 +606,41 @@ class AdapterTests(unittest.TestCase):
         adapter.finalize_conflict_mappings()
         self.assertIn(("stmt-a", "stmt-b"), result.conflict_pairs)
 
-    def test_dedicated_error_falls_back_to_sidecar(self) -> None:
+    def test_scan_error_does_not_fall_back_to_sidecar(self) -> None:
         adapter = _adapter_with_client()
         adapter.settings.conflict_path = "/retrieve/conflicts"
+        adapter.settings.conflict_scan_path = "/retrieve/conflicts/scan"
         adapter._remember("stmt-a", "stmt-a")
         adapter._remember("stmt-b", "stmt-b")
         adapter._remember("hub-a", "stmt-a")
         adapter._remember("hub-b", "stmt-b")
-        adapter.client.request_path.side_effect = RuntimeError("HTTP 503")
+        adapter.client.start_conflict_scan.side_effect = RuntimeError("HTTP 503")
         adapter.client.retrieve_context.return_value = MagicMock(
             data={"temporal_conflicts": [{"hubs": ["hub-a", "hub-b"]}]},
             latency_ms=1.0,
             status_code=200,
         )
         result = adapter.query({"task": "conflict_audit", "question": "conflicts?"})
-        self.assertIn("conflict_endpoint_error", result.notes)
-        self.assertIn(("stmt-a", "stmt-b"), result.conflict_pairs)
+        self.assertIn("conflict_scan_error", result.notes)
+        self.assertEqual(result.conflict_pairs, [])
+        self.assertNotIn("temporal_conflicts_sidecar", result.notes)
+        self.assertEqual(adapter.capabilities["conflict_mode"], "scan_then_list_error")
+        self.assertTrue(adapter.capabilities.get("conflict_error"))
 
-    def test_unrecognized_dedicated_response_is_not_empty_prediction(self) -> None:
+    def test_unrecognized_list_response_is_an_error(self) -> None:
         adapter = _adapter_with_client()
         adapter.settings.conflict_path = "/retrieve/conflicts"
-        adapter.client.request_path.return_value = MagicMock(
+        adapter.settings.conflict_scan_path = "/retrieve/conflicts/scan"
+        adapter.client.start_conflict_scan.return_value = MagicMock(
+            data={"task_id": "scan-1"},
+            status_code=202,
+        )
+        adapter.client.wait_for_task.return_value = MagicMock(
+            data={"status": "completed"},
+            latency_ms=2.0,
+            status_code=200,
+        )
+        adapter.client.list_conflicts.return_value = MagicMock(
             data={"raw": "<html>ok</html>"},
             status_code=200,
         )
@@ -594,10 +650,10 @@ class AdapterTests(unittest.TestCase):
             status_code=200,
         )
         result = adapter.query({"task": "conflict_audit", "question": "conflicts?"})
-        self.assertIn("conflict_endpoint_unrecognized", result.notes)
-        self.assertIn("conflict_capability_pending", result.notes)
+        self.assertIn("conflict_list_error", result.notes)
         self.assertNotIn("conflict_producer_empty", result.notes)
         self.assertFalse(adapter.capabilities["conflict_pairs"])
+        self.assertTrue(adapter.capabilities.get("conflict_error"))
 
     def test_as_of_questions_reserve_historical_context(self) -> None:
         adapter = _adapter_with_client()
@@ -658,11 +714,6 @@ class AdapterTests(unittest.TestCase):
     def test_empty_conflict_producer_is_scoreable(self) -> None:
         adapter = _adapter_with_client()
         adapter.capabilities["temporal_conflicts_sidecar"] = True
-        adapter.settings.conflict_path = "/retrieve/conflicts"
-        adapter.client.request_path.return_value = MagicMock(
-            data={"pairs": []},
-            status_code=200,
-        )
         adapter.client.retrieve_context.return_value = MagicMock(
             data={"temporal_conflicts": []},
             latency_ms=1.0,
@@ -691,7 +742,8 @@ class AdapterTests(unittest.TestCase):
     def test_failed_conflict_endpoint_is_unavailable(self) -> None:
         adapter = _adapter_with_client()
         adapter.settings.conflict_path = "/retrieve/conflicts"
-        adapter.client.request_path.return_value = MagicMock(
+        adapter.settings.conflict_scan_path = "/retrieve/conflicts/scan"
+        adapter.client.start_conflict_scan.return_value = MagicMock(
             data={"detail": "missing"},
             status_code=404,
         )
@@ -702,7 +754,7 @@ class AdapterTests(unittest.TestCase):
         )
         result = adapter.query({"task": "conflict_audit", "question": "conflicts?"})
         self.assertEqual(result.conflict_pairs, [])
-        self.assertIn("conflict_capability_pending", result.notes)
+        self.assertIn("conflict_scan_unavailable", result.notes)
         self.assertNotIn("conflict_producer_empty", result.notes)
         self.assertFalse(adapter.capabilities["conflict_pairs"])
 

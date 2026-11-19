@@ -37,6 +37,42 @@ class ClientRetryTests(unittest.TestCase):
         self.assertEqual(result.data, {"ok": True})
         self.assertEqual(client._client.request.call_count, 2)
 
+    def test_conflict_scan_posts_scan_path_not_list_path(self) -> None:
+        client = self._client()
+        ok = MagicMock()
+        ok.status_code = 202
+        ok.content = b'{"task_id": "scan-1"}'
+        ok.json.return_value = {"task_id": "scan-1"}
+        client._client.request.return_value = ok
+        result = client.start_conflict_scan("evalucpolicyconflicts")
+        self.assertEqual(result.status_code, 202)
+        method, path = client._client.request.call_args.args[:2]
+        self.assertEqual(method, "POST")
+        self.assertEqual(path, "/retrieve/conflicts/scan")
+        self.assertEqual(
+            client._client.request.call_args.kwargs["json"], {"use_llm": False}
+        )
+        self.assertEqual(
+            client._client.request.call_args.kwargs["params"]["brain_id"],
+            "evalucpolicyconflicts",
+        )
+
+    def test_list_conflicts_is_get(self) -> None:
+        client = self._client()
+        ok = MagicMock()
+        ok.status_code = 200
+        ok.content = b'{"conflicts": [], "count": 0, "total": 0}'
+        ok.json.return_value = {"conflicts": [], "count": 0, "total": 0}
+        client._client.request.return_value = ok
+        result = client.list_conflicts("evalucpolicyconflicts")
+        self.assertEqual(result.data["total"], 0)
+        method, path = client._client.request.call_args.args[:2]
+        self.assertEqual(method, "GET")
+        self.assertEqual(path, "/retrieve/conflicts")
+        params = client._client.request.call_args.kwargs["params"]
+        self.assertEqual(params["brain_id"], "evalucpolicyconflicts")
+        self.assertEqual(params["status"], "open")
+
     def test_get_retries_read_timeout(self) -> None:
         client = self._client()
         ok = MagicMock()

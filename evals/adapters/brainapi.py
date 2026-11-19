@@ -6,8 +6,18 @@ from typing import Any, Callable
 
 from evals.adapters.base import QueryResult
 from evals.answer import extractive_answer, llm_answer
+from evals.baseline.dates import (
+    document_source_timestamp,
+    is_versioned_document,
+    require_document_source_timestamp,
+)
 from evals.client import BrainAPIClient
-from evals.config import Settings, PROMPT_BUDGET
+from evals.config import (
+    DEFAULT_CONFLICT_LIST_PATH,
+    DEFAULT_CONFLICT_SCAN_PATH,
+    PROMPT_BUDGET,
+    Settings,
+)
 from evals.metrics import pair_key
 
 
@@ -23,6 +33,20 @@ _REMAP_NOTES = frozenset(
         "conflict_mapping_unsupported",
         "conflict_producer_empty",
         "conflict_capability_pending",
+    }
+)
+CONFLICT_ERROR_NOTES = frozenset(
+    {
+        "conflict_scan_error",
+        "conflict_scan_task_failed",
+        "conflict_list_error",
+    }
+)
+CONFLICT_SKIP_NOTES = frozenset(
+    {
+        "conflict_mapping_unsupported",
+        "conflict_capability_pending",
+        "conflict_scan_unavailable",
     }
 )
 _STATEMENT_ID_RE = re.compile(r"Statement id:\s*([^\n]+)", re.I)
@@ -263,9 +287,10 @@ class BrainAPIAdapter:
                 "Until a true as-of field lands, versioned-rule questions send "
                 "include_history=true when that flag exists (not a date filter). "
                 "A native as-of field takes precedence when OpenAPI exposes it. "
-                "Conflict pairs from "
-                "temporal_conflicts are mapped back to ingested statement/doc ids "
-                "before scoring; unmapped graph UUIDs are reported unsupported."
+                "Conflict evals default to POST /retrieve/conflicts/scan, wait, "
+                "then GET /retrieve/conflicts. Scan/list failures are recorded as "
+                "error or skipped and do not fall back to temporal_conflicts. "
+                "Mapped ids are scored against ingested statement/doc gold."
             ),
         }
         self._schema_fields: set[str] = set()
@@ -279,6 +304,7 @@ class BrainAPIAdapter:
         self._conflict_outcomes: list[str] = []
         self._pending_conflict_jobs: list[dict[str, Any]] = []
         self._retrieve_payloads: list[dict[str, Any]] = []
+        self._conflict_scan_state: dict[str, Any] | None = None
 
     def _ensure_client(self) -> BrainAPIClient:
         if self.client is None:
@@ -403,15 +429,13 @@ class BrainAPIAdapter:
         else:
             as_of_mode = "unsupported_on_this_deployment"
             has_as_of = False
-        conflict_path = self.settings.conflict_path
-        has_conflict_path = bool(conflict_path and conflict_path in self._openapi_paths)
         has_temporal = "temporal_conflicts" in (
             ((payload.get("components") or {}).get("schemas") or {})
             .get("GetContextResponse", {})
             .get("properties") or {}
         )
-        if has_conflict_path:
-            conflict_mode = "dedicated_endpoint"
+        if self.settings.conflict_scan_path or self.settings.conflict_path:
+            conflict_mode = "scan_then_list"
             conflict_pairs = True
         elif has_temporal:
             conflict_mode = "temporal_conflicts_sidecar"
@@ -464,11 +488,16 @@ class BrainAPIAdapter:
             if doc.get("statement_id"):
                 header.append(f"Statement id: {doc['statement_id']}")
             body = "\n".join(header + ["", str(doc.get("text") or "")])
+            if is_versioned_document(doc):
+                stamp = require_document_source_timestamp(
+                    doc, f"ingest {doc.get('id')}"
+                )
+            else:
+                stamp = document_source_timestamp(doc)
             submitted = client.ingest_text(
                 body,
                 self.brain_id,
-                source_timestamp=str(doc.get("valid_from") or doc.get("source_timestamp") or "")
-                or None,
+                source_timestamp=stamp,
                 skip_enrichment=self.skip_enrichment,
                 meta_keys=ingest_meta_keys(doc) or None,
             )
@@ -555,49 +584,11 @@ class BrainAPIAdapter:
         }
         conflict_job: dict[str, Any] | None = None
         if question.get("task") == "conflict_audit":
-            path = self.settings.conflict_path
-            raw_pairs: list[tuple[str, str]] = []
-            pair_source = ""
-            dedicated_ok = False
             sidecar_ok = "temporal_conflicts" in payload
-            if path:
-                http_calls += 1
-                try:
-                    conflict_res = client.request_path(
-                        "POST",
-                        path,
-                        json={
-                            "brain_id": self.brain_id,
-                            "text": question.get("question"),
-                        },
-                    )
-                except Exception:
-                    notes.append("conflict_endpoint_error")
-                else:
-                    data = conflict_res.data if isinstance(conflict_res.data, dict) else {}
-                    if conflict_res.status_code < 400 and _has_pair_collection(data):
-                        dedicated_ok = True
-                        raw_pairs = self._pairs_from_payload(data)
-                        notes.append("conflict_endpoint")
-                        if raw_pairs:
-                            pair_source = "dedicated_endpoint"
-                    elif conflict_res.status_code < 400:
-                        notes.append("conflict_endpoint_unrecognized")
-                    else:
-                        notes.append(f"conflict_endpoint_http_{conflict_res.status_code}")
-            if not raw_pairs and sidecar_ok:
-                raw_pairs = self._conflict_plugin(payload, question)
-                if raw_pairs:
-                    notes.append("temporal_conflicts_sidecar")
-                    pair_source = "temporal_conflicts_sidecar"
-            conflict_job = {
-                "raw_pairs": raw_pairs,
-                "pair_source": pair_source,
-                "producer_ok": dedicated_ok or sidecar_ok,
-                "dedicated_ok": dedicated_ok,
-                "sidecar_ok": sidecar_ok,
-                "notes": notes,
-            }
+            conflict_job = self._conflict_job_for_question(
+                question, payload, client, notes, sidecar_ok=sidecar_ok
+            )
+            http_calls += int(conflict_job.get("http_calls") or 0)
             decided = self._decide_conflict_outcome(conflict_job)
             pairs = decided["pairs"]
             mapping_info = decided["mapping_info"]
@@ -690,6 +681,229 @@ class BrainAPIAdapter:
         if identified and (identified in self._gold_ids or self._canonical(identified)):
             self._remember(identified, gold)
 
+    def _conflict_job_for_question(
+        self,
+        question: dict[str, Any],
+        payload: dict[str, Any],
+        client: BrainAPIClient,
+        notes: list[str],
+        *,
+        sidecar_ok: bool,
+    ) -> dict[str, Any]:
+        if self.settings.conflict_scan_path or self.settings.conflict_path:
+            return self._scan_then_list_job(client, notes)
+        raw_pairs: list[tuple[str, str]] = []
+        pair_source = ""
+        if sidecar_ok:
+            raw_pairs = self._conflict_plugin(payload, question)
+            if raw_pairs:
+                notes.append("temporal_conflicts_sidecar")
+                pair_source = "temporal_conflicts_sidecar"
+        return {
+            "raw_pairs": raw_pairs,
+            "pair_source": pair_source,
+            "producer_ok": sidecar_ok,
+            "dedicated_ok": False,
+            "sidecar_ok": sidecar_ok,
+            "http_calls": 0,
+            "notes": notes,
+        }
+
+    def _scan_then_list_job(
+        self, client: BrainAPIClient, notes: list[str]
+    ) -> dict[str, Any]:
+        cached = self._conflict_scan_state
+        if cached is not None:
+            for item in cached.get("notes") or []:
+                if item not in notes:
+                    notes.append(item)
+            job = dict(cached)
+            job["http_calls"] = 0
+            job["notes"] = notes
+            return job
+        scan_path = self.settings.conflict_scan_path or DEFAULT_CONFLICT_SCAN_PATH
+        list_path = self.settings.conflict_path or DEFAULT_CONFLICT_LIST_PATH
+        extra_notes: list[str] = []
+        http_calls = 0
+        job: dict[str, Any] = {
+            "raw_pairs": [],
+            "pair_source": "",
+            "producer_ok": False,
+            "dedicated_ok": False,
+            "sidecar_ok": False,
+            "http_calls": 0,
+            "notes": notes,
+        }
+        try:
+            scan_res = client.start_conflict_scan(
+                self.brain_id, path=scan_path, use_llm=False
+            )
+            http_calls += 1
+        except Exception as exc:
+            extra_notes.append("conflict_scan_error")
+            job["error"] = str(exc)
+            job["http_calls"] = http_calls
+            self._stash_conflict_scan(job, extra_notes, notes)
+            return job
+        scan_data = scan_res.data if isinstance(scan_res.data, dict) else {}
+        if scan_res.status_code in {404, 405, 501}:
+            extra_notes.append("conflict_scan_unavailable")
+            job["skipped"] = True
+            job["error"] = (
+                f"POST {scan_path} returned HTTP {scan_res.status_code}"
+            )
+            job["http_calls"] = http_calls
+            self._stash_conflict_scan(job, extra_notes, notes)
+            return job
+        if scan_res.status_code >= 400:
+            extra_notes.append("conflict_scan_error")
+            job["error"] = (
+                f"POST {scan_path} returned HTTP {scan_res.status_code}"
+            )
+            job["http_calls"] = http_calls
+            self._stash_conflict_scan(job, extra_notes, notes)
+            return job
+        task_id = str(scan_data.get("task_id") or "").strip()
+        if not task_id:
+            extra_notes.append("conflict_scan_error")
+            job["error"] = f"POST {scan_path} did not return a task_id"
+            job["http_calls"] = http_calls
+            self._stash_conflict_scan(job, extra_notes, notes)
+            return job
+        try:
+            waited = client.wait_for_task(task_id, self.brain_id)
+            http_calls += 1
+        except Exception as exc:
+            extra_notes.append("conflict_scan_task_failed")
+            job["error"] = str(exc)
+            job["http_calls"] = http_calls
+            self._stash_conflict_scan(job, extra_notes, notes)
+            return job
+        status = str((waited.data or {}).get("status") or "")
+        if status != "completed":
+            extra_notes.append("conflict_scan_task_failed")
+            job["error"] = f"conflict scan task {task_id} ended with status={status}"
+            job["http_calls"] = http_calls
+            self._stash_conflict_scan(job, extra_notes, notes)
+            return job
+        rows, list_error, list_calls = self._list_conflict_rows(client, list_path)
+        http_calls += list_calls
+        if list_error:
+            extra_notes.append(list_error)
+            job["error"] = job.get("error") or list_error
+            job["skipped"] = list_error == "conflict_scan_unavailable"
+            job["http_calls"] = http_calls
+            self._stash_conflict_scan(job, extra_notes, notes)
+            return job
+        raw_pairs = self._pairs_from_payload({"conflicts": rows})
+        extra_notes.append("conflict_scan_then_list")
+        job.update(
+            {
+                "raw_pairs": raw_pairs,
+                "pair_source": "scan_then_list",
+                "producer_ok": True,
+                "dedicated_ok": True,
+                "http_calls": http_calls,
+            }
+        )
+        self._stash_conflict_scan(job, extra_notes, notes)
+        return job
+
+    def _stash_conflict_scan(
+        self,
+        job: dict[str, Any],
+        extra_notes: list[str],
+        notes: list[str],
+    ) -> None:
+        for item in extra_notes:
+            if item not in notes:
+                notes.append(item)
+        stored = dict(job)
+        stored["notes"] = list(extra_notes)
+        self._conflict_scan_state = stored
+
+    def _list_conflict_rows(
+        self, client: BrainAPIClient, list_path: str
+    ) -> tuple[list[dict[str, Any]], str | None, int]:
+        rows: list[dict[str, Any]] = []
+        skip = 0
+        limit = 100
+        calls = 0
+        total: int | None = None
+        while True:
+            try:
+                listed = client.list_conflicts(
+                    self.brain_id,
+                    path=list_path,
+                    status="open",
+                    limit=limit,
+                    skip=skip,
+                )
+            except Exception:
+                return rows, "conflict_list_error", calls + 1
+            calls += 1
+            if listed.status_code in {404, 405, 501}:
+                return rows, "conflict_scan_unavailable", calls
+            if listed.status_code >= 400:
+                return rows, "conflict_list_error", calls
+            data = listed.data if isinstance(listed.data, dict) else {}
+            batch = data.get("conflicts")
+            if not isinstance(batch, list):
+                if _has_pair_collection(data):
+                    batch = data.get("pairs") or data.get("items") or []
+                else:
+                    return rows, "conflict_list_error", calls
+            for row in batch:
+                if isinstance(row, dict):
+                    rows.append(row)
+            reported = data.get("total")
+            if isinstance(reported, int):
+                total = reported
+            skip += len(batch)
+            if not batch:
+                break
+            if total is not None and skip >= total:
+                break
+            if total is None and len(batch) < limit:
+                break
+            if skip > 10000:
+                break
+        return rows, None, calls
+
+    def _eval_id_from_side(self, side: Any) -> str | None:
+        if not isinstance(side, dict):
+            text = str(side or "").strip()
+            return self._canonical(text) or (text or None)
+        source = side.get("source") if isinstance(side.get("source"), dict) else {}
+        candidates = [
+            source.get("source_key"),
+            source.get("document"),
+            side.get("statement_id"),
+            side.get("eval_doc_id"),
+            side.get("doc_id"),
+            side.get("fact_id"),
+            side.get("id"),
+            *((source.get("chunk_ids") or []) if isinstance(source, dict) else []),
+        ]
+        for item in candidates:
+            text = str(item or "").strip()
+            if not text:
+                continue
+            gold = self._canonical(text)
+            if gold:
+                return gold
+        parsed = self._remember_text(str(source.get("text") or side.get("text") or ""))
+        gold = self._canonical(parsed.get("statement_id")) or self._canonical(
+            parsed.get("doc_id")
+        )
+        if gold:
+            return gold
+        for item in candidates:
+            text = str(item or "").strip()
+            if text:
+                return text
+        return None
+
     def _mapped_conflict_pairs(self, raw_pairs: list[tuple[str, str]]) -> dict[str, Any]:
         return remap_conflict_pairs(raw_pairs, self._id_map)
 
@@ -708,7 +922,23 @@ class BrainAPIAdapter:
             "n_unmapped": mapped["n_unmapped"],
         }
         pairs: list[tuple[str, str]] = []
-        if raw_pairs and mapped["n_unmapped"]:
+        if job.get("error") and not job.get("skipped"):
+            error_note = next(
+                (item for item in (notes or []) if item in CONFLICT_ERROR_NOTES),
+                "conflict_scan_error",
+            )
+            if isinstance(notes, list) and error_note not in notes:
+                notes.append(error_note)
+            conflict_mode = "scan_then_list_error"
+            mapping_info["supported"] = False
+            outcome = "error"
+        elif job.get("skipped"):
+            if isinstance(notes, list) and "conflict_scan_unavailable" not in notes:
+                notes.append("conflict_scan_unavailable")
+            conflict_mode = "scan_then_list_skipped"
+            mapping_info["supported"] = False
+            outcome = "unavailable"
+        elif raw_pairs and mapped["n_unmapped"]:
             if isinstance(notes, list):
                 notes.append("conflict_mapping_unsupported")
             conflict_mode = "id_mapping_unsupported"
@@ -716,19 +946,22 @@ class BrainAPIAdapter:
             outcome = "unmapped"
         elif mapped["pairs"]:
             pairs = mapped["pairs"]
-            conflict_mode = (
-                "dedicated_endpoint_mapped"
-                if pair_source == "dedicated_endpoint"
-                else "temporal_conflicts_mapped"
-            )
+            if pair_source == "scan_then_list":
+                conflict_mode = "scan_then_list_mapped"
+            elif pair_source == "dedicated_endpoint":
+                conflict_mode = "dedicated_endpoint_mapped"
+            else:
+                conflict_mode = "temporal_conflicts_mapped"
             if isinstance(notes, list):
                 notes.append("conflict_ids_mapped")
             outcome = "mapped"
         elif producer_ok:
             if isinstance(notes, list):
                 notes.append("conflict_producer_empty")
-            if job.get("dedicated_ok") and pair_source != "temporal_conflicts_sidecar":
-                conflict_mode = "dedicated_endpoint"
+            if pair_source == "scan_then_list" or (
+                job.get("dedicated_ok") and pair_source != "temporal_conflicts_sidecar"
+            ):
+                conflict_mode = pair_source or "scan_then_list"
             else:
                 conflict_mode = pair_source or "temporal_conflicts_sidecar"
             mapping_info["supported"] = True
@@ -795,6 +1028,12 @@ class BrainAPIAdapter:
     def _refresh_conflict_capability(self, last_mode: str | None = None) -> None:
         outcomes = set(self._conflict_outcomes)
         supported_mode = self._supported_conflict_mode()
+        if "error" in outcomes:
+            self.capabilities["conflict_pairs"] = False
+            self.capabilities["conflict_mode"] = "scan_then_list_error"
+            self.capabilities["conflict_error"] = True
+            return
+        self.capabilities["conflict_error"] = False
         if "unmapped" in outcomes:
             self.capabilities["conflict_pairs"] = False
             self.capabilities["conflict_mode"] = "id_mapping_unsupported"
@@ -885,17 +1124,39 @@ class BrainAPIAdapter:
 
     def _pairs_from_payload(self, payload: dict[str, Any]) -> list[tuple[str, str]]:
         pairs: list[tuple[str, str]] = []
+        seen: set[tuple[str, str]] = set()
         rows = payload.get("pairs") or payload.get("conflicts") or payload.get("items") or []
         for row in rows:
-            if isinstance(row, dict):
-                left = str(row.get("left") or row.get("a") or row.get("source") or "")
-                right = str(row.get("right") or row.get("b") or row.get("target") or "")
+            ids: list[str] = []
+            if isinstance(row, dict) and isinstance(row.get("sides"), (list, tuple)):
+                for side in row.get("sides") or []:
+                    found = self._eval_id_from_side(side)
+                    if found and found not in ids:
+                        ids.append(found)
+            elif isinstance(row, dict):
+                left = str(
+                    row.get("left") or row.get("a") or row.get("source") or ""
+                ).strip()
+                right = str(
+                    row.get("right") or row.get("b") or row.get("target") or ""
+                ).strip()
+                if left:
+                    ids.append(left)
+                if right:
+                    ids.append(right)
             elif isinstance(row, (list, tuple)) and len(row) >= 2:
-                left, right = str(row[0]), str(row[1])
+                ids = [str(row[0]), str(row[1])]
             else:
                 continue
-            if left and right and left != right:
-                pairs.append(pair_key(left, right))
+            for i, left in enumerate(ids):
+                for right in ids[i + 1 :]:
+                    if not left or not right or left == right:
+                        continue
+                    key = pair_key(left, right)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    pairs.append(key)
         return pairs
 
     def _answer(

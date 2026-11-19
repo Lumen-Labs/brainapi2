@@ -8,6 +8,8 @@ from unittest.mock import patch
 from evals.config import (
     CHEAP_CROSS_ENCODER,
     CHEAP_ST_EMBEDDING_MODEL,
+    DEFAULT_CONFLICT_LIST_PATH,
+    DEFAULT_CONFLICT_SCAN_PATH,
     DEFAULT_CROSS_ENCODER,
     DEFAULT_ST_EMBEDDING_MODEL,
     Settings,
@@ -39,6 +41,8 @@ _LLM_ENV = (
     "EVAL_EMBEDDING_MODEL",
     "EVAL_CROSS_ENCODER_MODEL",
     "EVAL_EMBEDDING_PROVIDER",
+    "EVAL_CONFLICT_PATH",
+    "EVAL_CONFLICT_SCAN_PATH",
 )
 
 
@@ -170,6 +174,18 @@ class ConfigTests(unittest.TestCase):
             "",
         )
         self.assertEqual(query_prefix_for_embedding_model("BAAI/bge-m3"), "")
+
+    def test_conflict_paths_default_to_scan_then_list(self) -> None:
+        with isolated_env():
+            settings = Settings.load()
+        self.assertEqual(settings.conflict_path, DEFAULT_CONFLICT_LIST_PATH)
+        self.assertEqual(settings.conflict_scan_path, DEFAULT_CONFLICT_SCAN_PATH)
+
+    def test_conflict_paths_can_be_disabled(self) -> None:
+        with isolated_env(EVAL_CONFLICT_PATH="off", EVAL_CONFLICT_SCAN_PATH="none"):
+            settings = Settings.load()
+        self.assertIsNone(settings.conflict_path)
+        self.assertIsNone(settings.conflict_scan_path)
 
     def test_embedding_dim_matches_profile_models(self) -> None:
         self.assertEqual(embedding_dim_for("BAAI/bge-large-en-v1.5"), 1024)

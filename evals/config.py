@@ -22,6 +22,8 @@ BGE_EN_QUERY_PREFIX = "Represent this sentence for searching relevant passages: 
 SOTA_BASELINE_PROFILES = frozenset({"sota", "strong", "bge", "default", ""})
 CHEAP_BASELINE_PROFILES = frozenset({"minilm", "cheap", "light"})
 DEFAULT_BRAIN_PREFIX = "evaluc"
+DEFAULT_CONFLICT_LIST_PATH = "/retrieve/conflicts"
+DEFAULT_CONFLICT_SCAN_PATH = "/retrieve/conflicts/scan"
 PROMPT_BUDGET = {
     "max_passages": 8,
     "max_chars": 6000,
@@ -109,6 +111,13 @@ def _first_env(*names: str, default: str = "") -> str:
     return default
 
 
+def _optional_path(*names: str, default: str = "") -> str | None:
+    raw = _first_env(*names, default=default).strip()
+    if not raw or raw.lower() in {"off", "none", "disabled"}:
+        return None
+    return raw
+
+
 def resolve_llm_model() -> str:
     seen: list[tuple[str, str]] = []
     for name in LLM_MODEL_ENV_KEYS:
@@ -161,6 +170,7 @@ class Settings:
     cross_encoder_model: str
     as_of_field: str | None
     conflict_path: str | None
+    conflict_scan_path: str | None
     conflict_plugin: str
     runs_dir: Path
     datasets_dir: Path
@@ -261,7 +271,12 @@ class Settings:
                 "EVAL_CROSS_ENCODER_MODEL", default=default_ce
             ),
             as_of_field=_first_env("EVAL_AS_OF_FIELD") or None,
-            conflict_path=_first_env("EVAL_CONFLICT_PATH") or None,
+            conflict_path=_optional_path(
+                "EVAL_CONFLICT_PATH", default=DEFAULT_CONFLICT_LIST_PATH
+            ),
+            conflict_scan_path=_optional_path(
+                "EVAL_CONFLICT_SCAN_PATH", default=DEFAULT_CONFLICT_SCAN_PATH
+            ),
             conflict_plugin=_first_env(
                 "EVAL_CONFLICT_PLUGIN", default="temporal_conflicts"
             ),
@@ -326,6 +341,7 @@ class Settings:
             "scale": self.scale,
             "as_of_field": self.as_of_field or "",
             "conflict_path": self.conflict_path or "",
+            "conflict_scan_path": self.conflict_scan_path or "",
             "llm_key_present": "yes" if self.llm_api_key else "no",
             "embedding_key_present": "yes" if self.embedding_api_key else "no",
             "expected_brainapi_model": self.expected_brainapi_model,
