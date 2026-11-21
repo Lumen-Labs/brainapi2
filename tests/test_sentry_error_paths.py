@@ -246,36 +246,9 @@ def test_embedding_client_error_handler_returns_503():
 
 
 def test_entity_context_missing_target_returns_four_tuple():
-    with (
-        patch(
-            "src.core.search.entity_context.embeddings_adapter.embed_text",
-            return_value=Vector(id="q", embeddings=[0.1, 0.2], metadata={}),
-        ),
-        patch(
-            "src.core.search.entity_context.vector_search.search_nodes",
-            return_value=[],
-        ),
-    ):
-        result = EntityContext("missing", "testbrain").get_context()
-    assert result == (None, [], [], [])
-
-
-def test_entity_context_missing_graph_node_returns_four_tuple():
-    hit = MagicMock()
-    hit.metadata = {"uuid": "gone"}
-    with (
-        patch(
-            "src.core.search.entity_context.embeddings_adapter.embed_text",
-            return_value=Vector(id="q", embeddings=[0.1], metadata={}),
-        ),
-        patch(
-            "src.core.search.entity_context.vector_search.search_nodes",
-            return_value=[hit],
-        ),
-        patch(
-            "src.core.search.entity_context.graph_adapter.get_by_uuid",
-            return_value=None,
-        ),
+    with patch(
+        "src.core.search.entity_context.resolve_entity_node",
+        return_value=None,
     ):
         result = EntityContext("missing", "testbrain").get_context()
     assert result == (None, [], [], [])

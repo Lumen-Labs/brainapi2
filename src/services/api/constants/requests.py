@@ -455,9 +455,9 @@ class CreateBrainRequest(BaseModel):
 class AddEntityRequest(BaseModel):
     """Request model for adding a new entity to the graph."""
 
-    name: str = Field(min_length=1)
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
     brain_id: str = "default"
-    labels: list[str] = []
+    labels: list[str] = Field(default_factory=list)
     description: Optional[str] = None
     properties: Optional[dict] = None
     identification_params: Optional[dict] = None
@@ -480,7 +480,9 @@ class AddRelationshipRequest(BaseModel):
     """Request model for adding a new relationship between two entities."""
 
     subject_uuid: str
-    predicate_name: str
+    predicate_name: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1)
+    ]
     predicate_description: str
     object_uuid: str
     brain_id: str = "default"
@@ -627,7 +629,7 @@ class GetEntityStatusResponse(BaseModel):
 class GetContextRequestBody(BaseModel):
     """Request body for the get context endpoint."""
 
-    text: str
+    text: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
     brain_id: str = "default"
     as_of: Optional[str] = Field(
         default=None,

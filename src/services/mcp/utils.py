@@ -11,6 +11,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 
 from src.config import config
 from src.services.data.main import data_adapter
+from src.utils.tokens import pat_matches
 
 
 def guard_brainpat(pat: str = None, target_brain: str = None) -> bool | str:
@@ -20,12 +21,12 @@ def guard_brainpat(pat: str = None, target_brain: str = None) -> bool | str:
     If the BrainPAT is not matching any brain, it will try to match with the systempat,
     if the systempat is not matching, it will raise an auth error.
     """
-    if pat == config.brainpat_token:
+    if pat_matches(pat, config.brainpat_token):
         return True
 
     brains = data_adapter.get_brains_list()
     for brain in brains:
-        if brain.pat == pat:
+        if pat_matches(pat, brain.pat):
             if target_brain and brain.name_key != target_brain:
                 return False
             return brain.name_key

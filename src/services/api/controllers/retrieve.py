@@ -2142,8 +2142,11 @@ async def _build_context(
         as_of = optional_instant(getattr(request, "as_of", None))
     except InvalidAsOf as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    with profile_stage("nlp.extract_elements"):
-        elements = _entity_extractor.extract_elements(request.text)
+    def _extract_elements():
+        with profile_stage("nlp.extract_elements"):
+            return _entity_extractor.extract_elements(request.text)
+
+    elements = await asyncio.to_thread(_extract_elements)
     with profile_stage("nlp.query_variants") as detail:
         variants = _collect_query_variants(request.text, elements)
         detail["variants"] = len(variants)
@@ -2213,18 +2216,22 @@ async def _build_context(
     if as_of is not None:
         include_history = False
     elif explicit_history is None:
-        try:
-            query_vector = _embed_query(request.text)
-            history_vectors, current_vectors = prototype_vectors(_embed_query)
-            include_history = resolve_include_history(
-                None,
-                query_text=request.text,
-                query=query_vector,
-                history_vectors=history_vectors,
-                current_vectors=current_vectors,
-            )
-        except Exception:
-            include_history = lexical_history_intent(request.text)
+        def _resolve_history_flag() -> tuple[bool, list[float] | None]:
+            try:
+                qv = _embed_query(request.text)
+                history_vectors, current_vectors = prototype_vectors(_embed_query)
+                flag = resolve_include_history(
+                    None,
+                    query_text=request.text,
+                    query=qv,
+                    history_vectors=history_vectors,
+                    current_vectors=current_vectors,
+                )
+                return flag, qv
+            except Exception:
+                return lexical_history_intent(request.text), None
+
+        include_history, query_vector = await asyncio.to_thread(_resolve_history_flag)
     else:
         include_history = explicit_history
 
@@ -2483,20 +2490,24 @@ async def _build_context(
     candidates = _merge_variant_candidate_lists(variant_lists)
 
     bridge_paths: list[dict[str, Any]] = []
-    with profile_stage(
-        "facts.bridge_expand",
-        bridges=request.cross_event_bridges,
-    ) as detail:
-        candidates, bridge_paths = _expand_cross_event_bridges(
-            candidates,
-            request.brain_id,
-            max_per_hub=request.cross_event_bridges,
-            include_history=include_history,
-            as_of=as_of,
-            unknown_out=unknown_facts if as_of is not None else None,
-        )
-        detail["candidates"] = len(candidates)
-        detail["paths"] = len(bridge_paths)
+    def _bridge_expand():
+        with profile_stage(
+            "facts.bridge_expand",
+            bridges=request.cross_event_bridges,
+        ) as detail:
+            expanded, paths = _expand_cross_event_bridges(
+                candidates,
+                request.brain_id,
+                max_per_hub=request.cross_event_bridges,
+                include_history=include_history,
+                as_of=as_of,
+                unknown_out=unknown_facts if as_of is not None else None,
+            )
+            detail["candidates"] = len(expanded)
+            detail["paths"] = len(paths)
+            return expanded, paths
+
+    candidates, bridge_paths = await asyncio.to_thread(_bridge_expand)
 
     with profile_stage("facts.dedup_rank") as detail:
         ranked = _dedupe_candidates(candidates)
@@ -2504,19 +2515,23 @@ async def _build_context(
         detail["deduped"] = len(ranked)
 
     if request.use_ppr and seed_hits and ranked:
-        with profile_stage("ppr"):
+        with profile_stage("ppr", blocking=False):
             personalization = _seed_personalization(seed_hits)
-            with profile_stage(
-                "ppr.adjacency", seeds=len(personalization)
-            ) as adjacency_detail:
-                adjacency = _build_adjacency_from_seeds(
-                    sorted(personalization.keys()),
-                    request.brain_id,
-                    query=request.text,
-                    include_history=include_history,
-                    as_of=as_of,
-                )
-                adjacency_detail["nodes"] = len(adjacency)
+            def _adjacency():
+                with profile_stage(
+                    "ppr.adjacency", seeds=len(personalization)
+                ) as adjacency_detail:
+                    built = _build_adjacency_from_seeds(
+                        sorted(personalization.keys()),
+                        request.brain_id,
+                        query=request.text,
+                        include_history=include_history,
+                        as_of=as_of,
+                    )
+                    adjacency_detail["nodes"] = len(built)
+                    return built
+
+            adjacency = await asyncio.to_thread(_adjacency)
             with profile_stage("ppr.iterations", iterations=_PPR_ITERS):
                 ppr_scores = personalized_pagerank(
                     adjacency,

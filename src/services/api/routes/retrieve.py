@@ -639,8 +639,8 @@ async def get_hops(
 
 @retrieve_router.get(path="/entity/info", response_model=GetEntityInfoResponse)
 async def get_entity_info(
-    target: str,
-    query: str,
+    target: str = Query(..., min_length=1),
+    query: str = Query(...),
     max_depth: int = 3,
     brain_id: str = Depends(get_brain_id),
 ):
@@ -661,7 +661,7 @@ async def get_entity_info(
 
 @retrieve_router.get(path="/entity/context", response_model=GetEntityContextResponse)
 async def get_entity_context(
-    target: str,
+    target: str = Query(..., min_length=1),
     context_depth: int = 3,
     brain_id: str = Depends(get_brain_id),
 ):

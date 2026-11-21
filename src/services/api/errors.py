@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Mapping
 from typing import Any
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, JsonValue
@@ -119,6 +121,15 @@ def _request_id(request: Request) -> str:
     )
 
 
+def _jsonable_detail(detail: Any) -> Any:
+    try:
+        encoded = jsonable_encoder(detail, custom_encoder={BaseException: str})
+        json.dumps(encoded, allow_nan=False)
+        return encoded
+    except (TypeError, ValueError, OverflowError):
+        return str(detail)
+
+
 def error_response(
     request: Request,
     *,
@@ -138,7 +149,7 @@ def error_response(
     )
     request_id = _request_id(request)
     content: dict[str, Any] = {
-        "detail": detail,
+        "detail": _jsonable_detail(detail),
         "error": {
             "code": code or default_code,
             "message": message or default_message,
@@ -147,7 +158,9 @@ def error_response(
         },
     }
     if extra:
-        content.update(extra)
+        encoded_extra = _jsonable_detail(extra)
+        if isinstance(encoded_extra, dict):
+            content.update(encoded_extra)
     response_headers = dict(headers or {})
     response_headers["X-Request-ID"] = request_id
     return JSONResponse(

@@ -79,8 +79,9 @@ def resolve_token_identity(pat: str | None) -> tuple[str | None, list[str]]:
         return None, []
     from src.config import config
     from src.services.data.main import data_adapter
+    from src.utils.tokens import pat_matches
 
-    if pat == config.brainpat_token:
+    if pat_matches(pat, config.brainpat_token):
         return principal_for_system(), env_system_pat_scopes()
     brain = data_adapter.get_brain_by_pat(pat)
     if not brain:

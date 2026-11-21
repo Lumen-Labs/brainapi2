@@ -399,6 +399,27 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
         self.assertNotIn("DETACH DELETE", query)
         self.assertEqual(params["text"], "MATCH (n) DETACH DELETE n")
 
+    def test_node_text_search_maps_uuid_from_returned_fields(self):
+        record = _DriverRecord(
+            {
+                "uuid": "alice-1",
+                "name": "Alice",
+                "labels": ["PERSON"],
+                "description": "",
+                "properties": {"uuid": "alice-1", "name": "Alice"},
+            }
+        )
+        client = _client(records=[record])
+        nodes = client.node_text_search("Alice", "braina")
+        query, params, _db = client.driver.calls[0]
+        self.assertIn("n['uuid'] as uuid", query)
+        self.assertIn("n['name'] as name", query)
+        self.assertNotRegex(query, r"RETURN n\s*$")
+        self.assertEqual(params["text"], "Alice")
+        self.assertEqual(len(nodes), 1)
+        self.assertEqual(nodes[0].uuid, "alice-1")
+        self.assertEqual(nodes[0].name, "Alice")
+
     def test_get_nodes_by_uuid_parameterizes_ids_and_bounds_depth(self):
         client = _client()
         client.get_nodes_by_uuid(

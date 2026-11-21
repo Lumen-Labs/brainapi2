@@ -49,6 +49,7 @@ from src.core.verification.service import (
 )
 from src.services.mcp.oauth_provider import BrainapiMcpOAuthProvider
 from src.services.mcp.prompt import HISTORY_NAVIGATION_GUIDE
+from src.services.mcp.errors import McpToolError, raise_if_tool_error_result
 from src.services.mcp.utils import guard_brainpat
 from src.services.mcp.conflicts import (
     conflict_report_tool,
@@ -66,6 +67,12 @@ from src.services.mcp.versions import (
 from src.utils.vector_search import VectorSearchFacade
 
 auth_token_var: ContextVar[str | None] = ContextVar("auth_token", default=None)
+
+
+def _require_brain_access(brain_id: str) -> None:
+    if not guard_brainpat(auth_token_var.get(), brain_id):
+        raise McpToolError("Unauthorized")
+
 auth_scopes_var: ContextVar[tuple[str, ...] | None] = ContextVar(
     "auth_scopes", default=None
 )
@@ -265,10 +272,9 @@ def _traverse_graph_sync(
     include_rejected: bool,
 ) -> Any:
     try:
-        if not guard_brainpat(auth_token_var.get(), brain_id):
-            return "Unauthorized"
+        _require_brain_access(brain_id)
         if direction not in {"in", "out", "both"}:
-            return "Error: direction must be in, out, or both"
+            raise McpToolError("Error: direction must be in, out, or both")
         with verification_scope(include_rejected=include_rejected):
             result = graph_adapter.traverse_graph(
                 brain_id=brain_id,
@@ -284,8 +290,10 @@ def _traverse_graph_sync(
         if isinstance(result, dict) and isinstance(result.get("hops"), list):
             result["invalidated"] = invalidated_hops(result["hops"])
         return json.dumps(result, default=str)
+    except McpToolError:
+        raise
     except Exception as e:
-        return f"Error traversing graph: {e}"
+        raise McpToolError(f"Error traversing graph: {e}") from e
 
 
 @mcp.tool()
@@ -328,10 +336,11 @@ def _search_memory_sync(
     db_query: str, brain_id: str, include_rejected: bool
 ) -> Any:
     try:
-        if not guard_brainpat(auth_token_var.get(), brain_id):
-            return "Unauthorized"
+        _require_brain_access(brain_id)
         result = graph_adapter.execute_operation(db_query, brain_id)
-        if include_rejected or not isinstance(result, str) or result.startswith("Error"):
+        if isinstance(result, str) and result.startswith("Error"):
+            raise McpToolError(result)
+        if include_rejected or not isinstance(result, str):
             return result
         try:
             payload = json.loads(result)
@@ -343,8 +352,10 @@ def _search_memory_sync(
         if isinstance(filtered, str):
             return filtered
         return json.dumps(filtered, default=str)
+    except McpToolError:
+        raise
     except Exception as e:
-        return f"Error executing graph operation: {e}"
+        raise McpToolError(f"Error executing graph operation: {e}") from e
 
 
 @mcp.tool()
@@ -380,8 +391,7 @@ def _search_semantically_sync(
     include_validity_unknown: bool = False,
 ) -> Any:
     try:
-        if not guard_brainpat(auth_token_var.get(), brain_id):
-            return "Unauthorized"
+        _require_brain_access(brain_id)
         from src.core.saving.validity import (
             InvalidAsOf,
             VALIDITY_UNKNOWN,
@@ -398,7 +408,7 @@ def _search_semantically_sync(
         try:
             as_of_dt = optional_instant(as_of)
         except InvalidAsOf as exc:
-            return f"Error: {exc}"
+            raise McpToolError(f"Error: {exc}") from exc
         query_embedding = embeddings_adapter.embed_text(query)
         data_vectors = vector_search.search_nodes(
             query_embedding.embeddings,
@@ -450,8 +460,10 @@ def _search_semantically_sync(
         if include_validity_unknown:
             envelope["validity_unknown"] = unknown_items
         return envelope
+    except McpToolError:
+        raise
     except Exception as e:
-        return f"Error executing graph operation: {e}"
+        raise McpToolError(f"Error executing graph operation: {e}") from e
 
 
 @mcp.tool()
@@ -489,7 +501,7 @@ async def search_semantically(
 def _list_brains_sync() -> list[str] | str:
     brain_key = guard_brainpat(auth_token_var.get())
     if not brain_key:
-        return "Unauthorized"
+        raise McpToolError("Unauthorized")
     if type(brain_key) == str:
         return [brain_key]
     brains = data_adapter.get_brains_list()
@@ -530,11 +542,10 @@ def _mutate_fact_sync(
     note: str,
 ) -> Any:
     try:
-        if not guard_brainpat(auth_token_var.get(), brain_id):
-            return "Unauthorized"
+        _require_brain_access(brain_id)
         actor = _require_verification_actor()
         if not actor:
-            return (
+            raise McpToolError(
                 f"Error: {VERIFICATION_PERMISSION_DENIED}: "
                 "verification scope is required"
             )
@@ -560,13 +571,15 @@ def _mutate_fact_sync(
                 notes=note or None,
             )
         return json.dumps(record.model_dump(mode="json"), default=str)
+    except McpToolError:
+        raise
     except FactNotFound:
-        return "Fact not found"
+        raise McpToolError("Fact not found")
     except Exception as e:
         detail = getattr(e, "detail", None)
         if detail:
-            return f"Error: {detail}"
-        return f"Error updating fact verification: {e}"
+            raise McpToolError(f"Error: {detail}") from e
+        raise McpToolError(f"Error updating fact verification: {e}") from e
 
 
 @mcp.tool()
@@ -648,8 +661,7 @@ def _list_facts_sync(
     skip: int,
 ) -> Any:
     try:
-        if not guard_brainpat(auth_token_var.get(), brain_id):
-            return "Unauthorized"
+        _require_brain_access(brain_id)
         normalized = require_state(state or None)
         records, total = list_fact_records(
             graph_adapter,
@@ -666,11 +678,13 @@ def _list_facts_sync(
             },
             default=str,
         )
+    except McpToolError:
+        raise
     except Exception as e:
         detail = getattr(e, "detail", None)
         if detail:
-            return f"Error: {detail}"
-        return f"Error listing facts: {e}"
+            raise McpToolError(f"Error: {detail}") from e
+        raise McpToolError(f"Error listing facts: {e}") from e
 
 
 @mcp.tool()
@@ -693,14 +707,15 @@ async def list_facts_by_verification(
 
 def _get_fact_sync(fact_id: str, brain_id: str) -> Any:
     try:
-        if not guard_brainpat(auth_token_var.get(), brain_id):
-            return "Unauthorized"
+        _require_brain_access(brain_id)
         record = get_fact_record(graph_adapter, fact_id, brain_id)
         return json.dumps(record.model_dump(mode="json"), default=str)
+    except McpToolError:
+        raise
     except FactNotFound:
-        return "Fact not found"
+        raise McpToolError("Fact not found")
     except Exception as e:
-        return f"Error reading fact verification: {e}"
+        raise McpToolError(f"Error reading fact verification: {e}") from e
 
 
 @mcp.tool()
@@ -749,7 +764,7 @@ def _list_changelogs_sync(
         graph=graph_adapter,
     )
     if isinstance(result, str):
-        return result
+        return raise_if_tool_error_result(result)
     return json.dumps(result, default=str)
 
 
@@ -791,7 +806,7 @@ def _get_changelog_sync(brain_id: str, changelog_id: str) -> Any:
         authorized=bool(guard_brainpat(auth_token_var.get(), brain_id)),
     )
     if isinstance(result, str):
-        return result
+        return raise_if_tool_error_result(result)
     return json.dumps(result, default=str)
 
 
@@ -830,7 +845,7 @@ def _list_source_versions_sync(
         search=_search_passages,
     )
     if isinstance(result, str):
-        return result
+        return raise_if_tool_error_result(result)
     return json.dumps(result, default=str)
 
 
@@ -883,7 +898,7 @@ def _list_conflicts_sync(
         graph=graph_adapter,
     )
     if isinstance(result, str):
-        return result
+        return raise_if_tool_error_result(result)
     return json.dumps(result, default=str)
 
 
@@ -923,7 +938,7 @@ def _get_conflict_sync(brain_id: str, conflict_id: str) -> Any:
         graph=graph_adapter,
     )
     if isinstance(result, str):
-        return result
+        return raise_if_tool_error_result(result)
     return json.dumps(result, default=str)
 
 
@@ -956,7 +971,7 @@ def _resolve_conflict_sync(
         has_verification=has_verification_scope(scopes),
     )
     if isinstance(result, str):
-        return result
+        return raise_if_tool_error_result(result)
     return json.dumps(result, default=str)
 
 
@@ -986,7 +1001,7 @@ def _dismiss_conflict_sync(brain_id: str, conflict_id: str, notes: str) -> Any:
         notes=notes or None,
     )
     if isinstance(result, str):
-        return result
+        return raise_if_tool_error_result(result)
     return json.dumps(result, default=str)
 
 
@@ -1021,7 +1036,7 @@ def _conflict_report_sync(
         limit=limit,
     )
     if isinstance(result, str):
-        return result
+        return raise_if_tool_error_result(result)
     return json.dumps(result, default=str)
 
 
