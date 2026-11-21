@@ -685,8 +685,11 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
         client.list_validity_relationships("braina", skip=0, limit=5)
         query, _params, _db = client.driver.calls[0]
         self.assertIn("ORDER BY n['uuid'], pred_key, r['uuid'], elementId(r)", query)
+        self.assertIn("=~ '[A-Z0-9]'", query)
+        self.assertIn("ELSE '_' END", query)
         self.assertIn("replace(t, '__', '_')", query)
         self.assertIn("AS pred_key", query)
+        self.assertNotIn("n['uuid'] >= $after_subject_uuid", query)
         self.assertNotIn("ORDER BY n['uuid'], type(r), r['uuid'], elementId(r)", query)
         self.assertNotIn("ORDER BY r['uuid'], elementId(r)\n", query)
 
@@ -704,6 +707,11 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
         self.assertIn("$after_subject_uuid", query)
         self.assertIn("$after_predicate", query)
         self.assertIn("pred_key > $after_predicate", query)
+        self.assertIn("n['uuid'] >= $after_subject_uuid", query)
+        self.assertLess(
+            query.index("n['uuid'] >= $after_subject_uuid"),
+            query.index("AS pred_key"),
+        )
         self.assertNotIn("type(r) > $after_predicate", query)
         self.assertEqual(params["after_subject_uuid"], payload)
         self.assertEqual(params["after_predicate"], "HAS_WINDOW")
@@ -711,6 +719,7 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
         count_query, count_params, _count_db = client.driver.calls[1]
         self.assertNotIn("$after_subject_uuid", count_query)
         self.assertNotIn("after_subject_uuid", count_params)
+        self.assertNotIn("n['uuid'] >= $after_subject_uuid", count_query)
 
     def test_list_validity_relationships_normalizes_after_predicate_aliases(self):
         client = _client()
@@ -724,6 +733,20 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
         query, params, _db = client.driver.calls[0]
         self.assertEqual(params["after_predicate"], "HAS_A")
         self.assertIn("pred_key > $after_predicate", query)
+
+    def test_list_validity_relationships_normalizes_punctuated_after_predicate(self):
+        client = _client()
+        client.list_validity_relationships(
+            "braina",
+            skip=0,
+            limit=5,
+            after_subject_uuid="subject-1",
+            after_predicate="HAS-A",
+        )
+        query, params, _db = client.driver.calls[0]
+        self.assertEqual(params["after_predicate"], "HAS_A")
+        self.assertIn("n['uuid'] >= $after_subject_uuid", query)
+        self.assertIn("=~ '[A-Z0-9]'", query)
 
     def test_list_validity_relationships_parameterizes_relationship_uuids(self):
         client = _client()
