@@ -7,6 +7,7 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 ENV_DEFAULTS = {
     "BRAINPAT_TOKEN": "test-token",
@@ -380,6 +381,35 @@ class PrototypeCacheTests(unittest.TestCase):
         with self.assertRaises(PrototypeWarmupError):
             prototype_vectors(boom)
         self.assertEqual(len(calls), first)
+
+    def test_warmup_backoff_starts_from_failure_time(self):
+        reset_prototype_cache()
+        clock = {"now": 1000.0}
+        calls: list[str] = []
+
+        def monotonic() -> float:
+            return clock["now"]
+
+        def boom(text: str) -> list[float]:
+            calls.append(text)
+            clock["now"] += 45.0
+            raise RuntimeError("embed down")
+
+        with patch("src.core.saving.history_intent.time.monotonic", monotonic):
+            with self.assertRaises(RuntimeError):
+                prototype_vectors(boom)
+            self.assertEqual(len(calls), 1)
+            with self.assertRaises(PrototypeWarmupError):
+                prototype_vectors(boom)
+            self.assertEqual(len(calls), 1)
+            clock["now"] += 29.0
+            with self.assertRaises(PrototypeWarmupError):
+                prototype_vectors(boom)
+            self.assertEqual(len(calls), 1)
+            clock["now"] += 2.0
+            with self.assertRaises(RuntimeError):
+                prototype_vectors(boom)
+            self.assertEqual(len(calls), 2)
 
     def test_successful_warmup_is_cached(self):
         reset_prototype_cache()

@@ -269,5 +269,5 @@ def prototype_vectors(embed: Embed) -> tuple[list[list[float]], list[list[float]
         except Exception:
             _FAIL_STREAK += 1
             delay = min(_FAIL_BACKOFF * (2 ** (_FAIL_STREAK - 1)), _FAIL_BACKOFF_MAX)
-            _FAIL_UNTIL = now + delay
+            _FAIL_UNTIL = time.monotonic() + delay
             raise

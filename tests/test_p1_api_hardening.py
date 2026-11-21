@@ -75,6 +75,21 @@ class OpenApiServerAndBrainIdTests(unittest.TestCase):
             ["https://eu.example.test", "https://us.example.test"],
         )
 
+    def test_single_url_leads_and_dedupes_server_list(self):
+        with patch.dict(
+            os.environ,
+            {
+                "OPENAPI_SERVER_URL": "https://us.example.test",
+                "OPENAPI_SERVER_URLS": "https://eu.example.test,https://us.example.test",
+            },
+            clear=False,
+        ):
+            servers = openapi_servers()
+        self.assertEqual(
+            [item["url"] for item in servers],
+            ["https://us.example.test", "https://eu.example.test"],
+        )
+
     def test_untyped_core_route_does_not_raise(self):
         app = FastAPI(title="BrainAPI", version="0.0.0")
         install_error_handlers(app)
@@ -89,7 +104,35 @@ class OpenApiServerAndBrainIdTests(unittest.TestCase):
         media = schema["paths"]["/retrieve/untyped"]["get"]["responses"]["200"][
             "content"
         ]["application/json"]
-        self.assertTrue(media.get("schema"))
+        self.assertEqual(
+            media.get("schema"),
+            {"$ref": "#/components/schemas/GenericValueResponse"},
+        )
+        value_schema = schema["components"]["schemas"]["GenericValueResponse"]
+        self.assertNotIn("type", value_schema)
+        self.assertTrue(value_schema.get("description"))
+
+    def test_untyped_list_path_keeps_array_schema(self):
+        app = FastAPI(title="BrainAPI", version="0.0.0")
+        install_error_handlers(app)
+
+        @app.get("/retrieve/hops", tags=["retrieve"])
+        def hops():
+            return []
+
+        install_openapi_contract(app)
+        schema = app.openapi()
+        media = schema["paths"]["/retrieve/hops"]["get"]["responses"]["200"]["content"][
+            "application/json"
+        ]
+        self.assertEqual(
+            media.get("schema"),
+            {"$ref": "#/components/schemas/GenericListResponse"},
+        )
+        self.assertEqual(
+            schema["components"]["schemas"]["GenericListResponse"]["type"],
+            "array",
+        )
 
 
 class RequestValidationTests(unittest.TestCase):

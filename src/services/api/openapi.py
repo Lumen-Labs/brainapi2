@@ -59,11 +59,9 @@ def _generic_schema(model: str) -> dict[str, Any]:
             },
         }
     return {
-        "type": "object",
         "description": (
-            "An operation-specific JSON object from an installed extension."
+            "An operation-specific JSON value from an installed extension."
         ),
-        "additionalProperties": True,
     }
 
 
@@ -81,8 +79,8 @@ def openapi_servers() -> list[dict[str, str]]:
     if multi:
         urls.extend(part.strip() for part in multi.split(",") if part.strip())
     single = os.getenv("OPENAPI_SERVER_URL", "").strip()
-    if single and single not in urls:
-        urls.insert(0, single)
+    if single:
+        urls = [single] + [url for url in urls if url != single]
     if not urls:
         urls = [_DEFAULT_SERVER_URL]
     servers: list[dict[str, str]] = []
@@ -148,7 +146,7 @@ def _ensure_success_schema(
                     path,
                 )
             model = (
-                "GenericListResponse" if path in _LIST_PATHS else "GenericObjectResponse"
+                "GenericListResponse" if path in _LIST_PATHS else "GenericValueResponse"
             )
             component_schemas.setdefault(model, _generic_schema(model))
             media["schema"] = {"$ref": f"#/components/schemas/{model}"}
