@@ -126,11 +126,14 @@ def test_adapter_maps_client_error_without_leaking():
 
     adapter = EmbeddingsAdapter()
     adapter.add_client(FakeClient())
-    vector = adapter.embed_text("hello")
-    assert vector.embeddings == []
-    many = adapter.embed_texts(["a", "b"])
-    assert len(many) == 2
-    assert all(item.embeddings == [] for item in many)
+    with pytest.raises(EmbeddingClientError) as exc_info:
+        adapter.embed_text("hello")
+    assert str(exc_info.value) == "Embedding request failed"
+    assert "secret upstream detail" not in str(exc_info.value)
+    with pytest.raises(EmbeddingClientError) as batch_info:
+        adapter.embed_texts(["a", "b"])
+    assert str(batch_info.value) == "Embedding request failed"
+    assert "secret upstream detail" not in str(batch_info.value)
 
 
 def test_adapter_raise_strategy_maps_client_error():
@@ -141,10 +144,39 @@ def test_adapter_raise_strategy_maps_client_error():
     adapter = EmbeddingsAdapter()
     adapter.add_client(FakeClient())
     adapter.set_failure_strategy(RaiseEmbeddingFailureStrategy())
-    with pytest.raises(EmbeddingError) as exc_info:
+    with pytest.raises(EmbeddingClientError) as exc_info:
         adapter.embed_text("hello")
     assert "secret upstream detail" not in str(exc_info.value)
     assert str(exc_info.value) == "Embedding request failed"
+
+
+def test_adapter_default_strategy_still_returns_empty_on_embedding_error():
+    adapter = EmbeddingsAdapter()
+    adapter._embed_text_with_retry = MagicMock(side_effect=EmbeddingError("failed"))
+    adapter._embed_texts_with_retry = MagicMock(side_effect=EmbeddingError("failed"))
+    vector = adapter.embed_text("hello")
+    assert vector.embeddings == []
+    many = adapter.embed_texts(["a", "b"])
+    assert len(many) == 2
+    assert all(item.embeddings == [] for item in many)
+
+
+def test_embed_query_vector_maps_adapter_client_error_to_503():
+    class FakeClient:
+        def embed_text(self, text):
+            raise ClientError("secret upstream detail")
+
+    adapter = EmbeddingsAdapter()
+    adapter.add_client(FakeClient())
+    with patch(
+        "src.services.api.controllers.retrieve.embeddings_adapter",
+        adapter,
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            _embed_query_vector("hello")
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == "Embedding service unavailable"
+    assert "secret upstream detail" not in str(exc_info.value.detail)
 
 
 def test_embed_query_vector_returns_503_on_client_failure():

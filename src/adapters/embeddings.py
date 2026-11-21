@@ -40,9 +40,12 @@ except ModuleNotFoundError:
 from src.adapters.interfaces.embeddings import EmbeddingsClient, VectorStoreClient
 from src.constants.embeddings import Vector
 try:
-    from src.lib.embeddings.client import EmbeddingError
+    from src.lib.embeddings.client import EmbeddingClientError, EmbeddingError
 except ModuleNotFoundError:
     class EmbeddingError(Exception):
+        pass
+
+    class EmbeddingClientError(Exception):
         pass
 
 logger = logging.getLogger(__name__)
@@ -140,9 +143,12 @@ class EmbeddingsAdapter:
             return Vector(id=str(uuid.uuid4()), embeddings=embeddings, metadata={})
         except (EmbeddingError, RetryError) as e:
             return self.failure_strategy.on_single_failure(self._to_embedding_error(e))
+        except EmbeddingClientError:
+            logger.exception("Embedding request failed")
+            raise
         except Exception as e:
             logger.exception("Embedding request failed")
-            return self.failure_strategy.on_single_failure(self._to_embedding_error(e))
+            raise EmbeddingClientError("Embedding request failed") from e
 
     def embed_texts(self, texts: list[str]) -> list[Vector]:
         """
@@ -158,11 +164,12 @@ class EmbeddingsAdapter:
             return self.failure_strategy.on_batch_failure(
                 self._to_embedding_error(e), len(texts)
             )
+        except EmbeddingClientError:
+            logger.exception("Embedding request failed")
+            raise
         except Exception as e:
             logger.exception("Embedding request failed")
-            return self.failure_strategy.on_batch_failure(
-                self._to_embedding_error(e), len(texts)
-            )
+            raise EmbeddingClientError("Embedding request failed") from e
 
 
 class VectorStoreAdapter:
