@@ -1,5 +1,6 @@
 import base64
 import json
+from collections import Counter
 from datetime import UTC, datetime
 from unittest.mock import Mock, patch
 
@@ -49,12 +50,22 @@ def test_complete_deterministic_membership_with_isolates_and_parallel_edges():
     assert sorted(root_members) == sorted(n["id"] for n in nodes)
     assert snapshot["totals"] == {"things": 30, "connections": 22}
     assert snapshot["overviewLinksTruncated"] is False
-    for link in snapshot["overviewLinks"]:
-        assert link["fromId"] in roots
-        assert link["toId"] in roots
-        assert link["fromId"] != link["toId"]
-        assert link["id"] == f"aggregate:{link['fromId']}:{link['toId']}"
-        assert link["count"] >= 1
+    ids = {n["id"] for n in nodes}
+    root_by_entity = {entity: cid for cid, entity in memberships if cid in roots}
+    expected_counts = Counter()
+    for edge in edges:
+        source, target = str(edge["fromId"]), str(edge["toId"])
+        if source not in ids or target not in ids:
+            continue
+        left, right = root_by_entity[source], root_by_entity[target]
+        if left != right:
+            expected_counts[(left, right)] += 1
+    expected_links = [
+        {"id": f"aggregate:{a}:{b}", "fromId": a, "toId": b, "count": count}
+        for (a, b), count in sorted(expected_counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
+    assert snapshot["overviewLinks"] == expected_links
+    assert expected_links
     {g["id"]: g for g in snapshot["groups"]}
     for group in snapshot["groups"]:
         members = {n for cid, n in memberships if cid == group["id"]}

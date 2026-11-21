@@ -383,10 +383,13 @@ async def ingest_file(
 
     workbook = await spreadsheets.try_import_file(file, brain_id, workbook_id=task)
     if workbook is not None:
-        set_ingestion_task_status(
-            task, brain_id, "completed", stage="completed",
-            counts={"sheets": len(workbook["sheets"])}, group_tracking=group_key,
-        )
+        try:
+            set_ingestion_task_status(
+                task, brain_id, "completed", stage="completed",
+                counts={"sheets": len(workbook["sheets"])}, group_tracking=group_key,
+            )
+        except Exception:
+            logger.exception("Workbook import status write failed for task %s", task)
         return JSONResponse(status_code=202, content={"message": "Workbook imported", "task_id": task})
 
     try:

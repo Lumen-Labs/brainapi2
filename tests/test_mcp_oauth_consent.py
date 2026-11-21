@@ -92,6 +92,26 @@ def test_consent_get_requires_request_id():
     assert 'name="request_id"' in found.text
     assert "code_challenge" not in found.text
     assert found.headers["cache-control"] == "no-store"
+    policy = found.headers["content-security-policy"]
+    assert "form-action 'self' https://mcp-client.example" in policy
+    assert "https://chatgpt.com" not in policy
+    assert "form-action 'self'" in missing.headers["content-security-policy"]
+    assert "mcp-client.example" not in missing.headers["content-security-policy"]
+
+
+def test_consent_csp_keeps_hosted_origin_when_restricted():
+    provider, request_id = _pending_provider()
+    with (
+        patch("src.services.mcp.main.oauth_provider", provider),
+        patch("src.services.mcp.main._oauth_issuer", ISSUER),
+        patch("src.services.mcp.main._chatgpt_only", True),
+    ):
+        client, _ = _consent_client(provider)
+        found = client.get("/mcp-oauth/consent", params={"request_id": request_id})
+    policy = found.headers["content-security-policy"]
+    assert "form-action 'self'" in policy
+    assert "https://chatgpt.com" in policy
+    assert "https://mcp-client.example" in policy
 
 
 def test_consent_post_rejects_wrong_origin():

@@ -112,8 +112,18 @@ def read_workbook(filename, payload):
         try:
             source = csv.reader(StringIO(payload.decode("utf-8-sig"), newline=""), strict=True)
             headers = next(source, [])
-            rows = ([csv_cell(value) for value in row] for row in source)
-            return [read_sheet("CSV", iter_with_header([cell(v) for v in headers], rows))]
+            if len(headers) > MAX_COLUMNS:
+                raise WorkbookError("Worksheet exceeds the column limit.")
+
+            def csv_rows():
+                for row in source:
+                    if len(row) > MAX_COLUMNS:
+                        raise WorkbookError("Worksheet exceeds the column limit.")
+                    yield [csv_cell(value) for value in row]
+
+            return [read_sheet("CSV", iter_with_header([cell(v) for v in headers], csv_rows()))]
+        except WorkbookError:
+            raise
         except (UnicodeError, csv.Error) as exc:
             raise WorkbookError("Expected a valid UTF-8 CSV.") from exc
     if suffix != ".xlsx":
@@ -146,7 +156,9 @@ def read_workbook(filename, payload):
                 cached.close()
         finally:
             original.close()
-    except (BadZipFile, InvalidFileException, KeyError, OSError, ParseError) as exc:
+    except WorkbookError:
+        raise
+    except (BadZipFile, InvalidFileException, KeyError, OSError, ParseError, ValueError) as exc:
         raise WorkbookError("Expected a valid XLSX workbook.") from exc
 
 

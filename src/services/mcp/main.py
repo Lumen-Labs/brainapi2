@@ -15,6 +15,7 @@ import json
 import os
 from contextvars import ContextVar
 from typing import Any
+from urllib.parse import urlsplit
 
 from mcp.server import FastMCP
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions
@@ -142,20 +143,37 @@ else:
     mcp = FastMCP("brainapi-mcp", stateless_http=True, host="0.0.0.0")
 
 
-_consent_headers = {
-    "Cache-Control": "no-store",
-    "Content-Security-Policy": "default-src 'none'; form-action 'self' https://chatgpt.com; frame-ancestors 'none'; base-uri 'none'",
-    "Referrer-Policy": "same-origin",
-}
+def _consent_headers(redirect_uri=None):
+    actions = ["'self'"]
+    origins = []
+    if redirect_uri:
+        parsed = urlsplit(str(redirect_uri))
+        if parsed.scheme in {"http", "https"} and parsed.netloc and not parsed.username:
+            origins.append(f"{parsed.scheme}://{parsed.netloc}")
+    if _chatgpt_only:
+        origins.append("https://chatgpt.com")
+    for origin in origins:
+        if origin not in actions:
+            actions.append(origin)
+    return {
+        "Cache-Control": "no-store",
+        "Content-Security-Policy": (
+            "default-src 'none'; form-action "
+            + " ".join(actions)
+            + "; frame-ancestors 'none'; base-uri 'none'"
+        ),
+        "Referrer-Policy": "same-origin",
+    }
 
 
 async def _mcp_oauth_consent(request: Request) -> HTMLResponse | RedirectResponse:
     if oauth_provider is None:
-        return HTMLResponse("OAuth is not configured.", status_code=404, headers=_consent_headers)
+        return HTMLResponse("OAuth is not configured.", status_code=404, headers=_consent_headers())
     if request.method == "GET":
         request_id = request.query_params.get("request_id", "")
-        if not oauth_provider.consent_request(request_id):
-            return HTMLResponse("Start a new connection in your MCP app.", status_code=400, headers=_consent_headers)
+        pending = oauth_provider.consent_request(request_id)
+        if not pending:
+            return HTMLResponse("Start a new connection in your MCP app.", status_code=400, headers=_consent_headers())
         form = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Authorize BrainAPI MCP</title></head>
 <body>
@@ -168,26 +186,26 @@ async def _mcp_oauth_consent(request: Request) -> HTMLResponse | RedirectRespons
 <button type="submit">Authorize</button>
 </form>
 </body></html>"""
-        return HTMLResponse(form, headers=_consent_headers)
+        return HTMLResponse(form, headers=_consent_headers(pending.get("redirect_uri")))
 
     if request.headers.get("origin") != _oauth_issuer.rstrip("/"):
-        return HTMLResponse("Invalid consent origin.", status_code=403, headers=_consent_headers)
+        return HTMLResponse("Invalid consent origin.", status_code=403, headers=_consent_headers())
     form = await request.form()
     request_id = str(form.get("request_id") or "")
     pending = oauth_provider.consent_request(request_id)
     if not pending:
-        return HTMLResponse("Start a new connection in your MCP app.", status_code=400, headers=_consent_headers)
+        return HTMLResponse("Start a new connection in your MCP app.", status_code=400, headers=_consent_headers())
 
     brainpat = str(form.get("brainpat") or "").strip()
     if not brainpat or not isinstance(await asyncio.to_thread(guard_brainpat, brainpat), str):
-        return HTMLResponse("Enter a valid brain access key.", status_code=401, headers=_consent_headers)
+        return HTMLResponse("Enter a valid brain access key.", status_code=401, headers=_consent_headers(pending.get("redirect_uri")))
     pending = oauth_provider.consent_request(request_id, consume=True)
     if not pending:
-        return HTMLResponse("Start a new connection in your MCP app.", status_code=400, headers=_consent_headers)
+        return HTMLResponse("Start a new connection in your MCP app.", status_code=400, headers=_consent_headers())
 
     client = await oauth_provider.get_client(pending["client_id"])
     if not client:
-        return HTMLResponse("Unknown client", status_code=400, headers=_consent_headers)
+        return HTMLResponse("Unknown client", status_code=400, headers=_consent_headers())
     _principal, pat_scopes = resolve_token_identity(brainpat)
     requested_scopes = (
         pending["scope"].split() if pending.get("scope", "").strip() else list(_default_oauth_scopes)
@@ -201,7 +219,7 @@ async def _mcp_oauth_consent(request: Request) -> HTMLResponse | RedirectRespons
         ru = AnyUrl(pending["redirect_uri"])
         ru = client.validate_redirect_uri(ru)
     except Exception:
-        return HTMLResponse("Invalid redirect_uri", status_code=400, headers=_consent_headers)
+        return HTMLResponse("Invalid redirect_uri", status_code=400, headers=_consent_headers(pending.get("redirect_uri")))
     code = oauth_provider.issue_auth_code(
         client_id=pending["client_id"],
         redirect_uri=ru,
