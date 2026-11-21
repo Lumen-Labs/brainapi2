@@ -32,13 +32,12 @@ MARKUP_TEXT_CONTENT_TYPES = {
     "text/xml",
 }
 
-SPREADSHEET_EXTENSIONS = {".csv", ".tsv", ".xls", ".xlsx"}
+SPREADSHEET_EXTENSIONS = {".csv", ".xls", ".xlsx"}
 SPREADSHEET_CONTENT_TYPES = {
     "application/csv",
     "application/vnd.ms-excel",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "text/csv",
-    "text/tab-separated-values",
 }
 
 
@@ -62,8 +61,13 @@ def spreadsheet_experiment_brains():
 
 def is_spreadsheet_upload(filename, content_type):
     ext = filename_extension(filename)
-    ctype = normalized_content_type(content_type)
-    return ext in SPREADSHEET_EXTENSIONS or ctype in SPREADSHEET_CONTENT_TYPES
+    if ext in {".tsv", ".txt", ".md", ".markdown", ".json", ".jsonl", ".ndjson"}:
+        return False
+    if ext in SPREADSHEET_EXTENSIONS:
+        return True
+    if ext:
+        return False
+    return normalized_content_type(content_type) in SPREADSHEET_CONTENT_TYPES
 
 
 def spreadsheet_experiment_owns_upload(brain_id, filename, content_type):
@@ -95,8 +99,6 @@ def decode_plain_text(content):
 
 
 def uses_plain_text_ingest(brain_id, filename, content_type, content=None):
-    if spreadsheet_experiment_owns_upload(brain_id, filename, content_type):
-        return False
     if not is_plain_text_upload(filename, content_type):
         return False
     if content is not None and looks_like_binary(content):

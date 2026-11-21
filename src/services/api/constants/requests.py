@@ -108,6 +108,16 @@ class IngestionRequestBody(IngestionTaskArgs):
     ] = None
     status: Optional[str] = None
     error: Optional[str] = None
+    page_index: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="0-based page index from a document-parser callback.",
+    )
+    total_pages: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description="Total pages in the document-parser job.",
+    )
 
     @model_validator(mode="after")
     def require_data_unless_failed_callback(self):

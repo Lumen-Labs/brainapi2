@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from src.core.saving.ingest_plain_text import (
     decode_plain_text,
+    is_spreadsheet_upload,
     spreadsheet_experiment_owns_upload,
     uses_plain_text_ingest,
 )
@@ -57,7 +58,13 @@ def test_plain_text_classification_and_utf8_decode():
 def test_spreadsheet_experiment_claims_csv_ahead_of_text_path(monkeypatch):
     monkeypatch.setenv("SPREADSHEET_EXPERIMENT_BRAINS", "sheet-brain")
     assert spreadsheet_experiment_owns_upload("sheet-brain", "rows.csv", "text/csv")
-    assert not uses_plain_text_ingest("sheet-brain", "rows.csv", "text/csv")
+    assert is_spreadsheet_upload("rows.csv", "text/csv")
+    assert is_spreadsheet_upload("book.xlsx", "application/octet-stream")
+    assert not is_spreadsheet_upload("rows.tsv", "text/tab-separated-values")
+    assert not is_spreadsheet_upload("notes.txt", "text/csv")
+    assert uses_plain_text_ingest("sheet-brain", "rows.csv", "text/csv")
+    assert uses_plain_text_ingest("sheet-brain", "rows.tsv", "text/tab-separated-values")
+    assert uses_plain_text_ingest("sheet-brain", "notes.txt", "text/csv")
     assert uses_plain_text_ingest("other-brain", "rows.csv", "text/csv")
 
 
@@ -149,7 +156,7 @@ def test_pdf_upload_still_goes_to_docparser(monkeypatch):
 
 def test_csv_falls_through_when_spreadsheet_experiment_owns_brain(monkeypatch):
     app, ingest = _ingest_app("sheet-brain")
-    parser = Mock(return_value=SimpleNamespace(status_code=200))
+    parser = Mock(side_effect=AssertionError("docparser must not get declined spreadsheets"))
     queued_text = Mock()
     monkeypatch.setenv("SPREADSHEET_EXPERIMENT_BRAINS", "sheet-brain")
     monkeypatch.setattr(ingest.config, "ocr_mode", "docparser")
@@ -164,8 +171,10 @@ def test_csv_falls_through_when_spreadsheet_experiment_owns_brain(monkeypatch):
         files={"file": ("rows.csv", b"a,b\n1,2", "text/csv")},
     )
     assert response.status_code == 202
-    parser.assert_called_once()
-    queued_text.assert_not_called()
+    queued_text.assert_called_once()
+    body = queued_text.call_args.kwargs["args"][0]
+    assert body["data"]["text_data"] == "a,b\n1,2"
+    parser.assert_not_called()
 
 
 def test_fail_expired_remote_ocr_updates_cached_task_status(monkeypatch):
@@ -290,3 +299,126 @@ def test_get_task_reports_failed_after_remote_ocr_deadline(monkeypatch):
     assert body["status"] == "failed"
     assert body["error"] == REMOTE_OCR_TIMEOUT_ERROR
     assert body["task_id"] == "ocr-task"
+
+
+def test_fail_expired_remote_ocr_does_not_timeout_started_tasks(monkeypatch):
+    monkeypatch.setattr(
+        "src.core.saving.ingest_staging.ingest_cancellation._runs",
+        lambda brain_id: SimpleNamespace(find_one=lambda query: None),
+    )
+    monkeypatch.setattr("src.core.saving.ingest_staging.time", lambda: 5_000)
+    result = fail_expired_remote_ocr(
+        "brain",
+        "ocr-task",
+        {
+            "status": "started",
+            "stage": "processing",
+            "remote_ocr_deadline": 10,
+            "task_id": "ocr-task",
+        },
+    )
+    assert result["status"] == "started"
+    assert result.get("error") is None
+
+
+def test_completed_status_clears_previous_timeout_error():
+    from src.workers.tasks.ingestion import set_ingestion_task_status
+
+    stored = {}
+
+    class FakeCache:
+        def get(self, key, brain_id="default"):
+            payload = stored.get((key, brain_id))
+            return json.dumps(payload) if payload else None
+
+        def get_task(self, task_id, brain_id="default"):
+            return self.get(f"task:{task_id}", brain_id=brain_id)
+
+        def set(self, key, value, brain_id="default", expires_in=None):
+            stored[(key, brain_id)] = json.loads(value)
+
+    import src.workers.tasks.ingestion as ingestion
+
+    original = ingestion.cache_adapter
+    ingestion.cache_adapter = FakeCache()
+    try:
+        set_ingestion_task_status(
+            "t3",
+            "brain",
+            "failed",
+            stage="failed",
+            error=REMOTE_OCR_TIMEOUT_ERROR,
+        )
+        set_ingestion_task_status("t3", "brain", "completed", stage="completed")
+        payload = stored[("task:t3", "brain")]
+        assert payload["status"] == "completed"
+        assert "error" not in payload
+    finally:
+        ingestion.cache_adapter = original
+
+
+def test_get_task_keeps_started_after_remote_ocr_deadline(monkeypatch):
+    app, tasks = _tasks_app()
+    cached = {
+        "status": "started",
+        "stage": "processing",
+        "task_id": "ocr-task",
+        "remote_ocr_deadline": 10,
+    }
+    monkeypatch.setattr(
+        tasks.cache_adapter,
+        "get_task",
+        lambda task_id, brain_id="default": json.dumps(cached),
+    )
+    monkeypatch.setattr(
+        "src.core.saving.ingest_staging.ingest_cancellation._runs",
+        lambda brain_id: SimpleNamespace(find_one=lambda query: None),
+    )
+    monkeypatch.setattr(
+        "src.core.saving.ingest_cancellation._runs",
+        lambda brain_id: SimpleNamespace(find_one=lambda query: None),
+    )
+    monkeypatch.setattr("src.core.saving.ingest_staging.time", lambda: 5_000)
+    monkeypatch.delenv("INGESTION_CANCELLATION_ENABLED", raising=False)
+    monkeypatch.delenv("STAGED_INGESTION_ENABLED", raising=False)
+
+    response = TestClient(app).get("/tasks/ocr-task")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "started"
+    assert body.get("error") in (None, "")
+
+
+def test_unstaged_failed_callback_accepted_for_known_task(monkeypatch):
+    app, ingest = _ingest_app()
+    monkeypatch.delenv("STAGED_INGESTION_ENABLED", raising=False)
+    monkeypatch.setattr(ingest, "set_ingestion_task_status", Mock())
+
+    class FakeCache:
+        def get(self, key, brain_id="default"):
+            if key == "task:known":
+                return json.dumps({"status": "started", "task_id": "known"})
+            return None
+
+        def get_task(self, task_id, brain_id="default"):
+            return self.get(f"task:{task_id}", brain_id=brain_id)
+
+    monkeypatch.setattr(ingest, "cache_adapter", FakeCache())
+    api = TestClient(app)
+    known = api.post(
+        "/ingest/",
+        json={"status": "failed", "error": "Success callback failed", "brain_id": "brain"},
+        headers={"Task-Identifier": "known"},
+    )
+    assert known.status_code == 202
+    unknown = api.post(
+        "/ingest/",
+        json={"status": "failed", "error": "nope", "brain_id": "brain"},
+        headers={"Task-Identifier": "missing"},
+    )
+    assert unknown.status_code == 422
+    missing_header = api.post(
+        "/ingest/",
+        json={"status": "failed", "error": "nope", "brain_id": "brain"},
+    )
+    assert missing_header.status_code == 422

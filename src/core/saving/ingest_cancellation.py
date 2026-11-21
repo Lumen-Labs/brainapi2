@@ -98,6 +98,24 @@ def public_state(brain_id, task_id, payload):
         return {**payload, **extra}
     if run and run["status"] in {"active", "staging"}:
         modes = ["keep_saved", "rollback"] if run["status"] == "staging" else ["keep_saved"]
+        pages = run.get("ocr_pages") or {}
+        accepted = int(run.get("ocr_pages_accepted") or 0) or sum(
+            1 for state in pages.values() if state == "accepted"
+        )
+        failed = int(run.get("ocr_pages_failed") or 0) or sum(
+            1 for state in pages.values() if state == "failed"
+        )
+        if run.get("callback_deadline") and (accepted or failed or run.get("units")):
+            extra = {
+                "status": "processing",
+                "stage": "processing",
+                "ocr_pages_accepted": accepted,
+                "ocr_pages_failed": failed,
+                "cancellation_modes": modes,
+            }
+            if run.get("ocr_total_pages"):
+                extra["ocr_total_pages"] = run["ocr_total_pages"]
+            return {**payload, **extra}
         return {"status": "queued", **payload, "cancellation_modes": modes}
     return payload
 

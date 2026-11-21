@@ -14,6 +14,7 @@ MAX_ROLLBACK_FAILURES = MAX_SETTLEMENT_FAILURES
 REMOTE_OCR_DEADLINE_SECONDS = 3600
 SMALL_REMOTE_OCR_DEADLINE_SECONDS = 300
 SMALL_REMOTE_OCR_MAX_BYTES = 1024 * 1024
+OCR_PAGE_IDLE_SECONDS = 120
 REMOTE_OCR_TIMEOUT_ERROR = "Document parser did not return a result before the deadline"
 REMOTE_OCR_REJECTED_ERROR = "Document parser rejected the ingestion request"
 REMOTE_OCR_EMPTY_ERROR = "Ingestion produced no text"
@@ -83,40 +84,118 @@ def register_unit(brain_id, root_id, key, message, *, seal=False, task_id=None):
     return None
 
 
-def register_ocr_callback(brain_id, root_id, message):
-    """Accept one page of OCR text. Later pages keep the run open until the deadline."""
-    inserted = []
+def ocr_unit_id(root_id, page_index):
+    return uuid5(NAMESPACE_URL, f"brainapi:ingest:{root_id}:ocr:{page_index}").hex
+
+
+def _ocr_counts(run):
+    pages = (run or {}).get("ocr_pages") or {}
+    accepted = sum(1 for state in pages.values() if state == "accepted")
+    failed = sum(1 for state in pages.values() if state == "failed")
+    return accepted, failed
+
+
+def _ocr_page_key(page_index, pages):
+    if page_index is None:
+        return f"anon:{len(pages)}"
+    return str(int(page_index))
+
+
+def _ocr_touch(_run, total_pages=None):
+    now = time()
+    changes = {
+        "ocr_last_callback_at": now,
+        "ocr_idle_seal_after": now + OCR_PAGE_IDLE_SECONDS,
+    }
+    if total_pages:
+        changes["ocr_total_pages"] = int(total_pages)
+    return now, changes
+
+
+def _ocr_close_action(run, now, *, rejected=False):
+    accepted, failed = _ocr_counts(run)
+    accounted = accepted + failed
+    total = run.get("ocr_total_pages")
+    past_deadline = run.get("callback_deadline") is not None and run["callback_deadline"] <= now
+    if total and accounted >= int(total):
+        return "seal" if accepted else "fail"
+    if rejected or past_deadline:
+        return "seal" if accepted else "fail"
+    if total:
+        return None
+    idle_after = run.get("ocr_idle_seal_after")
+    if idle_after is not None and idle_after <= now and accounted:
+        return "seal" if accepted else "fail"
+    return None
+
+
+def _apply_ocr_close(changes, run, now, *, rejected=False):
+    merged = {**run, **changes}
+    if "ocr_pages" in changes:
+        merged["ocr_pages"] = changes["ocr_pages"]
+    action = _ocr_close_action(merged, now, rejected=rejected)
+    if action == "seal" and not merged.get("sealed"):
+        changes["sealed"] = True
+        accepted, _failed = _ocr_counts(merged)
+        changes["ocr_pages_accepted"] = accepted
+    elif action == "fail" and merged.get("status") == "staging":
+        changes["status"] = "failed"
+        changes["error"] = merged.get("last_ocr_error") or REMOTE_OCR_TIMEOUT_ERROR
+    return changes
+
+
+def register_ocr_callback(brain_id, root_id, message, page_index=None, total_pages=None):
+    """Accept one page of OCR text. Replays of the same page_index stay idempotent."""
+    outcome = {"unit_id": None, "created": False, "rejected": True}
 
     def transition(run):
         deadline = run.get("callback_deadline")
-        if (
+        pages = dict(run.get("ocr_pages") or {})
+        closed = (
             run["status"] != "staging"
             or run.get("sealed")
             or (deadline is not None and deadline <= time())
-        ):
-            return None
-        ordinal = int(run.get("ocr_pages_accepted") or 0)
-        unit_id = f"ocr:{ordinal}"
-        while unit_id in run.get("units", {}):
-            ordinal += 1
-            unit_id = f"ocr:{ordinal}"
+        )
+        if page_index is not None:
+            unit_id = ocr_unit_id(root_id, int(page_index))
+            key = _ocr_page_key(page_index, pages)
+            if unit_id in run.get("units", {}) or pages.get(key) == "accepted":
+                outcome.update(unit_id=unit_id, created=False, rejected=closed)
+                return None
+            if closed:
+                return None
+        else:
+            if closed:
+                return None
+            accepted, failed = _ocr_counts(run)
+            unit_id = ocr_unit_id(root_id, accepted + failed)
+            key = _ocr_page_key(None, pages)
+            while unit_id in run.get("units", {}):
+                accepted += 1
+                unit_id = ocr_unit_id(root_id, accepted + failed)
         unit = {
             "state": "pending",
             "ordinal": len(run["units"]),
             "message": message,
         }
-        inserted.append(unit_id)
-        return {
-            "ocr_pages_accepted": ordinal + 1,
-            "units": {**run["units"], unit_id: unit},
-        }
+        pages[key] = "accepted"
+        now, changes = _ocr_touch(run, total_pages)
+        changes["units"] = {**run["units"], unit_id: unit}
+        changes["ocr_pages"] = pages
+        accepted, failed = _ocr_counts({**run, "ocr_pages": pages})
+        changes["ocr_pages_accepted"] = accepted
+        changes["ocr_pages_failed"] = failed
+        changes = _apply_ocr_close(changes, run, now)
+        outcome.update(unit_id=unit_id, created=True, rejected=False)
+        return changes
 
-    run = ingest_cancellation._change(brain_id, root_id, transition)
-    unit_id = inserted[-1] if inserted else None
-    if unit_id and run and run["status"] == "staging" and unit_id in run.get("units", {}):
+    ingest_cancellation._change(brain_id, root_id, transition)
+    if outcome["rejected"] or not outcome["unit_id"]:
+        return None
+    if outcome["created"]:
         _mark_ocr_pages_accepted(brain_id, root_id)
-        return unit_id
-    return None
+        maybe_finish_remote_ocr(brain_id, root_id)
+    return outcome["unit_id"], outcome["created"]
 
 
 def _mark_ocr_pages_accepted(brain_id, task_id):
@@ -126,7 +205,8 @@ def _mark_ocr_pages_accepted(brain_id, task_id):
         set_ingestion_task_status(
             task_id,
             brain_id,
-            "queued",
+            "started",
+            stage="processing",
             extra={"ocr_pages_accepted": True},
         )
     except Exception:
@@ -186,7 +266,10 @@ def complete_unit(brain_id, root_id, unit_id, token, output_ref):
         }
 
     unit = _update_unit(brain_id, root_id, unit_id, complete)
-    return bool(unit and unit.get("attempt") == token and unit.get("output_ref") == output_ref)
+    if not (unit and unit.get("attempt") == token and unit.get("output_ref") == output_ref):
+        return False
+    close_staging(brain_id, root_id)
+    return True
 
 
 def record_unit_failure(brain_id, root_id, unit_id, token):
@@ -580,8 +663,8 @@ def has_accepted_ocr_pages(run=None, cached=None):
     run = run or {}
     if int(run.get("ocr_pages_accepted") or 0) > 0:
         return True
-    units = run.get("units") or {}
-    return any(str(unit_id).startswith("ocr:") for unit_id in units)
+    pages = run.get("ocr_pages") or {}
+    return any(state == "accepted" for state in pages.values())
 
 
 def _mark_remote_ocr_failed(brain_id, task_id, error):
@@ -608,56 +691,76 @@ def expire_remote_ocr(brain_id, root_id, *, rejected=False):
         deadline = run.get("callback_deadline")
         if run["status"] != "staging" or not deadline:
             return None
-        accepted = has_accepted_ocr_pages(run)
-        past_deadline = deadline <= time()
-        if accepted:
-            if (past_deadline or rejected) and not run.get("sealed"):
-                return {"sealed": True}
+        now = time()
+        changes = _apply_ocr_close({}, run, now, rejected=rejected)
+        if not changes:
             return None
-        if rejected or past_deadline:
-            return {
-                "status": "failed",
-                "error": run.get("last_ocr_error") or default_error,
-            }
-        return None
+        if changes.get("status") == "failed" and not changes.get("error"):
+            changes["error"] = run.get("last_ocr_error") or default_error
+        return changes
 
     return ingest_cancellation._change(brain_id, root_id, transition)
 
 
-def record_ocr_page_failure(brain_id, root_id, error=None):
+def maybe_finish_remote_ocr(brain_id, root_id, *, rejected=False):
+    run = expire_remote_ocr(brain_id, root_id, rejected=rejected)
+    if run and run.get("status") == "staging" and run.get("sealed"):
+        closed = close_staging(brain_id, root_id)
+        return closed or run
+    return run
+
+
+def record_ocr_page_failure(
+    brain_id, root_id, error=None, page_index=None, total_pages=None,
+):
     """Keep accepted pages. Fail the run only when nothing usable has arrived."""
-    hard_fail = {"value": False}
 
     def transition(run):
         if run["status"] != "staging":
             return None
-        accepted = has_accepted_ocr_pages(run)
-        changes = {"ocr_pages_failed": int(run.get("ocr_pages_failed") or 0) + 1}
+        pages = dict(run.get("ocr_pages") or {})
+        key = _ocr_page_key(page_index, pages)
+        if pages.get(key) in {"accepted", "failed"}:
+            now, changes = _ocr_touch(run, total_pages)
+            return _apply_ocr_close(changes, run, now)
+        pages[key] = "failed"
+        now, changes = _ocr_touch(run, total_pages)
+        changes["ocr_pages"] = pages
+        accepted, failed = _ocr_counts({**run, "ocr_pages": pages})
+        changes["ocr_pages_accepted"] = accepted
+        changes["ocr_pages_failed"] = failed
         if error:
             changes["last_ocr_error"] = error
-        if accepted or is_soft_ocr_page_failure(error):
-            return changes
-        hard_fail["value"] = True
-        changes["status"] = "failed"
-        changes["error"] = error or REMOTE_OCR_REJECTED_ERROR
-        return changes
+        merged = {**run, **changes}
+        if not accepted and not is_soft_ocr_page_failure(error):
+            total = merged.get("ocr_total_pages")
+            if not total or failed >= int(total):
+                changes["status"] = "failed"
+                changes["error"] = error or REMOTE_OCR_REJECTED_ERROR
+                return changes
+        return _apply_ocr_close(changes, run, now)
 
     run = ingest_cancellation._change(brain_id, root_id, transition)
-    if hard_fail["value"] and run and run.get("status") == "failed":
+    if run and run.get("status") == "failed":
         _mark_remote_ocr_failed(
             brain_id, root_id, run.get("error") or error or REMOTE_OCR_REJECTED_ERROR
         )
-    return run
+        return run
+    maybe_finish_remote_ocr(brain_id, root_id)
+    return ingest_cancellation._runs(brain_id).find_one({"_id": root_id}) or run
 
 
 def fail_expired_remote_ocr(brain_id, task_id, cached=None, *, rejected=False):
     cached = dict(cached or {})
     try:
-        run = expire_remote_ocr(brain_id, task_id, rejected=rejected)
+        run = maybe_finish_remote_ocr(brain_id, task_id, rejected=rejected)
     except Exception:
         log.debug("Could not expire remote OCR run %s", task_id, exc_info=True)
         run = None
-    if cached.get("status") in TERMINAL_TASK_STATUSES:
+    status = cached.get("status")
+    if status in TERMINAL_TASK_STATUSES:
+        return cached
+    if status and status != "queued":
         return cached
     if has_accepted_ocr_pages(run, cached):
         return cached

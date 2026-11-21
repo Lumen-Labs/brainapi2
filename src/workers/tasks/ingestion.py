@@ -153,7 +153,9 @@ def set_ingestion_task_status(
         payload["stage"] = stage
     if counts is not None:
         payload["counts"] = counts
-    if error is not None:
+    if status == "completed":
+        payload.pop("error", None)
+    elif error is not None:
         payload["error"] = str(error)[:2000]
     if errors is not None:
         payload["errors"] = [
