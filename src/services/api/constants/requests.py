@@ -13,6 +13,8 @@ from urllib.parse import urlparse, urlsplit
 
 from pydantic import (
     BaseModel,
+    ConfigDict,
+    Discriminator,
     Field,
     StringConstraints,
     ValidationInfo,
@@ -29,7 +31,11 @@ from src.constants.kg import (
     Predicate,
     Relationship,
 )
-from src.constants.tasks.ingestion import IngestionTaskArgs
+from src.constants.tasks.ingestion import (
+    IngestionTaskArgs,
+    IngestionTaskJsonArgs,
+    IngestionTaskTextArgs,
+)
 from src.core.saving.ingest_groups import InvalidGroupTracking, normalize_group_tracking
 from src.core.search.entity_info import MatchPath
 
@@ -92,6 +98,24 @@ class IngestionRequestBody(IngestionTaskArgs):
     """
     Request body for the ingestion endpoint.
     """
+
+    model_config = ConfigDict(extra="allow")
+    data: Optional[
+        Annotated[
+            Union[IngestionTaskJsonArgs, IngestionTaskTextArgs],
+            Discriminator("data_type"),
+        ]
+    ] = None
+    status: Optional[str] = None
+    error: Optional[str] = None
+
+    @model_validator(mode="after")
+    def require_data_unless_failed_callback(self):
+        if self.data is not None:
+            return self
+        if str(self.status or "").lower() == "failed":
+            return self
+        raise ValueError("data is required")
 
 
 class IngestionUrlRequestBody(BaseModel):

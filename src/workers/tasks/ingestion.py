@@ -117,6 +117,7 @@ def set_ingestion_task_status(
     counts: Optional[dict] = None,
     cost: Optional[dict] = None,
     group_tracking: Optional[str] = None,
+    extra: Optional[dict] = None,
 ) -> dict:
     from src.core.saving.ingest_cost import IngestCostLedger, merge_cost_into_status_payload
 
@@ -136,6 +137,10 @@ def set_ingestion_task_status(
             existing = {}
     previous = existing.get("status")
     if previous in TERMINAL_TASK_STATUSES and status not in TERMINAL_TASK_STATUSES:
+        return existing
+    if previous in {"completed", "partial_failed"} and status == "failed":
+        return existing
+    if existing.get("ocr_pages_accepted") and status == "failed":
         return existing
     if previous and TASK_STATUS_RANK.get(status, -1) < TASK_STATUS_RANK.get(previous, -1):
         return existing
@@ -162,6 +167,12 @@ def set_ingestion_task_status(
             }
             for item in errors[:50]
         ]
+    if extra:
+        for extra_key, value in extra.items():
+            if value is None:
+                payload.pop(extra_key, None)
+            else:
+                payload[extra_key] = value
     if cost is not None:
         payload = merge_cost_into_status_payload(
             payload, IngestCostLedger.from_dict(cost)
@@ -177,6 +188,7 @@ def set_ingestion_task_status(
     else:
         payload.pop("group_tracking", None)
     if status in TERMINAL_TASK_STATUSES:
+        payload.pop("remote_ocr_deadline", None)
         record_terminal(brain_id, task_id, status)
     cache_adapter.set(
         key=key,

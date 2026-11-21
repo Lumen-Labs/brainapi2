@@ -42,6 +42,17 @@ from src.workers.tasks.ingestion import (
 )
 from src.workers.tasks.ingestion import set_ingestion_task_status
 from src.services.api.routes import spreadsheets
+from src.core.saving.ingest_plain_text import (
+    decode_plain_text,
+    uses_plain_text_ingest,
+)
+from src.constants.tasks.ingestion import IngestionTaskArgs
+from src.core.saving.ingest_staging import (
+    REMOTE_OCR_EMPTY_ERROR,
+    REMOTE_OCR_REJECTED_ERROR,
+    fail_expired_remote_ocr,
+    remote_ocr_callback_deadline,
+)
 
 MAX_TASK_RETRIES = 3
 RETRY_DELAY_BASE = 0.1
@@ -82,6 +93,178 @@ def _read_upload_capped(upload, limit):
             raise HTTPException(413, "Staged file upload is too large")
         chunks.append(chunk)
     return b"".join(chunks)
+
+
+def _upload_size(upload, content):
+    if content is not None:
+        return len(content)
+    size = getattr(upload, "size", None)
+    if isinstance(size, int) and size >= 0:
+        return size
+    return None
+
+
+def _plain_text_payload(brain_id, content, group_key):
+    payload = {
+        "data": {"data_type": "text", "text_data": decode_plain_text(content)},
+        "brain_id": brain_id,
+    }
+    if group_key:
+        payload["group_tracking"] = group_key
+    return payload
+
+
+def _file_accepted(task_id):
+    return JSONResponse(
+        status_code=202,
+        content={"message": "File ingestion accepted", "task_id": task_id},
+    )
+
+
+async def _queue_docling_file(brain_id, task, filename, content, context, group_key):
+    content_b64 = base64.b64encode(content).decode("ascii")
+    set_ingestion_task_status(
+        task, brain_id, "queued", stage="queued", group_tracking=group_key,
+    )
+    if (
+        os.getenv("STAGED_INGESTION_ENABLED") == "1"
+        and os.getenv("STAGED_ENRICHMENT_ENABLED") == "1"
+    ):
+        _submit_staged(
+            brain_id, task,
+            {"filename": filename, "group_tracking": group_key},
+            context, kind="file_discovery", discovery=True,
+            file_content=content_b64,
+        )
+        return
+    for attempt in range(MAX_TASK_RETRIES):
+        try:
+            ingest_file_task.apply_async(
+                args=[content_b64, filename, brain_id, group_key],
+                task_id=task,
+                **({"headers":{"pipeline_operation":context}} if context else {}),
+            )
+            return
+        except OperationalError:
+            if attempt == MAX_TASK_RETRIES - 1:
+                raise HTTPException(status_code=503, detail="Task queue unavailable")
+            await asyncio.sleep(RETRY_DELAY_BASE * (attempt + 1))
+
+
+def _forward_remote_ocr(request, brain_id, task, file, filename, content, group_key):
+    app_host = "{}://{}".format(
+        request.headers.get("X-Forwarded-Proto") or request.url.scheme,
+        request.headers.get("X-Forwarded-Host")
+        or request.headers.get("Host")
+        or request.base_url.netloc,
+    ).rstrip("/")
+    print(f"app_host: {app_host}")
+    deadline = remote_ocr_callback_deadline(_upload_size(file, content))
+    set_ingestion_task_status(
+        task,
+        brain_id,
+        "queued",
+        stage="queued",
+        group_tracking=group_key,
+        extra={"remote_ocr_deadline": deadline},
+    )
+    if (
+        os.getenv("STAGED_INGESTION_ENABLED") == "1"
+        and os.getenv("STAGED_ENRICHMENT_ENABLED") == "1"
+    ):
+        from src.core.saving import ingest_staging
+
+        ingest_staging.create_run(brain_id, task, callback_deadline=deadline)
+    parser_data = {
+        "brain_id": brain_id,
+        "webhook_callback": f"{app_host}/ingest/",
+        "identifier": task,
+    }
+    if group_key:
+        parser_data["group_tracking"] = group_key
+    upload = io.BytesIO(content) if content is not None else file.file
+    response = requests.post(
+        f"{config.docparser_endpoint}/ingest",
+        files={"file": (filename, upload, file.content_type)},
+        data=parser_data,
+        headers={"Authorization": f"Bearer {config.docparser_token}"},
+    )
+    if response.status_code != 200:
+        fail_expired_remote_ocr(brain_id, task, rejected=True)
+        raise HTTPException(status_code=503, detail=REMOTE_OCR_REJECTED_ERROR)
+
+
+async def _queue_text_ingest(brain_id, task_id, payload, context, group_tracking=None):
+    set_ingestion_task_status(
+        task_id,
+        brain_id,
+        "queued",
+        stage="queued",
+        group_tracking=group_tracking,
+    )
+    if os.getenv("STAGED_INGESTION_ENABLED") == "1" and (
+        payload.get("skip_enrichment") or os.getenv("STAGED_ENRICHMENT_ENABLED") == "1"
+    ):
+        _submit_staged(brain_id, task_id, payload, context)
+        return
+    headers = register(brain_id, task_id)
+    if context:
+        headers["pipeline_operation"] = context
+    for attempt in range(MAX_TASK_RETRIES):
+        try:
+            ingest_data_task.apply_async(
+                args=[payload],
+                task_id=task_id,
+                **({"headers": headers} if headers else {}),
+            )
+            return
+        except OperationalError:
+            if attempt == MAX_TASK_RETRIES - 1:
+                set_ingestion_task_status(
+                    task_id,
+                    brain_id,
+                    "failed",
+                    stage="queue",
+                    error="Task queue unavailable",
+                )
+                raise HTTPException(status_code=503, detail="Task queue unavailable")
+            await asyncio.sleep(RETRY_DELAY_BASE * (attempt + 1))
+
+
+def _ocr_callback_text(data):
+    payload = getattr(data, "data", None)
+    text = getattr(payload, "text_data", None) if payload is not None else None
+    if isinstance(text, str):
+        return text.strip()
+    return ""
+
+
+def _ocr_callback_failed(data):
+    if str(getattr(data, "status", "") or "").lower() == "failed":
+        return True
+    return not _ocr_callback_text(data)
+
+
+def _accept_remote_ocr_callback(brain_id, task_id, data, context):
+    from src.core.saving import ingest_staging
+
+    fail_expired_remote_ocr(brain_id, task_id)
+    if _ocr_callback_failed(data):
+        error = (getattr(data, "error", None) or "").strip() or REMOTE_OCR_EMPTY_ERROR
+        ingest_staging.record_ocr_page_failure(brain_id, task_id, error)
+        return JSONResponse(
+            status_code=202,
+            content={"message": "Ingestion accepted", "task_id": task_id},
+        )
+    payload = IngestionTaskArgs.model_validate(
+        data.model_dump(exclude={"status", "error"})
+    ).model_dump(mode="json")
+    _submit_staged(brain_id, task_id, payload, context, existing_ocr=True)
+    return JSONResponse(
+        status_code=202,
+        content={"message": "Ingestion accepted", "task_id": task_id},
+    )
+
 
 ingest_router = APIRouter(prefix="/ingest", tags=["ingest"])
 
@@ -142,14 +325,10 @@ async def ingest_data(
         from src.core.saving import ingest_staging
 
         if ingest_staging.is_remote_ocr_run(brain_id, task_id):
-            ingest_staging.expire_remote_ocr(brain_id, task_id)
-            _submit_staged(
-                brain_id, task_id, data.model_dump(mode="json"), context, existing_ocr=True,
-            )
-            return JSONResponse(
-                status_code=202,
-                content={"message": "Ingestion accepted", "task_id": task_id},
-            )
+            return _accept_remote_ocr_callback(brain_id, task_id, data, context)
+
+    if str(getattr(data, "status", "") or "").lower() == "failed" or data.data is None:
+        raise HTTPException(status_code=422, detail="data is required")
 
     set_ingestion_task_status(
         task_id,
@@ -393,110 +572,43 @@ async def ingest_file(
         return JSONResponse(status_code=202, content={"message": "Workbook imported", "task_id": task})
 
     try:
+        filename = file.filename or "file"
         file.file.seek(0)
         staged_file = (
             os.getenv("STAGED_INGESTION_ENABLED") == "1"
             and os.getenv("STAGED_ENRICHMENT_ENABLED") == "1"
         )
-        content = _read_upload_capped(file, staged_upload_max_bytes()) if staged_file else None
+        plain_text = uses_plain_text_ingest(brain_id, filename, file.content_type)
+        content = None
+        if staged_file:
+            content = _read_upload_capped(file, staged_upload_max_bytes())
+        elif plain_text:
+            content = file.file.read()
+        if content is not None:
+            plain_text = uses_plain_text_ingest(
+                brain_id, filename, file.content_type, content,
+            )
 
-        if config.ocr_mode == "docling":
+        if plain_text:
+            await _queue_text_ingest(
+                brain_id,
+                task,
+                _plain_text_payload(brain_id, content or b"", group_key),
+                context,
+                group_key,
+            )
+        elif config.ocr_mode == "docling":
             payload = file.file.read() if content is None else content
-            content_b64 = base64.b64encode(payload).decode("ascii")
-            filename = file.filename or "file"
-            set_ingestion_task_status(
-                task,
-                brain_id,
-                "queued",
-                stage="queued",
-                group_tracking=group_key,
+            await _queue_docling_file(
+                brain_id, task, filename, payload, context, group_key,
             )
-            if (
-                os.getenv("STAGED_INGESTION_ENABLED") == "1"
-                and os.getenv("STAGED_ENRICHMENT_ENABLED") == "1"
-            ):
-                _submit_staged(
-                    brain_id, task,
-                    {"filename": filename, "group_tracking": group_key},
-                    context, kind="file_discovery", discovery=True,
-                    file_content=content_b64,
-                )
-                return JSONResponse(
-                    status_code=202,
-                    content={"message": "File ingestion accepted", "task_id": task},
-                )
-            for attempt in range(MAX_TASK_RETRIES):
-                try:
-                    ingest_file_task.apply_async(
-                        args=[content_b64, filename, brain_id, group_key],
-                        task_id=task,
-                        **({"headers":{"pipeline_operation":context}} if context else {}),
-                    )
-                    break
-                except OperationalError:
-                    if attempt == MAX_TASK_RETRIES - 1:
-                        raise HTTPException(
-                            status_code=503, detail="Task queue unavailable"
-                        )
-                    await asyncio.sleep(RETRY_DELAY_BASE * (attempt + 1))
-            response_content = {
-                "message": "File ingestion accepted",
-                "task_id": task,
-            }
         else:
-            forwarded_proto = (
-                request.headers.get("X-Forwarded-Proto") or request.url.scheme
+            _forward_remote_ocr(
+                request, brain_id, task, file, filename, content, group_key,
             )
-            forwarded_host = (
-                request.headers.get("X-Forwarded-Host")
-                or request.headers.get("Host")
-                or request.base_url.netloc
-            )
-            app_host = f"{forwarded_proto}://{forwarded_host}".rstrip("/")
-            print(f"app_host: {app_host}")
-            set_ingestion_task_status(
-                task,
-                brain_id,
-                "queued",
-                stage="queued",
-                group_tracking=group_key,
-            )
-            staged_ocr = (
-                os.getenv("STAGED_INGESTION_ENABLED") == "1"
-                and os.getenv("STAGED_ENRICHMENT_ENABLED") == "1"
-            )
-            if staged_ocr:
-                from src.core.saving import ingest_staging
-
-                ingest_staging.create_run(brain_id, task, callback_deadline=time() + 3600)
-            parser_data = {
-                "brain_id": brain_id,
-                "webhook_callback": f"{app_host}/ingest/",
-                "identifier": task,
-            }
-            if group_key:
-                parser_data["group_tracking"] = group_key
-            upload = io.BytesIO(content) if content is not None else file.file
-            response = requests.post(
-                f"{config.docparser_endpoint}/ingest",
-                files={"file": (file.filename or "file", upload, file.content_type)},
-                data=parser_data,
-                headers={"Authorization": f"Bearer {config.docparser_token}"},
-            )
-            if response.status_code != 200:
-                if staged_ocr:
-                    ingest_staging.expire_remote_ocr(brain_id, task, rejected=True)
-                raise HTTPException(
-                    status_code=503,
-                    detail="Document parser rejected the ingestion request",
-                )
-            response_content = {
-                "message": "File ingestion accepted",
-                "task_id": task,
-            }
     except HTTPException:
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail="File ingestion failed") from exc
 
-    return JSONResponse(status_code=202, content=response_content)
+    return _file_accepted(task)
