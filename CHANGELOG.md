@@ -16,9 +16,9 @@ Spreadsheet import/query (off by default), Explore overview-link snapshots, and 
 
 ### MCP OAuth
 
-- Hosted sign-in: consent is a one-time `request_id` (OAuth params stay in Redis), BrainPATs in Redis are Fernet-encrypted from `BRAINPAT_TOKEN`, origin/CSP headers, 303 redirect, and brain-scoped PAT only (system PAT cannot grant OAuth). Consent `form-action` includes the pending callback origin so non-hosted clients are not blocked after POST.
+- Hosted sign-in: consent is a one-time `request_id` (OAuth params stay in Redis), BrainPATs in Redis are Fernet-encrypted from `BRAINPAT_TOKEN`, origin/CSP headers, 303 redirect, and brain-scoped PAT only (system PAT cannot grant OAuth). Consent `form-action` includes the pending callback origin so non-hosted clients are not blocked after POST. That origin is built from hostname characters only (`A-Za-z0-9.-` plus an optional port).
 - `MCP_OAUTH_CHATGPT_ONLY=true` or a set `MCP_HOSTED_OAUTH_ISSUER_URL` restricts client registration and authorize redirects to the hosted connector callback. `#142` verification scopes, `pat_scope_resolver`, conflict/changelog tools, and `McpToolError` are unchanged.
-- Refresh-token TTL still defaults to unset (no expiry) unless `MCP_OAUTH_REFRESH_TOKEN_TTL` is set. Fernet decryption failures stay hard failures: plaintext refresh records from an unencrypted image need a one-time re-authorize.
+- Refresh-token TTL still defaults to unset (no expiry) unless `MCP_OAUTH_REFRESH_TOKEN_TTL` is set. Fernet decryption failures (plaintext, corrupt, or wrong key) delete that Redis key and fail the access token so `/mcp` returns 401 and the client re-auths immediately. On startup, leftover plaintext PAT values are scanned and deleted (Fernet tokens start with `gAAAAA`; values are not logged). There is no plaintext decrypt fallback.
 
 ### Defaults and flags
 
@@ -32,7 +32,9 @@ Spreadsheet import/query (off by default), Explore overview-link snapshots, and 
 
 After shipping this image, remove the two MCP bind mounts that overrode `src/services/mcp/main.py` and `src/services/mcp/oauth_provider.py`. Spreadsheet and Explore no longer need custom image layers.
 
-Hosts that already encrypt MCP PATs in Redis keep working. A deploy that still has plaintext refresh records from an unencrypted image must re-authorize those clients once; this release does not treat decrypt failures as plaintext.
+**Hard requirement:** `BRAINPAT_TOKEN` and the MCP issuer (`MCP_HOSTED_OAUTH_ISSUER_URL` if set, otherwise `MCP_OAUTH_ISSUER_URL`) must stay exactly the same across this redeploy. Changing either one makes every stored PAT undecryptable. The Fernet key is HMAC-SHA256(`BRAINPAT_TOKEN`, `brainapi-mcp-oauth-pat:{issuer}`); keep that derivation as-is.
+
+Hosts that already encrypt MCP PATs with the same `BRAINPAT_TOKEN` and issuer keep working. Leftover plaintext PATs from 2.21.0 / `#142` (or any unencrypted image) are deleted on startup and on first decrypt failure; those clients get 401 on `/mcp` and must re-authorize once. Idle refresh keys that never expire are included in that cleanup.
 
 ## 2.21.0 — 2026-11-21
 

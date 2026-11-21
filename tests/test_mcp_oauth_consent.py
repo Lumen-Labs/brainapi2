@@ -154,6 +154,22 @@ def test_consent_post_requires_brain_scoped_pat():
     assert response.status_code == 401
 
 
+def test_consent_csp_rejects_semicolon_in_callback_host():
+    from src.services.mcp.main import _consent_headers
+
+    with patch("src.services.mcp.main._chatgpt_only", False):
+        injected = _consent_headers(
+            "https://evil.example%3Bscript-src%20https://x.example/"
+        )
+        ported = _consent_headers("https://mcp-client.example:8443/oauth/callback")
+    assert _form_action_origins(injected["Content-Security-Policy"]) == ["'self'"]
+    assert "script-src" not in injected["Content-Security-Policy"]
+    assert _form_action_origins(ported["Content-Security-Policy"]) == [
+        "'self'",
+        "https://mcp-client.example:8443",
+    ]
+
+
 def test_consent_post_issues_code_for_brain_pat():
     provider, request_id = _pending_provider()
     with (

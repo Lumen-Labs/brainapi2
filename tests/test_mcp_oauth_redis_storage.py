@@ -1,17 +1,27 @@
 import asyncio
+import base64
+import hmac
 import os
 import unittest
 from urllib.parse import parse_qs, urlparse
 
-from pydantic import AnyUrl
+from cryptography.fernet import Fernet
+from pydantic import AnyHttpUrl, AnyUrl
+from starlette.testclient import TestClient
 
 os.environ.setdefault("REDIS_HOST", "localhost")
 os.environ.setdefault("REDIS_PORT", "6379")
 
-from mcp.server.auth.provider import AuthorizationParams
+from mcp.server import FastMCP
+from mcp.server.auth.provider import AuthorizationParams, TokenError
+from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions
 from mcp.shared.auth import OAuthClientInformationFull
 
 from src.services.mcp.oauth_provider import BrainapiMcpOAuthProvider
+
+CALLBACK = "https://mcp-client.example/oauth/callback"
+ISSUER = "https://brainapi.example"
+RESOURCE = "https://brainapi.example/mcp"
 
 
 class FakeRedis:
@@ -63,6 +73,14 @@ class FakeRedis:
         self.expirations.pop(key, None)
         return self.values.pop(key, None)
 
+    def scan(self, cursor=0, match=None, count=100):
+        import fnmatch
+
+        keys = list(self.values)
+        if match:
+            keys = [key for key in keys if fnmatch.fnmatch(key, match)]
+        return 0, keys
+
 
 def make_provider(
     redis_client,
@@ -86,6 +104,70 @@ def make_provider(
         pat_scope_resolver=pat_scope_resolver,
         chatgpt_only=chatgpt_only,
         credential_secret=credential_secret,
+    )
+
+
+def _client_info(client_id="client-1"):
+    return OAuthClientInformationFull(
+        client_id=client_id,
+        redirect_uris=[AnyUrl(CALLBACK)],
+    )
+
+
+def _mint_oauth_token(redis_client, credential_secret=None, brainpat="brain-pat"):
+    provider = make_provider(redis_client, credential_secret=credential_secret)
+    client = _client_info()
+    asyncio.run(provider.register_client(client))
+    code = provider.issue_auth_code(
+        client_id=client.client_id,
+        redirect_uri=AnyUrl(CALLBACK),
+        code_challenge="challenge",
+        scopes=["brainapi"],
+        resource=RESOURCE,
+        state=None,
+        brainpat=brainpat,
+    )
+    auth_code = asyncio.run(provider.load_authorization_code(client, code))
+    token = asyncio.run(provider.exchange_authorization_code(client, auth_code))
+    return provider, client, token
+
+
+def _mcp_http(provider):
+    mcp = FastMCP(
+        "brainapi-mcp-test",
+        stateless_http=True,
+        auth_server_provider=provider,
+        auth=AuthSettings(
+            issuer_url=AnyHttpUrl(ISSUER),
+            resource_server_url=AnyHttpUrl(RESOURCE),
+            client_registration_options=ClientRegistrationOptions(
+                enabled=True,
+                valid_scopes=["brainapi"],
+                default_scopes=["brainapi"],
+            ),
+        ),
+    )
+    return TestClient(mcp.streamable_http_app())
+
+
+def _post_mcp(http, access_token):
+    return http.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": {"name": "test", "version": "0"},
+            },
+        },
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+        },
     )
 
 
@@ -340,6 +422,95 @@ class BrainapiMcpOAuthProviderRedisTests(unittest.TestCase):
         self.assertEqual(consumed["client_id"], "client-1")
         self.assertIsNone(provider.consent_request(request_id))
         self.assertIsNone(provider.consent_request("not-a-valid-id"))
+
+    def test_fernet_key_is_hmac_sha256_of_secret_and_issuer(self):
+        redis_client = FakeRedis()
+        provider = make_provider(redis_client, credential_secret="secret")
+        purpose = b"brainapi-mcp-oauth-pat:https://brainapi.example"
+        key = hmac.digest(b"secret", purpose, "sha256")
+        expected = Fernet(base64.urlsafe_b64encode(key))
+        token = expected.encrypt(b"brain-pat")
+        self.assertEqual(provider._credential_cipher.decrypt(token), b"brain-pat")
+
+    def test_plaintext_pat_from_unencrypted_image_is_purged_and_mcp_returns_401(self):
+        redis_client = FakeRedis()
+        _, client, token = _mint_oauth_token(redis_client)
+        access_pat_key = f"mcp:oauth:access_pat:{token.access_token}"
+        refresh_pat_key = f"mcp:oauth:refresh_pat:{token.refresh_token}"
+        self.assertEqual(redis_client.get(access_pat_key), "brain-pat")
+        self.assertEqual(redis_client.get(refresh_pat_key), "brain-pat")
+        self.assertFalse(redis_client.get(access_pat_key).startswith("gAAAAA"))
+
+        upgraded = make_provider(redis_client, credential_secret="secret")
+        self.assertIsNone(redis_client.get(access_pat_key))
+        self.assertIsNone(redis_client.get(f"mcp:oauth:access:{token.access_token}"))
+        self.assertIsNone(redis_client.get(refresh_pat_key))
+        self.assertIsNone(redis_client.get(f"mcp:oauth:refresh:{token.refresh_token}"))
+        self.assertIsNone(asyncio.run(upgraded.load_access_token(token.access_token)))
+        self.assertIsNone(upgraded.get_pat_for_access_token(token.access_token))
+        self.assertIsNone(
+            asyncio.run(upgraded.load_refresh_token(client, token.refresh_token))
+        )
+        with self.assertRaises(TokenError) as raised:
+            asyncio.run(
+                upgraded.exchange_refresh_token(
+                    client,
+                    type("RT", (), {"token": token.refresh_token, "client_id": client.client_id})(),
+                    ["brainapi"],
+                )
+            )
+        self.assertEqual(raised.exception.error, "invalid_grant")
+
+        with _mcp_http(upgraded) as http:
+            response = _post_mcp(http, token.access_token)
+        self.assertEqual(response.status_code, 401)
+
+    def test_decrypt_failure_deletes_plaintext_pat_without_startup_purge(self):
+        redis_client = FakeRedis()
+        provider, _client, token = _mint_oauth_token(redis_client)
+        access_pat_key = f"mcp:oauth:access_pat:{token.access_token}"
+        self.assertEqual(redis_client.get(access_pat_key), "brain-pat")
+        purpose = b"brainapi-mcp-oauth-pat:https://brainapi.example"
+        key = hmac.digest(b"secret", purpose, "sha256")
+        provider._credential_cipher = Fernet(base64.urlsafe_b64encode(key))
+
+        self.assertIsNone(asyncio.run(provider.load_access_token(token.access_token)))
+        self.assertIsNone(redis_client.get(access_pat_key))
+        self.assertIsNone(redis_client.get(f"mcp:oauth:access:{token.access_token}"))
+        self.assertIsNone(provider.get_pat_for_access_token(token.access_token))
+
+        with _mcp_http(provider) as http:
+            response = _post_mcp(http, token.access_token)
+        self.assertEqual(response.status_code, 401)
+
+    def test_wrong_key_ciphertext_is_deleted_on_use(self):
+        redis_client = FakeRedis()
+        _, _client, token = _mint_oauth_token(redis_client, credential_secret="secret-a")
+        access_pat_key = f"mcp:oauth:access_pat:{token.access_token}"
+        stored = redis_client.get(access_pat_key)
+        self.assertTrue(stored.startswith("gAAAAA"))
+
+        other = make_provider(redis_client, credential_secret="secret-b")
+        self.assertEqual(redis_client.get(access_pat_key), stored)
+        self.assertIsNone(asyncio.run(other.load_access_token(token.access_token)))
+        self.assertIsNone(redis_client.get(access_pat_key))
+        self.assertIsNone(redis_client.get(f"mcp:oauth:access:{token.access_token}"))
+
+        with _mcp_http(other) as http:
+            response = _post_mcp(http, token.access_token)
+        self.assertEqual(response.status_code, 401)
+
+    def test_encrypted_pats_survive_plaintext_cleanup(self):
+        redis_client = FakeRedis()
+        _, _client, token = _mint_oauth_token(redis_client, credential_secret="secret")
+        access_pat_key = f"mcp:oauth:access_pat:{token.access_token}"
+        stored = redis_client.get(access_pat_key)
+        self.assertTrue(stored.startswith("gAAAAA"))
+
+        recreated = make_provider(redis_client, credential_secret="secret")
+        self.assertEqual(redis_client.get(access_pat_key), stored)
+        self.assertIsNotNone(asyncio.run(recreated.load_access_token(token.access_token)))
+        self.assertEqual(recreated.get_pat_for_access_token(token.access_token), "brain-pat")
 
 
 if __name__ == "__main__":

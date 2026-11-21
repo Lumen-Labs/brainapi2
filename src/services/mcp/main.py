@@ -13,6 +13,7 @@ import asyncio
 import html
 import json
 import os
+import re
 from contextvars import ContextVar
 from typing import Any
 from urllib.parse import urlsplit
@@ -143,12 +144,20 @@ else:
     mcp = FastMCP("brainapi-mcp", stateless_http=True, host="0.0.0.0")
 
 
+_CONSENT_HOST = re.compile(r"^[A-Za-z0-9.-]+(?::\d{1,5})?$")
+
+
 def _consent_headers(redirect_uri=None):
     actions = ["'self'"]
     origins = []
     if redirect_uri:
         parsed = urlsplit(str(redirect_uri))
-        if parsed.scheme in {"http", "https"} and parsed.netloc and not parsed.username:
+        if (
+            parsed.scheme in {"http", "https"}
+            and parsed.netloc
+            and not parsed.username
+            and _CONSENT_HOST.fullmatch(parsed.netloc)
+        ):
             origins.append(f"{parsed.scheme}://{parsed.netloc}")
     if _chatgpt_only:
         origins.append("https://chatgpt.com")
