@@ -1054,19 +1054,15 @@ class Neo4jClient(GraphClient):
         cypher_query = (
             "MATCH (n)\n"
             "WHERE toLower(n['name']) CONTAINS toLower($text)\n"
-            "RETURN n"
+            "RETURN n['uuid'] as uuid, n['name'] as name, labels(n) as labels, "
+            "n['description'] as description,\n"
+            "properties(n) as properties,\n"
+            "n['polarity'] as polarity, n['happened_at'] as happened_at, "
+            "n['last_updated'] as last_updated,\n"
+            "n['observations'] as observations, n['metadata'] as metadata"
         )
         result = self._run_query(cypher_query, brain_id, {"text": text})
-        return [
-            Node(
-                uuid=node.get("uuid", "") or "",
-                name=node.get("name", "") or "",
-                labels=node.get("labels", []) or [],
-                description=node.get("description", "") or "",
-                properties=self._python_properties(node.get("properties", {}) or {}),
-            )
-            for node in result.records
-        ]
+        return [self._node_from_stored_fields(record) for record in result.records]
 
     def get_nodes_by_uuid(
         self,
