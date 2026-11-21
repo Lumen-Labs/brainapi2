@@ -30,6 +30,10 @@ class EmbeddingError(Exception):
     pass
 
 
+class EmbeddingClientError(Exception):
+    """Upstream embedding client failed."""
+
+
 class EmbeddingsClient(EmbeddingsClient):
     """
     Embeddings client.

@@ -9,6 +9,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 """
 
 import asyncio
+import logging
 import re
 from collections import defaultdict
 from datetime import datetime
@@ -61,6 +62,7 @@ from src.core.verification.facts import (
 from src.services.api.constants.requests import FactVerificationInfo
 
 vector_search = VectorSearchFacade(vector_store_adapter)
+logger = logging.getLogger(__name__)
 
 _MAX_NOUN_CHUNKS = 5
 _SEED_K = 25
@@ -78,6 +80,29 @@ _BRIDGE_SEED_HUB_CAP = 12
 _BRIDGE_RESERVE_HUB_CAP = 6
 _BRIDGE_RESERVE_MIN = 3
 _BRIDGE_RESERVE_FRAC_DENOM = 4
+
+
+def _embed_query_vector(text: str) -> Vector:
+    try:
+        vector = embeddings_adapter.embed_text(text)
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Embedding request failed")
+        raise HTTPException(
+            status_code=503,
+            detail="Embedding service unavailable",
+        ) from None
+    values = getattr(vector, "embeddings", None)
+    if not values:
+        logger.error("Embedding request failed")
+        raise HTTPException(
+            status_code=503,
+            detail="Embedding service unavailable",
+        )
+    return vector
+
+
 _DISTANCE_QUANT_DECIMALS = 3
 
 
@@ -460,7 +485,7 @@ async def retrieve_data(
         preferred_entities = []
 
     def _get_data():
-        text_embeddings = embeddings_adapter.embed_text(text)
+        text_embeddings = _embed_query_vector(text)
 
         data_vectors = vector_search.search_data(
             text_embeddings.embeddings,
@@ -659,7 +684,7 @@ async def retrieve_neighbors(
         node = await asyncio.to_thread(_get_node)
         target_node_types = node.labels
 
-        looking_for_v = embeddings_adapter.embed_text(look_for) if look_for else None
+        looking_for_v = _embed_query_vector(look_for) if look_for else None
 
         # ---------------------------------------------------------
         # ===== Getting 1st degree neighbors of the main node =====
@@ -1840,7 +1865,7 @@ def _seed_nodes_for_text(
     """Return (node_uuid, distance, entity_name) seeds from nodes + relationships."""
     if embeddings is None:
         with profile_stage("embed.query"):
-            text_embeddings = embeddings_adapter.embed_text(text)
+            text_embeddings = _embed_query_vector(text)
         embeddings = text_embeddings.embeddings
     seeds: list[tuple[str, float, str]] = []
 
@@ -2023,7 +2048,7 @@ def _retrieve_passages(
         id_to_distance: dict[str, float] = {}
         if use_dense:
             with profile_stage("embed.query"):
-                text_embeddings = embeddings_adapter.embed_text(text)
+                text_embeddings = _embed_query_vector(text)
             with profile_stage("vector.search_data", k=max(limit, _PASSAGE_K)):
                 vector_ids, id_to_distance = collect_dense_passages(
                     vector_search,
@@ -2139,7 +2164,7 @@ async def _build_context(
     def _embed_query(text: str) -> list[float]:
         cached = shared_vectors.get(text)
         if cached is None:
-            cached = embeddings_adapter.embed_text(text).embeddings
+            cached = _embed_query_vector(text).embeddings
             shared_vectors[text] = cached
         return cached
 
@@ -2154,11 +2179,26 @@ async def _build_context(
             return [item or [] for item in vectors]
         batch = getattr(embeddings_adapter, "embed_texts", None)
         if callable(batch):
-            raw = batch([text for _index, text in missing])
+            try:
+                raw = batch([text for _index, text in missing])
+            except HTTPException:
+                raise
+            except Exception:
+                logger.exception("Embedding request failed")
+                raise HTTPException(
+                    status_code=503,
+                    detail="Embedding service unavailable",
+                ) from None
             for (index, text), item in zip(missing, raw):
                 vector = getattr(item, "embeddings", None)
                 if vector is None:
                     vector = item
+                if not vector:
+                    logger.error("Embedding request failed")
+                    raise HTTPException(
+                        status_code=503,
+                        detail="Embedding service unavailable",
+                    )
                 shared_vectors[text] = vector
                 vectors[index] = vector
         else:

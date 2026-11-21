@@ -6,6 +6,7 @@ Author: Christian Nonis <alch.infoemail@gmail.com>
 
 import asyncio
 
+from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
 from src.constants.embeddings import EMBEDDING_STORES_SIZES
@@ -28,6 +29,8 @@ async def list_vectors(
     skip: int = 0,
     include_embeddings: bool = False,
 ):
+    if store not in EMBEDDING_STORES_SIZES:
+        raise HTTPException(status_code=404, detail="Vector store not found")
     vectors, total = await asyncio.to_thread(
         vector_store_adapter.list_vectors,
         store,
