@@ -46,6 +46,14 @@ ISSUER = "https://brainapi.example"
 CALLBACK = "https://mcp-client.example/oauth/callback"
 
 
+def _form_action_origins(policy):
+    for directive in policy.split(";"):
+        directive = directive.strip()
+        if directive.startswith("form-action "):
+            return directive.split()[1:]
+    return []
+
+
 def _consent_client(provider):
     app = Starlette(
         routes=[Route("/mcp-oauth/consent", _mcp_oauth_consent, methods=["GET", "POST"])]
@@ -92,11 +100,11 @@ def test_consent_get_requires_request_id():
     assert 'name="request_id"' in found.text
     assert "code_challenge" not in found.text
     assert found.headers["cache-control"] == "no-store"
-    policy = found.headers["content-security-policy"]
-    assert "form-action 'self' https://mcp-client.example" in policy
-    assert "https://chatgpt.com" not in policy
-    assert "form-action 'self'" in missing.headers["content-security-policy"]
-    assert "mcp-client.example" not in missing.headers["content-security-policy"]
+    assert _form_action_origins(found.headers["content-security-policy"]) == [
+        "'self'",
+        "https://mcp-client.example",
+    ]
+    assert _form_action_origins(missing.headers["content-security-policy"]) == ["'self'"]
 
 
 def test_consent_csp_keeps_hosted_origin_when_restricted():
@@ -108,10 +116,11 @@ def test_consent_csp_keeps_hosted_origin_when_restricted():
     ):
         client, _ = _consent_client(provider)
         found = client.get("/mcp-oauth/consent", params={"request_id": request_id})
-    policy = found.headers["content-security-policy"]
-    assert "form-action 'self'" in policy
-    assert "https://chatgpt.com" in policy
-    assert "https://mcp-client.example" in policy
+    assert _form_action_origins(found.headers["content-security-policy"]) == [
+        "'self'",
+        "https://mcp-client.example",
+        "https://chatgpt.com",
+    ]
 
 
 def test_consent_post_rejects_wrong_origin():
