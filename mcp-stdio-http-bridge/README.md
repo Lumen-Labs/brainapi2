@@ -62,7 +62,7 @@ Point Claude Desktop’s MCP `command` at the bridge binary so it runs as a stdi
 
 Optional env vars:
 
-- `URI` – remote MCP Streamable HTTP endpoint (default: `<your-deployment-url>/mcp`)
+- `URI` – remote MCP Streamable HTTP endpoint (default: `http://127.0.0.1:8000/mcp`)
 - `BEARER_TOKEN` – if set, sent as `Authorization: Bearer <token>`
 - `MCP_NAME` – used in logs only
 - `MCP_TIMEOUT_MS` – request timeout in ms (default: 60000)
