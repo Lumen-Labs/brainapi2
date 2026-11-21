@@ -29,6 +29,7 @@ from src.services.api.routes.meta import meta_router
 from src.services.api.routes.model import model_router
 from src.services.api.routes.public import public_router
 from src.services.api.routes.retrieve import retrieve_router
+from src.services.api.routes.spreadsheets import router as spreadsheets_router
 from src.services.api.routes.system import system_router
 from src.services.api.routes.tasks import tasks_router
 from src.lib.tracing.middleware import TraceMiddleware
@@ -194,6 +195,7 @@ app.add_middleware(
 app.add_middleware(TraceMiddleware, service_name="brainapi-api")
 
 app.include_router(ingest_router)
+app.include_router(spreadsheets_router)
 app.include_router(retrieve_router)
 app.include_router(meta_router)
 app.include_router(model_router)

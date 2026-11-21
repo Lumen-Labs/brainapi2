@@ -85,7 +85,20 @@ def build_communities(nodes, relationships):
             seen[identity] = cid
             current.append((cid, members))
         previous = current
+    root_ids = {group["id"] for group in communities if group["parentId"] is None}
+    root_by_entity = {entity: cid for cid, entity in memberships if cid in root_ids}
+    root_links = Counter(
+        (root_by_entity[source], root_by_entity[target])
+        for source, target in valid_edges
+        if root_by_entity[source] != root_by_entity[target]
+    )
+    ordered_links = sorted(root_links.items(), key=lambda item: (-item[1], item[0]))
     return {
         "groups": communities,
         "totals": {"things": len(metadata), "connections": len(valid_edges)},
+        "overviewLinks": [
+            {"id": f"aggregate:{a}:{b}", "fromId": a, "toId": b, "count": count}
+            for (a, b), count in ordered_links[:4000]
+        ],
+        "overviewLinksTruncated": len(ordered_links) > 4000,
     }, memberships

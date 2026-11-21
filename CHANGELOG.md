@@ -1,5 +1,37 @@
 # Changelog
 
+## 2.21.1 — 2026-11-21
+
+Spreadsheet import/query (off by default), Explore overview-link snapshots, and hosted MCP OAuth sign-in. These were live on engine hosts only; this release puts them in the image so hosts can drop bind mounts and custom layers.
+
+### Spreadsheets
+
+- `.xlsx` / `.csv` uploads on `POST /ingest/file` import as structured workbooks when the brain is gated on, instead of the text ingest pipeline. Direct upload: `POST /ingest/spreadsheets`. List/query: `GET /retrieve/spreadsheets`, `POST /retrieve/spreadsheets/query`.
+- Gate: `SPREADSHEET_EXPERIMENT_BRAINS` (comma-separated brain keys, `*` for all). Empty or unset disables every brain; disabled brains fall through to normal ingest and the retrieve routes return 404.
+- Adds `openpyxl` and `et-xmlfile`. PostgreSQL brains only.
+
+### Explore
+
+- Community snapshots store capped `overviewLinks` (4000) plus `overviewLinksTruncated`. Unfiltered overview reads those snapshot counts instead of aggregating the live graph.
+
+### MCP OAuth
+
+- Hosted sign-in: consent is a one-time `request_id` (OAuth params stay in Redis), BrainPATs in Redis are Fernet-encrypted from `BRAINPAT_TOKEN`, origin/CSP headers, 303 redirect, and brain-scoped PAT only (system PAT cannot grant OAuth).
+- `MCP_OAUTH_CHATGPT_ONLY=true` or a set `MCP_HOSTED_OAUTH_ISSUER_URL` restricts client registration and authorize redirects to the hosted connector callback. `#142` verification scopes, `pat_scope_resolver`, conflict/changelog tools, and `McpToolError` are unchanged.
+- Refresh-token TTL still defaults to unset (no expiry) unless `MCP_OAUTH_REFRESH_TOKEN_TTL` is set.
+
+### Defaults and flags
+
+| Flag / setting | Default |
+| --- | --- |
+| `SPREADSHEET_EXPERIMENT_BRAINS` | empty (off) |
+| `MCP_OAUTH_CHATGPT_ONLY` | unset / not `true` |
+| `MCP_HOSTED_OAUTH_ISSUER_URL` | empty |
+
+### Deploy
+
+After shipping this image, remove the two MCP bind mounts that overrode `src/services/mcp/main.py` and `src/services/mcp/oauth_provider.py`. Spreadsheet and Explore no longer need custom image layers.
+
 ## 2.21.0 — 2026-11-21
 
 Knowledge-graph memory: expert verification, cross-source conflict detection, fail-closed as-of retrieve, validity changelogs, staged-ingest rollback, and Cypher hardening. Defaults are unchanged: raw Cypher is read-only, `CONFLICT_DETECT_ON_INGEST` and `CONFLICT_DETECT_LLM` are off, as-of lookups fail closed, and ingest staging is not required for a normal import.

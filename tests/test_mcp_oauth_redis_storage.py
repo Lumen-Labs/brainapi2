@@ -59,6 +59,10 @@ class FakeRedis:
         self.expirations[key] = seconds
         return True
 
+    def getdel(self, key):
+        self.expirations.pop(key, None)
+        return self.values.pop(key, None)
+
 
 def make_provider(
     redis_client,
@@ -66,6 +70,8 @@ def make_provider(
     valid_scopes=None,
     default_scopes=None,
     pat_scope_resolver=None,
+    chatgpt_only=False,
+    credential_secret=None,
 ):
     return BrainapiMcpOAuthProvider(
         issuer_url="https://brainapi.example",
@@ -78,6 +84,8 @@ def make_provider(
         redis_client=redis_client,
         pat_verifier=pat_verifier,
         pat_scope_resolver=pat_scope_resolver,
+        chatgpt_only=chatgpt_only,
+        credential_secret=credential_secret,
     )
 
 
@@ -145,8 +153,10 @@ class BrainapiMcpOAuthProviderRedisTests(unittest.TestCase):
 
         url = asyncio.run(provider.authorize(client, params))
         query = parse_qs(urlparse(url).query)
+        pending = provider.consent_request(query["request_id"][0])
 
-        self.assertEqual(query["redirect_uri_provided_explicitly"], ["0"])
+        self.assertEqual(list(query), ["request_id"])
+        self.assertEqual(pending["redirect_uri_provided_explicitly"], "0")
 
     def test_valid_pat_can_be_used_as_bearer_token(self):
         provider = make_provider(FakeRedis(), pat_verifier=lambda pat: pat == "brain-pat")
@@ -190,7 +200,8 @@ class BrainapiMcpOAuthProviderRedisTests(unittest.TestCase):
         )
         url = asyncio.run(provider.authorize(client, params))
         query = parse_qs(urlparse(url).query)
-        self.assertEqual(query["scope"], ["brainapi"])
+        pending = provider.consent_request(query["request_id"][0])
+        self.assertEqual(pending["scope"], "brainapi")
 
     def test_invalid_pat_is_not_accepted_as_bearer_token(self):
         provider = make_provider(FakeRedis(), pat_verifier=lambda _pat: False)
@@ -230,6 +241,105 @@ class BrainapiMcpOAuthProviderRedisTests(unittest.TestCase):
             recreated.get_pat_for_access_token(second_token.access_token),
             "brain-pat",
         )
+
+    def test_chatgpt_only_rejects_non_connector_redirect(self):
+        from mcp.server.auth.provider import AuthorizeError, RegistrationError
+
+        provider = make_provider(FakeRedis(), chatgpt_only=True, credential_secret="secret")
+        client = OAuthClientInformationFull(
+            client_id="client-1",
+            redirect_uris=[AnyUrl("https://mcp-client.example/oauth/callback")],
+        )
+        with self.assertRaises(RegistrationError):
+            asyncio.run(provider.register_client(client))
+        hosted = OAuthClientInformationFull(
+            client_id="client-1",
+            redirect_uris=[AnyUrl("https://chatgpt.com/connector_platform_oauth_redirect")],
+        )
+        asyncio.run(provider.register_client(hosted))
+        params = AuthorizationParams(
+            state="state",
+            scopes=["brainapi"],
+            code_challenge="challenge",
+            redirect_uri=AnyUrl("https://mcp-client.example/oauth/callback"),
+            redirect_uri_provided_explicitly=True,
+            resource="https://brainapi.example/mcp",
+        )
+        with self.assertRaises(AuthorizeError):
+            asyncio.run(provider.authorize(hosted, params))
+
+    def test_chatgpt_only_requires_credential_secret(self):
+        with self.assertRaises(ValueError):
+            make_provider(FakeRedis(), chatgpt_only=True)
+
+    def test_stored_pat_is_encrypted_when_secret_is_set(self):
+        redis_client = FakeRedis()
+        provider = make_provider(redis_client, credential_secret="secret")
+        client = OAuthClientInformationFull(
+            client_id="client-1",
+            redirect_uris=[AnyUrl("https://mcp-client.example/oauth/callback")],
+        )
+        asyncio.run(provider.register_client(client))
+        code = provider.issue_auth_code(
+            client_id="client-1",
+            redirect_uri=AnyUrl("https://mcp-client.example/oauth/callback"),
+            code_challenge="challenge",
+            scopes=["brainapi"],
+            resource="https://brainapi.example/mcp",
+            state=None,
+            brainpat="brain-pat",
+        )
+        raw = redis_client.get(f"mcp:oauth:code_pat:{code}")
+        self.assertNotEqual(raw, "brain-pat")
+        auth_code = asyncio.run(provider.load_authorization_code(client, code))
+        token = asyncio.run(provider.exchange_authorization_code(client, auth_code))
+        self.assertEqual(provider.get_pat_for_access_token(token.access_token), "brain-pat")
+        stored_access = redis_client.get(f"mcp:oauth:access_pat:{token.access_token}")
+        self.assertNotEqual(stored_access, "brain-pat")
+
+    def test_load_access_token_rejects_resource_mismatch(self):
+        redis_client = FakeRedis()
+        provider = make_provider(redis_client)
+        client = OAuthClientInformationFull(
+            client_id="client-1",
+            redirect_uris=[AnyUrl("https://mcp-client.example/oauth/callback")],
+        )
+        asyncio.run(provider.register_client(client))
+        code = provider.issue_auth_code(
+            client_id="client-1",
+            redirect_uri=AnyUrl("https://mcp-client.example/oauth/callback"),
+            code_challenge="challenge",
+            scopes=["brainapi"],
+            resource="https://brainapi.example/mcp",
+            state=None,
+            brainpat="brain-pat",
+        )
+        auth_code = asyncio.run(provider.load_authorization_code(client, code))
+        token = asyncio.run(provider.exchange_authorization_code(client, auth_code))
+        provider._resource_server_url = "https://other.example/mcp"
+        self.assertIsNone(asyncio.run(provider.load_access_token(token.access_token)))
+
+    def test_consent_request_is_single_use(self):
+        provider = make_provider(FakeRedis())
+        client = OAuthClientInformationFull(
+            client_id="client-1",
+            redirect_uris=[AnyUrl("https://mcp-client.example/oauth/callback")],
+        )
+        params = AuthorizationParams(
+            state="state",
+            scopes=["brainapi"],
+            code_challenge="challenge",
+            redirect_uri=AnyUrl("https://mcp-client.example/oauth/callback"),
+            redirect_uri_provided_explicitly=True,
+            resource="https://brainapi.example/mcp",
+        )
+        url = asyncio.run(provider.authorize(client, params))
+        request_id = parse_qs(urlparse(url).query)["request_id"][0]
+        self.assertIsNotNone(provider.consent_request(request_id))
+        consumed = provider.consent_request(request_id, consume=True)
+        self.assertEqual(consumed["client_id"], "client-1")
+        self.assertIsNone(provider.consent_request(request_id))
+        self.assertIsNone(provider.consent_request("not-a-valid-id"))
 
 
 if __name__ == "__main__":

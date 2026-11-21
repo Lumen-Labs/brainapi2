@@ -12,7 +12,7 @@ from fastapi.openapi.utils import get_openapi
 logger = logging.getLogger("brainapi.openapi")
 
 _HTTP_METHODS = {"get", "post", "put", "patch", "delete", "options", "head"}
-_CORE_TAGS = {"public", "ingest", "retrieve", "model", "meta", "tasks", "system"}
+_CORE_TAGS = {"public", "ingest", "retrieve", "model", "meta", "tasks", "system", "spreadsheets"}
 _LIST_PATHS = {
     "/meta/entity-labels",
     "/meta/entity-properties",
