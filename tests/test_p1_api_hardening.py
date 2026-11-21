@@ -249,9 +249,17 @@ class RequestValidationTests(unittest.TestCase):
             require_label("PERSON;DROP")
         with self.assertRaises(InvalidCypherIdentifier):
             require_label("PERSON`DETACH DELETE")
-        with self.assertRaises(InvalidCypherIdentifier):
-            require_labels([])
-        self.assertEqual(require_label("person"), "PERSON")
+
+    def test_require_label_accepts_normal_labels(self):
+        self.assertEqual(require_label("Software Engineer"), "Software Engineer")
+        self.assertEqual(require_label("foo-bar"), "foo-bar")
+        self.assertEqual(require_label("Café"), "Café")
+        self.assertEqual(require_label("person"), "person")
+        self.assertEqual(require_labels([]), [])
+        self.assertEqual(
+            require_labels(["Software Engineer", "foo-bar"]),
+            ["Software Engineer", "foo-bar"],
+        )
 
 
 class EntityResolveTests(unittest.TestCase):
@@ -382,6 +390,49 @@ class ModelEmbedTests(unittest.IsolatedAsyncioTestCase):
                 [{"name": "Alice", "labels": ["PERSON;DROP"]}],
                 "brain",
             )
+
+    async def test_normal_labels_are_kept_without_uppercasing(self):
+        from src.services.api.controllers import model as model_mod
+
+        captured = []
+
+        def fake_add_nodes(nodes, brain_id, identification_params=None, metadata=None):
+            captured.extend(nodes)
+            return nodes
+
+        with (
+            patch.object(model_mod, "graph_adapter") as graph,
+            patch.object(model_mod, "embeddings_adapter") as embed,
+            patch.object(model_mod, "vector_store_adapter"),
+        ):
+            graph.add_nodes.side_effect = fake_add_nodes
+            embed.embed_text.side_effect = RuntimeError("embedder down")
+            await model_mod.add_nodes(
+                [
+                    {
+                        "name": "Alice",
+                        "labels": ["Software Engineer", "foo-bar", "Café"],
+                    }
+                ],
+                "brain",
+            )
+        self.assertEqual(
+            captured[0].labels,
+            ["Software Engineer", "foo-bar", "Café"],
+        )
+
+    async def test_update_node_empty_labels_does_not_fail(self):
+        from src.constants.kg import Node as KgNode
+        from src.services.api.controllers import model as model_mod
+
+        with patch.object(model_mod, "graph_adapter") as graph:
+            graph.update_node.return_value = KgNode(
+                uuid="n1", name="Alice", labels=[]
+            )
+            result = await model_mod.update_node("n1", "brain", new_labels=[])
+        self.assertEqual(result.uuid, "n1")
+        graph.update_node.assert_called_once()
+        self.assertEqual(graph.update_node.call_args.kwargs["new_labels"], [])
 
     async def test_embed_failure_still_writes_node(self):
         from src.services.api.controllers import model as model_mod

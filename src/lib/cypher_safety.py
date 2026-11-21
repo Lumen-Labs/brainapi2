@@ -190,6 +190,9 @@ def clean_label(label: str) -> str:
     return require_identifier(_ascii_label(cleaned, original=label), kind="label")
 
 
+_UNSAFE_LABEL_RE = re.compile(r"[;`\n\r]|/{2}")
+
+
 def require_label(label: str) -> str:
     if not isinstance(label, str) or not label.strip():
         raise InvalidCypherIdentifier(
@@ -197,18 +200,24 @@ def require_label(label: str) -> str:
             kind="label",
             value=label,
         )
-    return require_identifier(label.strip().upper(), kind="label")
+    text = label.strip()
+    if _UNSAFE_LABEL_RE.search(text):
+        raise InvalidCypherIdentifier(
+            f"Invalid Cypher label: {text!r}. "
+            "Use letters, digits, spaces, hyphens, and underscore.",
+            kind="label",
+            value=label,
+        )
+    clean_label(text)
+    return text
 
 
 def require_labels(labels: Sequence[str]) -> list[str]:
-    cleaned = [require_label(label) for label in labels]
-    if not cleaned:
-        raise InvalidCypherIdentifier(
-            "At least one label is required",
-            kind="label",
-            value=labels,
-        )
-    return cleaned
+    return [
+        require_label(label)
+        for label in labels
+        if isinstance(label, str) and label.strip()
+    ]
 
 
 def original_type_properties(labels: Sequence[str]) -> dict[str, Any]:
