@@ -455,21 +455,13 @@ class CreateBrainRequest(BaseModel):
 class AddEntityRequest(BaseModel):
     """Request model for adding a new entity to the graph."""
 
-    name: str = Field(min_length=1)
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
     brain_id: str = "default"
     labels: list[str] = Field(default_factory=list)
     description: Optional[str] = None
     properties: Optional[dict] = None
     identification_params: Optional[dict] = None
     metadata: Optional[dict] = None
-
-    @field_validator("name")
-    @classmethod
-    def _name_not_blank(cls, value: str) -> str:
-        text = value.strip()
-        if not text:
-            raise ValueError("Node name is required and cannot be empty")
-        return text
 
 
 class UpdateEntityRequest(BaseModel):
@@ -488,7 +480,9 @@ class AddRelationshipRequest(BaseModel):
     """Request model for adding a new relationship between two entities."""
 
     subject_uuid: str
-    predicate_name: str = Field(..., min_length=1)
+    predicate_name: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1)
+    ]
     predicate_description: str
     object_uuid: str
     brain_id: str = "default"
@@ -635,7 +629,7 @@ class GetEntityStatusResponse(BaseModel):
 class GetContextRequestBody(BaseModel):
     """Request body for the get context endpoint."""
 
-    text: str = Field(..., min_length=1)
+    text: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
     brain_id: str = "default"
     as_of: Optional[str] = Field(
         default=None,
@@ -662,14 +656,6 @@ class GetContextRequestBody(BaseModel):
         False,
         description="If true, include expert-rejected facts in the response.",
     )
-
-    @field_validator("text")
-    @classmethod
-    def _text_not_blank(cls, value: str) -> str:
-        text = value.strip()
-        if not text:
-            raise ValueError("text is required and cannot be empty")
-        return text
 
 
 class GetContextTriple(BaseModel):

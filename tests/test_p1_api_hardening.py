@@ -33,13 +33,18 @@ for key, value in ENV_DEFAULTS.items():
     os.environ.setdefault(key, value)
 
 from fastapi import FastAPI
-from pydantic import ValidationError
+from fastapi.testclient import TestClient
+from pydantic import BaseModel, ValidationError, field_validator
 
 from src.constants.kg import Node
 from src.core.search.entity_info import EventSynergyRetriever, MatchPath
 from src.core.search.entity_resolve import node_matches_target, resolve_entity_node
 from src.lib.cypher_safety import InvalidCypherIdentifier, require_label, require_labels
-from src.services.api.constants.requests import AddEntityRequest, GetContextRequestBody
+from src.services.api.constants.requests import (
+    AddEntityRequest,
+    AddRelationshipRequest,
+    GetContextRequestBody,
+)
 from src.services.api.errors import install_error_handlers
 from src.services.api.openapi import install_openapi_contract, openapi_servers
 
@@ -135,6 +140,50 @@ class OpenApiServerAndBrainIdTests(unittest.TestCase):
         )
 
 
+def _validation_app() -> FastAPI:
+    app = FastAPI()
+    install_error_handlers(app)
+
+    @app.post("/model/entity")
+    async def add_entity(body: AddEntityRequest):
+        return {"name": body.name}
+
+    @app.post("/retrieve/context")
+    async def get_context(body: GetContextRequestBody):
+        return {"text": body.text}
+
+    @app.post("/model/relationship")
+    async def add_relationship(body: AddRelationshipRequest):
+        return {"predicate_name": body.predicate_name}
+
+    class BlankNameBody(BaseModel):
+        name: str
+
+        @field_validator("name")
+        @classmethod
+        def _name_not_blank(cls, value: str) -> str:
+            text = value.strip()
+            if not text:
+                raise ValueError("Node name is required and cannot be empty")
+            return text
+
+    @app.post("/value-error")
+    async def value_error_route(body: BlankNameBody):
+        return {"name": body.name}
+
+    return app
+
+
+def _assert_422_json(test, response):
+    test.assertEqual(response.status_code, 422)
+    test.assertIn("application/json", response.headers.get("content-type", ""))
+    body = response.json()
+    test.assertIsInstance(body.get("detail"), list)
+    test.assertEqual(body["error"]["code"], "VALIDATION_ERROR")
+    test.assertNotIn("Internal server error", response.text)
+    test.assertNotIn("Traceback", response.text)
+
+
 class RequestValidationTests(unittest.TestCase):
     def test_empty_entity_name_is_rejected(self):
         with self.assertRaises(ValidationError):
@@ -147,6 +196,53 @@ class RequestValidationTests(unittest.TestCase):
             GetContextRequestBody(text="")
         with self.assertRaises(ValidationError):
             GetContextRequestBody(text="   ")
+
+    def test_empty_predicate_name_is_rejected(self):
+        with self.assertRaises(ValidationError):
+            AddRelationshipRequest(
+                subject_uuid="s",
+                predicate_name="",
+                predicate_description="d",
+                object_uuid="o",
+            )
+        with self.assertRaises(ValidationError):
+            AddRelationshipRequest(
+                subject_uuid="s",
+                predicate_name="   ",
+                predicate_description="d",
+                object_uuid="o",
+            )
+
+    def test_empty_and_whitespace_name_http_is_422_json(self):
+        client = TestClient(_validation_app(), raise_server_exceptions=False)
+        for payload in ({"name": ""}, {"name": "   "}):
+            with self.subTest(payload=payload):
+                _assert_422_json(self, client.post("/model/entity", json=payload))
+
+    def test_empty_and_whitespace_text_http_is_422_json(self):
+        client = TestClient(_validation_app(), raise_server_exceptions=False)
+        for payload in ({"text": ""}, {"text": "   "}):
+            with self.subTest(payload=payload):
+                _assert_422_json(self, client.post("/retrieve/context", json=payload))
+
+    def test_whitespace_predicate_name_http_is_422_json(self):
+        client = TestClient(_validation_app(), raise_server_exceptions=False)
+        response = client.post(
+            "/model/relationship",
+            json={
+                "subject_uuid": "s",
+                "predicate_name": "   ",
+                "predicate_description": "d",
+                "object_uuid": "o",
+            },
+        )
+        _assert_422_json(self, response)
+
+    def test_value_error_validator_serializes_to_422_json(self):
+        client = TestClient(_validation_app(), raise_server_exceptions=False)
+        response = client.post("/value-error", json={"name": "   "})
+        _assert_422_json(self, response)
+        self.assertEqual(response.status_code, 422)
 
     def test_require_label_rejects_injection(self):
         with self.assertRaises(InvalidCypherIdentifier):
