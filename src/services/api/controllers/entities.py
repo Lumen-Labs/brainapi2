@@ -76,6 +76,11 @@ async def get_entity_context(
     target_node, neighborhood, text_contexts, natural_language_web = (
         entity_context.get_context(context_depth=context_depth)
     )
+    if target_node is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No entity found matching the target.",
+        )
     return GetEntityContextResponse(
         target_node=target_node,
         neighborhood=neighborhood,

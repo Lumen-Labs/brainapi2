@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from typing import Any
 from uuid import uuid4
@@ -13,6 +14,9 @@ from pydantic import BaseModel, Field, JsonValue
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from src.lib.cypher_safety import InvalidCypherIdentifier, RawCypherRejected
+from src.lib.embeddings.client import EmbeddingClientError, EmbeddingError
+
+logger = logging.getLogger(__name__)
 
 
 class CodedHTTPException(HTTPException):
@@ -239,6 +243,17 @@ def install_error_handlers(app: FastAPI) -> None:
             resolution=_cypher_identifier_resolution(exc),
             extra=extra,
         )
+
+    async def embedding_exception_handler(request: Request, exc: Exception):
+        logger.exception("Embedding request failed", exc_info=exc)
+        return error_response(
+            request,
+            status_code=503,
+            detail="Embedding service unavailable",
+        )
+
+    app.add_exception_handler(EmbeddingError, embedding_exception_handler)
+    app.add_exception_handler(EmbeddingClientError, embedding_exception_handler)
 
     @app.exception_handler(Exception)
     async def unexpected_exception_handler(request: Request, _exc: Exception):

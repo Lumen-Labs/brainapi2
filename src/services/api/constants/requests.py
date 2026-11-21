@@ -455,7 +455,7 @@ class CreateBrainRequest(BaseModel):
 class AddEntityRequest(BaseModel):
     """Request model for adding a new entity to the graph."""
 
-    name: str
+    name: str = Field(min_length=1)
     brain_id: str = "default"
     labels: list[str] = []
     description: Optional[str] = None

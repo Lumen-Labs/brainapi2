@@ -10,6 +10,9 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 
 import asyncio
 from typing import Optional
+
+from fastapi import HTTPException
+
 from src.services.kg_agent.main import graph_adapter
 from src.constants.kg import Node, Predicate
 
@@ -41,7 +44,10 @@ async def add_nodes(
     for node_data in nodes:
         name = node_data.get("name")
         if not name:
-            raise ValueError("Node name is required and cannot be empty")
+            raise HTTPException(
+                status_code=422,
+                detail="Node name is required and cannot be empty",
+            )
 
         properties = node_data.get("properties")
         if properties is None:

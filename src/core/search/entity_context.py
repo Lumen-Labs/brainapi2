@@ -8,7 +8,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
-from typing import Tuple
+from typing import Optional, Tuple
 from src.constants.kg import Node
 from src.services.kg_agent.main import (
     embeddings_adapter,
@@ -34,7 +34,7 @@ class EntityContext:
 
     def get_context(
         self, context_depth: int = 3
-    ) -> Tuple[Node, list[dict], list[dict]]:
+    ) -> Tuple[Optional[Node], list, list, list]:
         """
         Retrieve contextual information related to the target entity up to a specified depth.
         
@@ -59,7 +59,7 @@ class EntityContext:
         )
 
         if not target_node_vs:
-            return (None, [])
+            return (None, [], [], [])
 
         target_node_v = target_node_vs[0]
         target_node_id = target_node_v.metadata.get("uuid")
@@ -67,7 +67,7 @@ class EntityContext:
         target_node = graph_adapter.get_by_uuid(target_node_id, brain_id=self.brain_id)
 
         if not target_node:
-            return (None, [])
+            return (None, [], [], [])
 
         neighborhood = graph_adapter.get_neighborhood(
             target_node_id, context_depth, brain_id=self.brain_id
