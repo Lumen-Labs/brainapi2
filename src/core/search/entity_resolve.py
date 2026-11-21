@@ -18,6 +18,14 @@ def node_matches_target(node: Node | None, target: str) -> bool:
     return bool(name) and name.casefold() == wanted.casefold()
 
 
+def _exact_name_matches(nodes: list[Node] | None, wanted: str) -> list[Node]:
+    matches = [
+        node for node in (nodes or []) if node_matches_target(node, wanted)
+    ]
+    matches.sort(key=lambda node: str(getattr(node, "uuid", "") or ""))
+    return matches
+
+
 def resolve_entity_node(target: str, brain_id: str) -> Node | None:
     wanted = (target or "").strip()
     if not wanted:
@@ -25,6 +33,12 @@ def resolve_entity_node(target: str, brain_id: str) -> Node | None:
     node = graph_adapter.get_by_uuid(wanted, brain_id=brain_id)
     if node_matches_target(node, wanted):
         return node
+    graph_matches = _exact_name_matches(
+        graph_adapter.node_text_search(wanted, brain_id=brain_id),
+        wanted,
+    )
+    if graph_matches:
+        return graph_matches[0]
     try:
         embedding = embeddings_adapter.embed_text(wanted)
         hits = vector_search.search_nodes(

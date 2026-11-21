@@ -115,7 +115,11 @@ async def add_nodes(
             description=node_data.get("description"),
             properties=properties,
         )
-        node_objects.append(_embed_node(node, brain_id))
+        node_objects.append(node)
+
+    node_objects = await asyncio.to_thread(
+        lambda: [_embed_node(node, brain_id) for node in node_objects]
+    )
 
     result = await asyncio.to_thread(
         graph_adapter.add_nodes,
@@ -222,7 +226,9 @@ async def add_relationship(
         name=predicate_name,
         description=predicate_description,
     )
-    predicate = _embed_predicate(predicate, subject_node, object_node, brain_id)
+    predicate = await asyncio.to_thread(
+        _embed_predicate, predicate, subject_node, object_node, brain_id
+    )
 
     result = await asyncio.to_thread(
         graph_adapter.add_relationship,

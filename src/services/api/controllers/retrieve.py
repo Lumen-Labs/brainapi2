@@ -2515,7 +2515,7 @@ async def _build_context(
         detail["deduped"] = len(ranked)
 
     if request.use_ppr and seed_hits and ranked:
-        with profile_stage("ppr"):
+        with profile_stage("ppr", blocking=False):
             personalization = _seed_personalization(seed_hits)
             def _adjacency():
                 with profile_stage(

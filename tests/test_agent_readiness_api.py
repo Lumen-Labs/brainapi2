@@ -375,7 +375,9 @@ class OpenApiContractTests(unittest.TestCase):
         )
         self.assertTrue(
             any(
-                param.get("name") == "X-Brain-ID" and param.get("in") == "header"
+                param.get("name") == "X-Brain-ID"
+                and param.get("in") == "header"
+                and param.get("required") is not True
                 for param in retrieve_params
             )
         )

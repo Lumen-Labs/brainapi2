@@ -7,6 +7,7 @@ similarity to example questions can select history.
 from __future__ import annotations
 
 import re
+import threading
 import time
 from collections.abc import Callable
 
@@ -167,6 +168,7 @@ _STRONG_HISTORY_RE = re.compile(
 _CACHED: tuple[list[list[float]], list[list[float]]] | None = None
 _FAIL_UNTIL = 0.0
 _FAIL_STREAK = 0
+_CACHE_LOCK = threading.Lock()
 
 
 class PrototypeWarmupError(RuntimeError):
@@ -240,28 +242,32 @@ def resolve_include_history(
 
 def reset_prototype_cache() -> None:
     global _CACHED, _FAIL_UNTIL, _FAIL_STREAK
-    _CACHED = None
-    _FAIL_UNTIL = 0.0
-    _FAIL_STREAK = 0
+    with _CACHE_LOCK:
+        _CACHED = None
+        _FAIL_UNTIL = 0.0
+        _FAIL_STREAK = 0
 
 
 def prototype_vectors(embed: Embed) -> tuple[list[list[float]], list[list[float]]]:
     global _CACHED, _FAIL_UNTIL, _FAIL_STREAK
     if _CACHED is not None:
         return _CACHED
-    now = time.monotonic()
-    if now < _FAIL_UNTIL:
-        raise PrototypeWarmupError("history prototype warmup backing off")
-    try:
-        history = [embed(text) for text in HISTORY_EXAMPLES]
-        current = [embed(text) for text in CURRENT_EXAMPLES]
-        if any(not vector for vector in history + current):
-            raise PrototypeWarmupError("empty prototype embedding")
-        _CACHED = (history, current)
-        _FAIL_STREAK = 0
-        return _CACHED
-    except Exception:
-        _FAIL_STREAK += 1
-        delay = min(_FAIL_BACKOFF * (2 ** (_FAIL_STREAK - 1)), _FAIL_BACKOFF_MAX)
-        _FAIL_UNTIL = now + delay
-        raise
+    with _CACHE_LOCK:
+        if _CACHED is not None:
+            return _CACHED
+        now = time.monotonic()
+        if now < _FAIL_UNTIL:
+            raise PrototypeWarmupError("history prototype warmup backing off")
+        try:
+            history = [embed(text) for text in HISTORY_EXAMPLES]
+            current = [embed(text) for text in CURRENT_EXAMPLES]
+            if any(not vector for vector in history + current):
+                raise PrototypeWarmupError("empty prototype embedding")
+            _CACHED = (history, current)
+            _FAIL_STREAK = 0
+            return _CACHED
+        except Exception:
+            _FAIL_STREAK += 1
+            delay = min(_FAIL_BACKOFF * (2 ** (_FAIL_STREAK - 1)), _FAIL_BACKOFF_MAX)
+            _FAIL_UNTIL = now + delay
+            raise

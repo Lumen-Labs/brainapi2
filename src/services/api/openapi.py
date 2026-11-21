@@ -25,10 +25,11 @@ _DEFAULT_SERVER_URL = "http://localhost:8000"
 _X_BRAIN_ID = {
     "name": "X-Brain-ID",
     "in": "header",
-    "required": True,
+    "required": False,
     "description": (
-        "Alphanumeric brain identifier required for brain-scoped operations. "
-        "Can also be supplied as brain_id in the query string or JSON body."
+        "Alphanumeric brain identifier for brain-scoped operations. "
+        "Send this header, or brain_id in the query string or JSON body, "
+        "unless the request falls back to the default brain."
     ),
     "schema": {"type": "string", "pattern": "^[A-Za-z0-9]+$"},
 }

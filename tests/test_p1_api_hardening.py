@@ -62,6 +62,19 @@ class OpenApiServerAndBrainIdTests(unittest.TestCase):
             servers = openapi_servers()
         self.assertEqual(servers[0]["url"], "https://api.example.test")
 
+    def test_server_list_leads_when_single_url_unset(self):
+        with patch.dict(
+            os.environ,
+            {"OPENAPI_SERVER_URLS": "https://eu.example.test,https://us.example.test"},
+            clear=False,
+        ):
+            os.environ.pop("OPENAPI_SERVER_URL", None)
+            servers = openapi_servers()
+        self.assertEqual(
+            [item["url"] for item in servers],
+            ["https://eu.example.test", "https://us.example.test"],
+        )
+
     def test_untyped_core_route_does_not_raise(self):
         app = FastAPI(title="BrainAPI", version="0.0.0")
         install_error_handlers(app)
@@ -113,10 +126,13 @@ class EntityResolveTests(unittest.TestCase):
     def test_resolve_prefers_uuid_then_exact_name(self):
         alice = Node(uuid="n1", name="Alice", labels=["PERSON"])
         other = Node(uuid="n2", name="Alicia", labels=["PERSON"])
-        alice_hit = MagicMock()
-        alice_hit.metadata = {"uuid": "n1"}
         other_hit = MagicMock()
         other_hit.metadata = {"uuid": "n2"}
+
+        def fake_text_search(text, brain_id="default"):
+            if brain_id == "miss":
+                return [other]
+            return [alice, other]
 
         with (
             patch(
@@ -127,14 +143,16 @@ class EntityResolveTests(unittest.TestCase):
                 }.get(uuid),
             ),
             patch(
+                "src.core.search.entity_resolve.graph_adapter.node_text_search",
+                side_effect=fake_text_search,
+            ),
+            patch(
                 "src.core.search.entity_resolve.embeddings_adapter.embed_text",
-                return_value=MagicMock(embeddings=[1.0]),
+                side_effect=RuntimeError("embedder down"),
             ),
             patch(
                 "src.core.search.entity_resolve.vector_search.search_nodes",
-                side_effect=lambda *args, **kwargs: [other_hit]
-                if kwargs.get("brain_id") == "miss"
-                else [alice_hit],
+                return_value=[other_hit],
             ),
         ):
             self.assertEqual(resolve_entity_node("n1", "brain").uuid, "n1")
@@ -162,6 +180,7 @@ class RetrieveOffloadTests(unittest.TestCase):
         self.assertIn("asyncio.to_thread(_resolve_history_flag)", source)
         self.assertIn("asyncio.to_thread(_bridge_expand)", source)
         self.assertIn("asyncio.to_thread(_adjacency)", source)
+        self.assertIn('profile_stage("ppr", blocking=False)', source)
 
 
 class EntityInfoControllerTests(unittest.IsolatedAsyncioTestCase):

@@ -11,6 +11,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 
 import subprocess
 import sys
+import threading
 
 import spacy
 from src.config import config
@@ -23,6 +24,16 @@ class SpacyManager:
     def __init__(self):
         self.keep_models_in_memory = config.spacy.keep_models_in_memory
         self._cache = {}
+        self._locks = {}
+        self._locks_guard = threading.Lock()
+
+    def _lock_for(self, lang: str):
+        with self._locks_guard:
+            lock = self._locks.get(lang)
+            if lock is None:
+                lock = threading.Lock()
+                self._locks[lang] = lock
+            return lock
 
     def get_model(self, lang: str):
         if lang not in MODEL_NAMES:
@@ -30,6 +41,12 @@ class SpacyManager:
         if self.keep_models_in_memory and lang in self._cache:
             return self._cache[lang]
         model_name = MODEL_NAMES[lang]
+        with self._lock_for(lang):
+            if self.keep_models_in_memory and lang in self._cache:
+                return self._cache[lang]
+            return self._load_model(lang, model_name)
+
+    def _load_model(self, lang: str, model_name: str):
         try:
             nlp = spacy.load(model_name)
         except OSError:
