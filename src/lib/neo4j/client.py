@@ -72,18 +72,25 @@ VALIDITY_INDEX_FAIL_BACKOFF_INITIAL_SECONDS = 30.0
 VALIDITY_INDEX_FAIL_BACKOFF_MAX_SECONDS = 600.0
 
 
-def normalized_rel_type_cypher(rel_alias: str = "r") -> str:
-    """Cypher expression matching ``normalize_predicate`` for relationship types.
+_PRED_KEY_KEEP = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
 
-    ``clean_label`` already uppercases and maps punctuation to underscore, so
-    remaining work is collapsing repeated underscores and stripping edges.
-    ``toUpper`` covers mixed-case types created outside that path.
+
+def normalized_predicate_cypher(source_expr: str) -> str:
+    """Cypher matching Python ``normalize_predicate`` for an arbitrary string.
+
+    APOC is not a required dependency (raw Cypher also rejects ``apoc.*``), so
+    this is an apoc-free reduce over characters: uppercase, map every
+    non-[A-Z0-9] character to ``_``, collapse repeats, strip edges.
     """
-    rel_type = f"type({rel_alias})"
-    source = f"toUpper(coalesce({rel_type}, ''))"
-    length = f"size(coalesce({rel_type}, ''))"
+    src = f"toUpper(coalesce({source_expr}, ''))"
+    length = f"size({src})"
+    mapped = (
+        f"reduce(s = '', i IN range(0, {length} - 1) | "
+        f"s + CASE WHEN substring({src}, i, 1) =~ '[A-Z0-9]' "
+        f"THEN substring({src}, i, 1) ELSE '_' END)"
+    )
     collapsed = (
-        f"reduce(t = {source}, i IN range(0, {length}) | replace(t, '__', '_'))"
+        f"reduce(t = {mapped}, i IN range(0, {length}) | replace(t, '__', '_'))"
     )
     return (
         f"reduce(s = {collapsed}, j IN range(0, {length}) | "
@@ -91,6 +98,37 @@ def normalized_rel_type_cypher(rel_alias: str = "r") -> str:
         "WHEN s ENDS WITH '_' THEN substring(s, 0, size(s) - 1) "
         "ELSE s END)"
     )
+
+
+def normalized_rel_type_cypher(rel_alias: str = "r") -> str:
+    """Cypher expression matching ``normalize_predicate`` for relationship types."""
+    return normalized_predicate_cypher(f"type({rel_alias})")
+
+
+def cypher_normalize_predicate(name: str | None) -> str:
+    """Python counterpart of ``normalized_predicate_cypher``.
+
+    Same steps as the Cypher reduce: uppercase, map non-[A-Z0-9] to ``_``,
+    collapse repeats, strip edges. Must match ``normalize_predicate``.
+    """
+    mapped = "".join(
+        ch if ch in _PRED_KEY_KEEP else "_" for ch in (name or "").upper()
+    )
+    collapsed = mapped
+    for _ in range(len(collapsed) + 1):
+        nxt = collapsed.replace("__", "_")
+        if nxt == collapsed:
+            break
+        collapsed = nxt
+    stripped = collapsed
+    for _ in range(len(stripped) + 1):
+        if stripped.startswith("_"):
+            stripped = stripped[1:]
+        elif stripped.endswith("_"):
+            stripped = stripped[:-1]
+        else:
+            break
+    return stripped
 
 
 def _validity_index_now() -> float:
@@ -1677,6 +1715,7 @@ class Neo4jClient(GraphClient):
 
             params["after_subject_uuid"] = after_subject_uuid or ""
             params["after_predicate"] = normalize_predicate(after_predicate or "")
+            filters.append("n['uuid'] >= $after_subject_uuid")
             if after_relationship_uuid:
                 params["after_relationship_uuid"] = after_relationship_uuid
                 cursor_filters.append(

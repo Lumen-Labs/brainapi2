@@ -17,6 +17,7 @@ from src.core.saving.conflicts import (
     is_functional_predicate,
     judge_semantic_pairs,
     maybe_detect_after_ingest,
+    normalize_predicate,
     open_conflicts_by_fact_ids,
     pair_key_for,
     parse_date_value,
@@ -29,6 +30,7 @@ from src.core.saving.conflicts import (
     values_equivalent,
 )
 from src.core.saving.conflict_report import build_report, render_markdown
+from src.lib.neo4j.client import cypher_normalize_predicate
 from src.services.mcp.conflicts import (
     conflict_report_tool,
     dismiss_conflict_tool,
@@ -37,6 +39,38 @@ from src.services.mcp.conflicts import (
     resolve_conflict_tool,
 )
 from src.services.mcp.prompt import MCP_TOOL_SPECS
+
+PREDICATE_NORMALIZER_CASES = (
+    ("", ""),
+    ("HAS_WINDOW", "HAS_WINDOW"),
+    ("has_window", "HAS_WINDOW"),
+    ("Has_Window", "HAS_WINDOW"),
+    ("HAS-A", "HAS_A"),
+    ("HAS A", "HAS_A"),
+    ("HAS.A", "HAS_A"),
+    ("HAS__A", "HAS_A"),
+    ("__HAS_A__", "HAS_A"),
+    ("HAS---A", "HAS_A"),
+    ("  has a  ", "HAS_A"),
+    ("HAS.A-B C", "HAS_A_B_C"),
+    ("has-a.b", "HAS_A_B"),
+    ("A1", "A1"),
+    ("1A", "1A"),
+    ("v2.0", "V2_0"),
+    ("café", "CAF"),
+    ("HAS-é", "HAS"),
+    ("naïve", "NA_VE"),
+    ("ß", "SS"),
+    ("HAS😀A", "HAS_A"),
+    ("___", ""),
+    ("a.b.c", "A_B_C"),
+    ("foo/bar", "FOO_BAR"),
+    ("foo\\bar", "FOO_BAR"),
+    ("foo:bar", "FOO_BAR"),
+    ("(HAS)", "HAS"),
+    ("HAS[A]", "HAS_A"),
+    ("has a-b.c__d", "HAS_A_B_C_D"),
+)
 
 
 def _node(uuid, name, labels=None, polarity="neutral"):
@@ -2854,6 +2888,70 @@ class ConflictScanCursorTests(unittest.TestCase):
         self.assertEqual(store.rows[by_subject["a"].id].status, "resolved")
         self.assertEqual(store.rows[by_subject["b"].id].status, "open")
         self.assertEqual(store.rows[by_subject["c"].id].status, "open")
+
+    def test_cypher_predicate_key_matches_normalize_predicate(self):
+        self.assertEqual(cypher_normalize_predicate(None), "")
+        self.assertEqual(normalize_predicate(None), "")
+        for raw, expected in PREDICATE_NORMALIZER_CASES:
+            self.assertEqual(normalize_predicate(raw), expected, raw)
+            self.assertEqual(
+                cypher_normalize_predicate(raw),
+                normalize_predicate(raw),
+                raw,
+            )
+
+    def test_punctuation_predicate_aliases_stay_in_one_group(self):
+        def named(subject, fact_id, predicate, value):
+            return _triple(
+                _node(subject, subject),
+                _pred(
+                    fact_id,
+                    predicate,
+                    {
+                        "valid_from": "2024-01-01T00:00:00Z",
+                        "source_key": fact_id,
+                    },
+                ),
+                _node(fact_id + "-obj", value),
+            )
+
+        triples = [
+            named("s", "a1", "HAS-A", "14 days"),
+            named("s", "b1", "HAS_B", "7 days"),
+            named("s", "a2", "HAS A", "30 days"),
+            named("s", "a3", "HAS.A", "21 days"),
+            named("s", "a4", "has_a", "10 days"),
+            named("s", "b2", "HAS_B", "3 days"),
+        ]
+        store = MemoryConflictStore()
+        graph = FakeGraph(triples)
+
+        def fact_ids_for(result):
+            wanted = set(result.scanned_claim_keys)
+            ids = set()
+            for item in triples:
+                snap = snapshot_from_triple(item)
+                if claim_key_for(snap["subject_uuid"], snap["predicate"]) in wanted:
+                    ids.add(snap["fact_id"])
+            return ids
+
+        first = detect_conflicts(
+            store, graph, "brain", max_relationships=4
+        )
+        self.assertEqual(first.scanned_relationships, 4)
+        self.assertEqual(
+            set(first.scanned_claim_keys), {claim_key_for("s", "HAS_A")}
+        )
+        self.assertTrue(first.truncated)
+        first_ids = fact_ids_for(first)
+        self.assertEqual(first_ids, {"a1", "a2", "a3", "a4"})
+        second = detect_conflicts(
+            store, graph, "brain", max_relationships=4
+        )
+        second_ids = fact_ids_for(second)
+        self.assertEqual(second_ids, {"b1", "b2"})
+        self.assertEqual(first_ids & second_ids, set())
+        self.assertEqual(first_ids | second_ids, {item[1].uuid for item in triples})
 
     def test_normalized_predicate_aliases_stay_in_one_group(self):
         def named(subject, fact_id, predicate, value):
