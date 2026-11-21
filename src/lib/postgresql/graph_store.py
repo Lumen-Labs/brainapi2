@@ -610,10 +610,30 @@ class PostgreSQLGraphStore:
             raise GraphDatabaseError(str(exc)) from exc
         self._ensure_brain_schema(brain_id)
         with self._connection(brain_id) as conn:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute(f"SET LOCAL statement_timeout = {READ_QUERY_TIMEOUT_MS}")
-                cur.execute(sql)
-                rows = cur.fetchmany(max_rows + 1)
+            previous_autocommit = conn.autocommit
+            try:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                conn.autocommit = False
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    cur.execute("SET TRANSACTION READ ONLY")
+                    cur.execute(f"SET LOCAL statement_timeout = {READ_QUERY_TIMEOUT_MS}")
+                    cur.execute(sql)
+                    rows = cur.fetchmany(max_rows + 1)
+                conn.rollback()
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise
+            finally:
+                try:
+                    conn.autocommit = previous_autocommit
+                except Exception:
+                    pass
         truncated = len(rows) > max_rows
         if truncated:
             rows = rows[:max_rows]

@@ -212,6 +212,10 @@ class PublicApiTests(unittest.TestCase):
         self.assertEqual(protected.json()["error"]["code"], "AUTH_INVALID")
         self.assertEqual(protected.headers["X-Request-ID"], "auth-check")
 
+        unknown = client.get("/this-route-does-not-exist")
+        self.assertEqual(unknown.status_code, 404)
+        self.assertEqual(unknown.json()["error"]["code"], "RESOURCE_NOT_FOUND")
+
     def test_demo_is_disabled_by_default(self):
         with patch.dict(os.environ, {"PUBLIC_DEMO_ENABLED": "false"}):
             response = TestClient(_public_app()).get("/demo/search?query=memory")
@@ -363,6 +367,21 @@ class OpenApiContractTests(unittest.TestCase):
         self.assertIn(
             "503",
             schema["paths"]["/ingest/url"]["post"]["responses"],
+        )
+        self.assertTrue(schema["servers"])
+        self.assertTrue(all(item.get("url") for item in schema["servers"]))
+        retrieve_params = schema["paths"]["/retrieve/context"]["post"].get(
+            "parameters", []
+        )
+        self.assertTrue(
+            any(
+                param.get("name") == "X-Brain-ID" and param.get("in") == "header"
+                for param in retrieve_params
+            )
+        )
+        health_params = schema["paths"]["/health"]["get"].get("parameters", [])
+        self.assertFalse(
+            any(param.get("name") == "X-Brain-ID" for param in health_params)
         )
 
         generic_refs = [

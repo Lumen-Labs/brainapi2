@@ -17,6 +17,7 @@ from fastapi import HTTPException, Request
 
 from src.services.data.main import data_adapter
 from src.services.kg_agent.main import graph_adapter
+from src.utils.tokens import pat_matches
 
 
 async def get_login_info(request: Request):
@@ -29,7 +30,7 @@ async def get_login_info(request: Request):
         raise HTTPException(status_code=401, detail="Invalid or missing BrainPAT header")
 
     system_pat = os.getenv("BRAINPAT_TOKEN")
-    if brainpat == system_pat:
+    if pat_matches(brainpat, system_pat):
         return {"is_system_pat": True, "brain_id": "default"}
 
     brain = await asyncio.to_thread(data_adapter.get_brain_by_pat, brainpat)

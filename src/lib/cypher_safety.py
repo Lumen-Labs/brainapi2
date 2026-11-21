@@ -190,6 +190,27 @@ def clean_label(label: str) -> str:
     return require_identifier(_ascii_label(cleaned, original=label), kind="label")
 
 
+def require_label(label: str) -> str:
+    if not isinstance(label, str) or not label.strip():
+        raise InvalidCypherIdentifier(
+            "Label must be a non-empty string",
+            kind="label",
+            value=label,
+        )
+    return require_identifier(label.strip().upper(), kind="label")
+
+
+def require_labels(labels: Sequence[str]) -> list[str]:
+    cleaned = [require_label(label) for label in labels]
+    if not cleaned:
+        raise InvalidCypherIdentifier(
+            "At least one label is required",
+            kind="label",
+            value=labels,
+        )
+    return cleaned
+
+
 def original_type_properties(labels: Sequence[str]) -> dict[str, Any]:
     originals = [
         label

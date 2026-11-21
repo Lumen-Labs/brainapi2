@@ -13,8 +13,62 @@ from typing import Optional
 
 from fastapi import HTTPException
 
-from src.services.kg_agent.main import graph_adapter
 from src.constants.kg import Node, Predicate
+from src.lib.cypher_safety import require_label, require_labels
+from src.services.kg_agent.main import (
+    embeddings_adapter,
+    graph_adapter,
+    vector_store_adapter,
+)
+
+
+def _embed_node(node: Node, brain_id: str) -> Node:
+    text = (node.name or "").strip()
+    if not text:
+        return node
+    try:
+        vector = embeddings_adapter.embed_text(text)
+        vector.metadata = {
+            "labels": list(node.labels or []),
+            "name": node.name,
+            "uuid": node.uuid,
+        }
+        if vector.embeddings:
+            ids = vector_store_adapter.add_vectors(
+                [vector], store="nodes", brain_id=brain_id
+            )
+            if ids:
+                node.properties = {**(node.properties or {}), "v_id": ids[0]}
+    except Exception:
+        return node
+    return node
+
+
+def _embed_predicate(
+    predicate: Predicate,
+    subject: Node,
+    object_node: Node,
+    brain_id: str,
+) -> Predicate:
+    text = (predicate.description or "").strip() or (predicate.name or "").strip()
+    if not text:
+        return predicate
+    try:
+        vector = embeddings_adapter.embed_text(text)
+        vector.metadata = {
+            "uuid": predicate.uuid,
+            "node_ids": [subject.uuid, object_node.uuid],
+            "predicate": predicate.name,
+        }
+        if vector.embeddings:
+            ids = vector_store_adapter.add_vectors(
+                [vector], store="relationships", brain_id=brain_id
+            )
+            if ids:
+                predicate.properties = {**(predicate.properties or {}), "v_id": ids[0]}
+    except Exception:
+        return predicate
+    return predicate
 
 
 async def add_nodes(
@@ -43,7 +97,7 @@ async def add_nodes(
     node_objects = []
     for node_data in nodes:
         name = node_data.get("name")
-        if not name:
+        if not name or not str(name).strip():
             raise HTTPException(
                 status_code=422,
                 detail="Node name is required and cannot be empty",
@@ -53,15 +107,15 @@ async def add_nodes(
         if properties is None:
             properties = {}
 
-        node_objects.append(
-            Node(
-                uuid=str(uuid_lib.uuid4()),
-                name=name,
-                labels=node_data.get("labels", []),
-                description=node_data.get("description"),
-                properties=properties,
-            )
+        labels = [require_label(label) for label in (node_data.get("labels") or [])]
+        node = Node(
+            uuid=str(uuid_lib.uuid4()),
+            name=str(name).strip(),
+            labels=labels,
+            description=node_data.get("description"),
+            properties=properties,
         )
+        node_objects.append(_embed_node(node, brain_id))
 
     result = await asyncio.to_thread(
         graph_adapter.add_nodes,
@@ -100,6 +154,8 @@ async def update_node(
     Returns:
         Node | None: The updated Node if it exists, `None` if no node with the given UUID was found.
     """
+    if new_labels is not None:
+        new_labels = require_labels(new_labels)
     result = await asyncio.to_thread(
         graph_adapter.update_node,
         uuid=uuid,
@@ -133,6 +189,8 @@ async def add_relationship(
     Returns:
         str: Adapter result for the created relationship (typically the relationship identifier).
     """
+    predicate_name = require_label(predicate_name)
+
     subject_node = await asyncio.to_thread(
         graph_adapter.get_by_uuid,
         uuid=subject_uuid,
@@ -146,10 +204,16 @@ async def add_relationship(
     )
 
     if not subject_node:
-        raise ValueError(f"Subject node with UUID {subject_uuid} not found")
+        raise HTTPException(
+            status_code=404,
+            detail=f"Subject node with UUID {subject_uuid} not found",
+        )
 
     if not object_node:
-        raise ValueError(f"Object node with UUID {object_uuid} not found")
+        raise HTTPException(
+            status_code=404,
+            detail=f"Object node with UUID {object_uuid} not found",
+        )
 
     import uuid as uuid_lib
 
@@ -158,6 +222,7 @@ async def add_relationship(
         name=predicate_name,
         description=predicate_description,
     )
+    predicate = _embed_predicate(predicate, subject_node, object_node, brain_id)
 
     result = await asyncio.to_thread(
         graph_adapter.add_relationship,

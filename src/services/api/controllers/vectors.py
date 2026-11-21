@@ -31,14 +31,19 @@ async def list_vectors(
 ):
     if store not in EMBEDDING_STORES_SIZES:
         raise HTTPException(status_code=404, detail="Vector store not found")
-    vectors, total = await asyncio.to_thread(
-        vector_store_adapter.list_vectors,
-        store,
-        brain_id,
-        limit,
-        skip,
-        include_embeddings,
-    )
+    try:
+        vectors, total = await asyncio.to_thread(
+            vector_store_adapter.list_vectors,
+            store,
+            brain_id,
+            limit,
+            skip,
+            include_embeddings,
+        )
+    except ValueError as exc:
+        if "not available" in str(exc):
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise
     return JSONResponse(
         content={
             "message": "Vectors retrieved successfully",

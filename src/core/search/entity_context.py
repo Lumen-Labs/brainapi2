@@ -10,14 +10,8 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 
 from typing import Optional, Tuple
 from src.constants.kg import Node
-from src.services.kg_agent.main import (
-    embeddings_adapter,
-    vector_store_adapter,
-    graph_adapter,
-)
-from src.utils.vector_search import VectorSearchFacade
-
-vector_search = VectorSearchFacade(vector_store_adapter)
+from src.core.search.entity_resolve import resolve_entity_node
+from src.services.kg_agent.main import graph_adapter
 
 
 class EntityContext:
@@ -52,22 +46,12 @@ class EntityContext:
         text_contexts = set()
         natural_language_web = list()
 
-        target_embedding = embeddings_adapter.embed_text(self.target)
-        target_node_vs = vector_search.search_nodes(
-            target_embedding.embeddings,
-            brain_id=self.brain_id,
-        )
-
-        if not target_node_vs:
-            return (None, [], [], [])
-
-        target_node_v = target_node_vs[0]
-        target_node_id = target_node_v.metadata.get("uuid")
-
-        target_node = graph_adapter.get_by_uuid(target_node_id, brain_id=self.brain_id)
+        target_node = resolve_entity_node(self.target, self.brain_id)
 
         if not target_node:
             return (None, [], [], [])
+
+        target_node_id = target_node.uuid
 
         neighborhood = graph_adapter.get_neighborhood(
             target_node_id, context_depth, brain_id=self.brain_id
