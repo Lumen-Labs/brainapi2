@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.21.0 — 2026-11-19
+## 2.21.0 — 2026-11-21
 
 Knowledge-graph memory: expert verification, cross-source conflict detection, fail-closed as-of retrieve, validity changelogs, staged-ingest rollback, and Cypher hardening. Defaults are unchanged: raw Cypher is read-only, `CONFLICT_DETECT_ON_INGEST` and `CONFLICT_DETECT_LLM` are off, as-of lookups fail closed, and ingest staging is not required for a normal import.
 
@@ -17,7 +17,7 @@ Deferred: [#121](https://github.com/Lumen-Labs/brainapi2/pull/121) (agent-first 
 - Cross-source conflict scan, list, report, resolve, dismiss. REST under `/retrieve/conflicts`. MCP: `list_conflicts`, `get_conflict`, `resolve_conflict`, `dismiss_conflict`, `conflict_report`. ([#114](https://github.com/Lumen-Labs/brainapi2/pull/114), [#126](https://github.com/Lumen-Labs/brainapi2/pull/126))
 - Ingest-time scan is incremental (touched subjects), pages past the old 10k cap, and evals scan-then-list with versioned timestamps. ([#128](https://github.com/Lumen-Labs/brainapi2/pull/128), [#132](https://github.com/Lumen-Labs/brainapi2/pull/132))
 - Stale auto-resolve requires a concrete reason (side removed/superseded, validity windows no longer overlap, values compatible, or an explicit LLM `contradicts=false`). LLM-detected conflicts stay open when the LLM is off, the pair budget is exhausted, or that pair got no verdict. A stale-closed conflict reopens if the same contradiction is found again. Compact ISO clock times compare as instants. `upsert_conflict` does not overwrite a concurrent operator resolution. Ingest scans include prior published units in the same run and skip detect when a prior staged output cannot be read. ([#138](https://github.com/Lumen-Labs/brainapi2/pull/138), [#139](https://github.com/Lumen-Labs/brainapi2/pull/139))
-- Full scans honor `CONFLICT_DETECT_MAX_RELATIONSHIPS` (default `10000`; `0` is unlimited). Capped scans page by whole `(subject_uuid, normalize_predicate(predicate))` groups, persist a per-brain keyset cursor `{after_subject, after_predicate}` in Mongo `conflict_scan_state` / Postgres `data_conflict_scan_state`, and wrap around so later scans continue past the previous window. Hitting the cap sets `truncated` and stale-closes only the groups that scan loaded. Neo4j orders aliases such as `HAS_A` / `HAS__A` as one group. ([#138](https://github.com/Lumen-Labs/brainapi2/pull/138), [#139](https://github.com/Lumen-Labs/brainapi2/pull/139))
+- Full scans honor `CONFLICT_DETECT_MAX_RELATIONSHIPS` (default `10000`; `0` is unlimited). Capped scans page by whole `(subject_uuid, normalize_predicate(predicate))` groups, persist a per-brain keyset cursor `{after_subject, after_predicate}` in Mongo `conflict_scan_state` / Postgres `data_conflict_scan_state`, and wrap around so later scans continue past the previous window. Hitting the cap sets `truncated` and stale-closes only the groups that scan loaded. Neo4j `pred_key` matches `normalize_predicate` for relationship types that are not `clean_label` (hyphens, spaces, dots, non-ASCII), so those groups stay together; cursor pages keep `n.uuid >= after_subject_uuid`. ([#138](https://github.com/Lumen-Labs/brainapi2/pull/138), [#139](https://github.com/Lumen-Labs/brainapi2/pull/139), [#140](https://github.com/Lumen-Labs/brainapi2/pull/140))
 - Optional ingest/LLM detection stays **off**: `CONFLICT_DETECT_ON_INGEST=false`, `CONFLICT_DETECT_LLM=false`.
 
 ### As-of retrieve and changelogs
@@ -45,6 +45,10 @@ Deferred: [#121](https://github.com/Lumen-Labs/brainapi2/pull/121) (agent-first 
 
 - Use-case eval harness vs a hybrid baseline; BrainAPI eval conflict IDs, as-of `include_history`, and passage attribution. ([#107](https://github.com/Lumen-Labs/brainapi2/pull/107), [#116](https://github.com/Lumen-Labs/brainapi2/pull/116))
 - MCP version reads and multilingual history. ([#109](https://github.com/Lumen-Labs/brainapi2/pull/109))
+
+### Security
+
+- Raise `mcp` to `>=1.30.0,<2.0.0` and refresh both lockfiles (Trivy HIGH CVE-2026-115563). ([#140](https://github.com/Lumen-Labs/brainapi2/pull/140))
 
 ### Defaults and flags (unchanged unless you opt in)
 
@@ -80,3 +84,6 @@ Deferred: [#121](https://github.com/Lumen-Labs/brainapi2/pull/121) (agent-first 
 - A comparison group larger than `CONFLICT_DETECT_MAX_RELATIONSHIPS` is still loaded whole so groups are never split.
 - Truncated stale-close lists all open conflicts, then filters to scanned groups in Python.
 - Skip/limit-only `list_validity_relationships` backends fall back to their native first page when no cursor is set. Production Neo4j, NetworkX, and search-fallback scans already order by comparison-group key.
+- Neo4j conflict-scan count queries still run on each page (full-brain total, not the current window).
+- Unknown-side lookups during stale-close are unbounded.
+- The `search_relationships` fallback loads the whole graph before sorting and applying the cap.
