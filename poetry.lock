@@ -8821,4 +8821,4 @@ postgresql-backend = ["networkx", "pgvector", "psycopg2-binary"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<4.0.0"
-content-hash = "d155a19c0db29db4a9b26f2566becb6c0fce5f55bd892c9c6d1d57b28b45f093"
+content-hash = "e43957993e3490bcbe5bfee5065c964cad0ef7e3946f648bca5a54f02e5074e9"

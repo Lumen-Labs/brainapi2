@@ -41,6 +41,7 @@ from src.workers.tasks.ingestion import (
     ingest_structured_data as ingest_structured_data_task,
 )
 from src.workers.tasks.ingestion import set_ingestion_task_status
+from src.services.api.routes import spreadsheets
 
 MAX_TASK_RETRIES = 3
 RETRY_DELAY_BASE = 0.1
@@ -379,6 +380,17 @@ async def ingest_file(
         group_key = normalize_group_tracking(raw_group, strict=True)
     except InvalidGroupTracking as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    workbook = await spreadsheets.try_import_file(file, brain_id, workbook_id=task)
+    if workbook is not None:
+        try:
+            set_ingestion_task_status(
+                task, brain_id, "completed", stage="completed",
+                counts={"sheets": len(workbook["sheets"])}, group_tracking=group_key,
+            )
+        except Exception:
+            logger.exception("Workbook import status write failed for task %s", task)
+        return JSONResponse(status_code=202, content={"message": "Workbook imported", "task_id": task})
 
     try:
         file.file.seek(0)

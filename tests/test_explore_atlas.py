@@ -1,5 +1,7 @@
 import base64
 import json
+from collections import Counter
+from datetime import UTC, datetime
 from unittest.mock import Mock, patch
 
 import pytest
@@ -10,6 +12,7 @@ from src.services.api.dependencies import get_brain_id
 from src.services.api.routes.explore import explore_router
 from src.services.explore.communities import build_communities
 from src.services.explore.store import (
+    AtlasStore,
     InvalidCursor,
     SnapshotExpired,
     decode_cursor,
@@ -46,6 +49,23 @@ def test_complete_deterministic_membership_with_isolates_and_parallel_edges():
     root_members = [n for group, n in memberships if group in roots]
     assert sorted(root_members) == sorted(n["id"] for n in nodes)
     assert snapshot["totals"] == {"things": 30, "connections": 22}
+    assert snapshot["overviewLinksTruncated"] is False
+    ids = {n["id"] for n in nodes}
+    root_by_entity = {entity: cid for cid, entity in memberships if cid in roots}
+    expected_counts = Counter()
+    for edge in edges:
+        source, target = str(edge["fromId"]), str(edge["toId"])
+        if source not in ids or target not in ids:
+            continue
+        left, right = root_by_entity[source], root_by_entity[target]
+        if left != right:
+            expected_counts[(left, right)] += 1
+    expected_links = [
+        {"id": f"aggregate:{a}:{b}", "fromId": a, "toId": b, "count": count}
+        for (a, b), count in sorted(expected_counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
+    assert snapshot["overviewLinks"] == expected_links
+    assert expected_links
     {g["id"]: g for g in snapshot["groups"]}
     for group in snapshot["groups"]:
         members = {n for cid, n in memberships if cid == group["id"]}
@@ -61,7 +81,82 @@ def test_empty_and_self_loop_only_graphs():
         [{"id": "a", "name": "A", "types": []}], [{"fromId": "a", "toId": "a"}]
     )
     assert snapshot["totals"] == {"things": 1, "connections": 1}
+    assert snapshot["overviewLinks"] == []
+    assert snapshot["overviewLinksTruncated"] is False
     assert membership[0][1] == "a"
+
+
+def test_unfiltered_overview_uses_snapshot_links_not_live_graph():
+    payload = {
+        "groups": [
+            {"id": "group:a", "parentId": None, "name": "A", "count": 4},
+            {"id": "group:b", "parentId": None, "name": "B", "count": 2},
+            {"id": "group:c", "parentId": "group:a", "name": "C", "count": 1},
+        ],
+        "overviewLinks": [
+            {
+                "id": "aggregate:group:a:group:b",
+                "fromId": "group:a",
+                "toId": "group:b",
+                "count": 7,
+            }
+        ],
+        "overviewLinksTruncated": False,
+        "totals": {"things": 6, "connections": 7},
+    }
+    store = AtlasStore.__new__(AtlasStore)
+    store.overview = lambda _brain_id: (
+        "snap-1",
+        datetime(2026, 1, 1, tzinfo=UTC),
+        payload,
+        False,
+        False,
+    )
+
+    def fail_transaction(_brain_id):
+        raise AssertionError("unfiltered overview must not aggregate the live graph")
+
+    store.transaction = fail_transaction
+    result = store.read("brain")
+    assert result["groups"] == payload["groups"][:2]
+    assert result["groupLinks"] == payload["overviewLinks"]
+    assert result["groupLinksTruncated"] is False
+    assert result["coverage"] == {
+        "things": 6,
+        "connections": 7,
+        "aggregated": True,
+    }
+
+
+def test_filtered_overview_still_queries_live_graph():
+    payload = {
+        "groups": [{"id": "group:a", "parentId": None, "name": "A", "count": 4}],
+        "overviewLinks": [],
+        "overviewLinksTruncated": False,
+        "totals": {"things": 4, "connections": 0},
+    }
+    store = AtlasStore.__new__(AtlasStore)
+    store.overview = lambda _brain_id: (
+        "snap-1",
+        datetime(2026, 1, 1, tzinfo=UTC),
+        payload,
+        False,
+        False,
+    )
+    called = {"n": 0}
+
+    class Tx:
+        def __enter__(self):
+            called["n"] += 1
+            raise RuntimeError("live graph path")
+
+        def __exit__(self, *args):
+            return False
+
+    store.transaction = lambda _brain_id: Tx()
+    with pytest.raises(RuntimeError, match="live graph path"):
+        store.read("brain", types=["PERSON"])
+    assert called["n"] == 1
 
 
 def test_cursor_is_bound_to_snapshot_scope_and_filters():

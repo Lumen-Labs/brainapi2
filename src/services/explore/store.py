@@ -345,6 +345,25 @@ class AtlasStore:
         filters = [sorted(types), sorted(connection_types)]
         scope = node or group or "overview"
         offsets = decode_cursor(cursor, snapshot_id, scope, filters)
+        if (
+            children
+            and not group
+            and not types
+            and not connection_types
+            and "overviewLinks" in payload
+        ):
+            links = payload["overviewLinks"]
+            base.update(
+                groups=children,
+                groupLinks=links,
+                groupLinksTruncated=payload["overviewLinksTruncated"],
+                coverage={
+                    "things": sum(g["count"] for g in children),
+                    "connections": sum(link["count"] for link in links),
+                    "aggregated": True,
+                },
+            )
+            return base
         with self.transaction(brain_id) as cur:
             # Endpoint filters use both ends consistently, including neighborhood reads.
             eligible = "SELECT uuid FROM kg_nodes WHERE (%s::text[]='{}' OR COALESCE(data->'labels','[]'::jsonb) ?| %s::text[])"

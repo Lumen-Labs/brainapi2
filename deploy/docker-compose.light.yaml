@@ -131,6 +131,8 @@ services:
       <<: *brainapi-environment
       MCP_OAUTH_ISSUER_URL: ${MCP_OAUTH_ISSUER_URL:-}
       MCP_RESOURCE_SERVER_URL: ${MCP_RESOURCE_SERVER_URL:-}
+      MCP_HOSTED_OAUTH_ISSUER_URL: ${MCP_HOSTED_OAUTH_ISSUER_URL:-}
+      MCP_OAUTH_CHATGPT_ONLY: ${MCP_OAUTH_CHATGPT_ONLY:-}
     command: [-m, uvicorn, src.services.mcp.app:app, --host, 0.0.0.0, --port, "8001", --timeout-keep-alive, "30"]
     depends_on:
       redis: {condition: service_healthy}
