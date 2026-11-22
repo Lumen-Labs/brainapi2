@@ -127,7 +127,40 @@ def _wait_all(futures, timeout: float = _IO_TIMEOUT_SECONDS):
 def _parallel_io(fns: list):
     if len(fns) <= 1 or _on_io_worker():
         return [fn() for fn in fns]
-    return _wait_all([_submit_io(fn) for fn in fns])
+    slots: list[dict[str, object]] = [{} for _ in fns]
+
+    def run_one(index: int, fn) -> None:
+        try:
+            slots[index]["value"] = fn()
+        except Exception as exc:
+            slots[index]["error"] = exc
+
+    threads = []
+    for index, fn in enumerate(fns):
+        ctx = contextvars.copy_context()
+        thread = threading.Thread(
+            target=ctx.run,
+            args=(run_one, index, fn),
+            name=f"{_IO_THREAD_PREFIX}-job",
+            daemon=True,
+        )
+        threads.append(thread)
+        thread.start()
+    deadline = time.monotonic() + _IO_TIMEOUT_SECONDS
+    timed_out = False
+    for thread in threads:
+        thread.join(max(0.0, deadline - time.monotonic()))
+        if thread.is_alive():
+            timed_out = True
+    if timed_out:
+        raise TimeoutError()
+    results = []
+    for slot in slots:
+        error = slot.get("error")
+        if isinstance(error, Exception):
+            raise error
+        results.append(slot.get("value"))
+    return results
 
 
 def _embed_query_vector(text: str) -> Vector:
@@ -1916,10 +1949,11 @@ def _seed_nodes_for_text(
             text_embeddings = _embed_query_vector(text)
         embeddings = text_embeddings.embeddings
     seeds: list[tuple[str, float, str]] = []
+    vs = vector_search
 
     def _search_nodes():
         with profile_stage("vector.search_nodes", k=_SEED_K):
-            return vector_search.search_nodes(
+            return vs.search_nodes(
                 embeddings,
                 brain_id=brain_id,
                 k=_SEED_K,
@@ -1927,7 +1961,7 @@ def _seed_nodes_for_text(
 
     def _search_relationships():
         with profile_stage("vector.search_relationships", k=_SEED_K):
-            return vector_search.search_relationships(
+            return vs.search_relationships(
                 embeddings,
                 brain_id=brain_id,
                 k=_SEED_K,
@@ -2106,11 +2140,13 @@ def _retrieve_passages(
         if use_dense and query_embeddings is None:
             with profile_stage("embed.query"):
                 query_embeddings = _embed_query_vector(text).embeddings
+        vs = vector_search
+        data = data_adapter
 
         def _dense() -> tuple[list[str], dict[str, float]]:
             with profile_stage("vector.search_data", k=max(limit, _PASSAGE_K)):
                 return collect_dense_passages(
-                    vector_search,
+                    vs,
                     query_embeddings or [],
                     brain_id,
                     max(limit, _PASSAGE_K),
@@ -2121,7 +2157,7 @@ def _retrieve_passages(
                 with profile_stage("data.bm25_search"):
                     try:
                         ids, _, texts = collect_bm25_passages(
-                            data_adapter,
+                            data,
                             text,
                             brain_id,
                             max(limit, _PASSAGE_K),
@@ -2132,7 +2168,7 @@ def _retrieve_passages(
             if use_ilike:
                 with profile_stage("data.keyword_search"):
                     try:
-                        return collect_ilike_passages(data_adapter, text, brain_id)
+                        return collect_ilike_passages(data, text, brain_id)
                     except Exception:
                         return [], {}
             return [], {}
