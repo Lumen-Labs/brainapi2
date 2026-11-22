@@ -42,7 +42,6 @@ from src.workers.tasks.ingestion import (
     ingest_structured_data as ingest_structured_data_task,
 )
 from src.workers.tasks.ingestion import set_ingestion_task_status
-from src.services.api.routes import spreadsheets
 from src.core.saving.ingest_plain_text import (
     decode_plain_text,
     is_blank_plain_text,
@@ -424,10 +423,16 @@ async def _try_spreadsheet_import(file, brain_id, task, group_key):
     if workbook is None:
         return None
     try:
+        counts = {
+            "sheets": len(workbook.get("sheets") or ()),
+            "cells": workbook.get("cells"),
+            "workbook": workbook.get("id"),
+        }
+        if workbook.get("deduplicated"):
+            counts["deduplicated"] = True
         set_ingestion_task_status(
             task, brain_id, "completed", stage="completed",
-            counts={"sheets": len(workbook.get("sheets") or ())},
-            group_tracking=group_key,
+            counts=counts, group_tracking=group_key, cost=workbook.get("cost"),
         )
     except Exception:
         logger.exception("Workbook import status write failed for task %s", task)

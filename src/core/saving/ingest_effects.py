@@ -44,6 +44,7 @@ class IngestEffect:
     reused_chunk_ids: list[str] = field(default_factory=list)
     chunk_vector_ids: dict[str, str] = field(default_factory=dict)
     structured_data_id: Optional[str] = None
+    workbook_id: Optional[str] = None
     observations: list[dict[str, str]] = field(default_factory=list)
     nodes: list[EffectTouch] = field(default_factory=list)
     edges: list[EffectTouch] = field(default_factory=list)
@@ -149,12 +150,14 @@ def merge_effect(current: Optional[IngestEffect], task_id: str, delta: dict) -> 
     vectors = dict(base.chunk_vector_ids)
     vectors.update({str(key): str(value) for key, value in (delta.get("chunk_vector_ids") or {}).items() if key and value})
     structured = delta.get("structured_data_id") or base.structured_data_id
+    workbook = delta.get("workbook_id") or base.workbook_id
     return IngestEffect(
         task_id=task_id,
         created_chunk_ids=_unique([*base.created_chunk_ids, *(delta.get("created_chunk_ids") or [])]),
         reused_chunk_ids=_unique([*base.reused_chunk_ids, *(delta.get("reused_chunk_ids") or [])]),
         chunk_vector_ids=vectors,
         structured_data_id=str(structured) if structured else None,
+        workbook_id=str(workbook) if workbook else None,
         observations=list(observations.values()),
         nodes=list(nodes.values()),
         edges=list(edges.values()),
@@ -229,6 +232,8 @@ def plan_purge(
 
     if effect.structured_data_id:
         actions.append(PurgeAction("delete_structured", effect.structured_data_id))
+    if effect.workbook_id:
+        actions.append(PurgeAction("delete_workbook", effect.workbook_id))
 
     deleted_nodes: list[str] = []
     for touch in effect.nodes:
@@ -312,6 +317,7 @@ def summarize(plan: PurgePlan) -> dict[str, Any]:
             "unlink": sum(1 for action in plan.actions if action.kind == "unlink_edge"),
         },
         "unresolved": sum(1 for action in plan.actions if action.kind == "unresolved"),
+        "workbooks": sum(1 for action in plan.actions if action.kind == "delete_workbook"),
         "ledger_incomplete": False,
         "partial": False,
     }
@@ -329,6 +335,7 @@ def reconstruct_effect(
     nodes: list[dict],
     edges: list[dict],
     structured_data_id: Optional[str] = None,
+    workbook_id: Optional[str] = None,
     relationship_ids: Optional[Iterable[str]] = None,
 ) -> IngestEffect:
     """Build an effect for an import that predates the ledger. Does not delete."""
@@ -375,6 +382,7 @@ def reconstruct_effect(
         task_id=task_id,
         created_chunk_ids=chunk_ids,
         structured_data_id=structured_data_id,
+        workbook_id=workbook_id,
         nodes=effect_nodes,
         edges=effect_edges,
     )
@@ -406,6 +414,7 @@ def effect_from_document(document: dict) -> IngestEffect:
         reused_chunk_ids=_unique(document.get("reused_chunk_ids") or []),
         chunk_vector_ids={str(key): str(value) for key, value in (document.get("chunk_vector_ids") or {}).items()},
         structured_data_id=document.get("structured_data_id"),
+        workbook_id=document.get("workbook_id"),
         observations=list(document.get("observations") or []),
         nodes=[EffectTouch(**item) for item in document.get("nodes") or []],
         edges=[EffectTouch(**item) for item in document.get("edges") or []],
@@ -430,6 +439,7 @@ def effect_document(effect: IngestEffect) -> dict:
         "reused_chunk_ids": effect.reused_chunk_ids,
         "chunk_vector_ids": effect.chunk_vector_ids,
         "structured_data_id": effect.structured_data_id,
+        "workbook_id": effect.workbook_id,
         "observations": effect.observations,
         "nodes": [touch(item) for item in effect.nodes],
         "edges": [touch(item) for item in effect.edges],
@@ -560,6 +570,8 @@ def apply_actions(plan: PurgePlan, sink: Any) -> None:
                 sink.delete_observations([action.id])
             elif action.kind == "delete_structured":
                 sink.delete_structured(action.id)
+            elif action.kind == "delete_workbook":
+                sink.delete_workbook(action.id)
             elif action.kind == "unlink_node":
                 sink.unlink_graph("node", action.id, action.detail)
             elif action.kind == "unlink_edge":
@@ -631,6 +643,11 @@ class BrainSink:
         from src.services.data.main import data_adapter
 
         data_adapter.delete_structured_data(structured_id, self.brain_id)
+
+    def delete_workbook(self, workbook_id):
+        from src.services.api.routes.spreadsheets import delete_workbook_data
+
+        delete_workbook_data(self.brain_id, workbook_id)
 
     def unlink_graph(self, kind, uuid, detail):
         from src.services.kg_agent.main import graph_adapter
@@ -758,8 +775,13 @@ def reconstruct_live(brain_id: str, task_id: str, source_key: Optional[str] = No
             relationship_ids = relationship_ids_from_structured(payload)
         except Exception:
             relationship_ids = []
-    if not chunks and not relationship_ids and not payload:
+    workbook_id = _workbook_id_for_task(brain_id, task_id)
+    if not chunks and not relationship_ids and not payload and not workbook_id:
         return None
+    if not chunks and not relationship_ids and not payload:
+        return reconstruct_effect(
+            task_id, chunks=[], nodes=[], edges=[], workbook_id=workbook_id,
+        )
     from src.services.kg_agent.main import graph_adapter
 
     graph_nodes, graph_edges = graph_adapter.nodes_and_edges_citing(
@@ -835,8 +857,19 @@ def reconstruct_live(brain_id: str, task_id: str, source_key: Optional[str] = No
         nodes=node_rows,
         edges=edge_rows,
         structured_data_id=task_id if payload else None,
+        workbook_id=workbook_id,
         relationship_ids=relationship_ids,
     )
+
+
+def _workbook_id_for_task(brain_id: str, task_id: str) -> Optional[str]:
+    try:
+        from src.services.api.routes.spreadsheets import lookup_workbook
+
+        found = lookup_workbook(brain_id, task_id)
+    except Exception:
+        return None
+    return str(found) if found else None
 
 
 def snapshots_for(brain_id: str, effect: IngestEffect):

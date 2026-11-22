@@ -46,7 +46,12 @@ _DEFAULT_MIN_CONN = 1
 # Celery uses a threaded pool; keep enough connections for concurrent
 # brain reads/writes without blocking behind the in-memory graph lock.
 _DEFAULT_MAX_CONN = max(16, int(os.getenv("CELERY_WORKER_CONCURRENCY") or 4) * 4)
+_DEFAULT_POOL_TIMEOUT = 5.0
 _MAINTENANCE_FALLBACK_DB = "postgres"
+
+
+class PoolTimeout(Exception):
+    """Raised when the per-brain pool has no free connection before the wait limit."""
 
 
 def _maintenance_dbname() -> str:
@@ -97,6 +102,8 @@ class _PoolRegistry:
                 password=config.postgresql.password,
                 dbname=dbname,
             )
+            pool.maxconn = maxconn
+            pool._wait_limiter = threading.BoundedSemaphore(maxconn)
             self._pools[dbname] = pool
             self._evict_if_needed()
             return pool
@@ -137,13 +144,48 @@ def get_brain_pool(brain_id: str) -> psycopg2.pool.ThreadedConnectionPool:
     return _registry.get(brain_db_name(brain_id))
 
 
+def pool_timeout_seconds() -> float:
+    raw = os.getenv("POSTGRES_POOL_TIMEOUT", str(_DEFAULT_POOL_TIMEOUT))
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_POOL_TIMEOUT
+    return max(0.0, value)
+
+
+def getconn_wait(
+    pool: psycopg2.pool.ThreadedConnectionPool,
+    timeout: float | None = None,
+) -> psycopg2.extensions.connection:
+    wait = pool_timeout_seconds() if timeout is None else max(0.0, float(timeout))
+    limiter = getattr(pool, "_wait_limiter", None)
+    if limiter is None:
+        maxconn = int(getattr(pool, "maxconn", None) or _DEFAULT_MAX_CONN)
+        limiter = threading.BoundedSemaphore(maxconn)
+        pool._wait_limiter = limiter
+    if not limiter.acquire(timeout=wait):
+        raise PoolTimeout("connection pool timeout")
+    try:
+        return pool.getconn()
+    except Exception as exc:
+        limiter.release()
+        if isinstance(exc, psycopg2.pool.PoolError):
+            raise PoolTimeout("connection pool timeout") from exc
+        raise
+
+
 @contextmanager
 def borrow(pool: psycopg2.pool.ThreadedConnectionPool) -> Iterator[psycopg2.extensions.connection]:
-    conn = pool.getconn()
+    conn = getconn_wait(pool)
     try:
         yield conn
     finally:
-        pool.putconn(conn)
+        try:
+            pool.putconn(conn)
+        finally:
+            limiter = getattr(pool, "_wait_limiter", None)
+            if limiter is not None:
+                limiter.release()
 
 
 _created_dbs: set[str] = set()
