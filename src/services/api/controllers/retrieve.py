@@ -78,8 +78,10 @@ _MAX_NOUN_CHUNKS = 5
 _SEED_K = 25
 _PASSAGE_K = 24
 _IO_TIMEOUT_SECONDS = 10.0
+_IO_MAX_WORKERS = 8
+_IO_MAX_INFLIGHT = 8
 _IO_THREAD_PREFIX = "ctx-io"
-_io_state: dict[str, Any] = {"pool": None, "pid": 0}
+_io_state: dict[str, Any] = {"pool": None, "pid": 0, "inflight": 0}
 _io_state_lock = threading.Lock()
 _PPR_DAMPING = 0.85
 _PPR_ITERS = 20
@@ -104,10 +106,11 @@ def _io_executor() -> ThreadPoolExecutor:
             pool = _io_state["pool"]
             if pool is None or _io_state["pid"] != pid:
                 pool = ThreadPoolExecutor(
-                    max_workers=8, thread_name_prefix=_IO_THREAD_PREFIX
+                    max_workers=_IO_MAX_WORKERS, thread_name_prefix=_IO_THREAD_PREFIX
                 )
                 _io_state["pool"] = pool
                 _io_state["pid"] = pid
+                _io_state["inflight"] = 0
     return pool
 
 
@@ -121,13 +124,39 @@ def _submit_io(fn, *args, **kwargs):
 
 
 def _wait_all(futures, timeout: float = _IO_TIMEOUT_SECONDS):
-    return [fut.result(timeout=timeout) for fut in futures]
+    try:
+        return [fut.result(timeout=timeout) for fut in futures]
+    except Exception:
+        for fut in futures:
+            fut.cancel()
+        raise
+
+
+def _reserve_io_jobs(n: int) -> bool:
+    with _io_state_lock:
+        inflight = int(_io_state.get("inflight") or 0)
+        if inflight + n > _IO_MAX_INFLIGHT:
+            return False
+        _io_state["inflight"] = inflight + n
+        return True
+
+
+def _release_io_jobs(n: int) -> None:
+    with _io_state_lock:
+        inflight = int(_io_state.get("inflight") or 0)
+        _io_state["inflight"] = max(0, inflight - n)
 
 
 def _parallel_io(fns: list):
     if len(fns) <= 1 or _on_io_worker():
         return [fn() for fn in fns]
-    return _wait_all([_submit_io(fn) for fn in fns])
+    n = len(fns)
+    if not _reserve_io_jobs(n):
+        return [fn() for fn in fns]
+    try:
+        return _wait_all([_submit_io(fn) for fn in fns])
+    finally:
+        _release_io_jobs(n)
 
 
 def _embed_query_vector(text: str) -> Vector:

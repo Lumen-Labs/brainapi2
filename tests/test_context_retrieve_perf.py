@@ -373,6 +373,70 @@ class ConcurrencyRegressionTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    def test_wait_all_cancels_unstarted_jobs_on_timeout(self):
+        import threading
+        import time
+        from concurrent.futures import ThreadPoolExecutor
+
+        from src.services.api.controllers import retrieve as retrieve_mod
+
+        started = threading.Event()
+        block = threading.Event()
+        queued_ran = []
+
+        def hang():
+            started.set()
+            block.wait(30)
+
+        def queued():
+            queued_ran.append(True)
+            return "queued"
+
+        pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ctx-io")
+        previous = dict(retrieve_mod._io_state)
+        retrieve_mod._io_state["pool"] = pool
+        retrieve_mod._io_state["pid"] = os.getpid()
+        retrieve_mod._io_state["inflight"] = 0
+        try:
+            futures = [
+                retrieve_mod._submit_io(hang),
+                retrieve_mod._submit_io(queued),
+            ]
+            self.assertTrue(started.wait(2))
+            with self.assertRaises(TimeoutError):
+                retrieve_mod._wait_all(futures, timeout=0.2)
+            self.assertTrue(futures[1].cancelled())
+            time.sleep(0.1)
+            self.assertEqual(queued_ran, [])
+        finally:
+            block.set()
+            retrieve_mod._io_state.update(previous)
+            pool.shutdown(wait=False)
+
+    def test_parallel_io_runs_serial_when_inflight_cap_reached(self):
+        from src.services.api.controllers import retrieve as retrieve_mod
+
+        previous = dict(retrieve_mod._io_state)
+        retrieve_mod._io_state["inflight"] = retrieve_mod._IO_MAX_INFLIGHT
+        order = []
+
+        def first():
+            order.append("a")
+            return 1
+
+        def second():
+            order.append("b")
+            return 2
+
+        try:
+            self.assertEqual(retrieve_mod._parallel_io([first, second]), [1, 2])
+            self.assertEqual(order, ["a", "b"])
+            self.assertEqual(
+                retrieve_mod._io_state["inflight"], retrieve_mod._IO_MAX_INFLIGHT
+            )
+        finally:
+            retrieve_mod._io_state.update(previous)
+
     async def test_current_fact_candidates_runs_once_on_the_hot_path(self):
         from src.core.saving import source_passages as passages_mod
         from src.services.api.controllers import retrieve as retrieve_mod
