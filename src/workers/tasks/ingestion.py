@@ -84,6 +84,17 @@ from src.services.kg_agent.main import (
 from src.services.observations.main import observations_agent
 from src.utils.dates import normalize_date_string
 from src.utils.similarity.vectors import cosine_similarity
+from src.lib.tracing.ingest_telemetry import (
+    INGEST_DATA_OPERATION,
+    INGEST_FILE_OPERATION,
+    INGEST_STRUCTURED_OPERATION,
+    INGEST_URL_OPERATION,
+    kind_for_ingest_data,
+    maybe_emit_ingestion_telemetry,
+    now_ms,
+    stamp_started_at,
+    telemetry_extra,
+)
 from src.workers.app import ingestion_app
 
 PYPROJECT_PATH = Path(__file__).parent.parent.parent.parent / "pyproject.toml"
@@ -177,6 +188,7 @@ def set_ingestion_task_status(
                 payload.pop(extra_key, None)
             else:
                 payload[extra_key] = value
+    stamp_started_at(payload, status)
     if cost is not None:
         payload = merge_cost_into_status_payload(
             payload, IngestCostLedger.from_dict(cost)
@@ -220,6 +232,8 @@ def set_ingestion_task_status(
     if os.getenv("PROGRESSIVE_INGESTION_ENABLED") == "1":
         from src.core.saving.ingest_manifest import update_section
         update_section(brain_id, task_id, status, stage, payload.get("cost"), error)
+    if previous not in TERMINAL_TASK_STATUSES and status in TERMINAL_TASK_STATUSES:
+        maybe_emit_ingestion_telemetry(previous, payload)
     return payload
 
 
@@ -938,11 +952,13 @@ def _ingest_data(self, args, *, staged=False):
         if not claim_section_execution(args.get("brain_id", "default"), self.request.id, bool((getattr(self.request, "delivery_info", None) or {}).get("redelivered"))):
             return self.request.id
     payload = None
+    started_at_ms = now_ms()
     try:
         payload = IngestionTaskArgs(**args)
         from src.config import validate_pipeline_mode
 
         validate_pipeline_mode(config.pipeline_mode)
+        source_text = source_text_from_payload(payload)
 
         set_ingestion_task_status(
             self.request.id,
@@ -950,6 +966,13 @@ def _ingest_data(self, args, *, staged=False):
             "started",
             stage="source",
             group_tracking=payload.group_tracking,
+            extra=telemetry_extra(
+                operation=INGEST_DATA_OPERATION,
+                kind=kind_for_ingest_data(payload),
+                pipeline_mode=config.pipeline_mode,
+                started_at_ms=started_at_ms,
+                size_chars=len(source_text or ""),
+            ),
         )
 
         payload.meta_keys = (
@@ -972,7 +995,6 @@ def _ingest_data(self, args, *, staged=False):
             else None
         )
 
-        source_text = source_text_from_payload(payload)
         from src.core.saving.source_passages import prepare_source_revision
         from src.core.saving.validity import format_instant, parse_instant, stamp_valid_from, utc_now
 
@@ -1178,6 +1200,12 @@ def _ingest_data(self, args, *, staged=False):
             "failed",
             stage="failed",
             error=str(e),
+            extra=telemetry_extra(
+                operation=INGEST_DATA_OPERATION,
+                kind=kind_for_ingest_data(payload) if payload else "text",
+                pipeline_mode=config.pipeline_mode,
+                started_at_ms=started_at_ms,
+            ),
         )
         raise
 
@@ -1716,9 +1744,11 @@ def ingest_structured_data(self, args: dict):
 
 def _ingest_structured_data(self, args, *, staged=False):
     payload = None
+    started_at_ms = now_ms()
     try:
         payload = IngestionStructuredRequestBody(**args)
         mode = payload.resolved_mode()
+        source_chars = len(payload.text or "")
 
         set_ingestion_task_status(
             self.request.id,
@@ -1726,6 +1756,14 @@ def _ingest_structured_data(self, args, *, staged=False):
             "started",
             stage="source",
             counts={"triples": len(payload.data), "mode": mode},
+            extra=telemetry_extra(
+                operation=INGEST_STRUCTURED_OPERATION,
+                kind="structured",
+                pipeline_mode=config.pipeline_mode,
+                started_at_ms=started_at_ms,
+                size_chars=source_chars,
+                unit_count=len(payload.data),
+            ),
         )
 
         if mode == "deterministic" and payload.anchor is not None:
@@ -2027,6 +2065,12 @@ def _ingest_structured_data(self, args, *, staged=False):
             "failed",
             stage="failed",
             error=str(e),
+            extra=telemetry_extra(
+                operation=INGEST_STRUCTURED_OPERATION,
+                kind="structured",
+                pipeline_mode=config.pipeline_mode,
+                started_at_ms=started_at_ms,
+            ),
         )
         raise
 
@@ -2181,14 +2225,38 @@ def ingest_file(
         execute_staged_unit(brain_id, staged_root, self.request.id, discover, discovery=True)
         return self.request.id
 
-    set_ingestion_task_status(
-        self.request.id,
-        brain_id,
-        "started",
-        stage="source",
-        group_tracking=group_tracking,
-    )
-    page_markdowns = _extract_file_pages(content_b64, filename)
+    started_at_ms = now_ms()
+    try:
+        set_ingestion_task_status(
+            self.request.id,
+            brain_id,
+            "started",
+            stage="source",
+            group_tracking=group_tracking,
+            extra=telemetry_extra(
+                operation=INGEST_FILE_OPERATION,
+                kind="file",
+                pipeline_mode=config.pipeline_mode,
+                started_at_ms=started_at_ms,
+            ),
+        )
+        page_markdowns = _extract_file_pages(content_b64, filename)
+    except Exception as exc:
+        set_ingestion_task_status(
+            self.request.id,
+            brain_id,
+            "failed",
+            stage="failed",
+            error=str(exc),
+            group_tracking=group_tracking,
+            extra=telemetry_extra(
+                operation=INGEST_FILE_OPERATION,
+                kind="file",
+                pipeline_mode=config.pipeline_mode,
+                started_at_ms=started_at_ms,
+            ),
+        )
+        raise
     task_ids = [str(uuid4()) for _ in page_markdowns]
     for page_task_id in task_ids:
         set_ingestion_task_status(
@@ -2220,6 +2288,15 @@ def ingest_file(
         "completed",
         counts={"pages": len(task_ids), "task_ids": task_ids},
         group_tracking=group_tracking,
+        extra=telemetry_extra(
+            operation=INGEST_FILE_OPERATION,
+            kind="file",
+            pipeline_mode=config.pipeline_mode,
+            started_at_ms=started_at_ms,
+            size_chars=sum(len(page or "") for page in page_markdowns),
+            size_pages=len(task_ids),
+            unit_count=len(task_ids),
+        ),
     )
     return {"task_id": self.request.id, "task_ids": task_ids}
 
@@ -2248,6 +2325,7 @@ def build_url_page_ingest_payload(
         ).model_dump(),
         "brain_id": brain_id,
         "skip_enrichment": skip_enrichment,
+        "kind": "url",
     }
     if meta_keys:
         payload["meta_keys"] = meta_keys
@@ -2305,6 +2383,7 @@ def ingest_url(self, args: dict):
         )
         return self.request.id
 
+    started_at_ms = now_ms()
     try:
         set_ingestion_task_status(
             self.request.id,
@@ -2312,6 +2391,12 @@ def ingest_url(self, args: dict):
             "started",
             stage="crawling",
             group_tracking=group_tracking,
+            extra=telemetry_extra(
+                operation=INGEST_URL_OPERATION,
+                kind="url",
+                pipeline_mode=config.pipeline_mode,
+                started_at_ms=started_at_ms,
+            ),
         )
         pages = crawler_adapter.crawl_pages(
             CrawlRequest(
@@ -2363,6 +2448,15 @@ def ingest_url(self, args: dict):
             "completed",
             counts={"pages": len(task_ids), "task_ids": task_ids},
             group_tracking=group_tracking,
+            extra=telemetry_extra(
+                operation=INGEST_URL_OPERATION,
+                kind="url",
+                pipeline_mode=config.pipeline_mode,
+                started_at_ms=started_at_ms,
+                size_chars=sum(len(page.text or "") for page in ingestible),
+                size_pages=len(task_ids),
+                unit_count=len(task_ids),
+            ),
         )
         return {"task_id": self.request.id, "task_ids": task_ids}
     except (
@@ -2378,6 +2472,12 @@ def ingest_url(self, args: dict):
             stage="failed",
             error=str(exc),
             group_tracking=group_tracking,
+            extra=telemetry_extra(
+                operation=INGEST_URL_OPERATION,
+                kind="url",
+                pipeline_mode=config.pipeline_mode,
+                started_at_ms=started_at_ms,
+            ),
         )
         raise
     except Exception as exc:
@@ -2388,6 +2488,12 @@ def ingest_url(self, args: dict):
             stage="failed",
             error=str(exc),
             group_tracking=group_tracking,
+            extra=telemetry_extra(
+                operation=INGEST_URL_OPERATION,
+                kind="url",
+                pipeline_mode=config.pipeline_mode,
+                started_at_ms=started_at_ms,
+            ),
         )
         raise
 
@@ -2405,6 +2511,7 @@ def build_file_page_ingest_payload(
             data_type="text", text_data=markdown
         ).model_dump(),
         "brain_id": brain_id,
+        "kind": "file",
     }
     key = normalize_group_tracking(group_tracking, strict=False)
     if key:
