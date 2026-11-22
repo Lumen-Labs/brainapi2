@@ -890,6 +890,11 @@ def fail_expired_remote_ocr(brain_id, task_id, cached=None, *, rejected=False):
     status = cached.get("status")
     if status in TERMINAL_TASK_STATUSES:
         return cached
+    from src.core.saving.unstaged_ocr import settle_expired
+
+    settled = settle_expired(brain_id, task_id, cached)
+    if settled is not None:
+        return settled
     if _should_report_ocr_partial(run, cached):
         source = dict(run or cached)
         source["ocr_partial"] = True
