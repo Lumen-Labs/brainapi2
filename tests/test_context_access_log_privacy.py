@@ -57,7 +57,7 @@ from src.services.api.logging_privacy import (
 from src.services.api.routes.retrieve import retrieve_router
 from src.utils.nlp.ner import ExtractElementsResponse
 
-SECRET_QUESTION = "SECRET_QUESTION_ABOUT_ALICE_SSN_998877"
+PROBE_QUESTION = "PROBE_QUESTION_ABOUT_ALICE_NEIGHBOR"
 
 
 def _keyword_chunk():
@@ -148,7 +148,7 @@ class ContextAccessLogPrivacyTests(unittest.TestCase):
         ):
             response = client.get(
                 "/retrieve/context",
-                params={"text": SECRET_QUESTION},
+                params={"text": PROBE_QUESTION},
             )
         self.assertEqual(response.status_code, 200)
         query = response.request.url.query
@@ -157,7 +157,7 @@ class ContextAccessLogPrivacyTests(unittest.TestCase):
         raw_target = response.request.url.path
         if query:
             raw_target = f"{raw_target}?{query}"
-        self.assertIn(SECRET_QUESTION, raw_target)
+        self.assertIn(PROBE_QUESTION, raw_target)
 
         logger = logging.getLogger("uvicorn.access")
         stream = io.StringIO()
@@ -185,8 +185,8 @@ class ContextAccessLogPrivacyTests(unittest.TestCase):
 
         self.assertIn("/retrieve/context", line)
         self.assertIn("text=[redacted]", line)
-        self.assertNotIn(SECRET_QUESTION, line)
-        self.assertNotIn(SECRET_QUESTION, redact_access_target(raw_target))
+        self.assertNotIn(PROBE_QUESTION, line)
+        self.assertNotIn(PROBE_QUESTION, redact_access_target(raw_target))
 
     def test_filter_redacts_embedded_context_query(self):
         record = logging.LogRecord(
@@ -194,17 +194,17 @@ class ContextAccessLogPrivacyTests(unittest.TestCase):
             level=logging.INFO,
             pathname=__file__,
             lineno=1,
-            msg=f"GET /retrieve/context?text={SECRET_QUESTION}&profile_stages=false",
+            msg=f"GET /retrieve/context?text={PROBE_QUESTION}&profile_stages=false",
             args=(),
             exc_info=None,
         )
         AccessLogPrivacyFilter().filter(record)
         message = record.getMessage()
-        self.assertNotIn(SECRET_QUESTION, message)
+        self.assertNotIn(PROBE_QUESTION, message)
         self.assertIn("text=[redacted]", message)
 
     def test_filter_redacts_literal_apostrophe_in_query_text(self):
-        raw = "/retrieve/context?text=Alice's+SSN+998877"
+        raw = "/retrieve/context?text=Alice's+neighbor+998877"
         redacted = redact_access_target(raw)
         self.assertIn("text=[redacted]", redacted)
         self.assertNotIn("Alice's", redacted)
@@ -226,10 +226,10 @@ class ContextAccessLogPrivacyTests(unittest.TestCase):
         self.assertNotIn("998877", message)
 
     def test_filter_redacts_percent_encoded_context_path(self):
-        raw = "/retrieve/%63ontext?text=" + SECRET_QUESTION
+        raw = "/retrieve/%63ontext?text=" + PROBE_QUESTION
         redacted = redact_access_target(raw)
         self.assertIn("text=[redacted]", redacted)
-        self.assertNotIn(SECRET_QUESTION, redacted)
+        self.assertNotIn(PROBE_QUESTION, redacted)
 
     def test_app_logger_record_is_redacted(self):
         install_access_log_privacy()
@@ -243,14 +243,14 @@ class ContextAccessLogPrivacyTests(unittest.TestCase):
         logger.setLevel(logging.INFO)
         logger.propagate = False
         try:
-            logger.info("GET /retrieve/context?text=%s", SECRET_QUESTION)
+            logger.info("GET /retrieve/context?text=%s", PROBE_QUESTION)
             line = stream.getvalue()
         finally:
             logger.removeHandler(handler)
             logger.setLevel(previous_level)
             logger.propagate = previous_propagate
         self.assertIn("text=[redacted]", line)
-        self.assertNotIn(SECRET_QUESTION, line)
+        self.assertNotIn(PROBE_QUESTION, line)
 
 
 if __name__ == "__main__":
