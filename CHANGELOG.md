@@ -1,5 +1,23 @@
 # Changelog
 
+## 2.21.2 — 2026-11-22
+
+Current `main` since 2.21.1. The 2.21.0 and 2.21.1 tags did not publish a container image because the tag workflow ran before the required smoke checks had succeeded. This release is the first stable tag that can publish that image, including the Cypher parameterization from 2.21.0.
+
+### Ingest
+
+- Plain-text file ingest skips docparser and closes OCR once every page has arrived. ([#144](https://github.com/Lumen-Labs/brainapi2/pull/144))
+- OCR callbacks, Redis 503 handling, and text ingest limits are hardened. ([#146](https://github.com/Lumen-Labs/brainapi2/pull/146))
+- Unstaged OCR pages are dispatched at the deadline and stored atomically. ([#148](https://github.com/Lumen-Labs/brainapi2/pull/148))
+
+### Retrieve
+
+- `POST` and `GET /retrieve/context` are faster for small QA brains. ([#150](https://github.com/Lumen-Labs/brainapi2/pull/150))
+
+### Tracing
+
+- LangSmith tracing is removed, and tracing environment variables are forced off. ([#145](https://github.com/Lumen-Labs/brainapi2/pull/145))
+
 ## 2.21.1 — 2026-11-21
 
 Spreadsheet import/query (off by default), Explore overview-link snapshots, and hosted MCP OAuth sign-in. These were live on engine hosts only; this release puts them in the image so hosts can drop bind mounts and custom layers.
