@@ -313,6 +313,50 @@ class VectorTimeoutFallbackTests(unittest.IsolatedAsyncioTestCase):
             retrieve_mod._io_state.update(previous)
             pool.shutdown(wait=False)
 
+    def test_parallel_io_releases_unstarted_slot_on_partial_timeout(self):
+        import threading
+        import time
+        from concurrent.futures import ThreadPoolExecutor
+
+        from src.services.api.controllers import retrieve as retrieve_mod
+
+        started = threading.Event()
+        block = threading.Event()
+
+        def done():
+            return "kept"
+
+        def hang():
+            started.set()
+            block.wait(30)
+            return "late"
+
+        def queued():
+            return "queued"
+
+        pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ctx-io")
+        previous = dict(retrieve_mod._io_state)
+        retrieve_mod._io_state["pool"] = pool
+        retrieve_mod._io_state["pid"] = os.getpid()
+        retrieve_mod._io_state["inflight"] = 0
+        try:
+            with patch.object(retrieve_mod, "_IO_TIMEOUT_SECONDS", 0.3):
+                results = retrieve_mod._parallel_io([done, hang, queued])
+            self.assertTrue(started.wait(2))
+            self.assertEqual(results[0], "kept")
+            self.assertIs(results[1], retrieve_mod._IO_FAILED)
+            self.assertIs(results[2], retrieve_mod._IO_FAILED)
+            self.assertEqual(retrieve_mod._io_state["inflight"], 1)
+            block.set()
+            deadline = time.time() + 2
+            while retrieve_mod._io_state["inflight"] != 0 and time.time() < deadline:
+                time.sleep(0.01)
+            self.assertEqual(retrieve_mod._io_state["inflight"], 0)
+        finally:
+            block.set()
+            retrieve_mod._io_state.update(previous)
+            pool.shutdown(wait=False)
+
     async def test_programming_error_is_not_swallowed(self):
         from src.services.api.controllers import retrieve as retrieve_mod
 

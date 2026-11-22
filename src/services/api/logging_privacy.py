@@ -35,7 +35,7 @@ def redact_query(query: str) -> str:
 def redact_path(path: str) -> str:
     if not path or "?" not in path:
         return path
-    parts = urlsplit(path)
+    parts = urlsplit(path, allow_fragments=False)
     target_path = parts.path or path.split("?", 1)[0]
     if not _is_context_path(target_path):
         return path
@@ -47,9 +47,15 @@ def redact_path(path: str) -> str:
             parts.netloc,
             parts.path or target_path,
             redacted_query,
-            parts.fragment,
+            "",
         )
     )
+
+
+def redact_embedded_message(text: str) -> str:
+    if not text or "?" not in text:
+        return text
+    return _CONTEXT_QUERY_RE.sub(lambda match: redact_path(match.group(0)), text)
 
 
 def redact_access_target(target: str) -> str:
@@ -65,10 +71,7 @@ def redact_access_target(target: str) -> str:
             if start >= 0:
                 return target[:start] + redacted + target[start + len(stripped) :]
             return redacted
-    match = _CONTEXT_QUERY_RE.search(target)
-    if not match:
-        return redact_path(target)
-    return target[: match.start()] + redact_path(match.group(0)) + target[match.end() :]
+    return redact_embedded_message(target)
 
 
 class AccessLogPrivacyFilter(logging.Filter):
@@ -88,7 +91,9 @@ class AccessLogPrivacyFilter(logging.Filter):
             rendered = record.getMessage()
         except (TypeError, ValueError):
             return True
-        redacted_msg = redact_access_target(rendered)
+        redacted_msg = redact_embedded_message(rendered)
+        if redacted_msg == rendered:
+            redacted_msg = redact_access_target(rendered)
         if redacted_msg != rendered:
             record.msg = redacted_msg
             record.args = ()

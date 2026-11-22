@@ -225,6 +225,40 @@ class ContextAccessLogPrivacyTests(unittest.TestCase):
         self.assertNotIn("Alice's", message)
         self.assertNotIn("998877", message)
 
+    def test_filter_redacts_hash_in_query_text(self):
+        raw = "/retrieve/context?text=Alice#998877"
+        redacted = redact_access_target(raw)
+        self.assertIn("text=[redacted]", redacted)
+        self.assertNotIn("Alice", redacted)
+        self.assertNotIn("998877", redacted)
+
+    def test_filter_redacts_every_embedded_context_url(self):
+        from src.services.api.logging_privacy import redact_embedded_message
+
+        message = (
+            "first /retrieve/context?text=FIRST "
+            "second /retrieve/context?text=SECOND"
+        )
+        redacted = redact_embedded_message(message)
+        self.assertEqual(redacted.count("text=[redacted]"), 2)
+        self.assertNotIn("FIRST", redacted)
+        self.assertNotIn("SECOND", redacted)
+
+        record = logging.LogRecord(
+            name="app",
+            level=logging.INFO,
+            pathname=__file__,
+            lineno=1,
+            msg=message,
+            args=(),
+            exc_info=None,
+        )
+        AccessLogPrivacyFilter().filter(record)
+        rendered = record.getMessage()
+        self.assertEqual(rendered.count("text=[redacted]"), 2)
+        self.assertNotIn("FIRST", rendered)
+        self.assertNotIn("SECOND", rendered)
+
     def test_filter_redacts_percent_encoded_context_path(self):
         raw = "/retrieve/%63ontext?text=" + PROBE_QUESTION
         redacted = redact_access_target(raw)

@@ -204,7 +204,11 @@ def _parallel_io(fns: list):
     futures = []
     try:
         futures = [_submit_io(wrap(index, fn)) for index, fn in enumerate(fns)]
-        return _wait_all(futures, timeout=_IO_TIMEOUT_SECONDS)
+        results = _wait_all(futures, timeout=_IO_TIMEOUT_SECONDS)
+        for index, fut in enumerate(futures):
+            if fut.cancelled():
+                release_slot(index)
+        return results
     except Exception:
         for index, fut in enumerate(futures):
             if fut.cancelled() or fut.cancel():
