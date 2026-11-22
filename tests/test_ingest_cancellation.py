@@ -1285,9 +1285,9 @@ def test_staged_file_upload_rejects_oversize_and_ignores_limit_when_disabled(run
     queued_text = Mock()
     monkeypatch.setattr(ingest.ingest_data_task, "apply_async", queued_text)
     unstaged = api.post("/ingest/file", files={"file": ("big.txt", b"01234567890")})
-    assert unstaged.status_code == 202
+    assert unstaged.status_code == 413
     queued.assert_not_called()
-    queued_text.assert_called_once()
+    queued_text.assert_not_called()
 
 
 def test_staged_structured_batch_uses_configured_upload_limit(run, monkeypatch):
@@ -1416,6 +1416,7 @@ def test_three_page_ocr_seals_when_last_page_arrives_not_at_deadline(run, monkey
     assert last.status_code == 202
     after_last = cancellation._runs("brain").find_one({"_id": "ocr"})
     assert after_last["sealed"] is True
+    assert after_last["ocr_partial"] is True
     assert after_last["status"] == "staging"
     assert after_last["callback_deadline"] == 10**12
     _complete_pending_units(ingest_staging, "ocr")
@@ -1482,3 +1483,70 @@ def test_whole_document_ocr_error_fails_single_page_run(run, monkeypatch):
     stored = cancellation._runs("brain").find_one({"_id": "ocr"})
     assert stored["status"] == "failed"
     assert "Unsupported file format" in stored["error"]
+
+
+def test_later_callback_cannot_lower_total_pages(run, monkeypatch):
+    from src.core.saving import ingest_staging as staging
+
+    staging.create_run("brain", "ocr", callback_deadline=10**12)
+    first = staging.register_ocr_callback(
+        "brain", "ocr", {"payload": {"n": 1}}, page_index=0, total_pages=3,
+    )
+    assert first[1] is True
+    after_first = cancellation._runs("brain").find_one({"_id": "ocr"})
+    assert after_first["ocr_total_pages"] == 3
+    assert not after_first.get("sealed")
+    second = staging.register_ocr_callback(
+        "brain", "ocr", {"payload": {"n": 2}}, page_index=1, total_pages=2,
+    )
+    assert second[1] is True
+    stored = cancellation._runs("brain").find_one({"_id": "ocr"})
+    assert stored["ocr_total_pages"] == 3
+    assert not stored.get("sealed")
+    assert stored["ocr_pages_accepted"] == 2
+
+
+def test_missing_pages_at_deadline_are_partial_failed(run, monkeypatch):
+    from src.core.saving import ingest_staging as staging
+
+    now = {"value": 1000}
+    monkeypatch.setattr(staging, "time", lambda: now["value"])
+    staging.create_run("brain", "ocr", callback_deadline=2000)
+    staging.register_ocr_callback(
+        "brain", "ocr", {"payload": {"n": 1}}, page_index=0, total_pages=3,
+    )
+    now["value"] = 2500
+    expired = staging.expire_remote_ocr("brain", "ocr")
+    assert expired["sealed"] is True
+    assert expired["ocr_partial"] is True
+    assert expired["ocr_pages_accepted"] == 1
+    refreshed = staging.fail_expired_remote_ocr(
+        "brain",
+        "ocr",
+        {"status": "started", "ocr_pages_accepted": 1, "ocr_total_pages": 3},
+    )
+    assert refreshed["status"] == "partial_failed"
+    assert refreshed["ocr_pages_accepted"] == 1
+    assert refreshed["ocr_total_pages"] == 3
+
+
+def test_small_ocr_deadline_starts_on_first_page(run, monkeypatch):
+    from src.core.saving import ingest_staging as staging
+
+    now = {"value": 1000}
+    monkeypatch.setattr(staging, "time", lambda: now["value"])
+    staging.create_run(
+        "brain",
+        "ocr",
+        callback_deadline=1000 + staging.REMOTE_OCR_DEADLINE_SECONDS,
+        small_remote_ocr=True,
+    )
+    before = cancellation._runs("brain").find_one({"_id": "ocr"})
+    assert before["callback_deadline"] == 1000 + staging.REMOTE_OCR_DEADLINE_SECONDS
+    now["value"] = 1300
+    staging.register_ocr_callback(
+        "brain", "ocr", {"payload": {"n": 1}}, page_index=0, total_pages=2,
+    )
+    after = cancellation._runs("brain").find_one({"_id": "ocr"})
+    assert after["callback_deadline"] == 1300 + staging.SMALL_REMOTE_OCR_DEADLINE_SECONDS
+    assert not after.get("sealed")

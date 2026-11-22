@@ -20,6 +20,7 @@ from uuid import uuid4
 import requests
 from celery.exceptions import OperationalError
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from redis.exceptions import RedisError
 from starlette.responses import JSONResponse
 from typing_extensions import Annotated
 
@@ -44,15 +45,20 @@ from src.workers.tasks.ingestion import set_ingestion_task_status
 from src.services.api.routes import spreadsheets
 from src.core.saving.ingest_plain_text import (
     decode_plain_text,
+    is_blank_plain_text,
     uses_plain_text_ingest,
 )
 from src.constants.tasks.ingestion import IngestionTaskArgs
 from src.core.saving.ingest_staging import (
     REMOTE_OCR_EMPTY_ERROR,
     REMOTE_OCR_REJECTED_ERROR,
+    SMALL_REMOTE_OCR_DEADLINE_SECONDS,
+    TERMINAL_TASK_STATUSES,
     fail_expired_remote_ocr,
+    is_small_remote_ocr,
     remote_ocr_callback_deadline,
 )
+from src.services.api.errors import cache_unavailable
 
 MAX_TASK_RETRIES = 3
 RETRY_DELAY_BASE = 0.1
@@ -90,7 +96,7 @@ def _read_upload_capped(upload, limit):
             break
         total += len(chunk)
         if total > limit:
-            raise HTTPException(413, "Staged file upload is too large")
+            raise HTTPException(413, "File upload is too large")
         chunks.append(chunk)
     return b"".join(chunks)
 
@@ -104,9 +110,9 @@ def _upload_size(upload, content):
     return None
 
 
-def _plain_text_payload(brain_id, content, group_key):
+def _plain_text_payload(brain_id, text, group_key):
     payload = {
-        "data": {"data_type": "text", "text_data": decode_plain_text(content)},
+        "data": {"data_type": "text", "text_data": text},
         "brain_id": brain_id,
     }
     if group_key:
@@ -158,15 +164,18 @@ def _forward_remote_ocr(request, brain_id, task, file, filename, content, group_
         or request.headers.get("Host")
         or request.base_url.netloc,
     ).rstrip("/")
-    print(f"app_host: {app_host}")
-    deadline = remote_ocr_callback_deadline(_upload_size(file, content))
+    small = is_small_remote_ocr(_upload_size(file, content))
+    deadline = remote_ocr_callback_deadline()
+    extra = {"remote_ocr_deadline": deadline}
+    if small:
+        extra["small_remote_ocr"] = True
     set_ingestion_task_status(
         task,
         brain_id,
         "queued",
         stage="queued",
         group_tracking=group_key,
-        extra={"remote_ocr_deadline": deadline},
+        extra=extra,
     )
     if (
         os.getenv("STAGED_INGESTION_ENABLED") == "1"
@@ -174,7 +183,9 @@ def _forward_remote_ocr(request, brain_id, task, file, filename, content, group_
     ):
         from src.core.saving import ingest_staging
 
-        ingest_staging.create_run(brain_id, task, callback_deadline=deadline)
+        ingest_staging.create_run(
+            brain_id, task, callback_deadline=deadline, small_remote_ocr=small,
+        )
     parser_data = {
         "brain_id": brain_id,
         "webhook_callback": f"{app_host}/ingest/",
@@ -194,13 +205,16 @@ def _forward_remote_ocr(request, brain_id, task, file, filename, content, group_
         raise HTTPException(status_code=503, detail=REMOTE_OCR_REJECTED_ERROR)
 
 
-async def _queue_text_ingest(brain_id, task_id, payload, context, group_tracking=None):
+async def _queue_text_ingest(
+    brain_id, task_id, payload, context, group_tracking=None, extra=None,
+):
     set_ingestion_task_status(
         task_id,
         brain_id,
         "queued",
         stage="queued",
         group_tracking=group_tracking,
+        extra=extra,
     )
     if os.getenv("STAGED_INGESTION_ENABLED") == "1" and (
         payload.get("skip_enrichment") or os.getenv("STAGED_ENRICHMENT_ENABLED") == "1"
@@ -301,10 +315,133 @@ def _accept_remote_ocr_callback(brain_id, task_id, data, context):
     return _ocr_callback_accepted(task_id)
 
 
-def _accept_known_failed_callback(brain_id, task_id):
-    if _read_task_cache(brain_id, task_id):
+def _ocr_callback_error(data):
+    return (getattr(data, "error", None) or "").strip() or REMOTE_OCR_EMPTY_ERROR
+
+
+def _fail_known_task(brain_id, task_id, error, extra=None):
+    set_ingestion_task_status(
+        task_id,
+        brain_id,
+        "failed",
+        stage="failed",
+        error=str(error)[:2000],
+        extra=extra,
+    )
+    return _ocr_callback_accepted(task_id)
+
+
+def _unstaged_ocr_total(stored, total_pages):
+    values = []
+    if stored:
+        values.append(int(stored))
+    if total_pages:
+        values.append(int(total_pages))
+    return max(values) if values else None
+
+
+def _unstaged_page_key(page_index, pages, failed_keys):
+    if page_index is not None:
+        return str(int(page_index))
+    return f"anon:{len(pages) + len(failed_keys)}"
+
+
+def _unstaged_ocr_extra(cached, pages, failed_keys, stored_total):
+    extra = {
+        "ocr_page_texts": pages,
+        "ocr_failed_pages": failed_keys,
+        "ocr_pages_accepted": len(pages),
+        "ocr_pages_failed": len(failed_keys),
+    }
+    if stored_total:
+        extra["ocr_total_pages"] = stored_total
+    if cached.get("small_remote_ocr") and not (
+        cached.get("ocr_page_texts") or cached.get("ocr_failed_pages")
+    ):
+        extra["remote_ocr_deadline"] = time() + SMALL_REMOTE_OCR_DEADLINE_SECONDS
+    return extra
+
+
+def _joined_ocr_text(pages, stored_total):
+    if stored_total:
+        keys = [str(index) for index in range(int(stored_total)) if str(index) in pages]
+    else:
+        keys = sorted(pages, key=lambda item: int(item) if str(item).isdigit() else 10**9)
+    return "\n\n".join(pages[key] for key in keys)
+
+
+async def _dispatch_grouped_ocr(brain_id, task_id, cached, extra, context):
+    extra = {**extra, "ocr_dispatch_started": True}
+    if extra.get("ocr_pages_failed"):
+        extra["ocr_partial"] = True
+    text = _joined_ocr_text(extra["ocr_page_texts"], extra.get("ocr_total_pages"))
+    await _queue_text_ingest(
+        brain_id, task_id, _plain_text_payload(brain_id, text, cached.get("group_tracking")),
+        context, cached.get("group_tracking"), extra=extra,
+    )
+    return _ocr_callback_accepted(task_id)
+
+
+async def _accept_unstaged_ocr_callback(brain_id, task_id, data, context):
+    cached = _read_task_cache(brain_id, task_id)
+    if not cached:
+        raise HTTPException(status_code=422, detail="data is required")
+    if cached.get("ocr_dispatch_started") and cached.get("status") in TERMINAL_TASK_STATUSES:
         return _ocr_callback_accepted(task_id)
-    raise HTTPException(status_code=422, detail="data is required")
+    pages = dict(cached.get("ocr_page_texts") or {})
+    failed_keys = [str(item) for item in (cached.get("ocr_failed_pages") or [])]
+    page_index, total_pages = _ocr_page_meta(data)
+    stored_total = _unstaged_ocr_total(cached.get("ocr_total_pages"), total_pages)
+    key = _unstaged_page_key(page_index, pages, failed_keys)
+    failed = _ocr_callback_failed(data)
+    if not failed:
+        pages[key] = _ocr_callback_text(data)
+        failed_keys = [item for item in failed_keys if item != key]
+    elif key not in pages and key not in failed_keys:
+        failed_keys.append(key)
+    extra = _unstaged_ocr_extra(cached, pages, failed_keys, stored_total)
+    complete = stored_total and (len(pages) + len(failed_keys)) >= int(stored_total)
+    if not complete:
+        if failed and not pages and page_index is None:
+            return _fail_known_task(brain_id, task_id, _ocr_callback_error(data), extra)
+        set_ingestion_task_status(
+            task_id, brain_id, "started", stage="processing", extra=extra,
+        )
+        return _ocr_callback_accepted(task_id)
+    if not pages:
+        return _fail_known_task(brain_id, task_id, _ocr_callback_error(data), extra)
+    if cached.get("ocr_dispatch_started"):
+        return _ocr_callback_accepted(task_id)
+    return await _dispatch_grouped_ocr(brain_id, task_id, cached, extra, context)
+
+
+def _accept_known_failed_callback(brain_id, task_id, data=None):
+    cached = _read_task_cache(brain_id, task_id)
+    if not cached:
+        raise HTTPException(status_code=422, detail="data is required")
+    if cached.get("status") in TERMINAL_TASK_STATUSES:
+        return _ocr_callback_accepted(task_id)
+    if cached.get("ocr_pages_accepted") or cached.get("ocr_page_texts"):
+        return _ocr_callback_accepted(task_id)
+    return _fail_known_task(brain_id, task_id, _ocr_callback_error(data) if data else "Ingestion failed")
+
+
+async def _maybe_parser_callback(data, brain_id, task_id, context, flow_task_identifier):
+    if not flow_task_identifier:
+        return None
+    if os.getenv("STAGED_INGESTION_ENABLED") == "1":
+        from src.core.saving import ingest_staging
+
+        if ingest_staging.is_remote_ocr_run(brain_id, task_id):
+            return _accept_remote_ocr_callback(brain_id, task_id, data, context)
+    failed = str(getattr(data, "status", "") or "").lower() == "failed" or data.data is None
+    page_index, total_pages = _ocr_page_meta(data)
+    grouped = page_index is not None or total_pages is not None
+    if failed and not grouped:
+        return _accept_known_failed_callback(brain_id, task_id, data)
+    if grouped:
+        return await _accept_unstaged_ocr_callback(brain_id, task_id, data, context)
+    return None
 
 
 async def _try_spreadsheet_import(file, brain_id, task, group_key):
@@ -404,17 +541,20 @@ async def ingest_data(
     from src.core.saving.ingest_manifest import pipeline_context
     context = pipeline_context(request, brain_id, task_id)
 
-    if flow_task_identifier and os.getenv("STAGED_INGESTION_ENABLED") == "1":
-        from src.core.saving import ingest_staging
+    try:
+        handled = await _maybe_parser_callback(
+            data, brain_id, task_id, context, flow_task_identifier,
+        )
+        if handled is not None:
+            return handled
+        if str(getattr(data, "status", "") or "").lower() == "failed" or data.data is None:
+            raise HTTPException(status_code=422, detail="data is required")
+        return await _queue_ingest_payload(data, brain_id, task_id, context, flow_task_identifier)
+    except RedisError as exc:
+        raise cache_unavailable() from exc
 
-        if ingest_staging.is_remote_ocr_run(brain_id, task_id):
-            return _accept_remote_ocr_callback(brain_id, task_id, data, context)
 
-    if str(getattr(data, "status", "") or "").lower() == "failed" or data.data is None:
-        if flow_task_identifier:
-            return _accept_known_failed_callback(brain_id, task_id)
-        raise HTTPException(status_code=422, detail="data is required")
-
+async def _queue_ingest_payload(data, brain_id, task_id, context, flow_task_identifier):
     extra = {"ocr_pages_accepted": True} if flow_task_identifier else None
     set_ingestion_task_status(
         task_id,
@@ -652,6 +792,8 @@ async def ingest_file(
         return imported
     try:
         await _dispatch_file_ingest(request, file, brain_id, task, context, group_key)
+    except RedisError as exc:
+        raise cache_unavailable() from exc
     except HTTPException:
         raise
     except Exception as exc:
@@ -668,19 +810,20 @@ async def _dispatch_file_ingest(request, file, brain_id, task, context, group_ke
     )
     plain_text = uses_plain_text_ingest(brain_id, filename, file.content_type)
     content = None
-    if staged_file:
+    if staged_file or plain_text:
         content = _read_upload_capped(file, staged_upload_max_bytes())
-    elif plain_text:
-        content = file.file.read()
     if content is not None:
         plain_text = uses_plain_text_ingest(
             brain_id, filename, file.content_type, content,
         )
     if plain_text:
+        text = decode_plain_text(content or b"")
+        if is_blank_plain_text(filename, text):
+            raise HTTPException(status_code=422, detail="Text file is empty")
         await _queue_text_ingest(
             brain_id,
             task,
-            _plain_text_payload(brain_id, content or b"", group_key),
+            _plain_text_payload(brain_id, text, group_key),
             context,
             group_key,
         )

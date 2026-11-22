@@ -27,7 +27,10 @@ _SOFT_PAGE_FAILURE_MARKERS = (
 log = logging.getLogger(__name__)
 
 
-def create_run(brain_id, root_id, *, callback_deadline=None, upload_deadline=None, message=None, discovery=False):
+def create_run(
+    brain_id, root_id, *, callback_deadline=None, upload_deadline=None,
+    message=None, discovery=False, small_remote_ocr=False,
+):
     """Create the run and, for direct submissions, its first dispatch intent."""
     unit_id = None
     units = {}
@@ -35,18 +38,21 @@ def create_run(brain_id, root_id, *, callback_deadline=None, upload_deadline=Non
         key = "discovery" if discovery else "source"
         unit_id = uuid5(NAMESPACE_URL, f"brainapi:ingest:{root_id}:{key}").hex
         units[unit_id] = {"state": "pending", "ordinal": 0, "message": message}
+    inserted = {
+        "status": "staging",
+        "staged": True,
+        "revision": "",
+        "units": units,
+        "publication_cursor": 0,
+        "sealed": message is not None and not discovery,
+        "callback_deadline": callback_deadline,
+        "upload_deadline": upload_deadline,
+    }
+    if small_remote_ocr:
+        inserted["small_remote_ocr"] = True
     ingest_cancellation._runs(brain_id).update_one(
         {"_id": root_id},
-        {"$setOnInsert": {
-            "status": "staging",
-            "staged": True,
-            "revision": "",
-            "units": units,
-            "publication_cursor": 0,
-            "sealed": message is not None and not discovery,
-            "callback_deadline": callback_deadline,
-            "upload_deadline": upload_deadline,
-        }},
+        {"$setOnInsert": inserted},
         upsert=True,
     )
     return unit_id
@@ -101,15 +107,27 @@ def _ocr_page_key(page_index, pages):
     return str(int(page_index))
 
 
-def _ocr_touch(_run, total_pages=None):
+def _ocr_touch(run, total_pages=None):
     now = time()
     changes = {
         "ocr_last_callback_at": now,
         "ocr_idle_seal_after": now + OCR_PAGE_IDLE_SECONDS,
     }
+    stored = int(run.get("ocr_total_pages") or 0)
     if total_pages:
-        changes["ocr_total_pages"] = int(total_pages)
+        incoming = int(total_pages)
+        if incoming > stored:
+            changes["ocr_total_pages"] = incoming
+    if run.get("small_remote_ocr") and not (run.get("ocr_pages") or {}):
+        changes["callback_deadline"] = now + SMALL_REMOTE_OCR_DEADLINE_SECONDS
     return now, changes
+
+
+def _ocr_incomplete(run, accepted, failed):
+    total = run.get("ocr_total_pages")
+    if failed:
+        return True
+    return bool(total) and (accepted + failed) < int(total)
 
 
 def _ocr_close_action(run, now, *, rejected=False):
@@ -117,16 +135,27 @@ def _ocr_close_action(run, now, *, rejected=False):
     accounted = accepted + failed
     total = run.get("ocr_total_pages")
     past_deadline = run.get("callback_deadline") is not None and run["callback_deadline"] <= now
-    if total and accounted >= int(total):
-        return "seal" if accepted else "fail"
-    if rejected or past_deadline:
-        return "seal" if accepted else "fail"
-    if total:
-        return None
-    idle_after = run.get("ocr_idle_seal_after")
-    if idle_after is not None and idle_after <= now and accounted:
-        return "seal" if accepted else "fail"
-    return None
+    finished = (total and accounted >= int(total)) or rejected or past_deadline
+    if not finished:
+        if total:
+            return None
+        idle_after = run.get("ocr_idle_seal_after")
+        if idle_after is None or idle_after > now or not accounted:
+            return None
+    if not accepted:
+        return "fail"
+    if _ocr_incomplete(run, accepted, failed):
+        return "partial"
+    return "seal"
+
+
+def _ocr_partial_error(accepted, failed, total):
+    total = int(total or (accepted + failed))
+    missing = max(0, total - accepted - failed)
+    return (
+        f"OCR finished with {accepted} of {total} pages accepted; "
+        f"{failed} failed, {missing} missing"
+    )
 
 
 def _apply_ocr_close(changes, run, now, *, rejected=False):
@@ -134,10 +163,16 @@ def _apply_ocr_close(changes, run, now, *, rejected=False):
     if "ocr_pages" in changes:
         merged["ocr_pages"] = changes["ocr_pages"]
     action = _ocr_close_action(merged, now, rejected=rejected)
-    if action == "seal" and not merged.get("sealed"):
+    if action in {"seal", "partial"} and not merged.get("sealed"):
         changes["sealed"] = True
-        accepted, _failed = _ocr_counts(merged)
+        accepted, failed = _ocr_counts(merged)
         changes["ocr_pages_accepted"] = accepted
+        changes["ocr_pages_failed"] = failed
+        if action == "partial":
+            changes["ocr_partial"] = True
+            changes["error"] = _ocr_partial_error(
+                accepted, failed, merged.get("ocr_total_pages"),
+            )
     elif action == "fail" and merged.get("status") == "staging":
         changes["status"] = "failed"
         changes["error"] = merged.get("last_ocr_error") or REMOTE_OCR_TIMEOUT_ERROR
@@ -189,28 +224,69 @@ def register_ocr_callback(brain_id, root_id, message, page_index=None, total_pag
         outcome.update(unit_id=unit_id, created=True, rejected=False)
         return changes
 
-    ingest_cancellation._change(brain_id, root_id, transition)
+    run = ingest_cancellation._change(brain_id, root_id, transition)
     if outcome["rejected"] or not outcome["unit_id"]:
         return None
     if outcome["created"]:
-        _mark_ocr_pages_accepted(brain_id, root_id)
+        _sync_ocr_task_status(brain_id, root_id, run)
         maybe_finish_remote_ocr(brain_id, root_id)
     return outcome["unit_id"], outcome["created"]
 
 
-def _mark_ocr_pages_accepted(brain_id, task_id):
+def _ocr_status_extra(run):
+    accepted, failed = _ocr_counts(run)
+    if not accepted:
+        accepted = _accepted_ocr_count(run, run)
+    if not failed:
+        try:
+            failed = int(run.get("ocr_pages_failed") or 0)
+        except (TypeError, ValueError):
+            failed = 0
+    extra = {
+        "ocr_pages_failed": failed,
+        "remote_ocr_deadline": run.get("callback_deadline") or run.get("remote_ocr_deadline"),
+    }
+    if accepted:
+        extra["ocr_pages_accepted"] = accepted
+    total = run.get("ocr_total_pages")
+    if total:
+        extra["ocr_total_pages"] = total
+    if run.get("ocr_partial"):
+        extra["ocr_partial"] = True
+    return extra, accepted, failed
+
+
+def _sync_ocr_task_status(brain_id, task_id, run):
+    if not run:
+        return None
+    extra, accepted, failed = _ocr_status_extra(run)
     try:
         from src.workers.tasks.ingestion import set_ingestion_task_status
 
-        set_ingestion_task_status(
+        if run.get("ocr_partial"):
+            return set_ingestion_task_status(
+                task_id,
+                brain_id,
+                "partial_failed",
+                stage="partial_failed",
+                error=_ocr_partial_error(accepted, failed, run.get("ocr_total_pages")),
+                extra=extra,
+                counts={
+                    "ocr_pages_accepted": accepted,
+                    "ocr_pages_failed": failed,
+                    "ocr_total_pages": run.get("ocr_total_pages"),
+                },
+            )
+        return set_ingestion_task_status(
             task_id,
             brain_id,
             "started",
             stage="processing",
-            extra={"ocr_pages_accepted": True},
+            extra=extra,
         )
     except Exception:
-        log.debug("Could not record accepted OCR pages for %s", task_id, exc_info=True)
+        log.debug("Could not record OCR status for %s", task_id, exc_info=True)
+        return None
 
 
 def _update_unit(brain_id, root_id, unit_id, update):
@@ -446,8 +522,11 @@ def finish_publication(brain_id, root_id):
             return None
         if run["publication_cursor"] != len(_completed_units(run)):
             return None
+        terminal = "cancelled" if run.get("mode") else (
+            "partial_failed" if run.get("ocr_partial") else "completed"
+        )
         return {
-            "status": "cancelled" if run.get("mode") else "completed",
+            "status": terminal,
             "units": _terminal_units(run),
             "pending_cleanup": True,
         }
@@ -469,7 +548,9 @@ def finish_discard(brain_id, root_id):
 def _terminal_settlement_status(run):
     if run["status"] == "publishing":
         if run.get("publication_cursor", 0) >= len(_completed_units(run)):
-            return "cancelled" if run.get("mode") else "completed"
+            return "cancelled" if run.get("mode") else (
+                "partial_failed" if run.get("ocr_partial") else "completed"
+            )
         return "publish_partial"
     if run["status"] == "publish_partial":
         return "rollback_failed"
@@ -645,9 +726,11 @@ def is_remote_ocr_run(brain_id, root_id):
     return bool(run and run.get("callback_deadline"))
 
 
+def is_small_remote_ocr(size_bytes):
+    return size_bytes is not None and size_bytes <= SMALL_REMOTE_OCR_MAX_BYTES
+
+
 def remote_ocr_callback_deadline(size_bytes=None):
-    if size_bytes is not None and size_bytes <= SMALL_REMOTE_OCR_MAX_BYTES:
-        return time() + SMALL_REMOTE_OCR_DEADLINE_SECONDS
     return time() + REMOTE_OCR_DEADLINE_SECONDS
 
 
@@ -682,6 +765,42 @@ def _mark_remote_ocr_failed(brain_id, task_id, error):
     except Exception:
         log.exception("Could not record failed ingest status for %s", task_id)
         return None
+
+
+def _accepted_ocr_count(run, cached):
+    run = run or {}
+    cached = cached or {}
+    accepted, _failed = _ocr_counts(run)
+    if accepted:
+        return accepted
+    value = cached.get("ocr_pages_accepted")
+    if value is True:
+        return 1
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _should_report_ocr_partial(run, cached):
+    run = run or {}
+    cached = cached or {}
+    if run.get("ocr_partial") or cached.get("ocr_partial"):
+        return True
+    accepted = _accepted_ocr_count(run, cached)
+    failed = int(run.get("ocr_pages_failed") or 0) or sum(
+        1 for state in (run.get("ocr_pages") or {}).values() if state == "failed"
+    )
+    if not failed:
+        failed = int(cached.get("ocr_pages_failed") or 0)
+    total = run.get("ocr_total_pages") or cached.get("ocr_total_pages")
+    deadline = run.get("callback_deadline")
+    if deadline is None:
+        deadline = cached.get("remote_ocr_deadline")
+    closed = bool(run.get("sealed")) or (deadline is not None and deadline <= time())
+    if not accepted or not closed:
+        return False
+    return _ocr_incomplete({**cached, **run, "ocr_total_pages": total}, accepted, failed)
 
 
 def expire_remote_ocr(brain_id, root_id, *, rejected=False):
@@ -746,8 +865,19 @@ def record_ocr_page_failure(
             brain_id, root_id, run.get("error") or error or REMOTE_OCR_REJECTED_ERROR
         )
         return run
+    if run:
+        _sync_ocr_task_status(brain_id, root_id, run)
     maybe_finish_remote_ocr(brain_id, root_id)
     return ingest_cancellation._runs(brain_id).find_one({"_id": root_id}) or run
+
+
+def _finish_cached_ocr(cached, status, error, extra=None):
+    cached.update(extra or {})
+    cached["status"] = status
+    cached["stage"] = status
+    cached["error"] = error
+    cached.pop("remote_ocr_deadline", None)
+    return cached
 
 
 def fail_expired_remote_ocr(brain_id, task_id, cached=None, *, rejected=False):
@@ -760,9 +890,18 @@ def fail_expired_remote_ocr(brain_id, task_id, cached=None, *, rejected=False):
     status = cached.get("status")
     if status in TERMINAL_TASK_STATUSES:
         return cached
-    if status and status != "queued":
-        return cached
-    if has_accepted_ocr_pages(run, cached):
+    if _should_report_ocr_partial(run, cached):
+        source = dict(run or cached)
+        source["ocr_partial"] = True
+        updated = _sync_ocr_task_status(brain_id, task_id, source)
+        extra, accepted, failed = _ocr_status_extra(source)
+        return updated or _finish_cached_ocr(
+            cached,
+            "partial_failed",
+            _ocr_partial_error(accepted, failed, source.get("ocr_total_pages")),
+            extra,
+        )
+    if (status and status != "queued") or has_accepted_ocr_pages(run, cached):
         return cached
     error = None
     if run and run.get("callback_deadline") and run.get("status") == "failed":
@@ -774,14 +913,9 @@ def fail_expired_remote_ocr(brain_id, task_id, cached=None, *, rejected=False):
         error = REMOTE_OCR_REJECTED_ERROR
     if error is None:
         return cached
-    updated = _mark_remote_ocr_failed(brain_id, task_id, error)
-    if updated:
-        return updated
-    cached["status"] = "failed"
-    cached["stage"] = "failed"
-    cached["error"] = error
-    cached.pop("remote_ocr_deadline", None)
-    return cached
+    return _mark_remote_ocr_failed(brain_id, task_id, error) or _finish_cached_ocr(
+        cached, "failed", error,
+    )
 
 
 def create_batch_run(brain_id, root_id, messages):
