@@ -26,7 +26,8 @@ def reconcile_run(brain_id, root_id, dispatch, publish, rollback=None):
             if run is None:
                 return
         if run.get("callback_deadline"):
-            run = ingest_staging.expire_remote_ocr(brain_id, root_id)
+            ingest_staging.fail_expired_remote_ocr(brain_id, root_id)
+            run = ingest_cancellation._runs(brain_id).find_one({"_id": root_id})
             if not run or run["status"] != "staging":
                 return
         for unit_id, message in ingest_staging.pending_dispatches(brain_id, root_id):

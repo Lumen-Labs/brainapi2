@@ -13,6 +13,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 from src.core.saving import ingest_cancellation
+from src.core.saving import ingest_staging
 from src.utils.logging import log
 from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from src.services.api.dependencies import get_brain_id
@@ -37,13 +38,10 @@ async def get_tasks(brain_id: str = Depends(get_brain_id)):
             str_result = cache_adapter.get_task(task_id, brain_id=brain_id)
             if str_result is None:
                 continue
-            result = json.loads(str_result)
+            result = _parse_task_cache(str_result)
             results.append(
                 {
-                    **ingest_cancellation.public_state(
-                        brain_id, task_id,
-                        {**customer_task(result, brain_id), "status": result.get("status", "unknown")},
-                    ),
+                    **_polled_task_state(brain_id, task_id, result),
                     "id": task_id,
                 }
             )
@@ -63,20 +61,14 @@ async def get_task(task_id: str, brain_id: str = Depends(get_brain_id)):
     """
     try:
         str_result = cache_adapter.get_task(task_id, brain_id=brain_id)
-        if str_result is None:
-            durable = ingest_cancellation.public_state(brain_id, task_id, {})
+        result = _parse_task_cache(str_result)
+        if result is None:
+            durable = _polled_task_state(brain_id, task_id, {})
             if not durable:
                 raise HTTPException(status_code=404, detail="Task not found")
             return {**durable, "task_id": task_id}
-        if isinstance(str_result, bytes):
-            result = json.loads(str_result.decode("utf-8"))
-        else:
-            result = json.loads(str_result)
         return {
-            **ingest_cancellation.public_state(
-                brain_id, task_id,
-                {**customer_task(result, brain_id), "status": result.get("status", "unknown")},
-            ),
+            **_polled_task_state(brain_id, task_id, result),
             "task_id": task_id,
         }
     except HTTPException:
@@ -179,6 +171,27 @@ async def control_import(task_id: str, request: Request, brain_id: str = Depends
         raise HTTPException(404, "Activity is not ready")
 
     return result
+
+
+def _parse_task_cache(str_result):
+    if str_result is None:
+        return None
+    if isinstance(str_result, bytes):
+        str_result = str_result.decode("utf-8")
+    if isinstance(str_result, str):
+        return json.loads(str_result)
+    return dict(str_result)
+
+
+def _polled_task_state(brain_id, task_id, result):
+    refreshed = ingest_staging.fail_expired_remote_ocr(brain_id, task_id, result)
+    payload = refreshed or result or {}
+    if payload:
+        payload = {
+            **customer_task(payload, brain_id),
+            "status": payload.get("status", "unknown"),
+        }
+    return ingest_cancellation.public_state(brain_id, task_id, payload)
 
 
 def customer_task(result, brain_id=None):

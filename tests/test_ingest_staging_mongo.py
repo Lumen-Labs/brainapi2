@@ -140,7 +140,7 @@ def test_large_docling_file_uses_durable_input_and_discards_it_on_cancel(monkeyp
     app.dependency_overrides[get_brain_id] = lambda: brain
     file = b"x" * (13 * 1024 * 1024)
     try:
-        response = TestClient(app).post("/ingest/file", files={"file": ("large.txt", file)})
+        response = TestClient(app).post("/ingest/file", files={"file": ("large.pdf", file)})
         assert response.status_code == 202
         root = response.json()["task_id"]
         [(unit_id, message)] = ingest_staging.pending_dispatches(brain, root)

@@ -396,17 +396,70 @@ def test_ocr_callback_registers_work_and_rejects_late_payload(run, monkeypatch):
     [(unit, message)] = ingest_staging.pending_dispatches("brain", "ocr")
     assert message["payload"]["data"]["text_data"] == "Extracted document"
     dispatch.assert_called_once_with("brain", "ocr", unit)
-    assert cancellation._runs("brain").find_one({"_id": "ocr"})["sealed"]
+    stored = cancellation._runs("brain").find_one({"_id": "ocr"})
+    assert not stored.get("sealed")
+    assert stored["ocr_pages_accepted"] == 1
 
-    duplicate = api.post("/ingest/", json=payload, headers=headers)
-    assert duplicate.status_code == 409
-    assert dispatch.call_count == 1
+    second_page = api.post(
+        "/ingest/",
+        json={"data": {"data_type": "text", "text_data": "Page two"}},
+        headers=headers,
+    )
+    assert second_page.status_code == 202
+    assert dispatch.call_count == 2
+    units = cancellation._runs("brain").find_one({"_id": "ocr"})["units"]
+    assert set(units) == {
+        ingest_staging.ocr_unit_id("ocr", 0),
+        ingest_staging.ocr_unit_id("ocr", 1),
+    }
+
+    blank_page = api.post(
+        "/ingest/",
+        json={
+            "status": "failed",
+            "error": "Ingestion produced no text",
+            "brain_id": "brain",
+        },
+        headers=headers,
+    )
+    assert blank_page.status_code == 202
+    assert dispatch.call_count == 2
+    after_blank = cancellation._runs("brain").find_one({"_id": "ocr"})
+    assert after_blank["status"] == "staging"
+    assert after_blank["ocr_pages_failed"] == 1
+    assert after_blank["ocr_pages_accepted"] == 2
 
     cancellation.request_cancellation("brain", "ocr", "rollback")
     late = api.post("/ingest/", json=payload, headers=headers)
     assert late.status_code == 409
-    assert dispatch.call_count == 1
+    assert dispatch.call_count == 2
     set_status.assert_not_called()
+
+
+def test_reconcile_expires_remote_ocr_and_fails_cached_status(run, monkeypatch):
+    from src.core.saving import ingest_recovery, ingest_staging as staging
+
+    monkeypatch.setattr(staging, "time", lambda: 2000)
+    marked = {}
+
+    def fake_mark(brain_id, task_id, error):
+        marked["payload"] = {
+            "status": "failed",
+            "stage": "failed",
+            "error": error,
+            "task_id": task_id,
+        }
+        return marked["payload"]
+
+    monkeypatch.setattr(staging, "_mark_remote_ocr_failed", fake_mark)
+    staging.create_run("brain", "ocr", callback_deadline=1000)
+    ingest_recovery.reconcile_run("brain", "ocr", Mock(), Mock())
+    stored = cancellation._runs("brain").find_one({"_id": "ocr"})
+    assert stored["status"] == "failed"
+    assert stored["error"] == staging.REMOTE_OCR_TIMEOUT_ERROR
+    assert cancellation.public_state("brain", "ocr", {"status": "queued"})["status"] == "failed"
+    assert marked["payload"]["status"] == "failed"
+    assert marked["payload"]["error"] == staging.REMOTE_OCR_TIMEOUT_ERROR
 
 
 def test_expired_upload_cleanup_failure_is_terminal_and_reopens_access(run, monkeypatch, tmp_path):
@@ -985,9 +1038,14 @@ def test_register_ocr_callback_rejects_expired_deadline_and_duplicates(run):
     staging.create_run("brain", "live", callback_deadline=10**12)
     first = staging.register_ocr_callback("brain", "live", {"payload": {"n": 1}})
     second = staging.register_ocr_callback("brain", "live", {"payload": {"n": 2}})
-    assert first
-    assert second is None
-    assert staging.register_unit("brain", "live", "source", {"payload": {"n": 3}}, seal=True) == first
+    assert first == (staging.ocr_unit_id("live", 0), True)
+    assert second == (staging.ocr_unit_id("live", 1), True)
+    stored = cancellation._runs("brain").find_one({"_id": "live"})
+    assert not stored.get("sealed")
+    assert stored["ocr_pages_accepted"] == 2
+    extra = staging.register_unit("brain", "live", "source", {"payload": {"n": 3}}, seal=True)
+    assert extra
+    assert extra not in {first[0], second[0]}
 
 
 def test_ocr_callback_after_deadline_is_rejected(run, monkeypatch):
@@ -1028,6 +1086,133 @@ def test_ocr_callback_after_deadline_is_rejected(run, monkeypatch):
     leftover = cancellation._runs("brain").find_one({"_id": "late-reg"})
     assert leftover["status"] == "staging"
     assert leftover["units"] == {}
+
+
+def test_file_level_ocr_failure_fails_when_no_pages_accepted(run, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from src.core.saving import ingest_staging, ingest_worker
+    from src.services.api.dependencies import get_brain_id
+    from src.services.api.routes import ingest
+
+    monkeypatch.setenv("STAGED_INGESTION_ENABLED", "1")
+    ingest_staging.create_run("brain", "ocr", callback_deadline=10**12)
+    dispatch = Mock()
+    monkeypatch.setattr(ingest_worker, "dispatch_staged_source", dispatch)
+    monkeypatch.setattr(ingest, "set_ingestion_task_status", Mock())
+
+    app = FastAPI()
+    app.include_router(ingest.ingest_router)
+    app.dependency_overrides[get_brain_id] = lambda: "brain"
+    failed = TestClient(app).post(
+        "/ingest/",
+        json={
+            "status": "failed",
+            "error": "Unsupported file format: File format not allowed: note.txt",
+            "brain_id": "brain",
+        },
+        headers={"Task-Identifier": "ocr"},
+    )
+    assert failed.status_code == 202
+    dispatch.assert_not_called()
+    stored = cancellation._runs("brain").find_one({"_id": "ocr"})
+    assert stored["status"] == "failed"
+    assert "Unsupported file format" in stored["error"]
+
+
+def test_timeout_failure_after_success_does_not_flip_run(run, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from src.core.saving import ingest_staging, ingest_worker
+    from src.services.api.dependencies import get_brain_id
+    from src.services.api.routes import ingest
+
+    monkeypatch.setenv("STAGED_INGESTION_ENABLED", "1")
+    ingest_staging.create_run("brain", "ocr", callback_deadline=10**12)
+    dispatch = Mock()
+    monkeypatch.setattr(ingest_worker, "dispatch_staged_source", dispatch)
+    monkeypatch.setattr(ingest, "set_ingestion_task_status", Mock())
+
+    app = FastAPI()
+    app.include_router(ingest.ingest_router)
+    app.dependency_overrides[get_brain_id] = lambda: "brain"
+    api = TestClient(app)
+    headers = {"Task-Identifier": "ocr"}
+    accepted = api.post(
+        "/ingest/",
+        json={"data": {"data_type": "text", "text_data": "page one"}},
+        headers=headers,
+    )
+    assert accepted.status_code == 202
+    followup = api.post(
+        "/ingest/",
+        json={
+            "status": "failed",
+            "error": "Success callback failed: HTTPConnectionPool timed out",
+            "brain_id": "brain",
+        },
+        headers=headers,
+    )
+    assert followup.status_code == 202
+    stored = cancellation._runs("brain").find_one({"_id": "ocr"})
+    assert stored["status"] == "staging"
+    assert stored["ocr_pages_accepted"] == 1
+    assert dispatch.call_count == 1
+    rejected = api.post(
+        "/ingest/",
+        json={
+            "status": "failed",
+            "error": "Success callback rejected: HTTP 503",
+            "brain_id": "brain",
+        },
+        headers=headers,
+    )
+    assert rejected.status_code == 202
+    stored = cancellation._runs("brain").find_one({"_id": "ocr"})
+    assert stored["status"] == "staging"
+    assert stored["ocr_pages_failed"] == 2
+
+
+def test_expire_seals_accepted_ocr_pages_instead_of_failing(run, monkeypatch):
+    from src.core.saving import ingest_staging as staging
+
+    now = {"value": 500}
+    monkeypatch.setattr(staging, "time", lambda: now["value"])
+    staging.create_run("brain", "ocr", callback_deadline=1000)
+    registered = staging.register_ocr_callback("brain", "ocr", {"payload": {"n": 1}})
+    unit_id = staging.ocr_unit_id("ocr", 0)
+    assert registered == (unit_id, True)
+    now["value"] = 2000
+    expired = staging.expire_remote_ocr("brain", "ocr")
+    assert expired["status"] == "staging"
+    assert expired["sealed"] is True
+    assert expired["units"][unit_id]["message"]["payload"]["n"] == 1
+    cached = staging.fail_expired_remote_ocr(
+        "brain",
+        "ocr",
+        {"status": "queued", "remote_ocr_deadline": 10, "ocr_pages_accepted": True},
+    )
+    assert cached["status"] == "queued"
+
+
+def test_failed_callback_without_ocr_run_requires_data(run, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from src.services.api.dependencies import get_brain_id
+    from src.services.api.routes import ingest
+
+    monkeypatch.setenv("STAGED_INGESTION_ENABLED", "1")
+    app = FastAPI()
+    app.include_router(ingest.ingest_router)
+    app.dependency_overrides[get_brain_id] = lambda: "brain"
+    response = TestClient(app).post(
+        "/ingest/",
+        json={"status": "failed", "error": "nope", "brain_id": "brain"},
+    )
+    assert response.status_code == 422
 
 
 def test_staged_upload_max_bytes_falls_back_on_invalid_values(run, monkeypatch, caplog):
@@ -1097,9 +1282,12 @@ def test_staged_file_upload_rejects_oversize_and_ignores_limit_when_disabled(run
 
     monkeypatch.delenv("STAGED_INGESTION_ENABLED")
     monkeypatch.delenv("STAGED_ENRICHMENT_ENABLED")
+    queued_text = Mock()
+    monkeypatch.setattr(ingest.ingest_data_task, "apply_async", queued_text)
     unstaged = api.post("/ingest/file", files={"file": ("big.txt", b"01234567890")})
     assert unstaged.status_code == 202
-    queued.assert_called_once()
+    queued.assert_not_called()
+    queued_text.assert_called_once()
 
 
 def test_staged_structured_batch_uses_configured_upload_limit(run, monkeypatch):
@@ -1129,3 +1317,168 @@ def test_staged_structured_batch_uses_configured_upload_limit(run, monkeypatch):
     monkeypatch.setenv("STAGED_UPLOAD_MAX_BYTES", "10000")
     accepted = api.post("/ingest/structured/batch", json=payload)
     assert accepted.status_code == 202
+
+
+def _complete_pending_units(staging, root):
+    run = cancellation._runs("brain").find_one({"_id": root})
+    for unit_id, unit in list((run.get("units") or {}).items()):
+        if unit.get("state") == "complete":
+            continue
+        claim = staging.claim_unit("brain", root, unit_id)
+        assert claim
+        assert staging.complete_unit("brain", root, unit_id, claim, f"out-{unit_id}")
+
+
+def test_ocr_unit_ids_are_unique_per_run(run):
+    from src.core.saving import ingest_staging as staging
+
+    first = staging.ocr_unit_id("run-a", 0)
+    second = staging.ocr_unit_id("run-b", 0)
+    assert first != second
+    assert first != "ocr:0"
+    assert second != "ocr:0"
+    assert first == staging.ocr_unit_id("run-a", 0)
+
+
+def test_three_page_ocr_seals_when_last_page_arrives_not_at_deadline(run, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from src.core.saving import ingest_staging, ingest_worker
+    from src.services.api.dependencies import get_brain_id
+    from src.services.api.routes import ingest
+
+    monkeypatch.setenv("STAGED_INGESTION_ENABLED", "1")
+    ingest_staging.create_run("brain", "ocr", callback_deadline=10**12)
+    dispatch = Mock()
+    monkeypatch.setattr(ingest_worker, "dispatch_staged_source", dispatch)
+    monkeypatch.setattr(ingest, "set_ingestion_task_status", Mock())
+
+    app = FastAPI()
+    app.include_router(ingest.ingest_router)
+    app.dependency_overrides[get_brain_id] = lambda: "brain"
+    api = TestClient(app)
+    headers = {"Task-Identifier": "ocr"}
+
+    first = api.post(
+        "/ingest/",
+        json={
+            "data": {"data_type": "text", "text_data": "page one"},
+            "page_index": 0,
+            "total_pages": 3,
+        },
+        headers=headers,
+    )
+    assert first.status_code == 202
+    after_first = cancellation._runs("brain").find_one({"_id": "ocr"})
+    assert not after_first.get("sealed")
+    assert after_first["status"] == "staging"
+    replay = api.post(
+        "/ingest/",
+        json={
+            "data": {"data_type": "text", "text_data": "page one"},
+            "page_index": 0,
+            "total_pages": 3,
+        },
+        headers=headers,
+    )
+    assert replay.status_code == 202
+    assert dispatch.call_count == 1
+    assert len(cancellation._runs("brain").find_one({"_id": "ocr"})["units"]) == 1
+
+    blank = api.post(
+        "/ingest/",
+        json={
+            "status": "failed",
+            "error": "Ingestion produced no text",
+            "brain_id": "brain",
+            "page_index": 1,
+            "total_pages": 3,
+        },
+        headers=headers,
+    )
+    assert blank.status_code == 202
+    after_blank = cancellation._runs("brain").find_one({"_id": "ocr"})
+    assert after_blank["status"] == "staging"
+    assert not after_blank.get("sealed")
+    assert after_blank["ocr_pages_accepted"] == 1
+    assert after_blank["ocr_pages_failed"] == 1
+
+    last = api.post(
+        "/ingest/",
+        json={
+            "data": {"data_type": "text", "text_data": "page three"},
+            "page_index": 2,
+            "total_pages": 3,
+        },
+        headers=headers,
+    )
+    assert last.status_code == 202
+    after_last = cancellation._runs("brain").find_one({"_id": "ocr"})
+    assert after_last["sealed"] is True
+    assert after_last["status"] == "staging"
+    assert after_last["callback_deadline"] == 10**12
+    _complete_pending_units(ingest_staging, "ocr")
+    published = cancellation._runs("brain").find_one({"_id": "ocr"})
+    assert published["status"] == "publishing"
+    assert published["sealed"] is True
+
+    closed_replay = api.post(
+        "/ingest/",
+        json={
+            "data": {"data_type": "text", "text_data": "page one"},
+            "page_index": 0,
+            "total_pages": 3,
+        },
+        headers=headers,
+    )
+    assert closed_replay.status_code == 409
+
+
+def test_ocr_idle_close_without_total_pages(run, monkeypatch):
+    from src.core.saving import ingest_staging as staging
+
+    now = {"value": 1000}
+    monkeypatch.setattr(staging, "time", lambda: now["value"])
+    staging.create_run("brain", "ocr", callback_deadline=10_000)
+    registered = staging.register_ocr_callback("brain", "ocr", {"payload": {"n": 1}})
+    assert registered[1] is True
+    stored = cancellation._runs("brain").find_one({"_id": "ocr"})
+    assert not stored.get("sealed")
+    now["value"] = 1000 + staging.OCR_PAGE_IDLE_SECONDS
+    expired = staging.expire_remote_ocr("brain", "ocr")
+    assert expired["status"] == "staging"
+    assert expired["sealed"] is True
+
+
+def test_whole_document_ocr_error_fails_single_page_run(run, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from src.core.saving import ingest_staging, ingest_worker
+    from src.services.api.dependencies import get_brain_id
+    from src.services.api.routes import ingest
+
+    monkeypatch.setenv("STAGED_INGESTION_ENABLED", "1")
+    ingest_staging.create_run("brain", "ocr", callback_deadline=10**12)
+    monkeypatch.setattr(ingest_worker, "dispatch_staged_source", Mock())
+    monkeypatch.setattr(ingest, "set_ingestion_task_status", Mock())
+
+    app = FastAPI()
+    app.include_router(ingest.ingest_router)
+    app.dependency_overrides[get_brain_id] = lambda: "brain"
+    failed = TestClient(app).post(
+        "/ingest/",
+        json={
+            "status": "failed",
+            "error": "Unsupported file format: File format not allowed: note.txt",
+            "brain_id": "brain",
+            "page_index": 0,
+            "total_pages": 1,
+        },
+        headers={"Task-Identifier": "ocr"},
+    )
+    assert failed.status_code == 202
+    stored = cancellation._runs("brain").find_one({"_id": "ocr"})
+    assert stored["status"] == "failed"
+    assert "Unsupported file format" in stored["error"]
