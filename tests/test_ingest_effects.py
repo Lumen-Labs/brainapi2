@@ -17,11 +17,14 @@ from src.core.saving.ingest_effects import (
     handle_purge,
     merge_effect,
     plan_purge,
+    purge_task,
     reconstruct_effect,
     reconstruct_live,
     remember,
     summarize,
+    _workbook_id_for_task,
 )
+from src.lib.postgresql._provisioning import PoolTimeout
 
 
 def _screenshot_ops():
@@ -218,6 +221,36 @@ class ReconstructTests(unittest.TestCase):
             return_value=None,
         ):
             self.assertIsNone(reconstruct_live("brain", "missing"))
+
+    def test_workbook_lookup_failure_is_not_treated_as_missing(self):
+        with patch(
+            "src.core.saving.ingest_effects._workbook_id_for_task",
+            side_effect=PoolTimeout("connection pool timeout"),
+        ), patch(
+            "src.core.saving.ingest_effects._structured_payload",
+            return_value=None,
+        ):
+            with self.assertRaises(PoolTimeout):
+                reconstruct_live("brain", "task-wb")
+
+    def test_purge_does_not_succeed_when_workbook_lookup_fails(self):
+        with patch(
+            "src.core.saving.ingest_effects.load_effect",
+            return_value=None,
+        ), patch(
+            "src.core.saving.ingest_effects.reconstruct_live",
+            side_effect=PoolTimeout("connection pool timeout"),
+        ):
+            with self.assertRaises(PoolTimeout):
+                purge_task("brain", "task-wb", digest="abc")
+
+    def test_workbook_id_for_task_propagates_lookup_failure(self):
+        with patch(
+            "src.services.api.routes.spreadsheets.lookup_workbook",
+            side_effect=PoolTimeout("connection pool timeout"),
+        ):
+            with self.assertRaises(PoolTimeout):
+                _workbook_id_for_task("brain", "task-wb")
 
 
     def test_dry_run_marks_shared_and_exclusive_without_deleting(self):

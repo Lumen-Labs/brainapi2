@@ -39,6 +39,14 @@ ALTER TABLE spreadsheets ADD COLUMN IF NOT EXISTS content_hash text;
 ALTER TABLE spreadsheets ADD COLUMN IF NOT EXISTS cell_count integer NOT NULL DEFAULT 0;
 ALTER TABLE spreadsheets ADD COLUMN IF NOT EXISTS byte_size integer NOT NULL DEFAULT 0;
 CREATE UNIQUE INDEX IF NOT EXISTS spreadsheets_content_hash ON spreadsheets (content_hash);
+UPDATE spreadsheets AS book
+SET cell_count = totals.cells
+FROM (
+    SELECT workbook, SUM(jsonb_array_length(cells))::integer AS cells
+    FROM spreadsheet_rows
+    GROUP BY workbook
+) AS totals
+WHERE book.id = totals.workbook AND book.cell_count = 0;
 """
 DEFAULT_MAX_WORKBOOKS = 500
 DEFAULT_MAX_CELLS = 1_000_000
@@ -208,13 +216,14 @@ def lookup_workbook(brain_id, workbook_id):
     connect = postgres_connection()
     if connect is None:
         return None
-    try:
-        with connect(brain_id) as conn, conn, conn.cursor() as cursor:
+    with connect(brain_id) as conn, conn, conn.cursor() as cursor:
+        try:
             cursor.execute("SELECT id FROM spreadsheets WHERE id = %s", (str(workbook_id),))
-            row = cursor.fetchone()
-            return str(row[0]) if row else None
-    except Exception:
-        return None
+        except errors.UndefinedTable:
+            conn.rollback()
+            return None
+        row = cursor.fetchone()
+        return str(row[0]) if row else None
 
 
 def delete_workbook_data(brain_id, workbook_id):
@@ -241,6 +250,8 @@ async def upload_workbook(
 
 
 async def import_uploaded_file(file, brain_id, *, workbook_id):
+    if not enabled(brain_id) or postgres_connection() is None:
+        raise HTTPException(404, "Spreadsheet queries are unavailable for this brain.")
     payload = await file.read(MAX_UPLOAD_BYTES + 1)
     return await run_in_threadpool(
         save_workbook, connection(brain_id), Path(file.filename or "").name, payload, workbook_id, brain_id,

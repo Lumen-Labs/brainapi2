@@ -10,6 +10,7 @@ from src.lib.postgresql._provisioning import PoolTimeout
 from src.services.api.dependencies import get_brain_id
 from src.services.api.routes.spreadsheets import (
     enabled,
+    lookup_workbook,
     router,
     supports_file,
     try_import_file,
@@ -82,9 +83,11 @@ def test_retrieve_routes_404_when_flag_empty(api, monkeypatch):
         json={"workbook": "00000000-0000-0000-0000-000000000001"},
     )
     uploaded = api.post("/ingest/spreadsheets", files={"file": ("grid.csv", b"a,b\n1,2\n")})
+    empty = api.post("/ingest/spreadsheets", files={"file": ("grid.csv", b"")})
     assert listed.status_code == 404
     assert queried.status_code == 404
     assert uploaded.status_code == 404
+    assert empty.status_code == 404
 
 
 def test_retrieve_routes_404_for_ungated_brain(api, monkeypatch):
@@ -148,6 +151,49 @@ def test_list_accepts_pagination_query(api, monkeypatch):
     monkeypatch.setenv("SPREADSHEET_EXPERIMENT_BRAINS", "")
     response = api.get("/retrieve/spreadsheets", params={"offset": 0, "limit": 10})
     assert response.status_code == 404
+
+
+def test_lookup_workbook_propagates_pool_timeout():
+    @contextmanager
+    def busy(_brain_id):
+        raise PoolTimeout("connection pool timeout")
+        yield
+
+    with patch("src.services.api.routes.spreadsheets.postgres_connection", return_value=busy):
+        with pytest.raises(PoolTimeout):
+            lookup_workbook("demo", "00000000-0000-0000-0000-000000000001")
+
+
+def test_lookup_workbook_returns_none_when_missing():
+    class Cursor:
+        def execute(self, sql, args=None):
+            return None
+
+        def fetchone(self):
+            return None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    class Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def cursor(self):
+            return Cursor()
+
+    @contextmanager
+    def connect(_brain_id):
+        yield Conn()
+
+    with patch("src.services.api.routes.spreadsheets.postgres_connection", return_value=connect):
+        assert lookup_workbook("demo", "00000000-0000-0000-0000-000000000001") is None
 
 
 def test_delete_workbook_returns_204(api, monkeypatch):

@@ -863,12 +863,9 @@ def reconstruct_live(brain_id: str, task_id: str, source_key: Optional[str] = No
 
 
 def _workbook_id_for_task(brain_id: str, task_id: str) -> Optional[str]:
-    try:
-        from src.services.api.routes.spreadsheets import lookup_workbook
+    from src.services.api.routes.spreadsheets import lookup_workbook
 
-        found = lookup_workbook(brain_id, task_id)
-    except Exception:
-        return None
+    found = lookup_workbook(brain_id, task_id)
     return str(found) if found else None
 
 

@@ -45,6 +45,13 @@ def fake_connect(cursor):
     yield FakeConn(cursor)
 
 
+def test_schema_backfills_legacy_cell_counts():
+    from src.services.api.routes.spreadsheets import SCHEMA
+
+    assert "cell_count = totals.cells" in SCHEMA
+    assert "book.cell_count = 0" in SCHEMA
+
+
 def test_identical_upload_returns_existing_workbook_id():
     existing = ("11111111-1111-1111-1111-111111111111", "grid.csv", [{"name": "CSV"}])
     cursor = ScriptedCursor([existing])

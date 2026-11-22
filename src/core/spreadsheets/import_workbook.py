@@ -47,7 +47,9 @@ def cell(value, *, kind=None, formula=None, display=None):
             kind = "boolean"
         elif isinstance(value, (int, float, Decimal)):
             kind, value = "number", str(Decimal(str(value)))
-        elif isinstance(value, (date, datetime, time)):
+        elif isinstance(value, time):
+            kind, value = "time", value.isoformat()
+        elif isinstance(value, (date, datetime)):
             kind, value = "date", date_value(value)
         elif isinstance(value, timedelta):
             kind, value = "duration", str(value)
@@ -71,10 +73,10 @@ def _decimal(text):
 def csv_date(value):
     match = CSV_ISO_DATE.fullmatch(value)
     if match:
-        year, month, day, hour, minute, second = (int(part) if part else 0 for part in match.groups())
-        if hour or minute or second:
-            return datetime(year, month, day, hour, minute, second)
-        return date(year, month, day)
+        parsed = datetime.fromisoformat(value.replace(" ", "T", 1))
+        if parsed.tzinfo is None and parsed.time() == time.min:
+            return parsed.date()
+        return parsed
     match = CSV_YMD_SLASH.fullmatch(value)
     if match:
         year, month, day = (int(part) for part in match.groups())
@@ -195,11 +197,53 @@ def fill_merged(records, ranges):
                     current[col] = dict(source)
 
 
-def read_sheet(name, rows, merges=None, budget=None):
-    remaining = MAX_CELLS if budget is None else budget[0]
-    records = [list(row) for row in rows]
-    if merges:
-        fill_merged(records, merges)
+def take_cells(remaining, count):
+    remaining -= count
+    if remaining < 0:
+        raise WorkbookError("Spreadsheet exceeds the 250,000-cell limit.")
+    return remaining
+
+
+def collect_rows(rows, remaining):
+    records = []
+    for row in rows:
+        row = list(row)
+        remaining = take_cells(remaining, len(row))
+        records.append(row)
+    return records, remaining
+
+
+def merge_added_cells(records, ranges):
+    heights = len(records)
+    widths = [len(row) for row in records]
+    added = 0
+    for row1, col1, row2, col2 in ranges:
+        if row1 >= heights or col1 >= widths[row1]:
+            continue
+        if records[row1][col1].get("type") == "blank":
+            continue
+        for row in range(row1, row2 + 1):
+            while row >= heights:
+                widths.append(0)
+                heights += 1
+            for col in range(col1, col2 + 1):
+                if row == row1 and col == col1:
+                    continue
+                while col >= widths[row]:
+                    widths[row] += 1
+                    added += 1
+    return added
+
+
+def apply_merges(records, merges, remaining):
+    if not merges:
+        return remaining
+    remaining = take_cells(remaining, merge_added_cells(records, merges))
+    fill_merged(records, merges)
+    return remaining
+
+
+def sheet_header(name, records):
     if not records:
         raise WorkbookError(f"{name} requires unique, nonblank text headers in row 1.")
     header = records[0]
@@ -211,19 +255,29 @@ def read_sheet(name, rows, merges=None, budget=None):
     ):
         raise WorkbookError(f"{name} requires unique, nonblank text headers in row 1.")
     columns = [item["value"] for item in header]
-    if len({name.strip().casefold() for name in columns}) != len(columns):
+    if len({label.strip().casefold() for label in columns}) != len(columns):
         raise WorkbookError(f"{name} has ambiguous column headers.")
-    remaining -= len(columns)
+    return header, columns
+
+
+def pad_rows(name, header, columns, records, remaining):
     padded = [header]
+    width = len(columns)
     for row in records[1:]:
-        remaining -= len(columns)
-        if remaining < 0:
-            raise WorkbookError("Spreadsheet exceeds the 250,000-cell limit.")
-        if any(item["type"] != "blank" for item in row[len(columns):]):
+        extra = max(0, width - len(row))
+        remaining = take_cells(remaining, extra)
+        if any(item["type"] != "blank" for item in row[width:]):
             raise WorkbookError(f"{name} has data outside its named columns.")
-        padded.append(row[:len(columns)] + [cell(None)] * max(0, len(columns) - len(row)))
-    if remaining < 0:
-        raise WorkbookError("Spreadsheet exceeds the 250,000-cell limit.")
+        padded.append(row[:width] + [cell(None)] * extra)
+    return padded, remaining
+
+
+def read_sheet(name, rows, merges=None, budget=None):
+    remaining = MAX_CELLS if budget is None else budget[0]
+    records, remaining = collect_rows(rows, remaining)
+    remaining = apply_merges(records, merges, remaining)
+    header, columns = sheet_header(name, records)
+    padded, remaining = pad_rows(name, header, columns, records, remaining)
     if budget is not None:
         budget[0] = remaining
     if any(

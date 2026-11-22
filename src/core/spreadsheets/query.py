@@ -15,7 +15,11 @@ PAGE_SIZE = 50
 ADDRESS = re.compile(r"([A-Z]{1,3})([1-9][0-9]{0,6})", re.IGNORECASE)
 TIMESTAMP_SQL = (
     "CASE WHEN cells -> %s ->> 'type' = 'date' "
+    "AND (cells -> %s ->> 'value') ~ '^[0-9]{4}-' "
     "THEN (cells -> %s ->> 'value')::timestamp END"
+)
+GROUP_KEY_SQL = (
+    "jsonb_build_object('type', cells -> %s ->> 'type', 'value', cells -> %s ->> 'value')"
 )
 
 
@@ -111,21 +115,31 @@ def parse_filter_date(value):
     return start, start + timedelta(days=1) if whole else None, whole
 
 
+def timestamp_params(index, *values):
+    return [index, index, index, *values]
+
+
 def date_filter_sql(index, filt):
     start, end, whole = parse_filter_date(filt.value)
     ts = TIMESTAMP_SQL
     if whole:
         clauses = {
-            "eq": (f"({ts}) >= %s AND ({ts}) < %s", [index, index, start, index, index, end]),
-            "ne": (f"(({ts}) < %s OR ({ts}) >= %s)", [index, index, start, index, index, end]),
-            "lt": (f"({ts}) < %s", [index, index, start]),
-            "lte": (f"({ts}) < %s", [index, index, end]),
-            "gt": (f"({ts}) >= %s", [index, index, end]),
-            "gte": (f"({ts}) >= %s", [index, index, start]),
+            "eq": (
+                f"({ts}) >= %s AND ({ts}) < %s",
+                [*timestamp_params(index, start), *timestamp_params(index, end)],
+            ),
+            "ne": (
+                f"(({ts}) < %s OR ({ts}) >= %s)",
+                [*timestamp_params(index, start), *timestamp_params(index, end)],
+            ),
+            "lt": (f"({ts}) < %s", timestamp_params(index, start)),
+            "lte": (f"({ts}) < %s", timestamp_params(index, end)),
+            "gt": (f"({ts}) >= %s", timestamp_params(index, end)),
+            "gte": (f"({ts}) >= %s", timestamp_params(index, start)),
         }
     else:
         operator = {"eq": "=", "ne": "<>", "lt": "<", "lte": "<=", "gt": ">", "gte": ">="}[filt.op]
-        clauses = {filt.op: (f"({ts}) {operator} %s", [index, index, start])}
+        clauses = {filt.op: (f"({ts}) {operator} %s", timestamp_params(index, start))}
     return clauses[filt.op]
 
 
@@ -383,34 +397,79 @@ def group_value_sql(query, plan):
     return f"{operation}({plan.computed})", list(plan.operands)
 
 
+def group_key_sql(keys):
+    return ", ".join([GROUP_KEY_SQL] * len(keys))
+
+
+def group_key_args(keys):
+    args = []
+    for index in keys:
+        args.extend((index, index))
+    return args
+
+
+def column_spans(plan, indexes):
+    used = list(dict.fromkeys(indexes))
+    spans = []
+    for sheet in plan.active:
+        last = min(plan.last_row, 1 + sheet["rows"])
+        if plan.first_row > last:
+            continue
+        for index in used:
+            start = ref(sheet["name"], plan.first_row, index)
+            spans.append(f"{start}:{column_letter(index)}{last}")
+    return spans
+
+
+def aggregate_sources(plan, indexes):
+    return list(dict.fromkeys([*plan.evidence, *column_spans(plan, indexes)]))
+
+
+def grouped_sources(query, plan, keys):
+    indexes = list(keys)
+    if query.aggregate and query.aggregate.op == "count":
+        if query.aggregate.column:
+            indexes.append(index_of(plan.columns, query.aggregate.column))
+        else:
+            indexes.extend(plan.selection)
+    indexes.extend(plan.numeric_columns)
+    indexes.extend(index_of(plan.columns, filt.column) for filt in query.filters)
+    return aggregate_sources(plan, indexes)
+
+
+def format_group(plan, keys, row, sources):
+    blank = {"type": "blank", "value": None}
+    return {
+        "key": [
+            {"column": plan.columns[index], **(item if isinstance(item, dict) else blank)}
+            for index, item in zip(keys, row[:-1])
+        ],
+        "value": result_value(row[-1]),
+        "sources": sources,
+    }
+
+
 def grouped_result(cursor, query, plan):
     keys = [index_of(plan.columns, name) for name in query.group_by]
     if len(set(keys)) != len(keys):
         raise WorkbookError("group_by columns must be unique.")
-    key_sql = ", ".join(["cells -> %s"] * len(keys))
+    key_sql = group_key_sql(keys)
+    key_args = group_key_args(keys)
     value_sql, value_args = group_value_sql(query, plan)
     positions = ", ".join(str(position) for position in range(1, len(keys) + 1))
+    grouped = f"SELECT 1 FROM {plan.table} WHERE {plan.where} GROUP BY {key_sql}"
     cursor.execute(
-        f"SELECT COUNT(*) FROM (SELECT 1 FROM {plan.table} WHERE {plan.where} GROUP BY {key_sql}) grouped",
-        [*plan.args, *keys],
+        f"SELECT COUNT(*) FROM ({grouped}) grouped",
+        [*plan.args, *key_args],
     )
     total = cursor.fetchone()[0]
     cursor.execute(
         f"SELECT {key_sql}, {value_sql} FROM {plan.table} WHERE {plan.where} "
         f"GROUP BY {positions} ORDER BY {positions} LIMIT %s OFFSET %s",
-        [*keys, *value_args, *plan.args, query.limit, query.offset],
+        [*key_args, *value_args, *plan.args, query.limit, query.offset],
     )
-    groups = [
-        {
-            "key": [
-                {"column": plan.columns[index], **(item if isinstance(item, dict) else {"type": "blank", "value": None})}
-                for index, item in zip(keys, row[:-1])
-            ],
-            "value": result_value(row[-1]),
-            "sources": list(dict.fromkeys(plan.evidence)),
-        }
-        for row in cursor
-    ]
+    sources = grouped_sources(query, plan, keys)
+    groups = [format_group(plan, keys, row, sources) for row in cursor]
     return {"matched": total, "groups": groups, "next_offset": paged(query, groups, total)}
 
 
@@ -436,9 +495,10 @@ def aggregate_result(cursor, query, plan, total):
             [*plan.operands, *plan.args],
         )
         value, used = cursor.fetchone()[0], plan.numeric_columns
-    used = list(dict.fromkeys([*used, *(index_of(plan.columns, filt.column) for filt in query.filters)]))
-    spans = [
-        f"{ref(sheet['name'], plan.first_row, index)}:{column_letter(index)}{min(plan.last_row, 1 + sheet['rows'])}"
-        for sheet in plan.active for index in used if plan.first_row <= min(plan.last_row, 1 + sheet["rows"])
-    ]
-    return {"matched": total, "value": result_value(value), "sources": list(dict.fromkeys([*plan.evidence, *spans]))}
+    filters = (index_of(plan.columns, filt.column) for filt in query.filters)
+    used = list(dict.fromkeys([*used, *filters]))
+    return {
+        "matched": total,
+        "value": result_value(value),
+        "sources": aggregate_sources(plan, used),
+    }
