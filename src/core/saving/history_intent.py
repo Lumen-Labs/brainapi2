@@ -10,12 +10,16 @@ import re
 import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 
 Embed = Callable[[str], list[float]]
+EmbedMany = Callable[[list[str]], list[list[float]]]
 
 HISTORY_MARGIN = 0.02
 _FAIL_BACKOFF = 30.0
 _FAIL_BACKOFF_MAX = 300.0
+_PROTOTYPE_WARMUP_TIMEOUT = 8.0
 
 HISTORY_EXAMPLES: tuple[str, ...] = (
     "what did this say before the change",
@@ -214,6 +218,20 @@ def prefers_history(
     return history_score > current_score + margin
 
 
+def lexical_history_decision(query_text: str | None) -> bool | None:
+    """Return True/False when lexical rules decide, else None for embeddings."""
+    if lexical_history_intent(query_text):
+        return True
+    cleaned = (query_text or "").strip()
+    if (
+        cleaned
+        and _CURRENT_VALUE_RE.search(cleaned)
+        and not _STRONG_HISTORY_RE.search(cleaned)
+    ):
+        return False
+    return None
+
+
 def resolve_include_history(
     explicit: bool | None,
     query_text: str | None = None,
@@ -225,19 +243,19 @@ def resolve_include_history(
 ) -> bool:
     if explicit is not None:
         return explicit
-    if lexical_history_intent(query_text):
-        return True
-    cleaned = (query_text or "").strip()
-    if cleaned and _CURRENT_VALUE_RE.search(cleaned) and not _STRONG_HISTORY_RE.search(
-        cleaned
-    ):
-        return False
+    lexical = lexical_history_decision(query_text)
+    if lexical is not None:
+        return lexical
     return prefers_history(
         query,
         history_vectors or [],
         current_vectors or [],
         margin=margin,
     )
+
+
+def peek_prototype_vectors() -> tuple[list[list[float]], list[list[float]]] | None:
+    return _CACHED
 
 
 def reset_prototype_cache() -> None:
@@ -248,7 +266,55 @@ def reset_prototype_cache() -> None:
         _FAIL_STREAK = 0
 
 
-def prototype_vectors(embed: Embed) -> tuple[list[list[float]], list[list[float]]]:
+def _run_with_timeout(fn: Callable[[], list[list[float]]], timeout: float) -> list[list[float]]:
+    if timeout <= 0:
+        return fn()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(fn)
+        try:
+            return future.result(timeout=timeout)
+        except FutureTimeoutError as exc:
+            raise PrototypeWarmupError("history prototype warmup timed out") from exc
+
+
+def _as_vector_list(value: object) -> list[float] | None:
+    embeddings = getattr(value, "embeddings", None)
+    if embeddings is not None:
+        value = embeddings
+    if not isinstance(value, (list, tuple)) or not value:
+        return None
+    try:
+        return [float(item) for item in value]
+    except (TypeError, ValueError):
+        return None
+
+
+def _embed_prototypes(
+    embed: Embed,
+    embed_many: EmbedMany | None,
+) -> tuple[list[list[float]], list[list[float]]]:
+    texts = list(HISTORY_EXAMPLES) + list(CURRENT_EXAMPLES)
+    split_at = len(HISTORY_EXAMPLES)
+    if embed_many is not None:
+        raw = _run_with_timeout(lambda: embed_many(texts), _PROTOTYPE_WARMUP_TIMEOUT)
+        if not isinstance(raw, list) or len(raw) != len(texts):
+            raise PrototypeWarmupError("batch prototype embedding size mismatch")
+        vectors = [_as_vector_list(item) for item in raw]
+        if any(item is None for item in vectors):
+            raise PrototypeWarmupError("empty prototype embedding")
+        typed = [item for item in vectors if item is not None]
+        return typed[:split_at], typed[split_at:]
+    history = [embed(text) for text in HISTORY_EXAMPLES]
+    current = [embed(text) for text in CURRENT_EXAMPLES]
+    if any(not vector for vector in history + current):
+        raise PrototypeWarmupError("empty prototype embedding")
+    return history, current
+
+
+def prototype_vectors(
+    embed: Embed,
+    embed_many: EmbedMany | None = None,
+) -> tuple[list[list[float]], list[list[float]]]:
     global _CACHED, _FAIL_UNTIL, _FAIL_STREAK
     if _CACHED is not None:
         return _CACHED
@@ -259,10 +325,7 @@ def prototype_vectors(embed: Embed) -> tuple[list[list[float]], list[list[float]
         if now < _FAIL_UNTIL:
             raise PrototypeWarmupError("history prototype warmup backing off")
         try:
-            history = [embed(text) for text in HISTORY_EXAMPLES]
-            current = [embed(text) for text in CURRENT_EXAMPLES]
-            if any(not vector for vector in history + current):
-                raise PrototypeWarmupError("empty prototype embedding")
+            history, current = _embed_prototypes(embed, embed_many)
             _CACHED = (history, current)
             _FAIL_STREAK = 0
             return _CACHED

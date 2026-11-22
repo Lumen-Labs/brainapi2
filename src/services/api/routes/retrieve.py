@@ -242,6 +242,44 @@ async def get_context(
     return await retrieve_get_context_controller(request)
 
 
+@retrieve_router.get("/context", response_model=GetContextResponse)
+async def get_context_by_query(
+    text: str = Query(..., min_length=1),
+    as_of: Optional[str] = Query(None),
+    include_validity_unknown: bool = Query(False),
+    annotate_conflicts: bool = Query(False),
+    include_history: Optional[bool] = Query(None),
+    historical_limit: int = Query(10),
+    max_facts: int = Query(40, ge=0),
+    max_passages: int = Query(8),
+    apply_fact_filter: bool = Query(True),
+    use_ppr: bool = Query(True),
+    sufficiency_retry: bool = Query(False),
+    profile_stages: bool = Query(False),
+    cross_event_bridges: int = Query(3, ge=0),
+    include_rejected: bool = Query(False),
+    brain_id: str = Depends(get_brain_id),
+) -> GetContextResponse:
+    request = GetContextRequestBody(
+        text=text,
+        as_of=as_of,
+        include_validity_unknown=include_validity_unknown,
+        annotate_conflicts=annotate_conflicts,
+        include_history=include_history,
+        historical_limit=historical_limit,
+        max_facts=max_facts,
+        max_passages=max_passages,
+        apply_fact_filter=apply_fact_filter,
+        use_ppr=use_ppr,
+        sufficiency_retry=sufficiency_retry,
+        profile_stages=profile_stages,
+        cross_event_bridges=cross_event_bridges,
+        include_rejected=include_rejected,
+        brain_id=brain_id,
+    )
+    return await retrieve_get_context_controller(request)
+
+
 @retrieve_router.get(path="/relationships", response_model=RelationshipListResponse)
 async def get_relationships(
     limit: int = 10,
