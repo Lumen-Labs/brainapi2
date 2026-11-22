@@ -559,9 +559,11 @@ class QueryEmbeddingCacheIsolationTests(unittest.IsolatedAsyncioTestCase):
             mock_vs.search_relationships.return_value = []
             await asyncio.gather(one("tenant-a"), one("tenant-b"))
 
-        by_brain = {brain: vector for brain, vector in searches}
-        self.assertEqual(by_brain["tenant-a"][0], 0.11)
-        self.assertEqual(by_brain["tenant-b"][0], 0.99)
+        brains = {brain for brain, _vector in searches}
+        self.assertEqual(brains, {"tenant-a", "tenant-b"})
+        expected = {"tenant-a": 0.11, "tenant-b": 0.99}
+        for brain, vector in searches:
+            self.assertEqual(vector[0], expected[brain], (brain, vector))
 
 
 class ContextGetRouteTests(unittest.TestCase):
