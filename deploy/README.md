@@ -52,9 +52,10 @@ nginx server file; do not expose port 80 beyond a trusted proxy without HTTPS.
 
 - GET `/retrieve/context` puts the question in the query string. Prefer POST
   for sensitive questions. The API access log redacts `text`, and the bundled
-  nginx `main` format logs that path as `/retrieve/context?text=[redacted]`.
-  Checking in this config does not change already-running production servers;
-  they pick it up only when the stack is redeployed with these files.
+  nginx `main` format logs that path as `/retrieve/context?text=[redacted]`
+  using the normalized `$uri` (including percent-encoded paths). Checking in
+  this config does not change already-running production servers; they pick
+  it up only when the stack is redeployed with these files.
 - `BRAINAPI_IMAGE`, `BRAINAPI_ENV_FILE`, Redis credentials, and profile backend
   credentials are required and fail during Compose interpolation when absent.
 - Mount cloud credentials with a private operator-owned Compose override; no

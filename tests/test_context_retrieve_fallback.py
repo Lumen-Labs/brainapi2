@@ -205,6 +205,8 @@ class VectorTimeoutFallbackTests(unittest.IsolatedAsyncioTestCase):
             mock_vs.search_data.side_effect = ConnectionError("dense")
             mock_data.search.side_effect = ConnectionError("keyword")
             mock_data.search_bm25.side_effect = ConnectionError("bm25")
+            mock_data.get_last_text_chunks.side_effect = ConnectionError("chunks")
+            mock_data.get_last_structured_data.side_effect = ConnectionError("structured")
             mock_graph.get_event_centric_neighbors.side_effect = TimeoutError("graph")
             with self.assertRaises(HTTPException) as ctx:
                 await retrieve_mod.get_context(
@@ -216,6 +218,100 @@ class VectorTimeoutFallbackTests(unittest.IsolatedAsyncioTestCase):
                 )
         self.assertEqual(ctx.exception.status_code, 503)
         self.assertEqual(ctx.exception.detail, "Retrieval backends unavailable")
+
+    async def test_historical_backend_errors_return_503_when_all_else_fails(self):
+        from src.services.api.controllers import retrieve as retrieve_mod
+
+        with _stubbed_adapters(retrieve_mod, []) as (_emb, mock_vs, mock_graph, mock_data):
+            mock_vs.search_nodes.side_effect = TimeoutError("nodes")
+            mock_vs.search_relationships.side_effect = TimeoutError("rels")
+            mock_vs.search_data.side_effect = ConnectionError("dense")
+            mock_data.search.side_effect = ConnectionError("keyword")
+            mock_data.search_bm25.side_effect = ConnectionError("bm25")
+            mock_data.get_last_text_chunks.side_effect = ConnectionError("chunks")
+            mock_data.get_last_structured_data.side_effect = ConnectionError("structured")
+            mock_graph.get_event_centric_neighbors.side_effect = TimeoutError("graph")
+            with self.assertRaises(HTTPException) as ctx:
+                await retrieve_mod.get_context(
+                    GetContextRequestBody(
+                        text="who is Alice",
+                        brain_id="brain-a",
+                        include_history=True,
+                    )
+                )
+        self.assertEqual(ctx.exception.status_code, 503)
+
+    async def test_neo4j_driver_error_degrades_graph_not_request(self):
+        from neo4j.exceptions import ServiceUnavailable
+
+        from src.services.api.controllers import retrieve as retrieve_mod
+
+        chunk = _keyword_chunk()
+        with _stubbed_adapters(retrieve_mod, _facts(1)) as (_emb, mock_vs, mock_graph, mock_data):
+            mock_graph.get_event_centric_neighbors.side_effect = ServiceUnavailable(
+                "graph down"
+            )
+            mock_data.search.return_value = SimpleNamespace(text_chunks=[chunk])
+            mock_data.get_text_chunks_by_ids.return_value = ([chunk], [])
+            response = await retrieve_mod.get_context(
+                GetContextRequestBody(
+                    text="who is Alice",
+                    brain_id="brain-a",
+                    include_history=False,
+                )
+            )
+        self.assertIn("graph.event_neighbors", response.degraded or [])
+        self.assertTrue(
+            any("keyword search" in item for item in response.source_passages)
+            or "keyword search" in response.text_context
+        )
+
+    async def test_late_ok_does_not_clear_failed_stage(self):
+        from src.services.api.controllers import retrieve as retrieve_mod
+
+        health = retrieve_mod._RetrievalHealth()
+        health.start("vector.search_data")
+        health.error("vector.search_data")
+        health.ok("vector.search_data")
+        self.assertEqual(health.failed_stages, ["vector.search_data"])
+        self.assertTrue(health.all_failed())
+        health.start("vector.search_data")
+        health.ok("vector.search_data")
+        self.assertIn("vector.search_data", health.failed_stages)
+        self.assertFalse(health.all_failed())
+
+    def test_wait_all_keeps_completed_sibling_on_timeout(self):
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+
+        from src.services.api.controllers import retrieve as retrieve_mod
+
+        block = threading.Event()
+
+        def done():
+            return "kept"
+
+        def hang():
+            block.wait(30)
+            return "late"
+
+        pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ctx-io")
+        previous = dict(retrieve_mod._io_state)
+        retrieve_mod._io_state["pool"] = pool
+        retrieve_mod._io_state["pid"] = os.getpid()
+        retrieve_mod._io_state["inflight"] = 0
+        try:
+            futures = [
+                retrieve_mod._submit_io(done),
+                retrieve_mod._submit_io(hang),
+            ]
+            results = retrieve_mod._wait_all(futures, timeout=0.2)
+            self.assertEqual(results[0], "kept")
+            self.assertIs(results[1], retrieve_mod._IO_FAILED)
+        finally:
+            block.set()
+            retrieve_mod._io_state.update(previous)
+            pool.shutdown(wait=False)
 
     async def test_programming_error_is_not_swallowed(self):
         from src.services.api.controllers import retrieve as retrieve_mod
@@ -284,6 +380,8 @@ class ContextFallbackHttpTests(unittest.TestCase):
             mock_vs.search_data.side_effect = ConnectionError("dense")
             mock_data.search.side_effect = ConnectionError("keyword")
             mock_data.search_bm25.side_effect = ConnectionError("bm25")
+            mock_data.get_last_text_chunks.side_effect = ConnectionError("chunks")
+            mock_data.get_last_structured_data.side_effect = ConnectionError("structured")
             mock_graph.get_event_centric_neighbors.side_effect = TimeoutError("graph")
             response = client.get(
                 "/retrieve/context",

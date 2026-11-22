@@ -129,9 +129,31 @@ def _submit_io(fn, *args, **kwargs):
     return _io_executor().submit(ctx.run, fn, *args, **kwargs)
 
 
+_IO_FAILED = object()
+
+
+def _io_result(value, default):
+    return default if value is _IO_FAILED else value
+
+
 def _wait_all(futures, timeout: float = _IO_TIMEOUT_SECONDS):
+    results = []
+    last_exc = None
+    deadline = time.monotonic() + timeout
     try:
-        return [fut.result(timeout=timeout) for fut in futures]
+        for fut in futures:
+            remaining = max(0.0, deadline - time.monotonic())
+            try:
+                results.append(fut.result(timeout=remaining))
+            except _backend_error_types() as exc:
+                last_exc = exc
+                results.append(_IO_FAILED)
+        if last_exc is not None:
+            for fut in futures:
+                fut.cancel()
+            if all(value is _IO_FAILED for value in results):
+                raise last_exc
+        return results
     except Exception:
         for fut in futures:
             fut.cancel()
@@ -226,6 +248,7 @@ def _backend_error_types() -> tuple[type[BaseException], ...]:
         ("pymilvus.exceptions", "MilvusException"),
         ("psycopg2", "Error"),
         ("grpc", "RpcError"),
+        ("neo4j.exceptions", "DriverError"),
     )
     for module_name, attr in optional:
         try:
@@ -241,26 +264,30 @@ def _backend_error_types() -> tuple[type[BaseException], ...]:
 
 class _RetrievalHealth:
     def __init__(self) -> None:
-        self._status: dict[str, str] = {}
+        self._pending: set[str] = set()
+        self._ok: set[str] = set()
+        self._error: set[str] = set()
 
     def start(self, stage: str) -> None:
-        self._status.setdefault(stage, "pending")
+        self._pending.add(stage)
 
     def ok(self, stage: str) -> None:
-        self._status[stage] = "ok"
+        if stage not in self._pending:
+            return
+        self._pending.discard(stage)
+        self._ok.add(stage)
 
     def error(self, stage: str) -> None:
-        if self._status.get(stage) != "ok":
-            self._status[stage] = "error"
+        self._pending.discard(stage)
+        self._error.add(stage)
 
     @property
     def failed_stages(self) -> list[str]:
-        return [name for name, status in self._status.items() if status != "ok"]
+        return sorted(self._error | self._pending)
 
     def all_failed(self) -> bool:
-        return bool(self._status) and all(
-            status != "ok" for status in self._status.values()
-        )
+        tracked = self._pending | self._ok | self._error
+        return bool(tracked) and not self._ok
 
 
 def _health() -> _RetrievalHealth | None:
@@ -2105,6 +2132,13 @@ def _seed_nodes_for_text(
     except _backend_error_types() as exc:
         _note_degraded("facts.seed_search", brain_id, exc)
         node_vectors, rel_vectors = [], []
+    else:
+        if node_vectors is _IO_FAILED:
+            _note_degraded("vector.search_nodes", brain_id, TimeoutError())
+        if rel_vectors is _IO_FAILED:
+            _note_degraded("vector.search_relationships", brain_id, TimeoutError())
+        node_vectors = _io_result(node_vectors, [])
+        rel_vectors = _io_result(rel_vectors, [])
     for vector in node_vectors:
         meta = vector.metadata or {}
         uuid = meta.get("uuid") or getattr(vector, "id", None)
@@ -2330,7 +2364,16 @@ def _retrieve_passages(
                 dense_result, keyword_result = _parallel_io([_dense, _keyword])
             except _backend_error_types() as exc:
                 _note_degraded("passages.retrieve", brain_id, exc)
+                _note_degraded("vector.search_data", brain_id, exc)
                 dense_result, keyword_result = ([], {}), ([], {})
+            else:
+                if dense_result is _IO_FAILED:
+                    _note_degraded("vector.search_data", brain_id, TimeoutError())
+                    dense_result = ([], {})
+                if keyword_result is _IO_FAILED:
+                    stage = "data.bm25_search" if use_bm25 else "data.keyword_search"
+                    _note_degraded(stage, brain_id, TimeoutError())
+                    keyword_result = ([], {})
             vector_ids, id_to_distance = dense_result
             keyword_ids, id_to_text = keyword_result
         elif use_dense:
@@ -2762,14 +2805,24 @@ async def _build_context(
             with profile_stage("historical.fallback", blocking=False):
                 text_chunks, structured_data = await asyncio.gather(
                     asyncio.to_thread(
-                        data_adapter.get_last_text_chunks,
-                        brain_id=request.brain_id,
-                        limit=request.historical_limit,
+                        _backend_or_default,
+                        "data.last_text_chunks",
+                        request.brain_id,
+                        lambda: data_adapter.get_last_text_chunks(
+                            brain_id=request.brain_id,
+                            limit=request.historical_limit,
+                        ),
+                        [],
                     ),
                     asyncio.to_thread(
-                        data_adapter.get_last_structured_data,
-                        brain_id=request.brain_id,
-                        limit=request.historical_limit,
+                        _backend_or_default,
+                        "data.last_structured_data",
+                        request.brain_id,
+                        lambda: data_adapter.get_last_structured_data(
+                            brain_id=request.brain_id,
+                            limit=request.historical_limit,
+                        ),
+                        [],
                     ),
                 )
             chunk_hits = [

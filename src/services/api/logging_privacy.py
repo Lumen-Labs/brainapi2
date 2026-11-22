@@ -4,20 +4,21 @@ from __future__ import annotations
 
 import logging
 import re
-from urllib.parse import parse_qsl, quote_plus, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote_plus, unquote, urlencode, urlsplit, urlunsplit
 
 CONTEXT_PATH = "/retrieve/context"
 FREE_TEXT_PARAMS = frozenset({"text"})
 REDACTED = "[redacted]"
 _CONTEXT_QUERY_RE = re.compile(
-    r"(?:https?://[^\s\"']+)?/retrieve/context\?[^\s\"']+",
+    r"(?:https?://[^\s\"]+)?/retrieve/(?:%63|c)ontext\?[^\s\"]*",
     re.IGNORECASE,
 )
 _installed = False
+_original_factory = None
 
 
 def _is_context_path(path: str) -> bool:
-    cleaned = (path or "").split("?", 1)[0].rstrip("/")
+    cleaned = unquote((path or "").split("?", 1)[0]).rstrip("/").lower()
     return cleaned.endswith(CONTEXT_PATH)
 
 
@@ -52,10 +53,18 @@ def redact_path(path: str) -> str:
 
 
 def redact_access_target(target: str) -> str:
-    if not target or "/retrieve/context" not in target:
+    if not target or "?" not in target:
         return target
-    if "?" not in target:
+    if "/retrieve/" not in target.lower() and "/retrieve/" not in unquote(target).lower():
         return target
+    stripped = target.strip()
+    if stripped.startswith("/") or stripped.lower().startswith("http"):
+        redacted = redact_path(stripped)
+        if redacted != stripped:
+            start = target.find(stripped)
+            if start >= 0:
+                return target[:start] + redacted + target[start + len(stripped) :]
+            return redacted
     match = _CONTEXT_QUERY_RE.search(target)
     if not match:
         return redact_path(target)
@@ -73,19 +82,36 @@ class AccessLogPrivacyFilter(logging.Filter):
                 record.args = args[:2] + (redacted,) + args[3:]
         elif isinstance(args, dict):
             for key, value in list(args.items()):
-                if isinstance(value, str) and "/retrieve/context" in value:
+                if isinstance(value, str) and "/retrieve/" in value.lower():
                     args[key] = redact_access_target(value)
-        if isinstance(record.msg, str) and "/retrieve/context?" in record.msg:
-            record.msg = redact_access_target(record.msg)
+        try:
+            rendered = record.getMessage()
+        except (TypeError, ValueError):
+            return True
+        redacted_msg = redact_access_target(rendered)
+        if redacted_msg != rendered:
+            record.msg = redacted_msg
+            record.args = ()
         return True
 
 
+def _redacting_record_factory(*args, **kwargs):
+    factory = _original_factory or logging.getLogRecordFactory()
+    record = factory(*args, **kwargs)
+    AccessLogPrivacyFilter().filter(record)
+    return record
+
+
 def install_access_log_privacy() -> None:
-    global _installed
+    global _installed, _original_factory
     if _installed:
         return
     filt = AccessLogPrivacyFilter()
     for name in ("uvicorn.access", "uvicorn.error", "uvicorn"):
         logging.getLogger(name).addFilter(filt)
-    logging.getLogger().addFilter(filt)
+    root = logging.getLogger()
+    for handler in root.handlers:
+        handler.addFilter(filt)
+    _original_factory = logging.getLogRecordFactory()
+    logging.setLogRecordFactory(_redacting_record_factory)
     _installed = True

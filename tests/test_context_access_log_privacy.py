@@ -203,6 +203,55 @@ class ContextAccessLogPrivacyTests(unittest.TestCase):
         self.assertNotIn(SECRET_QUESTION, message)
         self.assertIn("text=[redacted]", message)
 
+    def test_filter_redacts_literal_apostrophe_in_query_text(self):
+        raw = "/retrieve/context?text=Alice's+SSN+998877"
+        redacted = redact_access_target(raw)
+        self.assertIn("text=[redacted]", redacted)
+        self.assertNotIn("Alice's", redacted)
+        self.assertNotIn("998877", redacted)
+
+        record = logging.LogRecord(
+            name="uvicorn.access",
+            level=logging.INFO,
+            pathname=__file__,
+            lineno=1,
+            msg='%s - "%s %s HTTP/%s" %d',
+            args=("127.0.0.1:9", "GET", raw, "1.1", 200),
+            exc_info=None,
+        )
+        AccessLogPrivacyFilter().filter(record)
+        message = record.getMessage()
+        self.assertIn("text=[redacted]", message)
+        self.assertNotIn("Alice's", message)
+        self.assertNotIn("998877", message)
+
+    def test_filter_redacts_percent_encoded_context_path(self):
+        raw = "/retrieve/%63ontext?text=" + SECRET_QUESTION
+        redacted = redact_access_target(raw)
+        self.assertIn("text=[redacted]", redacted)
+        self.assertNotIn(SECRET_QUESTION, redacted)
+
+    def test_app_logger_record_is_redacted(self):
+        install_access_log_privacy()
+        logger = logging.getLogger("brainapi.test.privacy")
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        logger.addHandler(handler)
+        previous_level = logger.level
+        previous_propagate = logger.propagate
+        logger.setLevel(logging.INFO)
+        logger.propagate = False
+        try:
+            logger.info("GET /retrieve/context?text=%s", SECRET_QUESTION)
+            line = stream.getvalue()
+        finally:
+            logger.removeHandler(handler)
+            logger.setLevel(previous_level)
+            logger.propagate = previous_propagate
+        self.assertIn("text=[redacted]", line)
+        self.assertNotIn(SECRET_QUESTION, line)
+
 
 if __name__ == "__main__":
     unittest.main()
