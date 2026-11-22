@@ -49,8 +49,8 @@ def test_csv_accepts_bounded_sheet():
 def test_csv_infers_dates_currency_and_percentages():
     payload = (
         b"When,Amount,Rate\n"
-        b"2026-01-31,$1,234.56,15%\n"
-        b"1/31/2026,\"($99.00)\",12.5%\n"
+        b'2026-01-31,"$1,234.56",15%\n'
+        b'1/31/2026,"($99.00)",12.5%\n'
     )
     _, columns, records = read_workbook("grid.csv", payload)[0]
     assert columns == ["When", "Amount", "Rate"]

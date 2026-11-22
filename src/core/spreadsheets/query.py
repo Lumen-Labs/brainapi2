@@ -1,6 +1,7 @@
 """Parameterized operations over a workbook's typed rows."""
 
 import re
+from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta
 from decimal import Decimal
 from typing import Annotated, Literal
@@ -195,6 +196,50 @@ def row_window(query, active, columns):
     return first_row, last_row, selection
 
 
+@dataclass
+class QueryPlan:
+    table: str
+    by_name: dict
+    active: list
+    columns: list
+    first_row: int
+    last_row: int
+    selection: list
+    where: str
+    args: list
+    computed: str | None = None
+    operands: list = field(default_factory=list)
+    evidence: list = field(default_factory=list)
+    numeric_columns: list = field(default_factory=list)
+
+
+def query_scope(query, sheets):
+    query_constraints(query)
+    by_name, active, columns = selected_sheets(query, sheets)
+    first_row, last_row, selection = row_window(query, active, columns)
+    args = [str(query.workbook), [sheet["index"] for sheet in active], first_row, last_row]
+    conditions = ["workbook = %s AND sheet = ANY(%s) AND row_number BETWEEN %s AND %s"]
+    if not query.range:
+        conditions.append(
+            "EXISTS (SELECT 1 FROM jsonb_array_elements(cells) AS cell WHERE cell->>'type' <> 'blank')"
+        )
+    for filt in query.filters:
+        clause, values = filter_sql(columns, filt)
+        conditions.append(clause)
+        args.extend(values)
+    return QueryPlan(
+        table="spreadsheet_rows",
+        by_name=by_name,
+        active=active,
+        columns=columns,
+        first_row=first_row,
+        last_row=last_row,
+        selection=selection,
+        where=" AND ".join(conditions),
+        args=args,
+    )
+
+
 def query_constraints(query):
     if query.aggregate and (query.expression or query.columns):
         raise WorkbookError("An aggregate accepts its own column or expression.")
@@ -216,183 +261,184 @@ def result_value(value):
     return {"type": "blank", "value": None} if value is None else {"type": "number", "value": str(value)}
 
 
-def query_workbook(cursor, query, sheets):
-    query_constraints(query)
-    by_name, active, columns = selected_sheets(query, sheets)
-    first_row, last_row, selection = row_window(query, active, columns)
-    args = [str(query.workbook), [sheet["index"] for sheet in active], first_row, last_row]
-    conditions = ["workbook = %s AND sheet = ANY(%s) AND row_number BETWEEN %s AND %s"]
-    if not query.range:
-        conditions.append("EXISTS (SELECT 1 FROM jsonb_array_elements(cells) AS cell WHERE cell->>'type' <> 'blank')")
-    for filt in query.filters:
-        clause, values = filter_sql(columns, filt)
-        conditions.append(clause)
-        args.extend(values)
-    where = " AND ".join(conditions)
-    table = "spreadsheet_rows"
+def compile_operand(cursor, table, query, by_name, columns, operand, operands, evidence, numeric_columns):
+    if isinstance(operand, Number):
+        operands.append(operand.number)
+        return "%s::numeric"
+    if isinstance(operand, Cell):
+        if operand.sheet not in by_name:
+            raise WorkbookError("Unknown operand worksheet.")
+        sheet = by_name[operand.sheet]
+        row, col = address(operand.cell)
+        if row > 1 + sheet["rows"] or col >= len(sheet["columns"]):
+            raise WorkbookError("Operand cell is outside its worksheet.")
+        cursor.execute(
+            f"SELECT cells -> %s FROM {table} WHERE workbook = %s AND sheet = %s AND row_number = %s",
+            (col, str(query.workbook), sheet["index"], row),
+        )
+        value = cursor.fetchone()[0]
+        if value["type"] != "number":
+            raise WorkbookError("Operand cell must contain a number or a saved numeric formula result.")
+        operands.append(Decimal(value["value"]))
+        evidence.append(ref(operand.sheet, row, col))
+        return "%s::numeric"
+    index = index_of(columns, operand.column)
+    numeric_columns.append(index)
+    operands.extend([index, index])
+    return "CASE WHEN cells -> %s ->> 'type' = 'number' THEN (cells -> %s ->> 'value')::numeric END"
+
+
+def compiled_expression(cursor, query, plan):
     expression = query.aggregate.expression if query.aggregate else query.expression
-    operands = []
-    evidence = []
-    numeric_columns = []
 
-    def compile_operand(operand):
-        if isinstance(operand, Number):
-            operands.append(operand.number)
-            return "%s::numeric"
-        if isinstance(operand, Cell):
-            if operand.sheet not in by_name:
-                raise WorkbookError("Unknown operand worksheet.")
-            sheet = by_name[operand.sheet]
-            row, col = address(operand.cell)
-            if row > 1 + sheet["rows"] or col >= len(sheet["columns"]):
-                raise WorkbookError("Operand cell is outside its worksheet.")
-            cursor.execute(
-                f"SELECT cells -> %s FROM {table} WHERE workbook = %s AND sheet = %s AND row_number = %s",
-                (col, str(query.workbook), sheet["index"], row),
-            )
-            value = cursor.fetchone()[0]
-            if value["type"] != "number":
-                raise WorkbookError("Operand cell must contain a number or a saved numeric formula result.")
-            operands.append(Decimal(value["value"]))
-            evidence.append(ref(operand.sheet, row, col))
-            return "%s::numeric"
-        index = index_of(columns, operand.column)
-        numeric_columns.append(index)
-        operands.extend([index, index])
-        return "CASE WHEN cells -> %s ->> 'type' = 'number' THEN (cells -> %s ->> 'value')::numeric END"
+    def bind(operand):
+        return compile_operand(
+            cursor, plan.table, query, plan.by_name, plan.columns,
+            operand, plan.operands, plan.evidence, plan.numeric_columns,
+        )
 
-    computed = None
     if expression:
         operators = {"add": "+", "subtract": "-", "multiply": "*", "divide": "/"}
-        computed = f"(({compile_operand(expression.left)}) {operators[expression.op]} ({compile_operand(expression.right)}))"
+        plan.computed = f"(({bind(expression.left)}) {operators[expression.op]} ({bind(expression.right)}))"
     elif query.aggregate and query.aggregate.column and query.aggregate.op != "count":
-        computed = compile_operand(Column(column=query.aggregate.column))
+        plan.computed = bind(Column(column=query.aggregate.column))
 
-    for index in set(numeric_columns):
+
+def reject_nonnumeric(cursor, plan):
+    for index in set(plan.numeric_columns):
         cursor.execute(
-            f"SELECT 1 FROM {table} WHERE {where} AND (cells -> %s ->> 'type') NOT IN ('number', 'blank') LIMIT 1",
-            [*args, index],
+            f"SELECT 1 FROM {plan.table} WHERE {plan.where} AND (cells -> %s ->> 'type') NOT IN ('number', 'blank') LIMIT 1",
+            [*plan.args, index],
         )
         if cursor.fetchone():
-            raise WorkbookError(f"{columns[index]} contains a nonnumeric value or an unavailable formula result.")
+            raise WorkbookError(
+                f"{plan.columns[index]} contains a nonnumeric value or an unavailable formula result."
+            )
 
-    if query.expression and not numeric_columns and not query.range and not query.filters:
-        cursor.execute(f"SELECT {computed}", operands)
-        return {"matched": 1, "value": result_value(cursor.fetchone()[0]), "sources": evidence}
 
+def paged(query, rows, total):
+    offset = query.offset + len(rows)
+    return offset if rows and offset < total else None
+
+
+def select_rows(cursor, query, plan, total):
+    extra = f", {plan.computed}" if plan.computed else ""
+    cursor.execute(
+        f"SELECT sheet, row_number, cells{extra} FROM {plan.table} "
+        f"WHERE {plan.where} ORDER BY sheet, row_number LIMIT %s OFFSET %s",
+        [*plan.operands, *plan.args, query.limit, query.offset],
+    )
+    names = {sheet["index"]: sheet["name"] for sheet in plan.active}
+    rows = [format_row(plan, names, sheet, row, cells, calculation)
+            for sheet, row, cells, *calculation in cursor]
+    return {"matched": total, "rows": rows, "next_offset": paged(query, rows, total)}
+
+
+def format_row(plan, names, sheet, row, cells, calculation):
+    result = {
+        "sheet": names[sheet],
+        "row": row,
+        "cells": [
+            {"column": plan.columns[index], "source": ref(names[sheet], row, index), **cells[index]}
+            for index in plan.selection
+        ],
+    }
+    if calculation:
+        result["calculation"] = {
+            **result_value(calculation[0]),
+            "sources": list(dict.fromkeys(
+                [*plan.evidence, *(ref(names[sheet], row, i) for i in plan.numeric_columns)]
+            )),
+        }
+    return result
+
+
+def query_workbook(cursor, query, sheets):
+    plan = query_scope(query, sheets)
+    compiled_expression(cursor, query, plan)
+    reject_nonnumeric(cursor, plan)
+    if query.expression and not plan.numeric_columns and not query.range and not query.filters:
+        cursor.execute(f"SELECT {plan.computed}", plan.operands)
+        return {"matched": 1, "value": result_value(cursor.fetchone()[0]), "sources": plan.evidence}
     if query.group_by:
-        return grouped_result(
-            cursor, query, columns, table, where, args, computed, operands, evidence, numeric_columns,
-        )
-
-    cursor.execute(f"SELECT COUNT(*) FROM {table} WHERE {where}", args)
+        return grouped_result(cursor, query, plan)
+    cursor.execute(f"SELECT COUNT(*) FROM {plan.table} WHERE {plan.where}", plan.args)
     total = cursor.fetchone()[0]
     if query.unique and total > 1:
         raise WorkbookError("Multiple rows match. Specify a worksheet or a more specific key.")
-
     if query.aggregate:
-        return aggregate_result(
-            cursor, query, columns, table, where, args, computed, operands, evidence,
-            numeric_columns, selection, active, first_row, last_row, total,
-        )
-
-    cursor.execute(
-        f"SELECT sheet, row_number, cells{', ' + computed if computed else ''} FROM {table} "
-        f"WHERE {where} ORDER BY sheet, row_number LIMIT %s OFFSET %s",
-        [*operands, *args, query.limit, query.offset],
-    )
-    names = {sheet["index"]: sheet["name"] for sheet in active}
-    rows = []
-    for sheet, row, cells, *calculation in cursor:
-        values = [
-            {"column": columns[index], "source": ref(names[sheet], row, index), **cells[index]}
-            for index in selection
-        ]
-        result = {"sheet": names[sheet], "row": row, "cells": values}
-        if calculation:
-            result["calculation"] = {
-                **result_value(calculation[0]),
-                "sources": list(dict.fromkeys([*evidence, *(ref(names[sheet], row, i) for i in numeric_columns)])),
-            }
-        rows.append(result)
-    offset = query.offset + len(rows)
-    return {"matched": total, "rows": rows, "next_offset": offset if rows and offset < total else None}
+        return aggregate_result(cursor, query, plan, total)
+    return select_rows(cursor, query, plan, total)
 
 
-def grouped_result(cursor, query, columns, table, where, args, computed, operands, evidence, numeric_columns):
-    keys = [index_of(columns, name) for name in query.group_by]
+def group_value_sql(query, plan):
+    operation = query.aggregate.op
+    if operation == "count":
+        index = index_of(plan.columns, query.aggregate.column) if query.aggregate.column else None
+        if index is None:
+            return "COUNT(*)", []
+        return "COUNT(*) FILTER (WHERE (cells -> %s ->> 'type') <> 'blank')", [index]
+    if plan.computed is None:
+        raise WorkbookError("Choose a numeric column or expression for this aggregate.")
+    return f"{operation}({plan.computed})", list(plan.operands)
+
+
+def grouped_result(cursor, query, plan):
+    keys = [index_of(plan.columns, name) for name in query.group_by]
     if len(set(keys)) != len(keys):
         raise WorkbookError("group_by columns must be unique.")
     key_sql = ", ".join(["cells -> %s"] * len(keys))
-    grouped_args = [*keys]
-    operation = query.aggregate.op
-    if operation == "count":
-        index = index_of(columns, query.aggregate.column) if query.aggregate.column else None
-        if index is None:
-            value_sql = "COUNT(*)"
-            value_args = []
-        else:
-            value_sql = "COUNT(*) FILTER (WHERE (cells -> %s ->> 'type') <> 'blank')"
-            value_args = [index]
-    else:
-        if computed is None:
-            raise WorkbookError("Choose a numeric column or expression for this aggregate.")
-        value_sql = f"{operation}({computed})"
-        value_args = list(operands)
-    group_by = ", ".join(str(position) for position in range(1, len(keys) + 1))
+    value_sql, value_args = group_value_sql(query, plan)
+    positions = ", ".join(str(position) for position in range(1, len(keys) + 1))
     cursor.execute(
-        f"SELECT COUNT(*) FROM (SELECT 1 FROM {table} WHERE {where} GROUP BY {key_sql}) grouped",
-        [*args, *grouped_args],
+        f"SELECT COUNT(*) FROM (SELECT 1 FROM {plan.table} WHERE {plan.where} GROUP BY {key_sql}) grouped",
+        [*plan.args, *keys],
     )
     total = cursor.fetchone()[0]
     cursor.execute(
-        f"SELECT {key_sql}, {value_sql} FROM {table} WHERE {where} "
-        f"GROUP BY {group_by} ORDER BY {group_by} LIMIT %s OFFSET %s",
-        [*grouped_args, *value_args, *args, query.limit, query.offset],
+        f"SELECT {key_sql}, {value_sql} FROM {plan.table} WHERE {plan.where} "
+        f"GROUP BY {positions} ORDER BY {positions} LIMIT %s OFFSET %s",
+        [*keys, *value_args, *plan.args, query.limit, query.offset],
     )
-    groups = []
-    for row in cursor:
-        cells = [
-            {"column": columns[index], **(item if isinstance(item, dict) else {"type": "blank", "value": None})}
-            for index, item in zip(keys, row[:-1])
-        ]
-        groups.append({"key": cells, "value": result_value(row[-1]), "sources": list(dict.fromkeys(evidence))})
-    offset = query.offset + len(groups)
-    return {
-        "matched": total,
-        "groups": groups,
-        "next_offset": offset if groups and offset < total else None,
-    }
-
-
-def aggregate_result(
-    cursor, query, columns, table, where, args, computed, operands, evidence,
-    numeric_columns, selection, active, first_row, last_row, total,
-):
-    operation = query.aggregate.op
-    if operation == "count":
-        index = index_of(columns, query.aggregate.column) if query.aggregate.column else None
-        if index is None:
-            value = total
-        else:
-            cursor.execute(
-                f"SELECT COUNT(*) FROM {table} WHERE {where} AND (cells -> %s ->> 'type') <> 'blank'",
-                [*args, index],
-            )
-            value = cursor.fetchone()[0]
-        used = ([] if query.filters else selection) if index is None else [index]
-    else:
-        if computed is None:
-            raise WorkbookError("Choose a numeric column or expression for this aggregate.")
-        cursor.execute(
-            f"SELECT {operation}({computed}) FROM {table} WHERE {where}",
-            [*operands, *args],
-        )
-        value = cursor.fetchone()[0]
-        used = numeric_columns
-    used = list(dict.fromkeys([*used, *(index_of(columns, filt.column) for filt in query.filters)]))
-    spans = [
-        f"{ref(sheet['name'], first_row, index)}:{column_letter(index)}{min(last_row, 1 + sheet['rows'])}"
-        for sheet in active for index in used if first_row <= min(last_row, 1 + sheet["rows"])
+    groups = [
+        {
+            "key": [
+                {"column": plan.columns[index], **(item if isinstance(item, dict) else {"type": "blank", "value": None})}
+                for index, item in zip(keys, row[:-1])
+            ],
+            "value": result_value(row[-1]),
+            "sources": list(dict.fromkeys(plan.evidence)),
+        }
+        for row in cursor
     ]
-    return {"matched": total, "value": result_value(value), "sources": list(dict.fromkeys([*evidence, *spans]))}
+    return {"matched": total, "groups": groups, "next_offset": paged(query, groups, total)}
+
+
+def count_aggregate(cursor, query, plan, total):
+    index = index_of(plan.columns, query.aggregate.column) if query.aggregate.column else None
+    if index is None:
+        return total, ([] if query.filters else plan.selection)
+    cursor.execute(
+        f"SELECT COUNT(*) FROM {plan.table} WHERE {plan.where} AND (cells -> %s ->> 'type') <> 'blank'",
+        [*plan.args, index],
+    )
+    return cursor.fetchone()[0], [index]
+
+
+def aggregate_result(cursor, query, plan, total):
+    if query.aggregate.op == "count":
+        value, used = count_aggregate(cursor, query, plan, total)
+    elif plan.computed is None:
+        raise WorkbookError("Choose a numeric column or expression for this aggregate.")
+    else:
+        cursor.execute(
+            f"SELECT {query.aggregate.op}({plan.computed}) FROM {plan.table} WHERE {plan.where}",
+            [*plan.operands, *plan.args],
+        )
+        value, used = cursor.fetchone()[0], plan.numeric_columns
+    used = list(dict.fromkeys([*used, *(index_of(plan.columns, filt.column) for filt in query.filters)]))
+    spans = [
+        f"{ref(sheet['name'], plan.first_row, index)}:{column_letter(index)}{min(plan.last_row, 1 + sheet['rows'])}"
+        for sheet in plan.active for index in used if plan.first_row <= min(plan.last_row, 1 + sheet["rows"])
+    ]
+    return {"matched": total, "value": result_value(value), "sources": list(dict.fromkeys([*plan.evidence, *spans]))}

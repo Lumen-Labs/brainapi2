@@ -134,6 +134,48 @@ def workbook_payload(workbook, filename, catalog, *, cells, cost, deduplicated=F
     return result
 
 
+def duplicated_workbook(cursor, digest, cells, cost):
+    cursor.execute(
+        "SELECT id, filename, sheets FROM spreadsheets WHERE content_hash = %s",
+        (digest,),
+    )
+    existing = cursor.fetchone()
+    if not existing:
+        return None
+    return workbook_payload(
+        str(existing[0]), existing[1], existing[2],
+        cells=cells, cost=cost, deduplicated=True,
+    )
+
+
+def enforce_caps(cursor, cells, payload_size):
+    max_workbooks, max_cells, max_bytes = workbook_caps()
+    cursor.execute(
+        "SELECT COUNT(*), COALESCE(SUM(cell_count), 0), COALESCE(SUM(byte_size), 0) FROM spreadsheets"
+    )
+    stored, stored_cells, stored_bytes = cursor.fetchone()
+    if max_workbooks and stored >= max_workbooks:
+        raise HTTPException(409, "Workbook count limit reached for this brain.")
+    if max_cells and stored_cells + cells > max_cells:
+        raise HTTPException(409, "Stored spreadsheet cell limit reached for this brain.")
+    if max_bytes and stored_bytes + payload_size > max_bytes:
+        raise HTTPException(409, "Stored spreadsheet size limit reached for this brain.")
+
+
+def insert_workbook(cursor, workbook_id, filename, catalog, digest, cells, payload, sheets):
+    cursor.execute(
+        "INSERT INTO spreadsheets (id, filename, sheets, content_hash, cell_count, byte_size) "
+        "VALUES (%s,%s,%s,%s,%s,%s)",
+        (workbook_id, filename, Json(catalog), digest, cells, len(payload)),
+    )
+    records = (
+        (workbook_id, index, row, Json(row_cells))
+        for index, (_, _, rows) in enumerate(sheets)
+        for row, row_cells in enumerate(rows, start=1)
+    )
+    execute_values(cursor, "INSERT INTO spreadsheet_rows VALUES %s", records, page_size=250)
+
+
 def save_workbook(connect, filename, payload, workbook_id, brain_id):
     try:
         sheets = read_workbook(filename, payload)
@@ -143,41 +185,14 @@ def save_workbook(connect, filename, payload, workbook_id, brain_id):
     cells = cell_count(sheets)
     cost = workbook_cost(sheets)
     digest = hashlib.sha256(payload).hexdigest()
-    max_workbooks, max_cells, max_bytes = workbook_caps()
     with connect as conn, conn, conn.cursor() as cursor:
         cursor.execute("SELECT pg_advisory_xact_lock(767947831)")
         cursor.execute(SCHEMA)
-        cursor.execute(
-            "SELECT id, filename, sheets FROM spreadsheets WHERE content_hash = %s",
-            (digest,),
-        )
-        existing = cursor.fetchone()
+        existing = duplicated_workbook(cursor, digest, cells, cost)
         if existing:
-            return workbook_payload(
-                str(existing[0]), existing[1], existing[2],
-                cells=cells, cost=cost, deduplicated=True,
-            )
-        cursor.execute(
-            "SELECT COUNT(*), COALESCE(SUM(cell_count), 0), COALESCE(SUM(byte_size), 0) FROM spreadsheets"
-        )
-        stored, stored_cells, stored_bytes = cursor.fetchone()
-        if max_workbooks and stored >= max_workbooks:
-            raise HTTPException(409, "Workbook count limit reached for this brain.")
-        if max_cells and stored_cells + cells > max_cells:
-            raise HTTPException(409, "Stored spreadsheet cell limit reached for this brain.")
-        if max_bytes and stored_bytes + len(payload) > max_bytes:
-            raise HTTPException(409, "Stored spreadsheet size limit reached for this brain.")
-        cursor.execute(
-            "INSERT INTO spreadsheets (id, filename, sheets, content_hash, cell_count, byte_size) "
-            "VALUES (%s,%s,%s,%s,%s,%s)",
-            (workbook_id, filename, Json(catalog), digest, cells, len(payload)),
-        )
-        records = (
-            (workbook_id, index, row, Json(row_cells))
-            for index, (_, _, rows) in enumerate(sheets)
-            for row, row_cells in enumerate(rows, start=1)
-        )
-        execute_values(cursor, "INSERT INTO spreadsheet_rows VALUES %s", records, page_size=250)
+            return existing
+        enforce_caps(cursor, cells, len(payload))
+        insert_workbook(cursor, workbook_id, filename, catalog, digest, cells, payload, sheets)
     remember_workbook(brain_id, workbook_id)
     return workbook_payload(workbook_id, filename, catalog, cells=cells, cost=cost)
 

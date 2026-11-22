@@ -108,6 +108,18 @@ def csv_currency(value):
     return cell(-number if negative else number)
 
 
+def csv_number(stripped):
+    if len(stripped) > 100:
+        return None
+    if CSV_PERCENT.fullmatch(stripped):
+        return cell(_decimal(stripped[:-1]) / 100, display="percent")
+    if CSV_THOUSANDS.fullmatch(stripped):
+        return cell(_decimal(stripped.replace(",", "")))
+    if CSV_NUMBER.fullmatch(stripped):
+        return cell(_decimal(stripped))
+    return None
+
+
 def csv_cell(value):
     if value == "":
         return cell(None)
@@ -115,22 +127,14 @@ def csv_cell(value):
     lowered = stripped.casefold()
     if lowered in {"true", "false"}:
         return cell(lowered == "true")
-    if len(stripped) <= 100 and CSV_PERCENT.fullmatch(stripped):
-        return cell(_decimal(stripped[:-1]) / 100, display="percent")
-    currency = csv_currency(stripped)
-    if currency is not None:
-        return currency
-    if len(stripped) <= 100 and CSV_THOUSANDS.fullmatch(stripped):
-        return cell(_decimal(stripped.replace(",", "")))
-    if len(stripped) <= 100 and CSV_NUMBER.fullmatch(stripped):
-        return cell(_decimal(stripped))
+    typed = csv_currency(stripped) or csv_number(stripped)
+    if typed is not None:
+        return typed
     try:
         parsed = csv_date(stripped)
     except ValueError:
         parsed = None
-    if parsed is not None:
-        return cell(parsed)
-    return cell(value)
+    return cell(parsed) if parsed is not None else cell(value)
 
 
 def percent_display(number_format):
