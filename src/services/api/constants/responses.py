@@ -293,6 +293,11 @@ class SpreadsheetWorkbookListResponse(BaseModel):
     next_offset: Optional[int] = None
 
 
+class SpreadsheetDeleteResponse(BaseModel):
+    id: str
+    deleted: bool = True
+
+
 class SpreadsheetCellValue(BaseModel):
     type: str
     value: JsonValue | None = None

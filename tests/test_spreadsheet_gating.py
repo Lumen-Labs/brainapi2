@@ -182,4 +182,5 @@ def test_delete_workbook_returns_204(api, monkeypatch):
 
     with patch("src.services.api.routes.spreadsheets.postgres_connection", return_value=connect):
         response = api.delete("/retrieve/spreadsheets/00000000-0000-0000-0000-000000000001")
-    assert response.status_code == 204
+    assert response.status_code == 200
+    assert response.json()["deleted"] is True

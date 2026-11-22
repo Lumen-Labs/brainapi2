@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Annotated
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from psycopg2 import errors
 from psycopg2.extras import Json, execute_values
 from starlette.concurrency import run_in_threadpool
@@ -17,6 +17,7 @@ from src.core.spreadsheets.import_workbook import MAX_UPLOAD_BYTES, WorkbookErro
 from src.core.spreadsheets.query import PAGE_SIZE, WorkbookQuery, query_workbook
 from src.lib.postgresql._provisioning import PoolTimeout
 from src.services.api.constants.responses import (
+    SpreadsheetDeleteResponse,
     SpreadsheetQueryResponse,
     SpreadsheetWorkbookListResponse,
     SpreadsheetWorkbookResponse,
@@ -278,7 +279,7 @@ def list_workbooks(
         }
 
 
-@router.delete("/retrieve/spreadsheets/{workbook_id}", status_code=204)
+@router.delete("/retrieve/spreadsheets/{workbook_id}", response_model=SpreadsheetDeleteResponse)
 def delete_workbook(workbook_id: UUID, brain_id: str = Depends(get_brain_id)):
     """
     Delete one imported workbook and its rows for the current brain.
@@ -291,7 +292,7 @@ def delete_workbook(workbook_id: UUID, brain_id: str = Depends(get_brain_id)):
             raise HTTPException(404, "Workbook not found.") from exc
         if cursor.fetchone() is None:
             raise HTTPException(404, "Workbook not found.")
-    return Response(status_code=204)
+    return {"id": str(workbook_id), "deleted": True}
 
 
 @router.post("/retrieve/spreadsheets/query", response_model=SpreadsheetQueryResponse)
