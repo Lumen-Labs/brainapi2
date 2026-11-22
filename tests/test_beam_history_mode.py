@@ -44,9 +44,13 @@ for key, value in ENV_DEFAULTS.items():
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.core.saving.history_intent import (
+    CURRENT_EXAMPLES,
+    HISTORY_EXAMPLES,
     PrototypeWarmupError,
+    lexical_history_decision,
     lexical_history_intent,
     prefers_history,
+    peek_prototype_vectors,
     prototype_vectors,
     reset_prototype_cache,
     resolve_include_history,
@@ -419,11 +423,37 @@ class PrototypeCacheTests(unittest.TestCase):
             calls.append(text)
             return [1.0, 0.0] if "previous" in text or "prima" in text or "antes" in text else [0.0, 1.0]
 
+        self.assertIsNone(peek_prototype_vectors())
         first = prototype_vectors(embed)
         n = len(calls)
+        self.assertIs(peek_prototype_vectors(), first)
         second = prototype_vectors(embed)
         self.assertEqual(len(calls), n)
         self.assertIs(first, second)
+
+    def test_lexical_decision_skips_embeddings(self):
+        self.assertTrue(lexical_history_decision("what did this say before the change"))
+        self.assertFalse(lexical_history_decision("what is the current value"))
+        self.assertIsNone(lexical_history_decision("who is Alice"))
+
+    def test_embed_many_warms_prototypes_in_one_call(self):
+        reset_prototype_cache()
+        single_calls: list[str] = []
+        batch_calls: list[int] = []
+
+        def embed(text: str) -> list[float]:
+            single_calls.append(text)
+            return [1.0, 0.0]
+
+        def embed_many(texts: list[str]) -> list[list[float]]:
+            batch_calls.append(len(texts))
+            return [[1.0, 0.0] for _ in texts]
+
+        history, current = prototype_vectors(embed, embed_many)
+        self.assertEqual(single_calls, [])
+        self.assertEqual(batch_calls, [len(HISTORY_EXAMPLES) + len(CURRENT_EXAMPLES)])
+        self.assertEqual(len(history), len(HISTORY_EXAMPLES))
+        self.assertEqual(len(current), len(CURRENT_EXAMPLES))
 
 
 class SessionIdParseTests(unittest.TestCase):
