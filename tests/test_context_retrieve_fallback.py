@@ -280,6 +280,16 @@ class VectorTimeoutFallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("vector.search_data", health.failed_stages)
         self.assertFalse(health.all_failed())
 
+    async def test_late_ok_before_error_does_not_count_as_success(self):
+        from src.services.api.controllers import retrieve as retrieve_mod
+
+        health = retrieve_mod._RetrievalHealth()
+        health.start("vector.search_data")
+        health.ok("vector.search_data")
+        health.error("vector.search_data")
+        self.assertEqual(health.failed_stages, ["vector.search_data"])
+        self.assertTrue(health.all_failed())
+
     def test_wait_all_keeps_completed_sibling_on_timeout(self):
         import threading
         from concurrent.futures import ThreadPoolExecutor

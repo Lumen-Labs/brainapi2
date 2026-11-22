@@ -54,7 +54,8 @@ nginx server file; do not expose port 80 beyond a trusted proxy without HTTPS.
   for sensitive questions. The API access log redacts `text`, and the bundled
   nginx `main` format logs that path as `/retrieve/context?text=[redacted]`
   using the normalized `$uri` (including percent-encoded paths). Referer
-  headers that point at the same path are redacted the same way. Checking in
+  query strings that point at `/retrieve/` (including encoded paths) are
+  redacted the same way. Checking in
   this config does not change already-running production servers; they pick
   it up only when the stack is redeployed with these files.
 - `BRAINAPI_IMAGE`, `BRAINAPI_ENV_FILE`, Redis credentials, and profile backend

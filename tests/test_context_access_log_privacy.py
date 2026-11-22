@@ -3,6 +3,7 @@ import logging
 import os
 import sys
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -258,6 +259,34 @@ class ContextAccessLogPrivacyTests(unittest.TestCase):
         self.assertEqual(rendered.count("text=[redacted]"), 2)
         self.assertNotIn("FIRST", rendered)
         self.assertNotIn("SECOND", rendered)
+
+    def test_filter_redacts_quoted_complete_target(self):
+        raw = '/retrieve/context?text=Alice"998877'
+        redacted = redact_access_target(raw)
+        self.assertIn("text=[redacted]", redacted)
+        self.assertNotIn("Alice", redacted)
+        self.assertNotIn("998877", redacted)
+
+        record = logging.LogRecord(
+            name="app",
+            level=logging.INFO,
+            pathname=__file__,
+            lineno=1,
+            msg=raw,
+            args=(),
+            exc_info=None,
+        )
+        AccessLogPrivacyFilter().filter(record)
+        message = record.getMessage()
+        self.assertIn("text=[redacted]", message)
+        self.assertNotIn("Alice", message)
+        self.assertNotIn("998877", message)
+
+    def test_nginx_referer_map_covers_encoded_context_path(self):
+        conf = Path(__file__).resolve().parents[1] / "deploy" / "nginx" / "nginx.conf"
+        text = conf.read_text()
+        self.assertIn("$logged_referer", text)
+        self.assertIn("/retrieve/[^?]+", text)
 
     def test_filter_redacts_percent_encoded_context_path(self):
         raw = "/retrieve/%63ontext?text=" + PROBE_QUESTION

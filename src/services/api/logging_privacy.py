@@ -91,9 +91,7 @@ class AccessLogPrivacyFilter(logging.Filter):
             rendered = record.getMessage()
         except (TypeError, ValueError):
             return True
-        redacted_msg = redact_embedded_message(rendered)
-        if redacted_msg == rendered:
-            redacted_msg = redact_access_target(rendered)
+        redacted_msg = redact_access_target(rendered)
         if redacted_msg != rendered:
             record.msg = redacted_msg
             record.args = ()

@@ -16,7 +16,7 @@ import re
 import threading
 import time
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import datetime
 from typing import Any, Optional
 
@@ -245,6 +245,7 @@ def _backend_error_types() -> tuple[type[BaseException], ...]:
         return _backend_error_types_cache
     types: list[type[BaseException]] = [
         TimeoutError,
+        FuturesTimeoutError,
         ConnectionError,
         BrokenPipeError,
     ]
@@ -268,29 +269,35 @@ def _backend_error_types() -> tuple[type[BaseException], ...]:
 
 class _RetrievalHealth:
     def __init__(self) -> None:
-        self._pending: set[str] = set()
-        self._ok: set[str] = set()
+        self._gen: dict[str, int] = {}
+        self._pending: dict[str, int] = {}
+        self._ok: dict[str, int] = {}
         self._error: set[str] = set()
 
     def start(self, stage: str) -> None:
-        self._pending.add(stage)
+        generation = self._gen.get(stage, 0) + 1
+        self._gen[stage] = generation
+        self._pending[stage] = generation
 
     def ok(self, stage: str) -> None:
-        if stage not in self._pending:
+        generation = self._pending.get(stage)
+        if generation is None or self._gen.get(stage) != generation:
             return
-        self._pending.discard(stage)
-        self._ok.add(stage)
+        del self._pending[stage]
+        self._ok[stage] = generation
 
     def error(self, stage: str) -> None:
-        self._pending.discard(stage)
+        generation = self._pending.pop(stage, self._gen.get(stage))
         self._error.add(stage)
+        if generation is not None and self._ok.get(stage) == generation:
+            del self._ok[stage]
 
     @property
     def failed_stages(self) -> list[str]:
-        return sorted(self._error | self._pending)
+        return sorted(self._error | set(self._pending))
 
     def all_failed(self) -> bool:
-        tracked = self._pending | self._ok | self._error
+        tracked = set(self._pending) | set(self._ok) | self._error
         return bool(tracked) and not self._ok
 
 
