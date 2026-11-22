@@ -136,6 +136,7 @@ class HalfvecAnnTests(unittest.TestCase):
             hits = client.search_vectors([0.0] * 3072, "brain", "data", k=1)
 
         joined = "\n".join(executed)
+        self.assertIn("statement_timeout", joined)
         self.assertIn("halfvec(3072)", joined)
         self.assertIn("embeddings <=> %s::vector", joined)
         self.assertEqual([h.id for h in hits], ["a"])

@@ -354,12 +354,24 @@ class ConcurrencyRegressionTests(unittest.IsolatedAsyncioTestCase):
             first = retrieve_mod._seed_nodes_for_text(
                 "Alice", "brain-a", embeddings=[0.1, 0.2, 0.3]
             )
-            second = retrieve_mod._seed_nodes_for_text(
-                "Alice", "brain-a", embeddings=[0.1, 0.2, 0.3]
-            )
+            with patch.object(
+                retrieve_mod,
+                "_parallel_io",
+                lambda fns: [fn() for fn in fns],
+            ):
+                second = retrieve_mod._seed_nodes_for_text(
+                    "Alice", "brain-a", embeddings=[0.1, 0.2, 0.3]
+                )
 
         self.assertEqual(first, second)
-        self.assertEqual({item[0] for item in first}, {"a", "mid", "tail"})
+        self.assertEqual(
+            first,
+            [
+                ("mid", 0.05, "Alice"),
+                ("tail", 0.05, "Alice"),
+                ("a", 0.2, "Alice"),
+            ],
+        )
 
     async def test_current_fact_candidates_runs_once_on_the_hot_path(self):
         from src.core.saving import source_passages as passages_mod

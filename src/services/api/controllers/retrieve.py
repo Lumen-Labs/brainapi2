@@ -127,40 +127,7 @@ def _wait_all(futures, timeout: float = _IO_TIMEOUT_SECONDS):
 def _parallel_io(fns: list):
     if len(fns) <= 1 or _on_io_worker():
         return [fn() for fn in fns]
-    slots: list[dict[str, object]] = [{} for _ in fns]
-
-    def run_one(index: int, fn) -> None:
-        try:
-            slots[index]["value"] = fn()
-        except Exception as exc:
-            slots[index]["error"] = exc
-
-    threads = []
-    for index, fn in enumerate(fns):
-        ctx = contextvars.copy_context()
-        thread = threading.Thread(
-            target=ctx.run,
-            args=(run_one, index, fn),
-            name=f"{_IO_THREAD_PREFIX}-job",
-            daemon=True,
-        )
-        threads.append(thread)
-        thread.start()
-    deadline = time.monotonic() + _IO_TIMEOUT_SECONDS
-    timed_out = False
-    for thread in threads:
-        thread.join(max(0.0, deadline - time.monotonic()))
-        if thread.is_alive():
-            timed_out = True
-    if timed_out:
-        raise TimeoutError()
-    results = []
-    for slot in slots:
-        error = slot.get("error")
-        if isinstance(error, Exception):
-            raise error
-        results.append(slot.get("value"))
-    return results
+    return _wait_all([_submit_io(fn) for fn in fns])
 
 
 def _embed_query_vector(text: str) -> Vector:

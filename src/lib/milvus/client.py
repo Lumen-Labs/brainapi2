@@ -26,6 +26,8 @@ from src.adapters.interfaces.embeddings import VectorStoreClient
 from src.config import config
 from src.constants.embeddings import EMBEDDING_STORES_SIZES, Vector
 
+_SEARCH_TIMEOUT_SECONDS = 10.0
+
 
 def string_to_int64(s: str) -> int:
     sha256 = hashlib.sha256(s.encode()).digest()
@@ -263,7 +265,7 @@ class MilvusClient(VectorStoreClient):
         self._ensure_store(store, brain_id)
 
         try:
-            client.load_collection(store)
+            client.load_collection(store, timeout=_SEARCH_TIMEOUT_SECONDS)
         except Exception:
             pass
 
@@ -271,7 +273,11 @@ class MilvusClient(VectorStoreClient):
 
         fetch_k = ann_overfetch_k(k)
         _results = client.search(
-            store, data=[data_vector], limit=fetch_k, output_fields=["$meta"]
+            store,
+            data=[data_vector],
+            limit=fetch_k,
+            output_fields=["$meta"],
+            timeout=_SEARCH_TIMEOUT_SECONDS,
         )
         results = []
         for query_results in _results:

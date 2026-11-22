@@ -111,6 +111,7 @@ class VectorSimilarityContractTests(unittest.TestCase):
         results = MilvusClient.search_vectors(
             client, [1.0, 0.0, 0.0], "brain-a", "nodes", k=2
         )
+        self.assertEqual(milvus.search.call_args.kwargs.get("timeout"), 10.0)
         self.assertEqual(results[0].id, "1")
         self.assertAlmostEqual(results[0].distance, 0.05)
         self.assertEqual(results[1].id, "2")
