@@ -184,6 +184,8 @@ def test_csv_falls_through_when_spreadsheet_experiment_owns_brain(monkeypatch):
 
 
 def test_fail_expired_remote_ocr_updates_cached_task_status(monkeypatch):
+    cache, _store, _hashes = _writable_cache({})
+    monkeypatch.setattr("src.workers.tasks.ingestion.cache_adapter", cache)
     monkeypatch.setattr(
         "src.core.saving.ingest_staging.ingest_cancellation._runs",
         lambda brain_id: SimpleNamespace(find_one=lambda query: None),
@@ -272,11 +274,11 @@ def test_get_task_reports_failed_after_remote_ocr_deadline(monkeypatch):
         "task_id": "ocr-task",
         "remote_ocr_deadline": 10,
     }
-    monkeypatch.setattr(
-        tasks.cache_adapter,
-        "get_task",
-        lambda task_id, brain_id="default": json.dumps(cached),
-    )
+    cache, _store, _hashes = _writable_cache({
+        ("task:ocr-task", "brain"): cached,
+    })
+    monkeypatch.setattr(tasks, "cache_adapter", cache)
+    monkeypatch.setattr("src.workers.tasks.ingestion.cache_adapter", cache)
     monkeypatch.setattr(
         "src.core.saving.ingest_staging.ingest_cancellation._runs",
         lambda brain_id: SimpleNamespace(find_one=lambda query: None),
@@ -456,6 +458,13 @@ def _writable_cache(initial):
             bucket = self._bucket(key, brain_id)
             bucket[str(field)] = value
             return 1
+
+        def hset_unless_locked(self, key, lock_field, field, value, brain_id="default"):
+            bucket = self._bucket(key, brain_id)
+            if bucket.get(str(lock_field)):
+                return False
+            bucket[str(field)] = value
+            return True
 
         def hsetnx(self, key, field, value, brain_id="default"):
             bucket = self._bucket(key, brain_id)
@@ -738,11 +747,12 @@ def test_expired_unstaged_pages_are_ingested_once(monkeypatch):
     )
     queued.assert_called_once()
     assert queued.call_args.kwargs["args"][0]["data"]["text_data"] == "kept page"
-    assert first["status"] == "partial_failed"
+    assert first["status"] == "started"
     assert first["ocr_partial"] is True
     assert "p:0" not in hashes.get(("ocr_pages:ocr", "brain"), {})
     assert store[("task:ocr", "brain")].get("ocr_dispatch_started") is True
-    assert second["status"] == "partial_failed"
+    assert second["status"] == "started"
+    assert second["ocr_partial"] is True
 
 
 def test_expired_unstaged_without_total_pages_is_ingested(monkeypatch):
@@ -764,7 +774,7 @@ def test_expired_unstaged_without_total_pages_is_ingested(monkeypatch):
     )
     queued.assert_called_once()
     assert queued.call_args.kwargs["args"][0]["data"]["text_data"] == "page one\n\npage two"
-    assert result["status"] == "partial_failed"
+    assert result["status"] == "started"
     assert result["ocr_partial"] is True
 
 
@@ -813,7 +823,7 @@ def test_get_task_dispatches_expired_unstaged_pages(monkeypatch):
     assert response.status_code == 200
     body = response.json()
     queued.assert_called_once()
-    assert body["status"] == "partial_failed"
+    assert body["status"] == "started"
     assert body.get("ocr_partial") is True
     assert "ocr_page_texts" not in body
     assert "p:0" not in hashes.get(("ocr_pages:ocr-task", "brain"), {})
@@ -866,7 +876,7 @@ def test_unstaged_mixed_pages_dispatch_partial(monkeypatch):
     assert queued.call_args.kwargs["args"][0]["data"]["text_data"] == "kept"
     payload = store[("task:ocr", "brain")]
     assert payload["ocr_partial"] is True
-    assert payload["status"] == "partial_failed"
+    assert payload["status"] == "started"
     assert "p:0" not in hashes.get(("ocr_pages:ocr", "brain"), {})
 
 
@@ -892,3 +902,178 @@ def test_replayed_complete_callback_does_not_ingest_twice(monkeypatch):
     assert first.status_code == 202
     assert second.status_code == 202
     queued.assert_called_once()
+
+
+def test_expired_ocr_does_not_finalize_when_page_hash_unreadable(monkeypatch):
+    cache, store, hashes = _writable_cache({
+        ("task:ocr", "brain"): {
+            "status": "started",
+            "task_id": "ocr",
+            "remote_ocr_deadline": 10,
+            "ocr_pages_accepted": 1,
+            "ocr_total_pages": 2,
+        },
+    })
+    hashes[("ocr_pages:ocr", "brain")] = {"p:0": "kept page", "total": "2"}
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("redis down")
+
+    cache.hgetall = boom
+    _silence_remote_ocr_runs(monkeypatch)
+    monkeypatch.setattr("src.workers.tasks.ingestion.cache_adapter", cache)
+    queued = Mock()
+    monkeypatch.setattr("src.workers.tasks.ingestion.ingest_data.apply_async", queued)
+    monkeypatch.setattr("src.core.saving.unstaged_ocr.time", lambda: 5_000)
+    monkeypatch.setattr("src.core.saving.ingest_staging.time", lambda: 5_000)
+    result = fail_expired_remote_ocr(
+        "brain", "ocr", dict(store[("task:ocr", "brain")]),
+    )
+    queued.assert_not_called()
+    assert result["status"] == "started"
+    assert store[("task:ocr", "brain")]["status"] == "started"
+
+
+def test_dispatch_releases_claim_when_setup_fails(monkeypatch):
+    cache, store, hashes = _writable_cache({
+        ("task:ocr", "brain"): {"status": "started", "task_id": "ocr"},
+    })
+    hashes[("ocr_pages:ocr", "brain")] = {"p:0": "kept"}
+    monkeypatch.setattr("src.workers.tasks.ingestion.cache_adapter", cache)
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("ttl failed")
+
+    cache.expire = boom
+    from src.core.saving import unstaged_ocr
+
+    snapshot = unstaged_ocr.Snapshot({"0": "kept"}, [], 1)
+    with pytest.raises(RuntimeError):
+        unstaged_ocr.dispatch_snapshot(
+            "brain", "ocr", store[("task:ocr", "brain")], snapshot,
+        )
+    assert "lock" not in hashes[("ocr_pages:ocr", "brain")]
+    assert unstaged_ocr.claim_dispatch("brain", "ocr") is True
+
+
+def test_anon_pages_join_in_numeric_order():
+    from src.core.saving import unstaged_ocr
+
+    pages = {f"anon:{index}": f"p{index}" for index in range(12)}
+    assert unstaged_ocr.joined_text(pages) == "\n\n".join(
+        f"p{index}" for index in range(12)
+    )
+
+
+def test_pages_after_dispatch_claim_are_not_stored(monkeypatch):
+    cache, _store, hashes = _writable_cache({
+        ("task:ocr", "brain"): {"status": "queued", "task_id": "ocr"},
+    })
+    monkeypatch.setattr("src.workers.tasks.ingestion.cache_adapter", cache)
+    from src.core.saving import unstaged_ocr
+
+    unstaged_ocr.record_page("brain", "ocr", "0", "one")
+    snapshot = unstaged_ocr.load_pages("brain", "ocr")
+    queued = Mock()
+    monkeypatch.setattr("src.workers.tasks.ingestion.ingest_data.apply_async", queued)
+    assert unstaged_ocr.dispatch_snapshot("brain", "ocr", {"status": "started"}, snapshot)
+    assert unstaged_ocr.record_page("brain", "ocr", "1", "late") is False
+    assert "p:1" not in hashes.get(("ocr_pages:ocr", "brain"), {})
+    queued.assert_called_once()
+    assert queued.call_args.kwargs["args"][0]["data"]["text_data"] == "one"
+
+
+def test_clear_page_text_keeps_pages_not_in_snapshot(monkeypatch):
+    cache, _store, hashes = _writable_cache({})
+    hashes[("ocr_pages:ocr", "brain")] = {"p:0": "queued", "p:1": "late", "lock": "1"}
+    monkeypatch.setattr("src.workers.tasks.ingestion.cache_adapter", cache)
+    from src.core.saving import unstaged_ocr
+
+    unstaged_ocr.clear_page_text(
+        "brain", "ocr", unstaged_ocr.Snapshot({"0": "queued"}, [], 2, True),
+    )
+    leftover = hashes[("ocr_pages:ocr", "brain")]
+    assert "p:0" not in leftover
+    assert leftover["p:1"] == "late"
+    assert leftover["lock"] == "1"
+
+
+def test_started_ocr_partial_completes_as_partial_failed(monkeypatch):
+    from src.workers.tasks.ingestion import set_ingestion_task_status
+
+    cache, store, _hashes = _writable_cache({})
+    import src.workers.tasks.ingestion as ingestion
+
+    original = ingestion.cache_adapter
+    ingestion.cache_adapter = cache
+    try:
+        set_ingestion_task_status(
+            "t-partial",
+            "brain",
+            "started",
+            stage="processing",
+            extra={"ocr_partial": True, "ocr_pages_accepted": 1, "ocr_total_pages": 2},
+        )
+        set_ingestion_task_status("t-partial", "brain", "completed", stage="completed")
+        payload = store[("task:t-partial", "brain")]
+        assert payload["status"] == "partial_failed"
+        assert payload.get("ocr_partial") is True
+    finally:
+        ingestion.cache_adapter = original
+
+
+def test_unstaged_partial_dispatch_does_not_record_terminal(monkeypatch):
+    cache, store, hashes = _writable_cache({
+        ("task:ocr", "brain"): {
+            "status": "started",
+            "task_id": "ocr",
+            "remote_ocr_deadline": 10,
+            "ocr_total_pages": 2,
+        },
+    })
+    hashes[("ocr_pages:ocr", "brain")] = {"p:0": "kept page", "total": "2"}
+    _silence_remote_ocr_runs(monkeypatch)
+    monkeypatch.setenv("INGESTION_CANCELLATION_ENABLED", "1")
+    monkeypatch.setattr("src.workers.tasks.ingestion.cache_adapter", cache)
+    recorded = []
+    monkeypatch.setattr(
+        "src.workers.tasks.ingestion.record_terminal",
+        lambda *args, **_kwargs: recorded.append(args),
+    )
+    queued = Mock()
+    monkeypatch.setattr("src.workers.tasks.ingestion.ingest_data.apply_async", queued)
+    monkeypatch.setattr("src.core.saving.unstaged_ocr.time", lambda: 5_000)
+    monkeypatch.setattr("src.core.saving.ingest_staging.time", lambda: 5_000)
+    result = fail_expired_remote_ocr(
+        "brain", "ocr", dict(store[("task:ocr", "brain")]),
+    )
+    queued.assert_called_once()
+    assert result["status"] == "started"
+    assert result["ocr_partial"] is True
+    assert recorded == []
+
+
+def test_unstaged_callback_returns_503_when_page_hash_unreadable(monkeypatch):
+    app, ingest = _ingest_app()
+    _silence_remote_ocr_runs(monkeypatch)
+    cache, _store, _hashes = _writable_cache({
+        ("task:ocr", "brain"): {"status": "queued", "task_id": "ocr"},
+    })
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("redis down")
+
+    cache.hgetall = boom
+    monkeypatch.setattr(ingest, "cache_adapter", cache)
+    monkeypatch.setattr("src.workers.tasks.ingestion.cache_adapter", cache)
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/ingest/",
+        json={
+            "data": {"data_type": "text", "text_data": "page"},
+            "page_index": 0,
+            "total_pages": 1,
+        },
+        headers={"Task-Identifier": "ocr"},
+    )
+    assert response.status_code == 503
+    assert response.headers.get("retry-after") == "5"

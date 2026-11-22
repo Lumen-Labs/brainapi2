@@ -82,5 +82,15 @@ class CacheAdapter:
     def hmax(self, key: str, field: str, value: int, brain_id: str = "default") -> int:
         return self.cache.hmax(key, field, value, brain_id)
 
+    def hset_unless_locked(
+        self,
+        key: str,
+        lock_field: str,
+        field: str,
+        value: str,
+        brain_id: str = "default",
+    ) -> bool:
+        return self.cache.hset_unless_locked(key, lock_field, field, value, brain_id)
+
     def expire(self, key: str, seconds: int, brain_id: str = "default") -> bool:
         return self.cache.expire(key, seconds, brain_id)

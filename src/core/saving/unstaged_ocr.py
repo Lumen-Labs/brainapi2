@@ -2,8 +2,6 @@
 
 from time import time
 
-from celery.exceptions import OperationalError
-
 from src.core.saving.ingest_staging import (
     SMALL_REMOTE_OCR_DEADLINE_SECONDS,
     TERMINAL_TASK_STATUSES,
@@ -22,6 +20,10 @@ INTERNAL_TASK_KEYS = (
     "ocr_failed_pages",
     "ocr_dispatch_started",
 )
+
+
+class SnapshotUnavailable(Exception):
+    """Raised when the OCR page hash cannot be read."""
 
 
 class Snapshot:
@@ -72,10 +74,10 @@ def load_pages(brain_id, task_id, cached=None):
     total = cached.get("ocr_total_pages")
     dispatched = bool(cached.get("ocr_dispatch_started"))
     try:
-        raw = _hash_call("hgetall", pages_key(task_id), brain_id=brain_id) or {}
-    except Exception:
-        raw = {}
-    parsed = {_decode(key): _decode(value) for key, value in raw.items()}
+        raw = _hash_call("hgetall", pages_key(task_id), brain_id=brain_id)
+    except Exception as exc:
+        raise SnapshotUnavailable from exc
+    parsed = {_decode(key): _decode(value) for key, value in (raw or {}).items()}
     for field, value in parsed.items():
         if field.startswith(PAGE_PREFIX) and value:
             pages[field[len(PAGE_PREFIX):]] = value
@@ -114,18 +116,39 @@ def page_key(brain_id, task_id, page_index):
     return f"anon:{int(count) - 1}"
 
 
+def _store_field(brain_id, task_id, field, value):
+    stored = _hash_call(
+        "hset_unless_locked",
+        pages_key(task_id),
+        LOCK_FIELD,
+        field,
+        value,
+        brain_id=brain_id,
+    )
+    if stored is None:
+        if load_pages(brain_id, task_id).dispatched:
+            return False
+        _hash_call("hset", pages_key(task_id), field, value, brain_id=brain_id)
+        stored = True
+    if stored:
+        _touch(task_id, brain_id)
+    return bool(stored)
+
+
 def record_page(brain_id, task_id, key, text):
-    _hash_call("hset", pages_key(task_id), f"{PAGE_PREFIX}{key}", text, brain_id=brain_id)
-    _hash_call("hdel", pages_key(task_id), f"{FAIL_PREFIX}{key}", brain_id=brain_id)
-    _touch(task_id, brain_id)
+    stored = _store_field(brain_id, task_id, f"{PAGE_PREFIX}{key}", text)
+    if stored:
+        _hash_call("hdel", pages_key(task_id), f"{FAIL_PREFIX}{key}", brain_id=brain_id)
+    return stored
 
 
 def record_failure(brain_id, task_id, key):
     snapshot = load_pages(brain_id, task_id)
+    if snapshot.dispatched:
+        return False
     if key in snapshot.pages or key in snapshot.failed:
-        return
-    _hash_call("hset", pages_key(task_id), f"{FAIL_PREFIX}{key}", "1", brain_id=brain_id)
-    _touch(task_id, brain_id)
+        return True
+    return _store_field(brain_id, task_id, f"{FAIL_PREFIX}{key}", "1")
 
 
 def raise_total(brain_id, task_id, total):
@@ -149,41 +172,54 @@ def raise_total(brain_id, task_id, total):
 
 
 def claim_dispatch(brain_id, task_id):
-    result = _hash_call(
-        "hsetnx", pages_key(task_id), LOCK_FIELD, "1", brain_id=brain_id,
+    return bool(
+        _hash_call("hsetnx", pages_key(task_id), LOCK_FIELD, "1", brain_id=brain_id)
     )
-    _touch(task_id, brain_id)
-    return bool(result)
 
 
 def release_claim(brain_id, task_id):
     _hash_call("hdel", pages_key(task_id), LOCK_FIELD, brain_id=brain_id)
 
 
-def clear_page_text(brain_id, task_id):
-    try:
-        raw = _hash_call("hgetall", pages_key(task_id), brain_id=brain_id) or {}
-    except Exception:
-        return
-    for field in raw:
-        name = _decode(field)
-        if name.startswith(PAGE_PREFIX) or name.startswith(FAIL_PREFIX):
-            _hash_call("hdel", pages_key(task_id), name, brain_id=brain_id)
+def clear_page_text(brain_id, task_id, snapshot=None):
+    fields = []
+    if snapshot is None:
+        try:
+            raw = _hash_call("hgetall", pages_key(task_id), brain_id=brain_id) or {}
+        except Exception:
+            return
+        for field in raw:
+            name = _decode(field)
+            if name.startswith(PAGE_PREFIX) or name.startswith(FAIL_PREFIX):
+                fields.append(name)
+    else:
+        fields = [f"{PAGE_PREFIX}{key}" for key in snapshot.pages]
+        fields.extend(f"{FAIL_PREFIX}{key}" for key in snapshot.failed)
+    for name in fields:
+        _hash_call("hdel", pages_key(task_id), name, brain_id=brain_id)
+
+
+def _page_order(key):
+    text = str(key)
+    if text.isdigit():
+        return (0, int(text))
+    if text.startswith("anon:"):
+        suffix = text[5:]
+        if suffix.isdigit():
+            return (1, int(suffix))
+        return (1, suffix)
+    return (2, text)
 
 
 def joined_text(pages, total=None):
-    numeric = []
-    other = []
-    for key, text in (pages or {}).items():
-        if str(key).isdigit():
-            numeric.append((int(key), text))
-        else:
-            other.append((str(key), text))
-    numeric.sort()
-    other.sort()
+    items = [(_page_order(key), text) for key, text in (pages or {}).items()]
+    items.sort()
     if total:
-        numeric = [item for item in numeric if item[0] < int(total)]
-    return "\n\n".join(text for _, text in numeric + other if text)
+        items = [
+            item for item in items
+            if item[0][0] != 0 or item[0][1] < int(total)
+        ]
+    return "\n\n".join(text for _, text in items if text)
 
 
 def task_extra(cached, snapshot, *, first=False, closing=False):
@@ -224,14 +260,15 @@ def already_dispatched(brain_id, task_id, cached=None):
 def record_callback(brain_id, task_id, cached, *, page_index, total_pages, text, failed):
     prior = load_pages(brain_id, task_id, cached)
     first = not prior.pages and not prior.failed
+    if prior.dispatched:
+        return prior, first, None
     key = page_key(brain_id, task_id, page_index)
-    if not failed:
-        record_page(brain_id, task_id, key, text)
-    else:
-        record_failure(brain_id, task_id, key)
-    raise_total(brain_id, task_id, total_pages)
-    snapshot = load_pages(brain_id, task_id, cached)
-    return snapshot, first, key
+    stored = record_failure(brain_id, task_id, key) if failed else record_page(
+        brain_id, task_id, key, text,
+    )
+    if stored:
+        raise_total(brain_id, task_id, total_pages)
+    return load_pages(brain_id, task_id, cached), first, key
 
 
 def _enqueue_text(brain_id, task_id, payload, context=None):
@@ -251,35 +288,50 @@ def _enqueue_text(brain_id, task_id, payload, context=None):
 def _write_dispatch_status(brain_id, task_id, cached, extra, error=None):
     from src.workers.tasks.ingestion import set_ingestion_task_status
 
-    partial = bool(extra.get("ocr_partial"))
-    status = "partial_failed" if partial else "started"
     kwargs = {
-        "stage": "partial_failed" if partial else "processing",
+        "stage": "processing",
         "group_tracking": cached.get("group_tracking"),
         "extra": public_task_extra(extra),
     }
     if error:
         kwargs["error"] = error
-    return set_ingestion_task_status(task_id, brain_id, status, **kwargs)
+    return set_ingestion_task_status(task_id, brain_id, "started", **kwargs)
+
+
+def _merged_extra(cached, snapshot, extra):
+    built = task_extra(cached, snapshot, closing=True)
+    if not extra:
+        return built
+    if extra.get("ocr_partial"):
+        built["ocr_partial"] = True
+    built.update(
+        {key: value for key, value in extra.items() if key != "ocr_partial" or value}
+    )
+    return built
+
+
+def _claim_live_snapshot(brain_id, task_id, cached, snapshot):
+    if already_dispatched(brain_id, task_id, cached) or not snapshot.pages:
+        return None
+    if not claim_dispatch(brain_id, task_id):
+        return None
+    try:
+        _touch(task_id, brain_id)
+        current = load_pages(brain_id, task_id, cached)
+        if current.pages:
+            return current
+    except Exception:
+        release_claim(brain_id, task_id)
+        raise
+    release_claim(brain_id, task_id)
+    return None
 
 
 def dispatch_snapshot(brain_id, task_id, cached, snapshot, context=None, extra=None):
-    if already_dispatched(brain_id, task_id, cached) or not snapshot.pages:
+    snapshot = _claim_live_snapshot(brain_id, task_id, cached, snapshot)
+    if not snapshot:
         return False
-    if not claim_dispatch(brain_id, task_id):
-        return False
-    built = task_extra(cached, snapshot, closing=True)
-    if extra:
-        if extra.get("ocr_partial"):
-            built["ocr_partial"] = True
-        built.update(
-            {
-                key: value
-                for key, value in extra.items()
-                if key != "ocr_partial" or value
-            }
-        )
-    extra = built
+    extra = _merged_extra(cached, snapshot, extra)
     payload = {
         "data": {"data_type": "text", "text_data": joined_text(snapshot.pages, snapshot.total)},
         "brain_id": brain_id,
@@ -294,11 +346,11 @@ def dispatch_snapshot(brain_id, task_id, cached, snapshot, context=None, extra=N
         )
     try:
         _enqueue_text(brain_id, task_id, payload, context)
-    except OperationalError:
+    except Exception:
         release_claim(brain_id, task_id)
         raise
     updated = _write_dispatch_status(brain_id, task_id, cached, extra, error)
-    clear_page_text(brain_id, task_id)
+    clear_page_text(brain_id, task_id, snapshot)
     return updated if isinstance(updated, dict) else True
 
 
@@ -327,7 +379,7 @@ def _dispatch_expired_pages(brain_id, task_id, cached, snapshot):
     extra["ocr_partial"] = True
     try:
         result = dispatch_snapshot(brain_id, task_id, cached, snapshot, extra=extra)
-    except OperationalError:
+    except Exception:
         return cached
     return result if isinstance(result, dict) else cached
 
@@ -342,7 +394,10 @@ def settle_expired(brain_id, task_id, cached):
         or deadline > time()
     ):
         return None
-    snapshot = load_pages(brain_id, task_id, cached)
+    try:
+        snapshot = load_pages(brain_id, task_id, cached)
+    except SnapshotUnavailable:
+        return cached
     if already_dispatched(brain_id, task_id, cached):
         return cached
     if snapshot.pages:

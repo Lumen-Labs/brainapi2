@@ -349,6 +349,13 @@ def _unstaged_ocr_finished(brain_id, task_id, cached):
 
 
 async def _accept_unstaged_ocr_callback(brain_id, task_id, data, context):
+    try:
+        return await _run_unstaged_ocr_callback(brain_id, task_id, data, context)
+    except unstaged_ocr.SnapshotUnavailable as exc:
+        raise cache_unavailable() from exc
+
+
+async def _run_unstaged_ocr_callback(brain_id, task_id, data, context):
     cached = _read_task_cache(brain_id, task_id)
     if not cached:
         raise HTTPException(status_code=422, detail="data is required")

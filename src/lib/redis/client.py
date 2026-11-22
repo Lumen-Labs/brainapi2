@@ -190,6 +190,24 @@ class RedisClient(CacheClient):
             )
         )
 
+    def hset_unless_locked(
+        self, key: str, lock_field: str, field: str, value: str, brain_id: str
+    ) -> bool:
+        return bool(
+            self.client.eval(
+                (
+                    "if redis.call('HEXISTS', KEYS[1], ARGV[1]) == 1 then return 0 end "
+                    "redis.call('HSET', KEYS[1], ARGV[2], ARGV[3]) "
+                    "return 1"
+                ),
+                1,
+                self._get_key(key, brain_id),
+                lock_field,
+                field,
+                value,
+            )
+        )
+
     def expire(self, key: str, seconds: int, brain_id: str) -> bool:
         return bool(self.client.expire(self._get_key(key, brain_id), seconds))
 
