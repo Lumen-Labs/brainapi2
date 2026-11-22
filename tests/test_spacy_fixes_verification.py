@@ -1,8 +1,9 @@
 import ast
 import os
+import time
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -39,10 +40,17 @@ class TestDockerfileSpacyModels(unittest.TestCase):
     def test_builder_installs_models_via_preload_script(self):
         dockerfile = (ROOT / "Dockerfile").read_text()
         preload = (ROOT / "scripts" / "preload_docker_models.py").read_text()
-        self.assertIn("preload_docker_models.py", dockerfile)
+        self.assertIn("preload_docker_models.py --spacy-only", dockerfile)
+        self.assertIn("--local-ml-only", dockerfile)
         self.assertIn("SPACY_MODEL_NAMES", preload)
         self.assertIn("spacy download", preload)
         self.assertIn("src.constants.spacy_models", preload)
+        self.assertIn("--spacy-only", preload)
+        spacy_run, _, rest = dockerfile.partition(
+            "python scripts/preload_docker_models.py --spacy-only"
+        )
+        self.assertTrue(rest)
+        self.assertNotIn("INSTALL_LOCAL_ML", spacy_run.splitlines()[-1])
 
     def test_preload_detects_wrapped_huggingface_rate_limits(self):
         import scripts.preload_docker_models as preload
@@ -64,6 +72,19 @@ class TestDockerfileSpacyModels(unittest.TestCase):
         self.assertTrue(preload._is_rate_limited(wrapped))
         self.assertTrue(preload._is_transient_hub_error(wrapped))
         self.assertEqual(preload._retry_after_seconds(wrapped), 7.0)
+
+    def test_spacy_only_skips_sentence_transformer_preload(self):
+        import scripts.preload_docker_models as preload
+
+        with (
+            patch.object(preload, "_preload_spacy") as spacy_fn,
+            patch.object(preload, "_preload_sentence_transformers") as st_fn,
+            patch.object(preload, "_configure_hf_token") as hf_fn,
+        ):
+            preload.main(["--spacy-only"])
+        spacy_fn.assert_called_once()
+        st_fn.assert_not_called()
+        hf_fn.assert_not_called()
 
     def test_chinese_uses_web_pipeline_name(self):
         from src.constants.spacy_models import SPACY_MODEL_NAMES
@@ -117,37 +138,93 @@ class TestFastAPIRedirectSlashes(unittest.TestCase):
 
 
 class TestSpacyManagerDownloadBehavior(unittest.TestCase):
-    @patch("src.utils.nlp.spacy.subprocess.run")
+    def test_request_path_module_does_not_import_subprocess(self):
+        source = (ROOT / "src" / "utils" / "nlp" / "spacy.py").read_text()
+        self.assertNotIn("subprocess", source)
+        self.assertNotIn("spacy download", source)
+
     @patch("src.utils.nlp.spacy.spacy.load")
-    def test_failed_download_raises_oserror_not_sysexit(
-        self, mock_load, mock_run
-    ):
+    def test_failed_load_raises_fast_and_is_cached(self, mock_load):
         mock_load.side_effect = OSError("missing")
-        mock_run.return_value = MagicMock(returncode=1, stderr="nope", stdout="")
 
         from src.utils.nlp.spacy import SpacyManager
 
         mgr = SpacyManager()
-        with self.assertRaises(OSError) as ctx:
-            mgr.get_model("it")
+        started = time.perf_counter()
+        with patch("src.utils.nlp.spacy.logger") as mock_logger:
+            with self.assertRaises(OSError) as ctx:
+                mgr.get_model("it")
+            with self.assertRaises(OSError):
+                mgr.get_model("it")
+        elapsed = time.perf_counter() - started
         self.assertIn("it_core_news_sm", str(ctx.exception))
-        mock_run.assert_called_once()
+        self.assertEqual(mock_load.call_count, 1)
+        self.assertEqual(mock_logger.error.call_count, 1)
+        self.assertLess(elapsed, 0.5)
 
-    @patch("src.utils.nlp.spacy.subprocess.run")
     @patch("src.utils.nlp.spacy.spacy.load")
-    def test_successful_download_then_load(
-        self, mock_load, mock_run
-    ):
+    def test_extract_elements_returns_empty_on_failed_load(self, mock_load):
+        mock_load.side_effect = OSError("missing")
+        from src.utils.nlp.ner import MultiLangEntityExtractor
+        from src.utils.nlp.spacy import SpacyManager
+
+        extractor = MultiLangEntityExtractor()
+        extractor.spacy_manager = SpacyManager()
+        started = time.perf_counter()
+        first = extractor.extract_elements("hello world", lang="en")
+        second = extractor.extract_elements("hello world", lang="en")
+        elapsed = time.perf_counter() - started
+        self.assertEqual(first.tokens, [])
+        self.assertEqual(first.noun_chunks, [])
+        self.assertEqual(second.tokens, [])
+        self.assertEqual(mock_load.call_count, 1)
+        self.assertLess(elapsed, 0.5)
+
+    @patch("src.utils.nlp.spacy.spacy.load")
+    def test_successful_load_is_cached(self, mock_load):
         nlp = object()
-        mock_load.side_effect = [OSError("missing"), nlp]
-        mock_run.return_value = MagicMock(returncode=0, stderr="", stdout="")
+        mock_load.return_value = nlp
 
         from src.utils.nlp.spacy import SpacyManager
 
         mgr = SpacyManager()
-        out = mgr.get_model("en")
-        self.assertIs(out, nlp)
-        self.assertEqual(mock_load.call_count, 2)
+        mgr.keep_models_in_memory = True
+        self.assertIs(mgr.get_model("en"), nlp)
+        self.assertIs(mgr.get_model("en"), nlp)
+        self.assertEqual(mock_load.call_count, 1)
+
+    def test_keep_models_in_memory_defaults_true(self):
+        config_src = (ROOT / "src" / "config.py").read_text()
+        self.assertIn(
+            'os.getenv("SPACY_KEEP_MODELS_IN_MEMORY", "true")',
+            config_src,
+        )
+        if os.getenv("SPACY_KEEP_MODELS_IN_MEMORY") in (None, "true"):
+            from src.utils.nlp.spacy import SpacyManager
+
+            self.assertTrue(SpacyManager().keep_models_in_memory)
+
+    @patch("src.utils.nlp.spacy.spacy.load")
+    def test_warmup_loads_default_language_once(self, mock_load):
+        nlp = object()
+        mock_load.return_value = nlp
+
+        from src.utils.nlp.spacy import SpacyManager
+
+        class ImmediateThread:
+            def __init__(self, target=None, name=None, daemon=None):
+                self._target = target
+                self.daemon = daemon
+
+            def start(self):
+                self._target()
+
+        mgr = SpacyManager()
+        mgr.keep_models_in_memory = True
+        with patch("src.utils.nlp.spacy.threading.Thread", ImmediateThread):
+            mgr.warmup("en")
+        self.assertIs(mgr.get_model("en"), nlp)
+        self.assertEqual(mock_load.call_count, 1)
 
 
 if __name__ == "__main__":

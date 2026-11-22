@@ -105,12 +105,12 @@ class MultiLangEntityExtractor:
             with profile_stage("nlp.detect_language"):
                 lang, _ = langid_detect(text)
         if lang not in MODEL_NAMES:
-            return {"tokens": [], "noun_chunks": []}
+            return ExtractElementsResponse(tokens=[], noun_chunks=[])
         try:
             with profile_stage("nlp.load_model", lang=lang):
                 nlp = self.spacy_manager.get_model(lang)
         except Exception:
-            return {"tokens": [], "noun_chunks": []}
+            return ExtractElementsResponse(tokens=[], noun_chunks=[])
         with profile_stage("nlp.parse", chars=len(text or "")):
             doc = nlp(text)
         ignore_pos_set = (
