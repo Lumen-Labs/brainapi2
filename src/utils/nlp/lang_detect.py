@@ -16,7 +16,7 @@ from spacy_langdetect import LanguageDetector
 import functools
 from langid import classify
 
-from src.utils.nlp.spacy import MODEL_NAMES, _spacy_manager
+from src.utils.nlp.spacy import _spacy_manager
 
 
 @functools.lru_cache(maxsize=2048)
@@ -33,16 +33,24 @@ Language.factory("language_detector", func=get_lang_detector)
 nlp_det.add_pipe("language_detector", last=True)
 
 
+_DETECTOR_WARMUP_TEXT = (
+    "The language detector warmup needs a short English sentence."
+)
+
+
 def detect_language(text: str) -> str:
     return nlp_det(text)._.language["language"]
 
 
 def get_nlp_for_text(text: str):
     lang = detect_language(text)
-    if lang not in MODEL_NAMES:
-        return None
     return _spacy_manager.get_model(lang)
 
 
 def langid_detect(text: str) -> tuple[str, float]:
     return _langid_cached(text)
+
+
+def warmup_language_detector() -> None:
+    langid_detect(_DETECTOR_WARMUP_TEXT)
+    detect_language(_DETECTOR_WARMUP_TEXT)
