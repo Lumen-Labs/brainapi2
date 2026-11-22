@@ -19,7 +19,7 @@ TIMESTAMP_SQL = (
     "THEN (cells -> %s ->> 'value')::timestamp END"
 )
 GROUP_KEY_SQL = (
-    "jsonb_build_object('type', cells -> %s ->> 'type', 'value', cells -> %s ->> 'value')"
+    "jsonb_build_object('type', cells -> %s ->> 'type', 'value', cells -> %s -> 'value')"
 )
 
 

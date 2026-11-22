@@ -161,6 +161,33 @@ def test_merged_expansion_respects_cell_budget():
     raise AssertionError("expected over-budget merged expansion")
 
 
+def test_overlapping_merges_charge_cascaded_cells():
+    records = (
+        [cell("A"), cell("B")],
+        [cell("x"), cell(None)],
+    )
+    try:
+        read_sheet("S", records, merges=[(1, 0, 1, 1), (1, 1, 2, 1)], budget=[4])
+    except WorkbookError as exc:
+        assert "250,000" in str(exc)
+        return
+    raise AssertionError("expected cascaded merge cells to exceed budget")
+
+
+def test_overlapping_merges_fill_when_budget_allows():
+    records = (
+        [cell("A"), cell("B")],
+        [cell("x"), cell(None)],
+    )
+    _, columns, padded = read_sheet(
+        "S", records, merges=[(1, 0, 1, 1), (1, 1, 2, 1)], budget=[6],
+    )
+    assert columns == ["A", "B"]
+    assert padded[1][1]["value"] == "x"
+    assert padded[2][1]["value"] == "x"
+    assert sum(len(row) for row in padded) == 6
+
+
 def test_catalog_row_count_excludes_header():
     _, _, records = read_workbook("ok.csv", b"A\n1\n2\n")[0]
     from src.services.api.routes.spreadsheets import sheet_catalog

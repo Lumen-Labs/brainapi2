@@ -175,6 +175,7 @@ def plan_purge(
     nodes: dict[str, Optional[GraphSnapshot]],
     edges: dict[str, Optional[GraphSnapshot]],
     claimed_chunks: set[str],
+    claimed_workbooks: Optional[set[str]] = None,
 ) -> PurgePlan:
     if effect.purged_at:
         return PurgePlan(actions=[], digest=_digest([]), reused=len(effect.reused_chunk_ids))
@@ -232,7 +233,7 @@ def plan_purge(
 
     if effect.structured_data_id:
         actions.append(PurgeAction("delete_structured", effect.structured_data_id))
-    if effect.workbook_id:
+    if effect.workbook_id and str(effect.workbook_id) not in (claimed_workbooks or set()):
         actions.append(PurgeAction("delete_workbook", effect.workbook_id))
 
     deleted_nodes: list[str] = []
@@ -550,6 +551,15 @@ def claimed_chunk_ids(brain_id: str, task_id: str) -> set[str]:
     return claimed
 
 
+def claimed_workbook_ids(brain_id: str, task_id: str) -> set[str]:
+    claimed: set[str] = set()
+    for effect in list_effects(brain_id):
+        if effect.task_id == task_id or effect.purged_at or not effect.workbook_id:
+            continue
+        claimed.add(str(effect.workbook_id))
+    return claimed
+
+
 def apply_actions(plan: PurgePlan, sink: Any) -> None:
     completed: list[dict] = []
     try:
@@ -602,6 +612,7 @@ def build_plan(
     nodes: dict[str, Optional[GraphSnapshot]],
     edges: dict[str, Optional[GraphSnapshot]],
     claimed_chunks: Optional[set[str]] = None,
+    claimed_workbooks: Optional[set[str]] = None,
 ) -> PurgePlan:
     return plan_purge(
         effect,
@@ -609,6 +620,7 @@ def build_plan(
         nodes=nodes,
         edges=edges,
         claimed_chunks=claimed_chunks or set(),
+        claimed_workbooks=claimed_workbooks or set(),
     )
 
 
@@ -939,6 +951,7 @@ def purge_task(
         nodes=nodes,
         edges=edges,
         claimed_chunks=claimed_chunk_ids(brain_id, task_id),
+        claimed_workbooks=claimed_workbook_ids(brain_id, task_id),
     )
     summary = summarize(plan)
     if effect.ledger_incomplete:
@@ -974,10 +987,18 @@ def handle_purge(
     nodes: dict[str, Optional[GraphSnapshot]],
     edges: dict[str, Optional[GraphSnapshot]],
     claimed_chunks: Optional[set[str]] = None,
+    claimed_workbooks: Optional[set[str]] = None,
     digest: Optional[str] = None,
     sink: Any = None,
 ) -> dict[str, Any]:
-    plan = build_plan(effect, chunks=chunks, nodes=nodes, edges=edges, claimed_chunks=claimed_chunks)
+    plan = build_plan(
+        effect,
+        chunks=chunks,
+        nodes=nodes,
+        edges=edges,
+        claimed_chunks=claimed_chunks,
+        claimed_workbooks=claimed_workbooks,
+    )
     summary = summarize(plan)
     if effect.ledger_incomplete:
         summary["ledger_incomplete"] = True

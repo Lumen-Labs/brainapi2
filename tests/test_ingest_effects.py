@@ -148,6 +148,20 @@ class PurgePlanTests(unittest.TestCase):
         apply_actions(plan, sink)
         self.assertEqual(sink.workbooks, ["wb-1"])
 
+    def test_shared_workbook_is_kept_while_another_import_claims_it(self):
+        effect = IngestEffect(task_id="task-1", workbook_id="wb-1")
+        plan = plan_purge(
+            effect,
+            chunks={},
+            nodes={},
+            edges={},
+            claimed_chunks=set(),
+            claimed_workbooks={"wb-1"},
+        )
+        kinds = {(action.kind, action.id) for action in plan.actions}
+        self.assertNotIn(("delete_workbook", "wb-1"), kinds)
+        self.assertEqual(summarize(plan)["workbooks"], 0)
+
     def test_structured_edge_without_chunk_ids_is_deleted(self):
         chunks, nodes, edges = _snapshots()
         plan = plan_purge(_effect(), chunks=chunks, nodes=nodes, edges=edges, claimed_chunks=set())

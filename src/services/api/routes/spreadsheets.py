@@ -185,6 +185,18 @@ def insert_workbook(cursor, workbook_id, filename, catalog, digest, cells, paylo
     execute_values(cursor, "INSERT INTO spreadsheet_rows VALUES %s", records, page_size=250)
 
 
+def commit_workbook(connect, filename, payload, workbook_id, sheets, catalog, cells, cost, digest):
+    with connect as conn, conn, conn.cursor() as cursor:
+        cursor.execute("SELECT pg_advisory_xact_lock(767947831)")
+        cursor.execute(SCHEMA)
+        existing = duplicated_workbook(cursor, digest, cells, cost)
+        if existing:
+            return existing
+        enforce_caps(cursor, cells, len(payload))
+        insert_workbook(cursor, workbook_id, filename, catalog, digest, cells, payload, sheets)
+    return None
+
+
 def save_workbook(connect, filename, payload, workbook_id, brain_id):
     try:
         sheets = read_workbook(filename, payload)
@@ -194,22 +206,20 @@ def save_workbook(connect, filename, payload, workbook_id, brain_id):
     cells = cell_count(sheets)
     cost = workbook_cost(sheets)
     digest = hashlib.sha256(payload).hexdigest()
-    with connect as conn, conn, conn.cursor() as cursor:
-        cursor.execute("SELECT pg_advisory_xact_lock(767947831)")
-        cursor.execute(SCHEMA)
-        existing = duplicated_workbook(cursor, digest, cells, cost)
-        if existing:
-            return existing
-        enforce_caps(cursor, cells, len(payload))
-        insert_workbook(cursor, workbook_id, filename, catalog, digest, cells, payload, sheets)
+    existing = commit_workbook(
+        connect, filename, payload, workbook_id, sheets, catalog, cells, cost, digest,
+    )
+    if existing:
+        remember_workbook(brain_id, existing["id"], task_id=workbook_id)
+        return existing
     remember_workbook(brain_id, workbook_id)
     return workbook_payload(workbook_id, filename, catalog, cells=cells, cost=cost)
 
 
-def remember_workbook(brain_id, workbook_id):
+def remember_workbook(brain_id, workbook_id, *, task_id=None):
     from src.core.saving.ingest_effects import remember
 
-    remember(brain_id, workbook_id, {"workbook_id": workbook_id})
+    remember(brain_id, task_id or workbook_id, {"workbook_id": workbook_id})
 
 
 def lookup_workbook(brain_id, workbook_id):

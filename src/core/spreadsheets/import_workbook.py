@@ -214,24 +214,25 @@ def collect_rows(rows, remaining):
 
 
 def merge_added_cells(records, ranges):
-    heights = len(records)
     widths = [len(row) for row in records]
+    filled = {
+        (row, col)
+        for row, cells in enumerate(records)
+        for col, item in enumerate(cells)
+        if item.get("type") != "blank"
+    }
     added = 0
     for row1, col1, row2, col2 in ranges:
-        if row1 >= heights or col1 >= widths[row1]:
-            continue
-        if records[row1][col1].get("type") == "blank":
+        if row1 >= len(widths) or col1 >= widths[row1] or (row1, col1) not in filled:
             continue
         for row in range(row1, row2 + 1):
-            while row >= heights:
+            while row >= len(widths):
                 widths.append(0)
-                heights += 1
             for col in range(col1, col2 + 1):
-                if row == row1 and col == col1:
-                    continue
                 while col >= widths[row]:
                     widths[row] += 1
                     added += 1
+                filled.add((row, col))
     return added
 
 

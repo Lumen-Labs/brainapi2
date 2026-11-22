@@ -104,6 +104,8 @@ def test_group_by_uses_type_and_value_not_formula():
     result = grouped_result(cursor, query, plan)
     assert "jsonb_build_object" in cursor.statements[0][0]
     assert "cells -> %s ->> 'type'" in cursor.statements[0][0]
+    assert "cells -> %s -> 'value'" in cursor.statements[0][0]
+    assert "cells -> %s ->> 'value'" not in cursor.statements[0][0]
     assert "formula" not in cursor.statements[0][0]
     assert result["groups"][0]["sources"] == ["Sales!A2:A4", "Sales!B2:B4"]
 

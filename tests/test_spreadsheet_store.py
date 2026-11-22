@@ -55,12 +55,13 @@ def test_schema_backfills_legacy_cell_counts():
 def test_identical_upload_returns_existing_workbook_id():
     existing = ("11111111-1111-1111-1111-111111111111", "grid.csv", [{"name": "CSV"}])
     cursor = ScriptedCursor([existing])
-    with patch("src.services.api.routes.spreadsheets.remember_workbook"):
+    with patch("src.services.api.routes.spreadsheets.remember_workbook") as remember:
         result = save_workbook(
             fake_connect(cursor), "grid.csv", b"A,B\n1,2\n", "new-id", "demo",
         )
     assert result["id"] == existing[0]
     assert result["deduplicated"] is True
+    remember.assert_called_once_with("demo", existing[0], task_id="new-id")
     assert not any("INSERT INTO spreadsheets" in sql for sql, _ in cursor.statements)
 
 
