@@ -22,6 +22,7 @@ disable_langchain_tracing()
 from src.constants.data import BRAIN_VERSION
 from src.services.api.console_static import SPAStaticFiles
 from src.services.api.errors import install_error_handlers
+from src.services.api.logging_privacy import install_access_log_privacy
 from src.services.api.openapi import install_openapi_contract
 
 from src.services.api.middlewares.auth import BrainPATMiddleware
@@ -39,6 +40,7 @@ from src.lib.tracing.middleware import TraceMiddleware
 from src.lib.tracing.runtime import start_runtime_monitoring, stop_runtime_monitoring
 
 logger = logging.getLogger("brainapi.plugins")
+install_access_log_privacy()
 
 PLUGINS_DIR = Path(os.getenv("PLUGINS_DIR", str(_project_root / "plugins")))
 CONSOLE_DIST = _project_root / "console" / "dist"
