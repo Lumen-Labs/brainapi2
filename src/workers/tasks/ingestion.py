@@ -2028,10 +2028,6 @@ def consolidate_graph_async(
     """
     Consolidate graph after all processing tasks complete.
     """
-    import os
-
-    import langsmith
-
     from src.config import config
     from src.core.layers.graph_consolidation.graph_consolidation import (
         consolidate_graph,
@@ -2069,30 +2065,13 @@ def consolidate_graph_async(
         f"[DEBUG (consolidate_graph_async)]: Consolidating graph with {len(relationship_models)} relationships"
     )
 
-    project_name = os.getenv("LANGSMITH_PROJECT", "brainapi")
-    tracing_metadata = {"brain_id": brain_id, "flow": "consolidate_graph"}
-    if ingestion_session_id:
-        tracing_metadata["ingestion_session_id"] = ingestion_session_id
-
     try:
-        with langsmith.tracing_context(
-            project_name=project_name,
-            enabled=True,
-            tags=["consolidate_graph", "janitor", "kg_agent"],
-            metadata=tracing_metadata,
-        ):
-            from src.core.saving.pipeline_runtime import _stage
-            token = _stage.set("consolidation")
-            try:
-                consolidate_graph(relationship_models, brain_id=brain_id)
-            finally:
-                _stage.reset(token)
+        from src.core.saving.pipeline_runtime import _stage
+        token = _stage.set("consolidation")
         try:
-            from langchain_core.tracers.langchain import wait_for_all_tracers
-
-            wait_for_all_tracers()
-        except ImportError:
-            pass
+            consolidate_graph(relationship_models, brain_id=brain_id)
+        finally:
+            _stage.reset(token)
         print(
             f"[DEBUG (consolidate_graph_async)]: Consolidation completed for session {session_id}"
         )

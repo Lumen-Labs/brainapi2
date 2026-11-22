@@ -6,15 +6,18 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import dotenv
-
-_project_root = Path(__file__).resolve().parent.parent.parent.parent
-dotenv.load_dotenv(_project_root / ".env")
-
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.routing import APIRoute
 from uvicorn import run
+
+_project_root = Path(__file__).resolve().parent.parent.parent.parent
+dotenv.load_dotenv(_project_root / ".env")
+
+from src.lib.disable_langchain_tracing import disable_langchain_tracing
+
+disable_langchain_tracing()
 
 from src.constants.data import BRAIN_VERSION
 from src.services.api.console_static import SPAStaticFiles
