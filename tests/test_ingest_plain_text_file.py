@@ -983,6 +983,28 @@ def test_pages_after_dispatch_claim_are_not_stored(monkeypatch):
     assert queued.call_args.kwargs["args"][0]["data"]["text_data"] == "one"
 
 
+def test_dispatch_keeps_live_snapshot_page_counts(monkeypatch):
+    cache, _store, hashes = _writable_cache({
+        ("task:ocr", "brain"): {"status": "started", "task_id": "ocr"},
+    })
+    hashes[("ocr_pages:ocr", "brain")] = {"p:0": "one", "p:1": "two", "total": "2"}
+    monkeypatch.setattr("src.workers.tasks.ingestion.cache_adapter", cache)
+    queued = Mock()
+    monkeypatch.setattr("src.workers.tasks.ingestion.ingest_data.apply_async", queued)
+    from src.core.saving import unstaged_ocr
+
+    stale = unstaged_ocr.Snapshot({"0": "one"}, [], 2)
+    extra = unstaged_ocr.task_extra({}, stale, closing=True)
+    extra["ocr_partial"] = True
+    result = unstaged_ocr.dispatch_snapshot(
+        "brain", "ocr", {"status": "started"}, stale, extra=extra,
+    )
+    queued.assert_called_once()
+    assert queued.call_args.kwargs["args"][0]["data"]["text_data"] == "one\n\ntwo"
+    assert result["ocr_pages_accepted"] == 2
+    assert result["ocr_partial"] is True
+
+
 def test_clear_page_text_keeps_pages_not_in_snapshot(monkeypatch):
     cache, _store, hashes = _writable_cache({})
     hashes[("ocr_pages:ocr", "brain")] = {"p:0": "queued", "p:1": "late", "lock": "1"}

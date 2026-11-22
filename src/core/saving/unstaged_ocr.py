@@ -298,15 +298,25 @@ def _write_dispatch_status(brain_id, task_id, cached, extra, error=None):
     return set_ingestion_task_status(task_id, brain_id, "started", **kwargs)
 
 
+_LIVE_SNAPSHOT_KEYS = {
+    "ocr_pages_accepted",
+    "ocr_pages_failed",
+    "ocr_total_pages",
+    "ocr_page_texts",
+    "ocr_failed_pages",
+}
+
+
 def _merged_extra(cached, snapshot, extra):
     built = task_extra(cached, snapshot, closing=True)
     if not extra:
         return built
     if extra.get("ocr_partial"):
         built["ocr_partial"] = True
-    built.update(
-        {key: value for key, value in extra.items() if key != "ocr_partial" or value}
-    )
+    for key, value in extra.items():
+        if key in _LIVE_SNAPSHOT_KEYS or key == "ocr_partial":
+            continue
+        built[key] = value
     return built
 
 
