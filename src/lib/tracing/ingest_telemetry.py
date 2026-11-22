@@ -49,7 +49,7 @@ PROPERTY_KEYS = (
 )
 
 _captured: list[dict[str, Any]] = []
-_STATE: dict[str, Any] = {"transport": None}
+_STATE: dict[str, Any] = {"transport": None, "retain": False}
 
 
 def now_ms() -> int:
@@ -71,6 +71,15 @@ def captured_events() -> list[dict[str, Any]]:
 
 
 def reset_captured_events() -> None:
+    _captured.clear()
+
+
+def enable_event_capture() -> None:
+    _STATE["retain"] = True
+
+
+def disable_event_capture() -> None:
+    _STATE["retain"] = False
     _captured.clear()
 
 
@@ -212,7 +221,8 @@ def capture_event(event: str, properties: dict[str, Any]) -> None:
         "distinct_id": RUNTIME_DISTINCT_ID,
         "properties": safe,
     }
-    _captured.append(record)
+    if _STATE.get("retain"):
+        _captured.append(record)
     try:
         transport = _STATE.get("transport")
         if transport is not None:

@@ -953,6 +953,7 @@ def _ingest_data(self, args, *, staged=False):
             return self.request.id
     payload = None
     started_at_ms = now_ms()
+    cost_ledger = None
     try:
         payload = IngestionTaskArgs(**args)
         from src.config import validate_pipeline_mode
@@ -1200,6 +1201,7 @@ def _ingest_data(self, args, *, staged=False):
             "failed",
             stage="failed",
             error=str(e),
+            cost=cost_ledger.to_dict() if cost_ledger is not None else None,
             extra=telemetry_extra(
                 operation=INGEST_DATA_OPERATION,
                 kind=kind_for_ingest_data(payload) if payload else "text",

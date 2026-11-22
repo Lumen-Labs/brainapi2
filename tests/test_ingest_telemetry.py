@@ -13,9 +13,12 @@ from src.lib.tracing.ingest_telemetry import (
     RUNTIME_EVENT,
     RUNTIME_OUTCOMES,
     captured_events,
+    disable_event_capture,
+    enable_event_capture,
     kind_for_ingest_data,
     properties_from_status,
     reset_captured_events,
+    set_capture_transport,
     telemetry_extra,
 )
 
@@ -49,6 +52,18 @@ ENV_DEFAULTS = {
 }
 for key, value in ENV_DEFAULTS.items():
     os.environ.setdefault(key, value)
+os.environ["POSTHOG_ENABLED"] = "false"
+
+
+def _install_test_capture():
+    enable_event_capture()
+    set_capture_transport(lambda _record: None)
+    reset_captured_events()
+
+
+def _uninstall_test_capture():
+    set_capture_transport(None)
+    disable_event_capture()
 
 
 SECRET_TEXT = "patient-secret-document-body"
@@ -154,13 +169,20 @@ class IngestTelemetryHelperTests(unittest.TestCase):
         self.assertEqual(props["unit_count"], 3)
         self.assertNotIn("embed", json.dumps(props))
 
+    def test_capture_does_not_retain_without_enable(self):
+        from src.lib.tracing.ingest_telemetry import capture_event
+
+        disable_event_capture()
+        capture_event(RUNTIME_EVENT, {"duration_ms": 1, "outcome": "succeeded"})
+        self.assertEqual(captured_events(), [])
+
 
 class IngestStatusTelemetryTests(unittest.TestCase):
     def setUp(self):
-        reset_captured_events()
+        _install_test_capture()
 
     def tearDown(self):
-        reset_captured_events()
+        _uninstall_test_capture()
 
     def test_completed_emits_runtime_and_ingestion_events(self):
         from src.workers.tasks import ingestion as ingestion_mod
@@ -230,6 +252,11 @@ class IngestStatusTelemetryTests(unittest.TestCase):
             size_chars=40,
             size_pages=1,
         )
+        extra["cost"] = {
+            "stages": {
+                "observations": {"input_tokens": 12, "output_tokens": 3, "calls": 1},
+            },
+        }
         with patch.object(ingestion_mod, "cache_adapter") as cache_adapter:
             store, fake_get, fake_set = _cache_store()
             cache_adapter.get.side_effect = fake_get
@@ -265,6 +292,8 @@ class IngestStatusTelemetryTests(unittest.TestCase):
             pipeline_mode="lightweight",
         )
         self.assertEqual(runtime[0]["properties"]["size_pages"], 1)
+        self.assertEqual(runtime[0]["properties"]["llm_call_count"], 1)
+        self.assertEqual(runtime[0]["properties"]["prompt_tokens"], 12)
         self.assertNotIn(SECRET_TEXT, json.dumps(captured_events()))
 
     def test_partial_failed_uses_partial_outcome_once(self):
@@ -298,10 +327,10 @@ class IngestStatusTelemetryTests(unittest.TestCase):
 
 class IngestDataTaskTelemetryTests(unittest.TestCase):
     def setUp(self):
-        reset_captured_events()
+        _install_test_capture()
 
     def tearDown(self):
-        reset_captured_events()
+        _uninstall_test_capture()
 
     def _run_ingest(self, args, pipeline_mode="accurate", fail=None):
         from src.constants.embeddings import Vector
