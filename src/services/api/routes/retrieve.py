@@ -11,6 +11,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 import json
 from typing import List, Literal, Optional
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from src.core.auth.scopes import has_verification_scope
 from src.services.api.dependencies import (
@@ -242,9 +243,26 @@ async def get_context(
     return await retrieve_get_context_controller(request)
 
 
+def _required_query_text(text: str = Query(...)) -> str:
+    cleaned = text.strip()
+    if not cleaned:
+        raise RequestValidationError(
+            [
+                {
+                    "type": "string_too_short",
+                    "loc": ("query", "text"),
+                    "msg": "String should have at least 1 character",
+                    "input": text,
+                    "ctx": {"min_length": 1},
+                }
+            ]
+        )
+    return cleaned
+
+
 @retrieve_router.get("/context", response_model=GetContextResponse)
 async def get_context_by_query(
-    text: str = Query(..., min_length=1),
+    text: str = Depends(_required_query_text),
     as_of: Optional[str] = Query(None),
     include_validity_unknown: bool = Query(False),
     annotate_conflicts: bool = Query(False),

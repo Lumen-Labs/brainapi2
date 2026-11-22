@@ -10,8 +10,6 @@ import re
 import threading
 import time
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FutureTimeoutError
 
 Embed = Callable[[str], list[float]]
 EmbedMany = Callable[[list[str]], list[list[float]]]
@@ -269,12 +267,26 @@ def reset_prototype_cache() -> None:
 def _run_with_timeout(fn: Callable[[], list[list[float]]], timeout: float) -> list[list[float]]:
     if timeout <= 0:
         return fn()
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(fn)
+    box: dict[str, object] = {}
+
+    def worker() -> None:
         try:
-            return future.result(timeout=timeout)
-        except FutureTimeoutError as exc:
-            raise PrototypeWarmupError("history prototype warmup timed out") from exc
+            box["value"] = fn()
+        except Exception as exc:
+            box["error"] = exc
+
+    thread = threading.Thread(target=worker, name="hist-warmup", daemon=True)
+    thread.start()
+    thread.join(timeout)
+    if thread.is_alive():
+        raise PrototypeWarmupError("history prototype warmup timed out")
+    error = box.get("error")
+    if isinstance(error, Exception):
+        raise error
+    value = box.get("value")
+    if not isinstance(value, list):
+        raise PrototypeWarmupError("batch prototype embedding size mismatch")
+    return value
 
 
 def _as_vector_list(value: object) -> list[float] | None:

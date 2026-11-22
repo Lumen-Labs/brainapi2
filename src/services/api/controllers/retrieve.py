@@ -2231,11 +2231,8 @@ async def _build_context(
     seed_hits: list[tuple[str, float, str]] = []
     passage_hits: list[tuple[str, float, str]] = []
     from src.core.saving.history_intent import (
-        CURRENT_EXAMPLES,
-        HISTORY_EXAMPLES,
         lexical_history_decision,
         lexical_history_intent,
-        peek_prototype_vectors,
         prototype_vectors,
         resolve_include_history,
     )
@@ -2304,7 +2301,7 @@ async def _build_context(
         seen_texts.add(key)
         unique_texts.append(text)
 
-    with profile_stage("history.intent") as history_detail:
+    with profile_stage("history.intent", blocking=False) as history_detail:
         if as_of is not None:
             include_history = False
             history_detail["source"] = "as_of"
@@ -2321,13 +2318,7 @@ async def _build_context(
 
                 def _resolve_history_flag() -> tuple[bool, list[float] | None]:
                     try:
-                        warmup_texts = list(unique_texts)
-                        if peek_prototype_vectors() is None:
-                            warmup_texts.extend(HISTORY_EXAMPLES)
-                            warmup_texts.extend(CURRENT_EXAMPLES)
                         with profile_stage("history.prototypes"):
-                            if warmup_texts:
-                                _embed_queries(warmup_texts)
                             history_vectors, current_vectors = prototype_vectors(
                                 _embed_query, _embed_queries
                             )
@@ -2458,17 +2449,14 @@ async def _build_context(
                     embeddings=shared_vectors.get(query),
                 )
 
-            if len(queries) == 1:
-                query_hits = [_hits_for_query(queries[0])]
-            else:
-                query_hits = list(
-                    await asyncio.gather(
-                        *[
-                            asyncio.to_thread(_hits_for_query, query)
-                            for query in queries
-                        ]
-                    )
+            query_hits = list(
+                await asyncio.gather(
+                    *[
+                        asyncio.to_thread(_hits_for_query, query)
+                        for query in queries
+                    ]
                 )
+            )
             for hits in query_hits:
                 ordered_ids: list[str] = []
                 for chunk_id, score, body in hits:
@@ -2594,7 +2582,7 @@ async def _build_context(
             historical_context = await asyncio.to_thread(_fallback_history)
             return historical_context
 
-    with profile_stage("embed.query") as embed_detail:
+    with profile_stage("embed.query", blocking=False) as embed_detail:
         pending = [text for text in unique_texts if text not in shared_vectors]
         if pending:
             await asyncio.to_thread(_embed_queries, pending)

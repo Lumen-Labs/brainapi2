@@ -220,6 +220,47 @@ class HistoryIntentPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(size >= prototype_n for size in batch_sizes))
         self.assertLess(embeddings.embed_text.call_count, 5)
 
+    async def test_failed_prototype_warmup_does_not_retry_examples_during_backoff(self):
+        from src.core.saving.history_intent import CURRENT_EXAMPLES, HISTORY_EXAMPLES
+        from src.services.api.controllers import retrieve as retrieve_mod
+
+        reset_prototype_cache()
+        prototype_n = len(HISTORY_EXAMPLES) + len(CURRENT_EXAMPLES)
+
+        def embed_texts(texts):
+            if len(texts) >= prototype_n:
+                raise RuntimeError("warmup down")
+            return [
+                Vector(id=f"b{i}", embeddings=[0.1, 0.2, 0.3], metadata={})
+                for i, _ in enumerate(texts)
+            ]
+
+        with _stubbed_adapters(retrieve_mod, _facts(1), embed_texts=embed_texts) as (
+            embeddings,
+            _vs,
+            _g,
+            _d,
+        ):
+            await retrieve_mod.get_context(
+                GetContextRequestBody(text="who is Alice", brain_id="brain-a")
+            )
+            first_large = [
+                len(call.args[0])
+                for call in embeddings.embed_texts.call_args_list
+                if call.args and len(call.args[0]) >= prototype_n
+            ]
+            await retrieve_mod.get_context(
+                GetContextRequestBody(text="who is Alice", brain_id="brain-a")
+            )
+            second_large = [
+                len(call.args[0])
+                for call in embeddings.embed_texts.call_args_list
+                if call.args and len(call.args[0]) >= prototype_n
+            ]
+
+        self.assertEqual(len(first_large), 1)
+        self.assertEqual(len(second_large), 1)
+
     async def test_explicit_history_flag_skips_prototype_warmup(self):
         from src.core.saving import history_intent as history_mod
         from src.services.api.controllers import retrieve as retrieve_mod
@@ -535,3 +576,17 @@ class ContextGetRouteTests(unittest.TestCase):
                 found.update(methods)
         self.assertIn("GET", found)
         self.assertIn("POST", found)
+
+    def test_get_context_rejects_whitespace_only_text_with_422(self):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from src.services.api.dependencies import get_brain_id
+        from src.services.api.routes.retrieve import retrieve_router
+
+        app = FastAPI()
+        app.include_router(retrieve_router)
+        app.dependency_overrides[get_brain_id] = lambda: "brain-a"
+        client = TestClient(app)
+        response = client.get("/retrieve/context", params={"text": "   "})
+        self.assertEqual(response.status_code, 422)

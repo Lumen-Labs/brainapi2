@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -545,6 +546,23 @@ class PrototypeCacheTests(unittest.TestCase):
         self.assertTrue(lexical_history_decision("what did this say before the change"))
         self.assertFalse(lexical_history_decision("what is the current value"))
         self.assertIsNone(lexical_history_decision("who is Alice"))
+
+    def test_warmup_timeout_returns_without_waiting_for_worker(self):
+        reset_prototype_cache()
+        started = time.monotonic()
+
+        def slow_many(texts: list[str]) -> list[list[float]]:
+            time.sleep(1.2)
+            return [[1.0, 0.0] for _ in texts]
+
+        with patch.object(history_mod, "_PROTOTYPE_WARMUP_TIMEOUT", 0.15):
+            with self.assertRaises(PrototypeWarmupError):
+                prototype_vectors(lambda _text: [1.0, 0.0], slow_many)
+        elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 0.6)
+        with self.assertRaises(PrototypeWarmupError):
+            prototype_vectors(lambda _text: [1.0, 0.0], slow_many)
+        self.assertIsNone(peek_prototype_vectors())
 
     def test_embed_many_warms_prototypes_in_one_call(self):
         reset_prototype_cache()
