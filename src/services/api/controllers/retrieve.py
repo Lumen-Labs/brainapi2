@@ -83,6 +83,10 @@ _IO_MAX_INFLIGHT = 8
 _IO_THREAD_PREFIX = "ctx-io"
 _io_state: dict[str, Any] = {"pool": None, "pid": 0, "inflight": 0}
 _io_state_lock = threading.Lock()
+_health_var: contextvars.ContextVar[Any] = contextvars.ContextVar(
+    "retrieve_health", default=None
+)
+_backend_error_types_cache: tuple[type[BaseException], ...] | None = None
 _PPR_DAMPING = 0.85
 _PPR_ITERS = 20
 _SESSION_RE = re.compile(r"session_(\d+)", re.IGNORECASE)
@@ -207,6 +211,98 @@ def _embed_query_vector(text: str) -> Vector:
             detail="Embedding service unavailable",
         )
     return vector
+
+
+def _backend_error_types() -> tuple[type[BaseException], ...]:
+    global _backend_error_types_cache
+    if _backend_error_types_cache is not None:
+        return _backend_error_types_cache
+    types: list[type[BaseException]] = [
+        TimeoutError,
+        ConnectionError,
+        BrokenPipeError,
+    ]
+    optional = (
+        ("pymilvus.exceptions", "MilvusException"),
+        ("psycopg2", "Error"),
+        ("grpc", "RpcError"),
+    )
+    for module_name, attr in optional:
+        try:
+            module = __import__(module_name, fromlist=[attr])
+        except ImportError:
+            continue
+        cls = getattr(module, attr, None)
+        if isinstance(cls, type) and issubclass(cls, BaseException):
+            types.append(cls)
+    _backend_error_types_cache = tuple(types)
+    return _backend_error_types_cache
+
+
+class _RetrievalHealth:
+    def __init__(self) -> None:
+        self._status: dict[str, str] = {}
+
+    def start(self, stage: str) -> None:
+        self._status.setdefault(stage, "pending")
+
+    def ok(self, stage: str) -> None:
+        self._status[stage] = "ok"
+
+    def error(self, stage: str) -> None:
+        if self._status.get(stage) != "ok":
+            self._status[stage] = "error"
+
+    @property
+    def failed_stages(self) -> list[str]:
+        return [name for name, status in self._status.items() if status != "ok"]
+
+    def all_failed(self) -> bool:
+        return bool(self._status) and all(
+            status != "ok" for status in self._status.values()
+        )
+
+
+def _health() -> _RetrievalHealth | None:
+    value = _health_var.get()
+    return value if isinstance(value, _RetrievalHealth) else None
+
+
+def _note_degraded(stage: str, brain_id: str, exc: BaseException) -> None:
+    logger.warning(
+        "Retrieval stage %s failed for brain_id=%s (%s)",
+        stage,
+        brain_id,
+        type(exc).__name__,
+    )
+    health = _health()
+    if health is not None:
+        health.error(stage)
+
+
+def _start_stage(stage: str) -> None:
+    health = _health()
+    if health is not None:
+        health.start(stage)
+
+
+def _ok_stage(stage: str) -> None:
+    health = _health()
+    if health is not None:
+        health.ok(stage)
+
+
+def _backend_or_default(stage: str, brain_id: str, fn, default):
+    _start_stage(stage)
+    try:
+        result = fn()
+    except HTTPException:
+        raise
+    except _backend_error_types() as exc:
+        _note_degraded(stage, brain_id, exc)
+        return default
+    _ok_stage(stage)
+    return result
 
 
 _DISTANCE_QUANT_DECIMALS = 3
@@ -1978,21 +2074,37 @@ def _seed_nodes_for_text(
 
     def _search_nodes():
         with profile_stage("vector.search_nodes", k=_SEED_K):
-            return vs.search_nodes(
-                embeddings,
-                brain_id=brain_id,
-                k=_SEED_K,
+            return _backend_or_default(
+                "vector.search_nodes",
+                brain_id,
+                lambda: vs.search_nodes(
+                    embeddings,
+                    brain_id=brain_id,
+                    k=_SEED_K,
+                ),
+                [],
             )
 
     def _search_relationships():
         with profile_stage("vector.search_relationships", k=_SEED_K):
-            return vs.search_relationships(
-                embeddings,
-                brain_id=brain_id,
-                k=_SEED_K,
+            return _backend_or_default(
+                "vector.search_relationships",
+                brain_id,
+                lambda: vs.search_relationships(
+                    embeddings,
+                    brain_id=brain_id,
+                    k=_SEED_K,
+                ),
+                [],
             )
 
-    node_vectors, rel_vectors = _parallel_io([_search_nodes, _search_relationships])
+    try:
+        node_vectors, rel_vectors = _parallel_io(
+            [_search_nodes, _search_relationships]
+        )
+    except _backend_error_types() as exc:
+        _note_degraded("facts.seed_search", brain_id, exc)
+        node_vectors, rel_vectors = [], []
     for vector in node_vectors:
         meta = vector.metadata or {}
         uuid = meta.get("uuid") or getattr(vector, "id", None)
@@ -2170,16 +2282,23 @@ def _retrieve_passages(
 
         def _dense() -> tuple[list[str], dict[str, float]]:
             with profile_stage("vector.search_data", k=max(limit, _PASSAGE_K)):
-                return collect_dense_passages(
-                    vs,
-                    query_embeddings or [],
+                return _backend_or_default(
+                    "vector.search_data",
                     brain_id,
-                    max(limit, _PASSAGE_K),
+                    lambda: collect_dense_passages(
+                        vs,
+                        query_embeddings or [],
+                        brain_id,
+                        max(limit, _PASSAGE_K),
+                    ),
+                    ([], {}),
                 )
 
         def _keyword() -> tuple[list[str], dict[str, str]]:
+            stage = "data.bm25_search" if use_bm25 else "data.keyword_search"
             if use_bm25:
                 with profile_stage("data.bm25_search"):
+                    _start_stage(stage)
                     try:
                         ids, _, texts = collect_bm25_passages(
                             data,
@@ -2187,21 +2306,31 @@ def _retrieve_passages(
                             brain_id,
                             max(limit, _PASSAGE_K),
                         )
+                        _ok_stage(stage)
                         return ids, texts
-                    except Exception:
+                    except Exception as exc:
+                        _note_degraded(stage, brain_id, exc)
                         return [], {}
             if use_ilike:
                 with profile_stage("data.keyword_search"):
+                    _start_stage(stage)
                     try:
-                        return collect_ilike_passages(data, text, brain_id)
-                    except Exception:
+                        ids, texts = collect_ilike_passages(data, text, brain_id)
+                        _ok_stage(stage)
+                        return ids, texts
+                    except Exception as exc:
+                        _note_degraded(stage, brain_id, exc)
                         return [], {}
             return [], {}
 
         keyword_ids: list[str] = []
         id_to_text: dict[str, str] = {}
         if use_dense and (use_bm25 or use_ilike):
-            dense_result, keyword_result = _parallel_io([_dense, _keyword])
+            try:
+                dense_result, keyword_result = _parallel_io([_dense, _keyword])
+            except _backend_error_types() as exc:
+                _note_degraded("passages.retrieve", brain_id, exc)
+                dense_result, keyword_result = ([], {}), ([], {})
             vector_ids, id_to_distance = dense_result
             keyword_ids, id_to_text = keyword_result
         elif use_dense:
@@ -2253,18 +2382,30 @@ async def get_context(
     for it or `TRACE_STAGE_PROFILER_ENABLED` is set.
     """
     attach_timings = bool(request.profile_stages) or stage_profiling_enabled(False)
-    with verification_scope(include_rejected=bool(request.include_rejected)):
-        with profile_request(
-            "retrieve.context",
-            enabled=True,
-            publish=attach_timings,
-        ) as profiler:
-            response = await _build_context(request, fact_filter_adapter)
-    if profiler is not None:
-        log_stage_report(profiler.last_report, logger)
-        if attach_timings:
-            response.stage_timings = profiler.last_report
-    return response
+    health = _RetrievalHealth()
+    token = _health_var.set(health)
+    try:
+        with verification_scope(include_rejected=bool(request.include_rejected)):
+            with profile_request(
+                "retrieve.context",
+                enabled=True,
+                publish=attach_timings,
+            ) as profiler:
+                response = await _build_context(request, fact_filter_adapter)
+        if profiler is not None:
+            log_stage_report(profiler.last_report, logger)
+            if attach_timings:
+                response.stage_timings = profiler.last_report
+        if health.all_failed():
+            raise HTTPException(
+                status_code=503,
+                detail="Retrieval backends unavailable",
+            )
+        if health.failed_stages:
+            response.degraded = health.failed_stages
+        return response
+    finally:
+        _health_var.reset(token)
 
 
 async def _build_context(
@@ -2426,8 +2567,15 @@ async def _build_context(
                     from src.core.saving.validity import format_instant
 
                     as_of_stamp = format_instant(as_of)
-                neighbors = graph_adapter.get_event_centric_neighbors(
-                    seed_uuids, brain_id=request.brain_id, as_of=as_of_stamp
+                neighbors = _backend_or_default(
+                    "graph.event_neighbors",
+                    request.brain_id,
+                    lambda: graph_adapter.get_event_centric_neighbors(
+                        seed_uuids,
+                        brain_id=request.brain_id,
+                        as_of=as_of_stamp,
+                    ),
+                    [],
                 )
                 neighbors_detail["rows"] = len(neighbors)
             local: list[dict[str, Any]] = []
