@@ -105,12 +105,14 @@ def _io_executor() -> ThreadPoolExecutor:
         with _io_state_lock:
             pool = _io_state["pool"]
             if pool is None or _io_state["pid"] != pid:
+                previous_pid = _io_state["pid"]
                 pool = ThreadPoolExecutor(
                     max_workers=_IO_MAX_WORKERS, thread_name_prefix=_IO_THREAD_PREFIX
                 )
                 _io_state["pool"] = pool
                 _io_state["pid"] = pid
-                _io_state["inflight"] = 0
+                if previous_pid != 0 and previous_pid != pid:
+                    _io_state["inflight"] = 0
     return pool
 
 
@@ -151,12 +153,39 @@ def _parallel_io(fns: list):
     if len(fns) <= 1 or _on_io_worker():
         return [fn() for fn in fns]
     n = len(fns)
+    _io_executor()
     if not _reserve_io_jobs(n):
         return [fn() for fn in fns]
+    released = [False] * n
+    released_lock = threading.Lock()
+
+    def release_slot(index: int) -> None:
+        with released_lock:
+            if released[index]:
+                return
+            released[index] = True
+        _release_io_jobs(1)
+
+    def wrap(index: int, fn):
+        def run():
+            try:
+                return fn()
+            finally:
+                release_slot(index)
+
+        return run
+
+    futures = []
     try:
-        return _wait_all([_submit_io(fn) for fn in fns])
-    finally:
-        _release_io_jobs(n)
+        futures = [_submit_io(wrap(index, fn)) for index, fn in enumerate(fns)]
+        return _wait_all(futures, timeout=_IO_TIMEOUT_SECONDS)
+    except Exception:
+        for index, fut in enumerate(futures):
+            if fut.cancelled() or fut.cancel():
+                release_slot(index)
+        for index in range(len(futures), n):
+            release_slot(index)
+        raise
 
 
 def _embed_query_vector(text: str) -> Vector:

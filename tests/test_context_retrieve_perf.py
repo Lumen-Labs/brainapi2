@@ -414,9 +414,14 @@ class ConcurrencyRegressionTests(unittest.IsolatedAsyncioTestCase):
             pool.shutdown(wait=False)
 
     def test_parallel_io_runs_serial_when_inflight_cap_reached(self):
+        from concurrent.futures import ThreadPoolExecutor
+
         from src.services.api.controllers import retrieve as retrieve_mod
 
+        pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ctx-io")
         previous = dict(retrieve_mod._io_state)
+        retrieve_mod._io_state["pool"] = pool
+        retrieve_mod._io_state["pid"] = os.getpid()
         retrieve_mod._io_state["inflight"] = retrieve_mod._IO_MAX_INFLIGHT
         order = []
 
@@ -436,6 +441,83 @@ class ConcurrencyRegressionTests(unittest.IsolatedAsyncioTestCase):
             )
         finally:
             retrieve_mod._io_state.update(previous)
+            pool.shutdown(wait=False)
+
+    def test_parallel_io_initializes_executor_before_reserving_slots(self):
+        from src.services.api.controllers import retrieve as retrieve_mod
+
+        previous = dict(retrieve_mod._io_state)
+        retrieve_mod._io_state["pool"] = None
+        retrieve_mod._io_state["pid"] = 0
+        retrieve_mod._io_state["inflight"] = 0
+        seen = []
+        original_reserve = retrieve_mod._reserve_io_jobs
+
+        def reserve(n):
+            seen.append(retrieve_mod._io_state["pool"] is not None)
+            return original_reserve(n)
+
+        try:
+            with patch.object(retrieve_mod, "_reserve_io_jobs", reserve):
+                self.assertEqual(retrieve_mod._parallel_io([lambda: 1, lambda: 2]), [1, 2])
+            self.assertEqual(seen, [True])
+            self.assertEqual(retrieve_mod._io_state["inflight"], 0)
+        finally:
+            pool = retrieve_mod._io_state.get("pool")
+            retrieve_mod._io_state.update(previous)
+            if pool is not None and pool is not previous.get("pool"):
+                pool.shutdown(wait=False)
+
+    def test_parallel_io_keeps_inflight_until_running_job_finishes(self):
+        import threading
+        import time
+        from concurrent.futures import ThreadPoolExecutor
+
+        from src.services.api.controllers import retrieve as retrieve_mod
+
+        started = threading.Event()
+        block = threading.Event()
+
+        def hang():
+            started.set()
+            block.wait(30)
+            return "hung"
+
+        def queued():
+            return "queued"
+
+        pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ctx-io")
+        previous = dict(retrieve_mod._io_state)
+        retrieve_mod._io_state["pool"] = pool
+        retrieve_mod._io_state["pid"] = os.getpid()
+        retrieve_mod._io_state["inflight"] = 0
+        raised = []
+
+        def run_pair():
+            try:
+                retrieve_mod._parallel_io([hang, queued])
+            except Exception as exc:
+                raised.append(exc)
+
+        try:
+            with patch.object(retrieve_mod, "_IO_TIMEOUT_SECONDS", 0.2):
+                worker = threading.Thread(target=run_pair)
+                worker.start()
+                self.assertTrue(started.wait(2))
+                worker.join(2)
+                self.assertFalse(worker.is_alive())
+            self.assertTrue(raised)
+            self.assertIsInstance(raised[0], TimeoutError)
+            self.assertEqual(retrieve_mod._io_state["inflight"], 1)
+            block.set()
+            deadline = time.time() + 2
+            while retrieve_mod._io_state["inflight"] != 0 and time.time() < deadline:
+                time.sleep(0.01)
+            self.assertEqual(retrieve_mod._io_state["inflight"], 0)
+        finally:
+            block.set()
+            retrieve_mod._io_state.update(previous)
+            pool.shutdown(wait=False)
 
     async def test_current_fact_candidates_runs_once_on_the_hot_path(self):
         from src.core.saving import source_passages as passages_mod

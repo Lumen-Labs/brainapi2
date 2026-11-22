@@ -42,6 +42,39 @@ def _collection_is_loaded(client, store: str, timeout: float | None) -> bool:
     return str(name).rsplit(".", 1)[-1] == "Loaded"
 
 
+def _collection_has_index(client, store: str, timeout: float | None) -> bool:
+    lister = getattr(client, "list_indexes", None)
+    if not callable(lister):
+        return False
+    try:
+        indexes = lister(store, field_name="embeddings", timeout=timeout)
+    except TypeError:
+        try:
+            indexes = lister(store, field_name="embeddings")
+        except Exception:
+            return False
+    except Exception:
+        return False
+    return bool(indexes)
+
+
+def _create_vector_index(client, store: str, timeout: float | None) -> None:
+    try:
+        index_params = IndexParams()
+        index_params.add_index(
+            field_name="embeddings",
+            index_type="AUTOINDEX",
+            metric_type="COSINE",
+        )
+        client.create_index(
+            collection_name=store,
+            index_params=index_params,
+            timeout=timeout,
+        )
+    except Exception as e:
+        print(f"[Milvus] Error creating index for collection {store}: {e}")
+
+
 def string_to_int64(s: str) -> int:
     sha256 = hashlib.sha256(s.encode()).digest()
     return int.from_bytes(sha256[:8], byteorder="big") % (2**63)
@@ -206,7 +239,6 @@ class MilvusClient(VectorStoreClient):
         if store not in EMBEDDING_STORES_SIZES:
             raise ValueError(f"Store {store} not available")
 
-        collection_created = False
         if not client.has_collection(store, timeout=timeout):
             client.create_collection(
                 store,
@@ -214,26 +246,11 @@ class MilvusClient(VectorStoreClient):
                 vector_field_name="embeddings",
                 timeout=timeout,
             )
-            collection_created = True
-
-        if collection_created:
-            try:
-                index_params = IndexParams()
-                index_params.add_index(
-                    field_name="embeddings",
-                    index_type="AUTOINDEX",
-                    metric_type="COSINE",
-                )
-                client.create_index(
-                    collection_name=store,
-                    index_params=index_params,
-                    timeout=timeout,
-                )
-            except Exception as e:
-                print(f"[Milvus] Error creating index for collection {store}: {e}")
 
         if _collection_is_loaded(client, store, timeout):
             return
+        if not _collection_has_index(client, store, timeout):
+            _create_vector_index(client, store, timeout)
         try:
             client.load_collection(store, timeout=timeout)
         except Exception:
