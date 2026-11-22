@@ -41,9 +41,12 @@ class SpacyManager:
                 self._locks[lang] = lock
             return lock
 
+    def _failed_error(self, lang: str) -> OSError:
+        return OSError(self._errors[lang])
+
     def _raise_if_failed(self, lang: str, cached):
         if cached is _FAILED:
-            raise self._errors[lang]
+            raise self._failed_error(lang)
 
     def _log_unavailable(self, lang: str, model_name: str, exc: BaseException) -> None:
         now = time.monotonic()
@@ -78,14 +81,14 @@ class SpacyManager:
         try:
             nlp = spacy.load(model_name)
         except OSError as exc:
-            error = OSError(
+            message = (
                 f"SpaCy model {model_name!r} is not installed. "
                 f"NER is disabled for lang={lang}."
             )
-            self._errors[lang] = error
+            self._errors[lang] = message
             self._cache[lang] = _FAILED
             self._log_unavailable(lang, model_name, exc)
-            raise error from None
+            raise OSError(message) from None
         if self.keep_models_in_memory:
             self._cache[lang] = nlp
         return nlp

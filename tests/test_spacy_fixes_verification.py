@@ -152,12 +152,14 @@ class TestSpacyManagerDownloadBehavior(unittest.TestCase):
         mgr = SpacyManager()
         started = time.perf_counter()
         with patch("src.utils.nlp.spacy.logger") as mock_logger:
-            with self.assertRaises(OSError) as ctx:
+            with self.assertRaises(OSError) as first:
                 mgr.get_model("it")
-            with self.assertRaises(OSError):
+            with self.assertRaises(OSError) as second:
                 mgr.get_model("it")
         elapsed = time.perf_counter() - started
-        self.assertIn("it_core_news_sm", str(ctx.exception))
+        self.assertIn("it_core_news_sm", str(first.exception))
+        self.assertEqual(str(first.exception), str(second.exception))
+        self.assertIsNot(first.exception, second.exception)
         self.assertEqual(mock_load.call_count, 1)
         self.assertEqual(mock_logger.error.call_count, 1)
         self.assertLess(elapsed, 0.5)
