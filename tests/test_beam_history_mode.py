@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -43,14 +44,48 @@ for key, value in ENV_DEFAULTS.items():
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from src.core.saving import history_intent as history_mod
 from src.core.saving.history_intent import (
+    CURRENT_EXAMPLES,
+    HISTORY_EXAMPLES,
+    HISTORY_MARGIN,
     PrototypeWarmupError,
+    lexical_history_decision,
     lexical_history_intent,
     prefers_history,
+    peek_prototype_vectors,
     prototype_vectors,
     reset_prototype_cache,
     resolve_include_history,
 )
+
+
+def _mainline_resolve_include_history(
+    explicit,
+    query_text=None,
+    query=None,
+    history_vectors=None,
+    current_vectors=None,
+    *,
+    margin=0.02,
+):
+    if explicit is not None:
+        return explicit
+    if lexical_history_intent(query_text):
+        return True
+    cleaned = (query_text or "").strip()
+    if (
+        cleaned
+        and history_mod._CURRENT_VALUE_RE.search(cleaned)
+        and not history_mod._STRONG_HISTORY_RE.search(cleaned)
+    ):
+        return False
+    return prefers_history(
+        query,
+        history_vectors or [],
+        current_vectors or [],
+        margin=margin,
+    )
 
 try:
     from src.services.api.controllers import retrieve as retrieve_mod
@@ -362,6 +397,86 @@ class EverydayHistoryIntentTests(unittest.TestCase):
         )
 
 
+class MainlineHistoryParityTests(unittest.TestCase):
+    def test_margin_and_strict_greater_than_threshold_match_main(self):
+        self.assertEqual(HISTORY_MARGIN, 0.02)
+        history = [[1.0, 0.0]]
+        current = [[0.0, 1.0]]
+        self.assertTrue(prefers_history([1.0, 0.0], history, current, margin=0.02))
+        self.assertFalse(prefers_history([0.0, 1.0], history, current, margin=0.02))
+        self.assertFalse(
+            prefers_history([1.0, 0.0], [[1.0, 0.0]], [[1.0, 0.0]], margin=0.02)
+        )
+
+    def test_explicit_none_true_false_match_mainline_resolver(self):
+        history = [[1.0, 0.0]]
+        current = [[0.0, 1.0]]
+        queries = (
+            list(HISTORY_EXAMPLES)
+            + list(CURRENT_EXAMPLES)
+            + [
+                "who is Alice",
+                "what is the current value",
+                "what did this say before the change",
+                "Have I implemented this library before?",
+                "com'era prima questo testo",
+                "was steht hier jetzt",
+                "以前の内容は何でしたか",
+                "现在的内容是什么",
+                "ما المكتوب الآن",
+                "что здесь было написано раньше",
+            ]
+        )
+        vectors = (None, [1.0, 0.0], [0.0, 1.0])
+        flags = (True, False, None)
+        mismatches = []
+        for text in queries:
+            for explicit in flags:
+                for query in vectors:
+                    got = resolve_include_history(
+                        explicit,
+                        query_text=text,
+                        query=query,
+                        history_vectors=history,
+                        current_vectors=current,
+                    )
+                    expected = _mainline_resolve_include_history(
+                        explicit,
+                        query_text=text,
+                        query=query,
+                        history_vectors=history,
+                        current_vectors=current,
+                    )
+                    if got is not expected:
+                        mismatches.append((text, explicit, query, got, expected))
+        self.assertEqual(mismatches, [])
+
+    def test_fixture_probes_match_mainline_and_held_out_labels(self):
+        history = _FIXTURE["history_vectors"]
+        current = _FIXTURE["current_vectors"]
+        mismatches = []
+        for probe in _FIXTURE["probes"]:
+            kwargs = dict(
+                explicit=None,
+                query_text=probe["text"],
+                query=probe["vector"],
+                history_vectors=history,
+                current_vectors=current,
+            )
+            got = resolve_include_history(**kwargs)
+            mainline = _mainline_resolve_include_history(**kwargs)
+            if got is not mainline or got is not probe["want_history"]:
+                mismatches.append(
+                    {
+                        "text": probe["text"],
+                        "got": got,
+                        "mainline": mainline,
+                        "want": probe["want_history"],
+                    }
+                )
+        self.assertEqual(mismatches, [])
+
+
 class PrototypeCacheTests(unittest.TestCase):
     def tearDown(self):
         reset_prototype_cache()
@@ -419,11 +534,54 @@ class PrototypeCacheTests(unittest.TestCase):
             calls.append(text)
             return [1.0, 0.0] if "previous" in text or "prima" in text or "antes" in text else [0.0, 1.0]
 
+        self.assertIsNone(peek_prototype_vectors())
         first = prototype_vectors(embed)
         n = len(calls)
+        self.assertIs(peek_prototype_vectors(), first)
         second = prototype_vectors(embed)
         self.assertEqual(len(calls), n)
         self.assertIs(first, second)
+
+    def test_lexical_decision_skips_embeddings(self):
+        self.assertTrue(lexical_history_decision("what did this say before the change"))
+        self.assertFalse(lexical_history_decision("what is the current value"))
+        self.assertIsNone(lexical_history_decision("who is Alice"))
+
+    def test_warmup_timeout_returns_without_waiting_for_worker(self):
+        reset_prototype_cache()
+        started = time.monotonic()
+
+        def slow_many(texts: list[str]) -> list[list[float]]:
+            time.sleep(1.2)
+            return [[1.0, 0.0] for _ in texts]
+
+        with patch.object(history_mod, "_PROTOTYPE_WARMUP_TIMEOUT", 0.15):
+            with self.assertRaises(PrototypeWarmupError):
+                prototype_vectors(lambda _text: [1.0, 0.0], slow_many)
+        elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 0.6)
+        with self.assertRaises(PrototypeWarmupError):
+            prototype_vectors(lambda _text: [1.0, 0.0], slow_many)
+        self.assertIsNone(peek_prototype_vectors())
+
+    def test_embed_many_warms_prototypes_in_one_call(self):
+        reset_prototype_cache()
+        single_calls: list[str] = []
+        batch_calls: list[int] = []
+
+        def embed(text: str) -> list[float]:
+            single_calls.append(text)
+            return [1.0, 0.0]
+
+        def embed_many(texts: list[str]) -> list[list[float]]:
+            batch_calls.append(len(texts))
+            return [[1.0, 0.0] for _ in texts]
+
+        history, current = prototype_vectors(embed, embed_many)
+        self.assertEqual(single_calls, [])
+        self.assertEqual(batch_calls, [len(HISTORY_EXAMPLES) + len(CURRENT_EXAMPLES)])
+        self.assertEqual(len(history), len(HISTORY_EXAMPLES))
+        self.assertEqual(len(current), len(CURRENT_EXAMPLES))
 
 
 class SessionIdParseTests(unittest.TestCase):

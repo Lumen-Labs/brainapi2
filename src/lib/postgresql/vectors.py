@@ -22,6 +22,7 @@ from pgvector.psycopg2 import register_vector
 from src.adapters.interfaces.embeddings import VectorStoreClient
 from src.config import config
 from src.constants.embeddings import EMBEDDING_STORES_SIZES, Vector
+from src.lib.postgresql.read_query import READ_QUERY_TIMEOUT_MS
 
 from ._provisioning import (
     borrow,
@@ -262,22 +263,41 @@ class PostgreSQLVectorStoreClient(VectorStoreClient):
         else:
             order_sql = "embeddings <=> %s::vector"
         with self._connection(brain_id) as conn:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute(
-                    "SELECT set_config('hnsw.ef_search', %s, true)",
-                    (str(max(100, fetch_k)),),
-                )
-                cur.execute(
-                    f"""
+            previous_autocommit = conn.autocommit
+            try:
+                if previous_autocommit:
+                    conn.autocommit = False
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    cur.execute(
+                        f"SET LOCAL statement_timeout = {int(READ_QUERY_TIMEOUT_MS)}"
+                    )
+                    cur.execute(
+                        "SELECT set_config('hnsw.ef_search', %s, true)",
+                        (str(max(100, fetch_k)),),
+                    )
+                    cur.execute(
+                        f"""
                     SELECT id, uuid, metadata,
                            (embeddings <=> %s::vector) AS distance
                     FROM {table}
                     ORDER BY {order_sql}, uuid ASC, id ASC
                     LIMIT %s
                     """,
-                    (data_vector, data_vector, fetch_k),
-                )
-                rows = cur.fetchall()
+                        (data_vector, data_vector, fetch_k),
+                    )
+                    rows = cur.fetchall()
+                conn.rollback()
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise
+            finally:
+                try:
+                    conn.autocommit = previous_autocommit
+                except Exception:
+                    pass
         results: list[Vector] = []
         for row in rows:
             metadata = dict(row["metadata"] or {})

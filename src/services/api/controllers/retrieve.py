@@ -9,9 +9,14 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 """
 
 import asyncio
+import contextvars
 import logging
+import os
 import re
+import threading
+import time
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any, Optional
 
@@ -33,7 +38,12 @@ from src.core.search.hybrid import (
     fuse_passage_lists,
 )
 from src.core.search.relationships import search_relationships
-from src.lib.tracing.profiler import profile_request, profile_stage
+from src.lib.tracing.profiler import (
+    log_stage_report,
+    profile_request,
+    profile_stage,
+    stage_profiling_enabled,
+)
 from src.utils.vector_search import VectorSearchFacade
 from src.services.api.constants.requests import (
     GetContextRequestBody,
@@ -67,6 +77,12 @@ logger = logging.getLogger(__name__)
 _MAX_NOUN_CHUNKS = 5
 _SEED_K = 25
 _PASSAGE_K = 24
+_IO_TIMEOUT_SECONDS = 10.0
+_IO_MAX_WORKERS = 8
+_IO_MAX_INFLIGHT = 8
+_IO_THREAD_PREFIX = "ctx-io"
+_io_state: dict[str, Any] = {"pool": None, "pid": 0, "inflight": 0}
+_io_state_lock = threading.Lock()
 _PPR_DAMPING = 0.85
 _PPR_ITERS = 20
 _SESSION_RE = re.compile(r"session_(\d+)", re.IGNORECASE)
@@ -80,6 +96,96 @@ _BRIDGE_SEED_HUB_CAP = 12
 _BRIDGE_RESERVE_HUB_CAP = 6
 _BRIDGE_RESERVE_MIN = 3
 _BRIDGE_RESERVE_FRAC_DENOM = 4
+
+
+def _io_executor() -> ThreadPoolExecutor:
+    pid = os.getpid()
+    pool = _io_state["pool"]
+    if pool is None or _io_state["pid"] != pid:
+        with _io_state_lock:
+            pool = _io_state["pool"]
+            if pool is None or _io_state["pid"] != pid:
+                previous_pid = _io_state["pid"]
+                pool = ThreadPoolExecutor(
+                    max_workers=_IO_MAX_WORKERS, thread_name_prefix=_IO_THREAD_PREFIX
+                )
+                _io_state["pool"] = pool
+                _io_state["pid"] = pid
+                if previous_pid != 0 and previous_pid != pid:
+                    _io_state["inflight"] = 0
+    return pool
+
+
+def _on_io_worker() -> bool:
+    return threading.current_thread().name.startswith(_IO_THREAD_PREFIX)
+
+
+def _submit_io(fn, *args, **kwargs):
+    ctx = contextvars.copy_context()
+    return _io_executor().submit(ctx.run, fn, *args, **kwargs)
+
+
+def _wait_all(futures, timeout: float = _IO_TIMEOUT_SECONDS):
+    try:
+        return [fut.result(timeout=timeout) for fut in futures]
+    except Exception:
+        for fut in futures:
+            fut.cancel()
+        raise
+
+
+def _reserve_io_jobs(n: int) -> bool:
+    with _io_state_lock:
+        inflight = int(_io_state.get("inflight") or 0)
+        if inflight + n > _IO_MAX_INFLIGHT:
+            return False
+        _io_state["inflight"] = inflight + n
+        return True
+
+
+def _release_io_jobs(n: int) -> None:
+    with _io_state_lock:
+        inflight = int(_io_state.get("inflight") or 0)
+        _io_state["inflight"] = max(0, inflight - n)
+
+
+def _parallel_io(fns: list):
+    if len(fns) <= 1 or _on_io_worker():
+        return [fn() for fn in fns]
+    n = len(fns)
+    _io_executor()
+    if not _reserve_io_jobs(n):
+        return [fn() for fn in fns]
+    released = [False] * n
+    released_lock = threading.Lock()
+
+    def release_slot(index: int) -> None:
+        with released_lock:
+            if released[index]:
+                return
+            released[index] = True
+        _release_io_jobs(1)
+
+    def wrap(index: int, fn):
+        def run():
+            try:
+                return fn()
+            finally:
+                release_slot(index)
+
+        return run
+
+    futures = []
+    try:
+        futures = [_submit_io(wrap(index, fn)) for index, fn in enumerate(fns)]
+        return _wait_all(futures, timeout=_IO_TIMEOUT_SECONDS)
+    except Exception:
+        for index, fut in enumerate(futures):
+            if fut.cancelled() or fut.cancel():
+                release_slot(index)
+        for index in range(len(futures), n):
+            release_slot(index)
+        raise
 
 
 def _embed_query_vector(text: str) -> Vector:
@@ -1868,13 +1974,25 @@ def _seed_nodes_for_text(
             text_embeddings = _embed_query_vector(text)
         embeddings = text_embeddings.embeddings
     seeds: list[tuple[str, float, str]] = []
+    vs = vector_search
 
-    with profile_stage("vector.search_nodes", k=_SEED_K):
-        node_vectors = vector_search.search_nodes(
-            embeddings,
-            brain_id=brain_id,
-            k=_SEED_K,
-        )
+    def _search_nodes():
+        with profile_stage("vector.search_nodes", k=_SEED_K):
+            return vs.search_nodes(
+                embeddings,
+                brain_id=brain_id,
+                k=_SEED_K,
+            )
+
+    def _search_relationships():
+        with profile_stage("vector.search_relationships", k=_SEED_K):
+            return vs.search_relationships(
+                embeddings,
+                brain_id=brain_id,
+                k=_SEED_K,
+            )
+
+    node_vectors, rel_vectors = _parallel_io([_search_nodes, _search_relationships])
     for vector in node_vectors:
         meta = vector.metadata or {}
         uuid = meta.get("uuid") or getattr(vector, "id", None)
@@ -1885,13 +2003,6 @@ def _seed_nodes_for_text(
         )
         name = meta.get("name") or text
         seeds.append((str(uuid), float(distance), str(name)))
-
-    with profile_stage("vector.search_relationships", k=_SEED_K):
-        rel_vectors = vector_search.search_relationships(
-            embeddings,
-            brain_id=brain_id,
-            k=_SEED_K,
-        )
     for vector in rel_vectors:
         meta = vector.metadata or {}
         distance = (
@@ -2034,7 +2145,11 @@ def _build_fact_channel(
 
 
 def _retrieve_passages(
-    text: str, brain_id: str, *, limit: int
+    text: str,
+    brain_id: str,
+    *,
+    limit: int,
+    embeddings: list[float] | None = None,
 ) -> list[tuple[str, float, str]]:
     """Return (chunk_id, score, text) ranked passages via vector + keyword fusion."""
     mode = (
@@ -2046,38 +2161,53 @@ def _retrieve_passages(
     with profile_stage("passages.retrieve", blocking=True, queries=1):
         vector_ids: list[str] = []
         id_to_distance: dict[str, float] = {}
-        if use_dense:
+        query_embeddings = embeddings
+        if use_dense and query_embeddings is None:
             with profile_stage("embed.query"):
-                text_embeddings = _embed_query_vector(text)
+                query_embeddings = _embed_query_vector(text).embeddings
+        vs = vector_search
+        data = data_adapter
+
+        def _dense() -> tuple[list[str], dict[str, float]]:
             with profile_stage("vector.search_data", k=max(limit, _PASSAGE_K)):
-                vector_ids, id_to_distance = collect_dense_passages(
-                    vector_search,
-                    text_embeddings.embeddings,
+                return collect_dense_passages(
+                    vs,
+                    query_embeddings or [],
                     brain_id,
                     max(limit, _PASSAGE_K),
                 )
 
+        def _keyword() -> tuple[list[str], dict[str, str]]:
+            if use_bm25:
+                with profile_stage("data.bm25_search"):
+                    try:
+                        ids, _, texts = collect_bm25_passages(
+                            data,
+                            text,
+                            brain_id,
+                            max(limit, _PASSAGE_K),
+                        )
+                        return ids, texts
+                    except Exception:
+                        return [], {}
+            if use_ilike:
+                with profile_stage("data.keyword_search"):
+                    try:
+                        return collect_ilike_passages(data, text, brain_id)
+                    except Exception:
+                        return [], {}
+            return [], {}
+
         keyword_ids: list[str] = []
         id_to_text: dict[str, str] = {}
-        if use_bm25:
-            with profile_stage("data.bm25_search"):
-                try:
-                    keyword_ids, _, id_to_text = collect_bm25_passages(
-                        data_adapter,
-                        text,
-                        brain_id,
-                        max(limit, _PASSAGE_K),
-                    )
-                except Exception:
-                    pass
-        elif use_ilike:
-            with profile_stage("data.keyword_search"):
-                try:
-                    keyword_ids, id_to_text = collect_ilike_passages(
-                        data_adapter, text, brain_id
-                    )
-                except Exception:
-                    pass
+        if use_dense and (use_bm25 or use_ilike):
+            dense_result, keyword_result = _parallel_io([_dense, _keyword])
+            vector_ids, id_to_distance = dense_result
+            keyword_ids, id_to_text = keyword_result
+        elif use_dense:
+            vector_ids, id_to_distance = _dense()
+        else:
+            keyword_ids, id_to_text = _keyword()
 
         fused = fuse_passage_lists(
             vector_ids if use_dense else [],
@@ -2122,13 +2252,18 @@ async def get_context(
     and publishes it as a latency trace event; it is off unless the caller asks
     for it or `TRACE_STAGE_PROFILER_ENABLED` is set.
     """
+    attach_timings = bool(request.profile_stages) or stage_profiling_enabled(False)
     with verification_scope(include_rejected=bool(request.include_rejected)):
         with profile_request(
-            "retrieve.context", enabled=request.profile_stages
+            "retrieve.context",
+            enabled=True,
+            publish=attach_timings,
         ) as profiler:
             response = await _build_context(request, fact_filter_adapter)
     if profiler is not None:
-        response.stage_timings = profiler.last_report
+        log_stage_report(profiler.last_report, logger)
+        if attach_timings:
+            response.stage_timings = profiler.last_report
     return response
 
 
@@ -2157,6 +2292,7 @@ async def _build_context(
     seed_hits: list[tuple[str, float, str]] = []
     passage_hits: list[tuple[str, float, str]] = []
     from src.core.saving.history_intent import (
+        lexical_history_decision,
         lexical_history_intent,
         prototype_vectors,
         resolve_include_history,
@@ -2181,6 +2317,7 @@ async def _build_context(
         if not missing:
             return [item or [] for item in vectors]
         batch = getattr(embeddings_adapter, "embed_texts", None)
+        raw = None
         if callable(batch):
             try:
                 raw = batch([text for _index, text in missing])
@@ -2192,48 +2329,73 @@ async def _build_context(
                     status_code=503,
                     detail="Embedding service unavailable",
                 ) from None
-            for (index, text), item in zip(missing, raw):
-                vector = getattr(item, "embeddings", None)
-                if vector is None:
-                    vector = item
-                if not vector:
-                    logger.error("Embedding request failed")
-                    raise HTTPException(
-                        status_code=503,
-                        detail="Embedding service unavailable",
-                    )
-                shared_vectors[text] = vector
-                vectors[index] = vector
-        else:
+            if not isinstance(raw, (list, tuple)) or len(raw) != len(missing):
+                raw = None
+        if raw is None:
             for index, text in missing:
                 vectors[index] = _embed_query(text)
+            return [item or [] for item in vectors]
+        for (index, text), item in zip(missing, raw):
+            vector = getattr(item, "embeddings", None)
+            if vector is None:
+                vector = item
+            if not vector:
+                logger.error("Embedding request failed")
+                raise HTTPException(
+                    status_code=503,
+                    detail="Embedding service unavailable",
+                )
+            shared_vectors[text] = vector
+            vectors[index] = vector
         return [item or [] for item in vectors]
 
     query_vector: list[float] | None = None
     explicit_history = request.include_history
     unknown_facts: list[dict[str, Any]] = []
     unknown_passages: list[dict[str, Any]] = []
-    if as_of is not None:
-        include_history = False
-    elif explicit_history is None:
-        def _resolve_history_flag() -> tuple[bool, list[float] | None]:
-            try:
-                qv = _embed_query(request.text)
-                history_vectors, current_vectors = prototype_vectors(_embed_query)
-                flag = resolve_include_history(
-                    None,
-                    query_text=request.text,
-                    query=qv,
-                    history_vectors=history_vectors,
-                    current_vectors=current_vectors,
-                )
-                return flag, qv
-            except Exception:
-                return lexical_history_intent(request.text), None
+    unique_texts: list[str] = []
+    seen_texts: set[str] = set()
+    for text in [request.text, *variants]:
+        key = text.strip().lower()
+        if not text or key in seen_texts:
+            continue
+        seen_texts.add(key)
+        unique_texts.append(text)
 
-        include_history, query_vector = await asyncio.to_thread(_resolve_history_flag)
-    else:
-        include_history = explicit_history
+    with profile_stage("history.intent", blocking=False) as history_detail:
+        if as_of is not None:
+            include_history = False
+            history_detail["source"] = "as_of"
+        elif explicit_history is not None:
+            include_history = explicit_history
+            history_detail["source"] = "explicit"
+        else:
+            lexical = lexical_history_decision(request.text)
+            if lexical is not None:
+                include_history = lexical
+                history_detail["source"] = "lexical"
+            else:
+                history_detail["source"] = "similarity"
+
+                def _resolve_history_flag() -> tuple[bool, list[float] | None]:
+                    try:
+                        with profile_stage("history.prototypes"):
+                            history_vectors, current_vectors = prototype_vectors(
+                                _embed_query, _embed_queries
+                            )
+                        qv = _embed_query(request.text)
+                        flag = resolve_include_history(
+                            None,
+                            query_text=request.text,
+                            query=qv,
+                            history_vectors=history_vectors,
+                            current_vectors=current_vectors,
+                        )
+                        return flag, qv
+                    except Exception:
+                        return lexical_history_intent(request.text), None
+
+                include_history, query_vector = await asyncio.to_thread(_resolve_history_flag)
 
     def _collect_facts_for_variant(
         text: str,
@@ -2323,9 +2485,9 @@ async def _build_context(
                     )
             return list(seeds), local
 
-    def _collect_passages() -> None:
+    async def _collect_passages() -> None:
         nonlocal passage_hits
-        with profile_stage("passages.collect") as detail:
+        with profile_stage("passages.collect", blocking=False) as detail:
             queries = [request.text] + [
                 v
                 for v in variants
@@ -2339,12 +2501,24 @@ async def _build_context(
             fused_lists: list[list[str]] = []
             id_to_text: dict[str, str] = {}
             id_to_score: dict[str, float] = {}
-            for query in queries:
-                hits = _retrieve_passages(
+
+            def _hits_for_query(query: str) -> list[tuple[str, float, str]]:
+                return _retrieve_passages(
                     query,
                     request.brain_id,
                     limit=max(max_passages, _PASSAGE_K),
+                    embeddings=shared_vectors.get(query),
                 )
+
+            query_hits = list(
+                await asyncio.gather(
+                    *[
+                        asyncio.to_thread(_hits_for_query, query)
+                        for query in queries
+                    ]
+                )
+            )
+            for hits in query_hits:
                 ordered_ids: list[str] = []
                 for chunk_id, score, body in hits:
                     ordered_ids.append(chunk_id)
@@ -2430,6 +2604,7 @@ async def _build_context(
                 request.text,
                 request.brain_id,
                 limit=max(request.historical_limit, _PASSAGE_K),
+                embeddings=shared_vectors.get(request.text),
             )
             if passages:
                 historical_context = await asyncio.to_thread(
@@ -2468,6 +2643,14 @@ async def _build_context(
             historical_context = await asyncio.to_thread(_fallback_history)
             return historical_context
 
+    with profile_stage("embed.query", blocking=False) as embed_detail:
+        pending = [text for text in unique_texts if text not in shared_vectors]
+        if pending:
+            await asyncio.to_thread(_embed_queries, pending)
+        if query_vector is None:
+            query_vector = shared_vectors.get(request.text)
+        embed_detail["texts"] = len(pending)
+
     with profile_stage(
         "retrieval.fanout", blocking=False, variants=len(variants)
     ):
@@ -2476,7 +2659,7 @@ async def _build_context(
             for variant in variants
         ]
         other_futures = [
-            asyncio.to_thread(_collect_passages),
+            _collect_passages(),
             _get_historical_context(),
         ]
         all_results = await asyncio.gather(*fact_futures, *other_futures)
@@ -2669,14 +2852,6 @@ async def _build_context(
         except Exception as exc:
             topic_detail["error"] = str(exc)[:120]
 
-    ranked = current_fact_candidates(
-        data_adapter,
-        request.brain_id,
-        ranked,
-        include_history=include_history,
-        as_of=as_of,
-    )
-
     with profile_stage("fact_filter") as detail:
         if request.apply_fact_filter and fact_filter_adapter is not None and ranked:
             detail["filter_applied"] = True
@@ -2729,20 +2904,27 @@ async def _build_context(
             detail["followups"] = len(followups[:3])
             extra_passages: list[tuple[str, float, str]] = []
             extra_variant_lists: list[list[dict[str, Any]]] = []
-            for query in followups[:3]:
-                extra_passages.extend(
-                    await asyncio.to_thread(
-                        _retrieve_passages,
-                        query,
-                        request.brain_id,
-                        limit=max_passages,
-                    )
+            retry_queries = followups[:3]
+            if retry_queries:
+                retry_results = await asyncio.gather(
+                    *[
+                        asyncio.gather(
+                            asyncio.to_thread(
+                                _retrieve_passages,
+                                query,
+                                request.brain_id,
+                                limit=max_passages,
+                                embeddings=shared_vectors.get(query),
+                            ),
+                            asyncio.to_thread(_collect_facts_for_variant, query),
+                        )
+                        for query in retry_queries
+                    ]
                 )
-                seeds, local = await asyncio.to_thread(
-                    _collect_facts_for_variant, query
-                )
-                seed_hits.extend(seeds)
-                extra_variant_lists.append(local)
+                for passages, (seeds, local) in retry_results:
+                    extra_passages.extend(passages)
+                    seed_hits.extend(seeds)
+                    extra_variant_lists.append(local)
             extra_unknown: list = []
             extra_passages = screen_passage_hits(
                 data_adapter,

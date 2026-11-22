@@ -111,11 +111,71 @@ class VectorSimilarityContractTests(unittest.TestCase):
         results = MilvusClient.search_vectors(
             client, [1.0, 0.0, 0.0], "brain-a", "nodes", k=2
         )
+        self.assertEqual(milvus.search.call_args.kwargs.get("timeout"), 10.0)
+        milvus.load_collection.assert_not_called()
         self.assertEqual(results[0].id, "1")
         self.assertAlmostEqual(results[0].distance, 0.05)
         self.assertEqual(results[1].id, "2")
         self.assertAlmostEqual(results[1].distance, 0.8)
         self.assertTrue(isinstance(results[0], Vector))
+
+    def test_ensure_store_skips_load_when_collection_is_loaded(self):
+        from src.lib.milvus.client import MilvusClient
+
+        client = MilvusClient.__new__(MilvusClient)
+        milvus = MagicMock()
+        milvus.has_collection.return_value = True
+        milvus.get_load_state.return_value = {"state": "Loaded"}
+        client._get_client = MagicMock(return_value=milvus)
+        client._ensure_store("nodes", "brain-a", timeout=10.0)
+        milvus.load_collection.assert_not_called()
+        milvus.create_index.assert_not_called()
+        milvus.list_indexes.assert_not_called()
+        self.assertEqual(milvus.get_load_state.call_args.kwargs.get("timeout"), 10.0)
+        self.assertEqual(milvus.has_collection.call_args.kwargs.get("timeout"), 10.0)
+
+    def test_ensure_store_load_uses_timeout_when_not_loaded(self):
+        from src.lib.milvus.client import MilvusClient
+
+        client = MilvusClient.__new__(MilvusClient)
+        milvus = MagicMock()
+        milvus.has_collection.return_value = True
+        milvus.get_load_state.return_value = {"state": "NotLoad"}
+        milvus.list_indexes.return_value = ["embeddings"]
+        client._get_client = MagicMock(return_value=milvus)
+        client._ensure_store("nodes", "brain-a", timeout=10.0)
+        milvus.create_index.assert_not_called()
+        self.assertEqual(milvus.load_collection.call_args.kwargs.get("timeout"), 10.0)
+
+    def test_ensure_store_creates_index_when_existing_collection_has_none(self):
+        from src.lib.milvus.client import MilvusClient
+
+        client = MilvusClient.__new__(MilvusClient)
+        milvus = MagicMock()
+        milvus.has_collection.return_value = True
+        milvus.get_load_state.return_value = {"state": "NotLoad"}
+        milvus.list_indexes.return_value = []
+        client._get_client = MagicMock(return_value=milvus)
+        client._ensure_store("nodes", "brain-a", timeout=10.0)
+        self.assertEqual(milvus.create_index.call_args.kwargs.get("timeout"), 10.0)
+        self.assertEqual(milvus.load_collection.call_args.kwargs.get("timeout"), 10.0)
+
+    def test_ensure_store_indexes_after_create_collection_timeout(self):
+        from src.lib.milvus.client import MilvusClient
+
+        client = MilvusClient.__new__(MilvusClient)
+        milvus = MagicMock()
+        milvus.has_collection.side_effect = [False, True]
+        milvus.create_collection.side_effect = TimeoutError("deadline")
+        milvus.get_load_state.return_value = {"state": "NotLoad"}
+        milvus.list_indexes.return_value = []
+        client._get_client = MagicMock(return_value=milvus)
+        with self.assertRaises(TimeoutError):
+            client._ensure_store("nodes", "brain-a", timeout=10.0)
+        milvus.create_index.assert_not_called()
+        client._ensure_store("nodes", "brain-a", timeout=10.0)
+        milvus.create_index.assert_called()
+        self.assertEqual(milvus.create_index.call_args.kwargs.get("timeout"), 10.0)
 
     def test_relationship_dedup_skips_self_and_uses_distance_threshold(self):
         from src.workers.tasks.ingestion import (

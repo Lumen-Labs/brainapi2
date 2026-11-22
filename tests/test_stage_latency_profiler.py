@@ -297,6 +297,7 @@ class GetContextStageCoverageTests(unittest.IsolatedAsyncioTestCase):
         for expected in (
             "nlp.extract_elements",
             "nlp.query_variants",
+            "history.intent",
             "retrieval.fanout",
             "facts.variant",
             "facts.seed_search",
