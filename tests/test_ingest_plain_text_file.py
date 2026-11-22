@@ -18,6 +18,7 @@ from src.core.saving.ingest_staging import (
     SMALL_REMOTE_OCR_DEADLINE_SECONDS,
     SMALL_REMOTE_OCR_MAX_BYTES,
     fail_expired_remote_ocr,
+    join_ocr_page_texts,
     remote_ocr_callback_deadline,
 )
 
@@ -508,6 +509,181 @@ def test_unstaged_multipage_callbacks_group_into_one_ingest(monkeypatch):
     queued.assert_called_once()
     body = queued.call_args.kwargs["args"][0]
     assert body["data"]["text_data"] == "page one\n\npage two"
+    payload = store[("task:ocr", "brain")]
+    assert payload["ocr_dispatch_started"] is True
+    assert payload["ocr_page_texts"]["0"] == "page one"
+    assert payload["ocr_page_texts"]["1"] == "page two"
+    replay = api.post(
+        "/ingest/",
+        json={
+            "data": {"data_type": "text", "text_data": "page two again"},
+            "page_index": 1,
+            "total_pages": 2,
+        },
+        headers=headers,
+    )
+    assert replay.status_code == 202
+    queued.assert_called_once()
+
+
+def test_unstaged_ocr_preserves_skip_enrichment(monkeypatch):
+    app, ingest = _ingest_app()
+    monkeypatch.delenv("STAGED_INGESTION_ENABLED", raising=False)
+    cache, store = _writable_cache({
+        ("task:ocr", "brain"): {"status": "queued", "task_id": "ocr"},
+    })
+    monkeypatch.setattr(ingest, "cache_adapter", cache)
+    monkeypatch.setattr("src.workers.tasks.ingestion.cache_adapter", cache)
+    queued = Mock()
+    monkeypatch.setattr(ingest.ingest_data_task, "apply_async", queued)
+    response = TestClient(app).post(
+        "/ingest/",
+        json={
+            "data": {"data_type": "text", "text_data": "only page"},
+            "page_index": 0,
+            "total_pages": 1,
+            "skip_enrichment": True,
+            "source_timestamp": "2026-01-02T00:00:00Z",
+        },
+        headers={"Task-Identifier": "ocr"},
+    )
+    assert response.status_code == 202
+    body = queued.call_args.kwargs["args"][0]
+    assert body["data"]["text_data"] == "only page"
+    assert body["skip_enrichment"] is True
+    assert body["source_timestamp"] == "2026-01-02T00:00:00Z"
+    assert store[("task:ocr", "brain")]["ocr_dispatch_started"] is True
+
+
+def test_unstaged_anonymous_pages_are_joined(monkeypatch):
+    app, ingest = _ingest_app()
+    monkeypatch.delenv("STAGED_INGESTION_ENABLED", raising=False)
+    cache, _store = _writable_cache({
+        ("task:ocr", "brain"): {"status": "queued", "task_id": "ocr"},
+    })
+    monkeypatch.setattr(ingest, "cache_adapter", cache)
+    monkeypatch.setattr("src.workers.tasks.ingestion.cache_adapter", cache)
+    queued = Mock()
+    monkeypatch.setattr(ingest.ingest_data_task, "apply_async", queued)
+    api = TestClient(app)
+    headers = {"Task-Identifier": "ocr"}
+    first = api.post(
+        "/ingest/",
+        json={"data": {"data_type": "text", "text_data": "anon one"}, "total_pages": 2},
+        headers=headers,
+    )
+    second = api.post(
+        "/ingest/",
+        json={"data": {"data_type": "text", "text_data": "anon two"}, "total_pages": 2},
+        headers=headers,
+    )
+    assert first.status_code == 202
+    assert second.status_code == 202
+    queued.assert_called_once()
+    body = queued.call_args.kwargs["args"][0]
+    assert body["data"]["text_data"] == "anon one\n\nanon two"
+    assert join_ocr_page_texts({"anon:1": "b", "0": "a", "anon:0": "c"}) == "a\n\nc\n\nb"
+
+
+def test_unstaged_ocr_enqueue_failure_stays_retryable(monkeypatch):
+    from celery.exceptions import OperationalError
+
+    app, ingest = _ingest_app()
+    monkeypatch.delenv("STAGED_INGESTION_ENABLED", raising=False)
+    cache, store = _writable_cache({
+        ("task:ocr", "brain"): {"status": "queued", "task_id": "ocr"},
+    })
+    monkeypatch.setattr(ingest, "cache_adapter", cache)
+    monkeypatch.setattr("src.workers.tasks.ingestion.cache_adapter", cache)
+    queued = Mock(side_effect=OperationalError("broker down"))
+    monkeypatch.setattr(ingest.ingest_data_task, "apply_async", queued)
+    api = TestClient(app, raise_server_exceptions=False)
+    headers = {"Task-Identifier": "ocr"}
+    failed = api.post(
+        "/ingest/",
+        json={
+            "data": {"data_type": "text", "text_data": "page one"},
+            "page_index": 0,
+            "total_pages": 1,
+        },
+        headers=headers,
+    )
+    assert failed.status_code == 503
+    assert store[("task:ocr", "brain")].get("ocr_dispatch_started") is not True
+    queued.side_effect = None
+    queued.return_value = None
+    retried = api.post(
+        "/ingest/",
+        json={
+            "data": {"data_type": "text", "text_data": "page one"},
+            "page_index": 0,
+            "total_pages": 1,
+        },
+        headers=headers,
+    )
+    assert retried.status_code == 202
+    assert queued.call_count > 3
+    assert store[("task:ocr", "brain")]["ocr_dispatch_started"] is True
+
+
+def test_ocr_revision_rejects_stale_writes():
+    from src.workers.tasks.ingestion import set_ingestion_task_status
+
+    cache, store = _writable_cache({})
+    import src.workers.tasks.ingestion as ingestion
+
+    original = ingestion.cache_adapter
+    ingestion.cache_adapter = cache
+    try:
+        set_ingestion_task_status(
+            "t-cas", "brain", "started", extra={"ocr_page_texts": {"0": "a"}, "ocr_revision": 1},
+        )
+        set_ingestion_task_status(
+            "t-cas", "brain", "started", extra={"ocr_page_texts": {"1": "b"}, "ocr_revision": 1},
+        )
+        payload = store[("task:t-cas", "brain")]
+        assert payload["ocr_page_texts"] == {"0": "a"}
+        set_ingestion_task_status(
+            "t-cas",
+            "brain",
+            "started",
+            extra={"ocr_page_texts": {"0": "a", "1": "b"}, "ocr_revision": 2},
+        )
+        assert store[("task:t-cas", "brain")]["ocr_page_texts"]["1"] == "b"
+    finally:
+        ingestion.cache_adapter = original
+
+
+def test_expired_unstaged_ocr_enqueues_accepted_pages(monkeypatch):
+    queued = Mock()
+    monkeypatch.setattr("src.workers.tasks.ingestion.ingest_data.apply_async", queued)
+    monkeypatch.setattr(
+        "src.core.saving.ingest_staging.ingest_cancellation._runs",
+        lambda brain_id: SimpleNamespace(find_one=lambda query: None),
+    )
+    monkeypatch.setattr("src.core.saving.ingest_staging.time", lambda: 5_000)
+    result = fail_expired_remote_ocr(
+        "brain",
+        "ocr-task",
+        {
+            "status": "started",
+            "ocr_page_texts": {"0": "keep me"},
+            "ocr_pages_accepted": 1,
+            "ocr_total_pages": 3,
+            "remote_ocr_deadline": 10,
+            "ocr_ingest_payload": {
+                "skip_enrichment": True,
+                "data": {"data_type": "text", "text_data": "keep me"},
+            },
+            "task_id": "ocr-task",
+        },
+    )
+    assert result["status"] == "partial_failed"
+    queued.assert_called_once()
+    body = queued.call_args.kwargs["args"][0]
+    assert body["data"]["text_data"] == "keep me"
+    assert body["skip_enrichment"] is True
+    assert result.get("ocr_dispatch_started") is True
 
 
 def test_empty_text_uploads_are_rejected(monkeypatch):

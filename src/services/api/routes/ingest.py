@@ -56,6 +56,7 @@ from src.core.saving.ingest_staging import (
     TERMINAL_TASK_STATUSES,
     fail_expired_remote_ocr,
     is_small_remote_ocr,
+    join_ocr_page_texts,
     remote_ocr_callback_deadline,
 )
 from src.services.api.errors import cache_unavailable
@@ -207,12 +208,13 @@ def _forward_remote_ocr(request, brain_id, task, file, filename, content, group_
 
 async def _queue_text_ingest(
     brain_id, task_id, payload, context, group_tracking=None, extra=None,
+    status="queued",
 ):
     set_ingestion_task_status(
         task_id,
         brain_id,
-        "queued",
-        stage="queued",
+        status,
+        stage="processing" if status == "started" else status,
         group_tracking=group_tracking,
         extra=extra,
     )
@@ -362,32 +364,36 @@ def _unstaged_ocr_extra(cached, pages, failed_keys, stored_total):
     return extra
 
 
-def _joined_ocr_text(pages, stored_total):
-    if stored_total:
-        keys = [str(index) for index in range(int(stored_total)) if str(index) in pages]
-    else:
-        keys = sorted(pages, key=lambda item: int(item) if str(item).isdigit() else 10**9)
-    return "\n\n".join(pages[key] for key in keys)
+def _ocr_extra_public(extra):
+    return {key: value for key, value in extra.items() if not str(key).startswith("_")}
 
 
-async def _dispatch_grouped_ocr(brain_id, task_id, cached, extra, context):
-    extra = {**extra, "ocr_dispatch_started": True}
-    if extra.get("ocr_pages_failed"):
-        extra["ocr_partial"] = True
-    text = _joined_ocr_text(extra["ocr_page_texts"], extra.get("ocr_total_pages"))
-    await _queue_text_ingest(
-        brain_id, task_id, _plain_text_payload(brain_id, text, cached.get("group_tracking")),
-        context, cached.get("group_tracking"), extra=extra,
-    )
-    return _ocr_callback_accepted(task_id)
+def _ocr_ingest_template(data, cached):
+    stored = dict(cached.get("ocr_ingest_payload") or {})
+    try:
+        payload = _ingest_task_payload(data)
+    except Exception:
+        return stored or None
+    if payload.get("data"):
+        return payload
+    return stored or None
 
 
-async def _accept_unstaged_ocr_callback(brain_id, task_id, data, context):
-    cached = _read_task_cache(brain_id, task_id)
-    if not cached:
-        raise HTTPException(status_code=422, detail="data is required")
-    if cached.get("ocr_dispatch_started") and cached.get("status") in TERMINAL_TASK_STATUSES:
-        return _ocr_callback_accepted(task_id)
+def _grouped_ocr_payload(brain_id, cached, extra, text):
+    payload = dict(extra.get("ocr_ingest_payload") or cached.get("ocr_ingest_payload") or {})
+    if not payload:
+        return _plain_text_payload(brain_id, text, cached.get("group_tracking"))
+    body = dict(payload.get("data") or {})
+    body["data_type"] = body.get("data_type") or "text"
+    body["text_data"] = text
+    payload["data"] = body
+    payload["brain_id"] = brain_id
+    if cached.get("group_tracking") and not payload.get("group_tracking"):
+        payload["group_tracking"] = cached["group_tracking"]
+    return payload
+
+
+def _prepare_unstaged_ocr_extra(cached, data):
     pages = dict(cached.get("ocr_page_texts") or {})
     failed_keys = [str(item) for item in (cached.get("ocr_failed_pages") or [])]
     page_index, total_pages = _ocr_page_meta(data)
@@ -400,19 +406,81 @@ async def _accept_unstaged_ocr_callback(brain_id, task_id, data, context):
     elif key not in pages and key not in failed_keys:
         failed_keys.append(key)
     extra = _unstaged_ocr_extra(cached, pages, failed_keys, stored_total)
+    extra["ocr_revision"] = int(cached.get("ocr_revision") or 0) + 1
+    template = _ocr_ingest_template(data, cached)
+    if template:
+        extra["ocr_ingest_payload"] = template
+    extra["_page_index"] = page_index
+    extra["_failed"] = failed
+    return extra
+
+
+def _cas_ocr_extra(brain_id, task_id, extra):
+    updated = set_ingestion_task_status(
+        task_id, brain_id, "started", stage="processing", extra=_ocr_extra_public(extra),
+    )
+    return int(updated.get("ocr_revision") or 0) == extra["ocr_revision"], updated
+
+
+async def _dispatch_grouped_ocr(brain_id, task_id, cached, extra, context):
+    extra = {**extra, "ocr_dispatch_started": True}
+    if extra.get("ocr_pages_failed"):
+        extra["ocr_partial"] = True
+    applied, updated = _cas_ocr_extra(brain_id, task_id, extra)
+    if not applied:
+        return None
+    text = join_ocr_page_texts(extra.get("ocr_page_texts"), extra.get("ocr_total_pages"))
+    try:
+        await _queue_text_ingest(
+            brain_id, task_id,
+            _grouped_ocr_payload(brain_id, cached, extra, text),
+            context, cached.get("group_tracking"), status="started",
+        )
+    except HTTPException:
+        set_ingestion_task_status(
+            task_id, brain_id, "started", stage="processing",
+            extra={
+                "ocr_dispatch_started": None,
+                "ocr_revision": int(updated.get("ocr_revision") or 0) + 1,
+            },
+        )
+        raise
+    return _ocr_callback_accepted(task_id)
+
+
+async def _try_unstaged_ocr_callback(brain_id, task_id, data, context):
+    cached = _read_task_cache(brain_id, task_id)
+    if not cached:
+        raise HTTPException(status_code=422, detail="data is required")
+    if cached.get("status") in TERMINAL_TASK_STATUSES:
+        return _ocr_callback_accepted(task_id)
+    extra = _prepare_unstaged_ocr_extra(cached, data)
+    pages = extra["ocr_page_texts"]
+    failed_keys = extra["ocr_failed_pages"]
+    stored_total = extra.get("ocr_total_pages")
     complete = stored_total and (len(pages) + len(failed_keys)) >= int(stored_total)
     if not complete:
-        if failed and not pages and page_index is None:
-            return _fail_known_task(brain_id, task_id, _ocr_callback_error(data), extra)
-        set_ingestion_task_status(
-            task_id, brain_id, "started", stage="processing", extra=extra,
-        )
-        return _ocr_callback_accepted(task_id)
+        if extra.get("_failed") and not pages and extra.get("_page_index") is None:
+            return _fail_known_task(
+                brain_id, task_id, _ocr_callback_error(data), _ocr_extra_public(extra),
+            )
+        applied = _cas_ocr_extra(brain_id, task_id, extra)[0]
+        return _ocr_callback_accepted(task_id) if applied else None
     if not pages:
-        return _fail_known_task(brain_id, task_id, _ocr_callback_error(data), extra)
+        return _fail_known_task(
+            brain_id, task_id, _ocr_callback_error(data), _ocr_extra_public(extra),
+        )
     if cached.get("ocr_dispatch_started"):
         return _ocr_callback_accepted(task_id)
     return await _dispatch_grouped_ocr(brain_id, task_id, cached, extra, context)
+
+
+async def _accept_unstaged_ocr_callback(brain_id, task_id, data, context):
+    for _ in range(8):
+        handled = await _try_unstaged_ocr_callback(brain_id, task_id, data, context)
+        if handled is not None:
+            return handled
+    return _ocr_callback_accepted(task_id)
 
 
 def _accept_known_failed_callback(brain_id, task_id, data=None):

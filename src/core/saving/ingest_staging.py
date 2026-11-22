@@ -233,6 +233,51 @@ def register_ocr_callback(brain_id, root_id, message, page_index=None, total_pag
     return outcome["unit_id"], outcome["created"]
 
 
+def _ocr_page_sort_key(key):
+    text = str(key)
+    if text.isdigit():
+        return (0, int(text))
+    suffix = text.rsplit(":", 1)[-1]
+    if suffix.isdigit():
+        return (1, int(suffix))
+    return (2, text)
+
+
+def join_ocr_page_texts(pages, stored_total=None):
+    pages = pages or {}
+    keys = sorted(pages, key=_ocr_page_sort_key)
+    return "\n\n".join(pages[key] for key in keys)
+
+
+def _unstaged_ocr_payload(brain_id, cached, text):
+    payload = dict(cached.get("ocr_ingest_payload") or {})
+    if not payload:
+        return {"data": {"data_type": "text", "text_data": text}, "brain_id": brain_id}
+    body = dict(payload.get("data") or {})
+    body["data_type"] = body.get("data_type") or "text"
+    body["text_data"] = text
+    payload["data"] = body
+    payload["brain_id"] = brain_id
+    return payload
+
+
+def _enqueue_unstaged_ocr_pages(brain_id, task_id, cached):
+    pages = cached.get("ocr_page_texts") or {}
+    if not pages or cached.get("ocr_dispatch_started"):
+        return False
+    try:
+        from src.workers.tasks.ingestion import ingest_data as ingest_data_task
+
+        ingest_data_task.apply_async(
+            args=[_unstaged_ocr_payload(brain_id, cached, join_ocr_page_texts(pages))],
+            task_id=task_id,
+        )
+        return True
+    except Exception:
+        log.debug("Could not enqueue partial OCR ingest for %s", task_id, exc_info=True)
+        return False
+
+
 def _ocr_status_extra(run):
     accepted, failed = _ocr_counts(run)
     if not accepted:
@@ -253,6 +298,8 @@ def _ocr_status_extra(run):
         extra["ocr_total_pages"] = total
     if run.get("ocr_partial"):
         extra["ocr_partial"] = True
+    if run.get("ocr_dispatch_started"):
+        extra["ocr_dispatch_started"] = True
     return extra, accepted, failed
 
 
@@ -880,6 +927,22 @@ def _finish_cached_ocr(cached, status, error, extra=None):
     return cached
 
 
+def _finish_unstaged_partial(brain_id, task_id, cached):
+    if cached.get("ocr_page_texts") and not cached.get("ocr_dispatch_started"):
+        if _enqueue_unstaged_ocr_pages(brain_id, task_id, cached):
+            cached = {**cached, "ocr_dispatch_started": True}
+    extra, accepted, failed = _ocr_status_extra(cached)
+    updated = _sync_ocr_task_status(brain_id, task_id, cached)
+    return updated or _finish_cached_ocr(
+        cached,
+        "partial_failed",
+        cached.get("error") or _ocr_partial_error(
+            accepted, failed, cached.get("ocr_total_pages"),
+        ),
+        extra,
+    )
+
+
 def fail_expired_remote_ocr(brain_id, task_id, cached=None, *, rejected=False):
     cached = dict(cached or {})
     try:
@@ -889,18 +952,13 @@ def fail_expired_remote_ocr(brain_id, task_id, cached=None, *, rejected=False):
         run = None
     status = cached.get("status")
     if status in TERMINAL_TASK_STATUSES:
+        if status == "partial_failed":
+            return _finish_unstaged_partial(brain_id, task_id, cached)
         return cached
     if _should_report_ocr_partial(run, cached):
         source = dict(run or cached)
         source["ocr_partial"] = True
-        updated = _sync_ocr_task_status(brain_id, task_id, source)
-        extra, accepted, failed = _ocr_status_extra(source)
-        return updated or _finish_cached_ocr(
-            cached,
-            "partial_failed",
-            _ocr_partial_error(accepted, failed, source.get("ocr_total_pages")),
-            extra,
-        )
+        return _finish_unstaged_partial(brain_id, task_id, source)
     if (status and status != "queued") or has_accepted_ocr_pages(run, cached):
         return cached
     error = None

@@ -146,6 +146,15 @@ def set_ingestion_task_status(
         return existing
     if previous and TASK_STATUS_RANK.get(status, -1) < TASK_STATUS_RANK.get(previous, -1):
         return existing
+    if extra:
+        incoming_rev = extra.get("ocr_revision")
+        if incoming_rev is not None:
+            try:
+                incoming_rev = int(incoming_rev)
+            except (TypeError, ValueError):
+                incoming_rev = None
+            if incoming_rev is not None and incoming_rev <= int(existing.get("ocr_revision") or 0):
+                return existing
     payload = {
         **existing,
         "status": status,
