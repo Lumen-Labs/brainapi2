@@ -13,12 +13,22 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, JsonValue
+from redis.exceptions import RedisError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from src.lib.cypher_safety import InvalidCypherIdentifier, RawCypherRejected
 from src.lib.embeddings.client import EmbeddingClientError, EmbeddingError
 
 logger = logging.getLogger(__name__)
+CACHE_RETRY_AFTER = "5"
+
+
+def cache_unavailable() -> HTTPException:
+    return HTTPException(
+        status_code=503,
+        detail="Cache unavailable",
+        headers={"Retry-After": CACHE_RETRY_AFTER},
+    )
 
 
 class CodedHTTPException(HTTPException):
@@ -267,6 +277,16 @@ def install_error_handlers(app: FastAPI) -> None:
 
     app.add_exception_handler(EmbeddingError, embedding_exception_handler)
     app.add_exception_handler(EmbeddingClientError, embedding_exception_handler)
+
+    @app.exception_handler(RedisError)
+    async def redis_exception_handler(request: Request, exc: RedisError):
+        logger.exception("Cache unavailable", exc_info=exc)
+        return error_response(
+            request,
+            status_code=503,
+            detail="Cache unavailable",
+            headers={"Retry-After": CACHE_RETRY_AFTER},
+        )
 
     @app.exception_handler(Exception)
     async def unexpected_exception_handler(request: Request, _exc: Exception):

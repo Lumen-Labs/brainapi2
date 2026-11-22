@@ -87,7 +87,8 @@ def public_state(brain_id, task_id, payload):
         status = cancellation_status(run)
         return {**payload, "status": status, "stage": status, "cancellation_mode": run["mode"]}
     if run and run.get("staged") and run["status"] in {
-        "publishing", "discarding", "completed", "failed", "rollback_failed", "publish_partial",
+        "publishing", "discarding", "completed", "failed", "rollback_failed",
+        "publish_partial", "partial_failed",
     }:
         status = "processing" if run["status"] in {"publishing", "discarding"} else run["status"]
         extra = {"status": status, "stage": run["status"]}
@@ -95,6 +96,11 @@ def public_state(brain_id, task_id, payload):
             extra["rollback_reason"] = run["rollback_reason"]
         if run.get("error"):
             extra["error"] = run["error"]
+        if run.get("ocr_pages_accepted") or run.get("ocr_pages_failed") or run.get("ocr_total_pages"):
+            extra["ocr_pages_accepted"] = int(run.get("ocr_pages_accepted") or 0)
+            extra["ocr_pages_failed"] = int(run.get("ocr_pages_failed") or 0)
+            if run.get("ocr_total_pages"):
+                extra["ocr_total_pages"] = run["ocr_total_pages"]
         return {**payload, **extra}
     if run and run["status"] in {"active", "staging"}:
         modes = ["keep_saved", "rollback"] if run["status"] == "staging" else ["keep_saved"]
@@ -106,15 +112,18 @@ def public_state(brain_id, task_id, payload):
             1 for state in pages.values() if state == "failed"
         )
         if run.get("callback_deadline") and (accepted or failed or run.get("units")):
+            closed = run.get("ocr_partial") and run.get("sealed")
             extra = {
-                "status": "processing",
-                "stage": "processing",
+                "status": "partial_failed" if closed else "processing",
+                "stage": "partial_failed" if closed else "processing",
                 "ocr_pages_accepted": accepted,
                 "ocr_pages_failed": failed,
                 "cancellation_modes": modes,
             }
             if run.get("ocr_total_pages"):
                 extra["ocr_total_pages"] = run["ocr_total_pages"]
+            if closed and run.get("error"):
+                extra["error"] = run["error"]
             return {**payload, **extra}
         return {"status": "queued", **payload, "cancellation_modes": modes}
     return payload

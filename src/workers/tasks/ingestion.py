@@ -136,6 +136,8 @@ def set_ingestion_task_status(
         except Exception:
             existing = {}
     previous = existing.get("status")
+    if (previous == "partial_failed" or existing.get("ocr_partial")) and status == "completed":
+        status = "partial_failed"
     if previous in TERMINAL_TASK_STATUSES and status not in TERMINAL_TASK_STATUSES:
         return existing
     if previous in {"completed", "partial_failed"} and status == "failed":

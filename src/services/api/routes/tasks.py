@@ -12,8 +12,10 @@ import json
 from typing import Literal
 
 from pydantic import BaseModel
+from redis.exceptions import RedisError
 from src.core.saving import ingest_cancellation
 from src.core.saving import ingest_staging
+from src.services.api.errors import cache_unavailable
 from src.utils.logging import log
 from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from src.services.api.dependencies import get_brain_id
@@ -46,6 +48,9 @@ async def get_tasks(brain_id: str = Depends(get_brain_id)):
                 }
             )
         return {"tasks": results}
+    except RedisError as e:
+        log(f"Error in get_tasks: {type(e).__name__}: {str(e)}")
+        raise cache_unavailable() from e
     except Exception as e:
         log(f"Error in get_tasks: {type(e).__name__}: {str(e)}")
         raise HTTPException(
@@ -73,6 +78,9 @@ async def get_task(task_id: str, brain_id: str = Depends(get_brain_id)):
         }
     except HTTPException:
         raise
+    except RedisError as e:
+        log(f"Error in get_task: {type(e).__name__}: {str(e)}")
+        raise cache_unavailable() from e
     except Exception as e:
         log(f"Error in get_task: {type(e).__name__}: {str(e)}")
         raise HTTPException(

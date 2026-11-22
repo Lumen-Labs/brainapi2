@@ -1,5 +1,3 @@
-import os
-
 PLAIN_TEXT_EXTENSIONS = {
     ".csv",
     ".json",
@@ -54,11 +52,6 @@ def filename_extension(filename):
     return "." + name.rsplit(".", 1)[-1]
 
 
-def spreadsheet_experiment_brains():
-    raw = os.getenv("SPREADSHEET_EXPERIMENT_BRAINS") or ""
-    return {item.strip() for item in raw.split(",") if item.strip()}
-
-
 def is_spreadsheet_upload(filename, content_type):
     ext = filename_extension(filename)
     if ext in {".tsv", ".txt", ".md", ".markdown", ".json", ".jsonl", ".ndjson"}:
@@ -68,13 +61,6 @@ def is_spreadsheet_upload(filename, content_type):
     if ext:
         return False
     return normalized_content_type(content_type) in SPREADSHEET_CONTENT_TYPES
-
-
-def spreadsheet_experiment_owns_upload(brain_id, filename, content_type):
-    brains = spreadsheet_experiment_brains()
-    if not brain_id or brain_id not in brains:
-        return False
-    return is_spreadsheet_upload(filename, content_type)
 
 
 def is_plain_text_upload(filename, content_type):
@@ -94,8 +80,23 @@ def looks_like_binary(content):
     return b"\x00" in sample
 
 
+BLANK_PLAIN_TEXT_EXTENSIONS = {".txt", ".md", ".csv"}
+
+
 def decode_plain_text(content):
-    return (content or b"").decode("utf-8-sig", errors="replace")
+    raw = content or b""
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        pass
+    try:
+        return raw.decode("cp1252")
+    except UnicodeDecodeError:
+        return raw.decode("latin-1")
+
+
+def is_blank_plain_text(filename, text):
+    return filename_extension(filename) in BLANK_PLAIN_TEXT_EXTENSIONS and not (text or "").strip()
 
 
 def uses_plain_text_ingest(brain_id, filename, content_type, content=None):

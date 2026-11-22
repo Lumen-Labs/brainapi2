@@ -8,8 +8,8 @@ from fastapi.testclient import TestClient
 
 from src.core.saving.ingest_plain_text import (
     decode_plain_text,
+    is_blank_plain_text,
     is_spreadsheet_upload,
-    spreadsheet_experiment_owns_upload,
     uses_plain_text_ingest,
 )
 from src.core.saving.ingest_staging import (
@@ -52,12 +52,17 @@ def test_plain_text_classification_and_utf8_decode():
     assert not uses_plain_text_ingest("b", "page.html", "text/html")
     assert not uses_plain_text_ingest("b", "notes.txt", "text/plain", b"\x00binary")
     assert decode_plain_text(b"\xef\xbb\xbfhello") == "hello"
-    assert "\ufffd" in decode_plain_text(b"hi \xff there")
+    assert decode_plain_text(b"hi \xff there") == "hi ÿ there"
+    assert decode_plain_text(b"cost \x80 5") == "cost € 5"
+    assert is_blank_plain_text("notes.txt", "  \n\t")
+    assert is_blank_plain_text("README.md", "")
+    assert is_blank_plain_text("rows.csv", "   ")
+    assert not is_blank_plain_text("payload.json", "")
+    assert not is_blank_plain_text("notes.txt", "hello")
 
 
-def test_spreadsheet_experiment_claims_csv_ahead_of_text_path(monkeypatch):
+def test_spreadsheet_uploads_keep_text_fallback_after_importer(monkeypatch):
     monkeypatch.setenv("SPREADSHEET_EXPERIMENT_BRAINS", "sheet-brain")
-    assert spreadsheet_experiment_owns_upload("sheet-brain", "rows.csv", "text/csv")
     assert is_spreadsheet_upload("rows.csv", "text/csv")
     assert is_spreadsheet_upload("book.xlsx", "application/octet-stream")
     assert not is_spreadsheet_upload("rows.tsv", "text/tab-separated-values")
@@ -68,16 +73,17 @@ def test_spreadsheet_experiment_claims_csv_ahead_of_text_path(monkeypatch):
     assert uses_plain_text_ingest("other-brain", "rows.csv", "text/csv")
 
 
-def test_small_files_use_shorter_remote_ocr_deadline(monkeypatch):
+def test_small_files_keep_long_ocr_backstop_until_first_page(monkeypatch):
     monkeypatch.setattr("src.core.saving.ingest_staging.time", lambda: 1_000)
-    assert remote_ocr_callback_deadline(77) == 1_000 + SMALL_REMOTE_OCR_DEADLINE_SECONDS
+    assert remote_ocr_callback_deadline(77) == 1_000 + REMOTE_OCR_DEADLINE_SECONDS
     assert remote_ocr_callback_deadline(SMALL_REMOTE_OCR_MAX_BYTES) == (
-        1_000 + SMALL_REMOTE_OCR_DEADLINE_SECONDS
+        1_000 + REMOTE_OCR_DEADLINE_SECONDS
     )
     assert remote_ocr_callback_deadline(SMALL_REMOTE_OCR_MAX_BYTES + 1) == (
         1_000 + REMOTE_OCR_DEADLINE_SECONDS
     )
     assert remote_ocr_callback_deadline(None) == 1_000 + REMOTE_OCR_DEADLINE_SECONDS
+    assert SMALL_REMOTE_OCR_DEADLINE_SECONDS < REMOTE_OCR_DEADLINE_SECONDS
 
 
 def test_txt_upload_uses_text_ingest_and_skips_docparser(monkeypatch):
@@ -422,3 +428,176 @@ def test_unstaged_failed_callback_accepted_for_known_task(monkeypatch):
         json={"status": "failed", "error": "nope", "brain_id": "brain"},
     )
     assert missing_header.status_code == 422
+    ingest.set_ingestion_task_status.assert_called()
+    failed_call = ingest.set_ingestion_task_status.call_args_list[-1]
+    assert failed_call.args[2] == "failed"
+    assert "Success callback failed" in failed_call.kwargs["error"]
+
+
+def _writable_cache(initial):
+    store = dict(initial)
+
+    class FakeCache:
+        def get(self, key, brain_id="default"):
+            payload = store.get((key, brain_id))
+            return json.dumps(payload) if payload else None
+
+        def get_task(self, task_id, brain_id="default"):
+            return self.get(f"task:{task_id}", brain_id=brain_id)
+
+        def set(self, key, value, brain_id="default", expires_in=None):
+            store[(key, brain_id)] = json.loads(value) if isinstance(value, str) else value
+
+    return FakeCache(), store
+
+
+def test_unstaged_failed_callback_caps_error_at_2kb(monkeypatch):
+    app, ingest = _ingest_app()
+    monkeypatch.delenv("STAGED_INGESTION_ENABLED", raising=False)
+    cache, store = _writable_cache({
+        ("task:known", "brain"): {"status": "queued", "task_id": "known"},
+    })
+    monkeypatch.setattr(ingest, "cache_adapter", cache)
+    monkeypatch.setattr("src.workers.tasks.ingestion.cache_adapter", cache)
+    huge = "x" * 5000
+    response = TestClient(app).post(
+        "/ingest/",
+        json={"status": "failed", "error": huge, "brain_id": "brain"},
+        headers={"Task-Identifier": "known"},
+    )
+    assert response.status_code == 202
+    payload = store[("task:known", "brain")]
+    assert payload["status"] == "failed"
+    assert len(payload["error"]) == 2000
+
+
+def test_unstaged_multipage_callbacks_group_into_one_ingest(monkeypatch):
+    app, ingest = _ingest_app()
+    monkeypatch.delenv("STAGED_INGESTION_ENABLED", raising=False)
+    cache, store = _writable_cache({
+        ("task:ocr", "brain"): {"status": "queued", "task_id": "ocr"},
+    })
+    monkeypatch.setattr(ingest, "cache_adapter", cache)
+    monkeypatch.setattr("src.workers.tasks.ingestion.cache_adapter", cache)
+    queued = Mock()
+    monkeypatch.setattr(ingest.ingest_data_task, "apply_async", queued)
+    api = TestClient(app)
+    headers = {"Task-Identifier": "ocr"}
+    first = api.post(
+        "/ingest/",
+        json={
+            "data": {"data_type": "text", "text_data": "page one"},
+            "page_index": 0,
+            "total_pages": 2,
+        },
+        headers=headers,
+    )
+    assert first.status_code == 202
+    queued.assert_not_called()
+    assert store[("task:ocr", "brain")]["status"] == "started"
+    second = api.post(
+        "/ingest/",
+        json={
+            "data": {"data_type": "text", "text_data": "page two"},
+            "page_index": 1,
+            "total_pages": 2,
+        },
+        headers=headers,
+    )
+    assert second.status_code == 202
+    queued.assert_called_once()
+    body = queued.call_args.kwargs["args"][0]
+    assert body["data"]["text_data"] == "page one\n\npage two"
+
+
+def test_empty_text_uploads_are_rejected(monkeypatch):
+    app, ingest = _ingest_app()
+    monkeypatch.setattr(ingest, "set_ingestion_task_status", Mock())
+    monkeypatch.setattr(ingest.ingest_data_task, "apply_async", Mock())
+    api = TestClient(app)
+    for filename, content_type, body in (
+        ("notes.txt", "text/plain", b"   \n"),
+        ("README.md", "text/markdown", b""),
+        ("rows.csv", "text/csv", b"\t  "),
+    ):
+        response = api.post(
+            "/ingest/file",
+            files={"file": (filename, body, content_type)},
+        )
+        assert response.status_code == 422, filename
+    ingest.ingest_data_task.apply_async.assert_not_called()
+
+
+def test_cp1252_text_upload_is_decoded(monkeypatch):
+    app, ingest = _ingest_app()
+    queued = Mock()
+    monkeypatch.setattr(ingest, "set_ingestion_task_status", Mock())
+    monkeypatch.setattr(ingest.ingest_data_task, "apply_async", queued)
+    response = TestClient(app).post(
+        "/ingest/file",
+        files={"file": ("notes.txt", b"caf\xe9", "text/plain")},
+    )
+    assert response.status_code == 202
+    body = queued.call_args.kwargs["args"][0]
+    assert body["data"]["text_data"] == "café"
+
+
+def test_redis_outage_returns_503_on_ingest_callback_and_tasks(monkeypatch):
+    from redis.exceptions import ConnectionError as RedisConnectionError
+
+    app, ingest = _ingest_app()
+    monkeypatch.delenv("STAGED_INGESTION_ENABLED", raising=False)
+
+    def boom(*_args, **_kwargs):
+        raise RedisConnectionError("redis down")
+
+    monkeypatch.setattr(ingest.cache_adapter, "get", boom)
+    monkeypatch.setattr(ingest.cache_adapter, "get_task", boom)
+    ingest_api = TestClient(app, raise_server_exceptions=False)
+    callback = ingest_api.post(
+        "/ingest/",
+        json={"status": "failed", "error": "nope", "brain_id": "brain"},
+        headers={"Task-Identifier": "known"},
+    )
+    assert callback.status_code == 503
+    assert callback.headers.get("retry-after") == "5"
+
+    file_app, file_ingest = _ingest_app()
+    monkeypatch.setattr(file_ingest, "set_ingestion_task_status", boom)
+    file_response = TestClient(file_app, raise_server_exceptions=False).post(
+        "/ingest/file",
+        files={"file": ("notes.txt", b"hello", "text/plain")},
+    )
+    assert file_response.status_code == 503
+    assert file_response.headers.get("retry-after") == "5"
+
+    tasks_app, tasks = _tasks_app()
+    monkeypatch.setattr(tasks.cache_adapter, "get_task", boom)
+    task_response = TestClient(tasks_app, raise_server_exceptions=False).get("/tasks/ocr-task")
+    assert task_response.status_code == 503
+    assert task_response.headers.get("retry-after") == "5"
+
+
+def test_completed_status_keeps_partial_failed_ocr(monkeypatch):
+    from src.workers.tasks.ingestion import set_ingestion_task_status
+
+    cache, store = _writable_cache({})
+    import src.workers.tasks.ingestion as ingestion
+
+    original = ingestion.cache_adapter
+    ingestion.cache_adapter = cache
+    try:
+        set_ingestion_task_status(
+            "t-partial",
+            "brain",
+            "partial_failed",
+            stage="partial_failed",
+            error="OCR finished with 1 of 3 pages accepted; 0 failed, 2 missing",
+            extra={"ocr_partial": True, "ocr_pages_accepted": 1, "ocr_total_pages": 3},
+        )
+        set_ingestion_task_status("t-partial", "brain", "completed", stage="completed")
+        payload = store[("task:t-partial", "brain")]
+        assert payload["status"] == "partial_failed"
+        assert payload.get("ocr_partial") is True
+    finally:
+        ingestion.cache_adapter = original
