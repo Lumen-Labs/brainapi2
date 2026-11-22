@@ -43,9 +43,11 @@ for key, value in ENV_DEFAULTS.items():
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from src.core.saving import history_intent as history_mod
 from src.core.saving.history_intent import (
     CURRENT_EXAMPLES,
     HISTORY_EXAMPLES,
+    HISTORY_MARGIN,
     PrototypeWarmupError,
     lexical_history_decision,
     lexical_history_intent,
@@ -55,6 +57,34 @@ from src.core.saving.history_intent import (
     reset_prototype_cache,
     resolve_include_history,
 )
+
+
+def _mainline_resolve_include_history(
+    explicit,
+    query_text=None,
+    query=None,
+    history_vectors=None,
+    current_vectors=None,
+    *,
+    margin=0.02,
+):
+    if explicit is not None:
+        return explicit
+    if lexical_history_intent(query_text):
+        return True
+    cleaned = (query_text or "").strip()
+    if (
+        cleaned
+        and history_mod._CURRENT_VALUE_RE.search(cleaned)
+        and not history_mod._STRONG_HISTORY_RE.search(cleaned)
+    ):
+        return False
+    return prefers_history(
+        query,
+        history_vectors or [],
+        current_vectors or [],
+        margin=margin,
+    )
 
 try:
     from src.services.api.controllers import retrieve as retrieve_mod
@@ -364,6 +394,86 @@ class EverydayHistoryIntentTests(unittest.TestCase):
         self.assertFalse(
             _wants("what did this say before the change", explicit=False)
         )
+
+
+class MainlineHistoryParityTests(unittest.TestCase):
+    def test_margin_and_strict_greater_than_threshold_match_main(self):
+        self.assertEqual(HISTORY_MARGIN, 0.02)
+        history = [[1.0, 0.0]]
+        current = [[0.0, 1.0]]
+        self.assertTrue(prefers_history([1.0, 0.0], history, current, margin=0.02))
+        self.assertFalse(prefers_history([0.0, 1.0], history, current, margin=0.02))
+        self.assertFalse(
+            prefers_history([1.0, 0.0], [[1.0, 0.0]], [[1.0, 0.0]], margin=0.02)
+        )
+
+    def test_explicit_none_true_false_match_mainline_resolver(self):
+        history = [[1.0, 0.0]]
+        current = [[0.0, 1.0]]
+        queries = (
+            list(HISTORY_EXAMPLES)
+            + list(CURRENT_EXAMPLES)
+            + [
+                "who is Alice",
+                "what is the current value",
+                "what did this say before the change",
+                "Have I implemented this library before?",
+                "com'era prima questo testo",
+                "was steht hier jetzt",
+                "以前の内容は何でしたか",
+                "现在的内容是什么",
+                "ما المكتوب الآن",
+                "что здесь было написано раньше",
+            ]
+        )
+        vectors = (None, [1.0, 0.0], [0.0, 1.0])
+        flags = (True, False, None)
+        mismatches = []
+        for text in queries:
+            for explicit in flags:
+                for query in vectors:
+                    got = resolve_include_history(
+                        explicit,
+                        query_text=text,
+                        query=query,
+                        history_vectors=history,
+                        current_vectors=current,
+                    )
+                    expected = _mainline_resolve_include_history(
+                        explicit,
+                        query_text=text,
+                        query=query,
+                        history_vectors=history,
+                        current_vectors=current,
+                    )
+                    if got is not expected:
+                        mismatches.append((text, explicit, query, got, expected))
+        self.assertEqual(mismatches, [])
+
+    def test_fixture_probes_match_mainline_and_held_out_labels(self):
+        history = _FIXTURE["history_vectors"]
+        current = _FIXTURE["current_vectors"]
+        mismatches = []
+        for probe in _FIXTURE["probes"]:
+            kwargs = dict(
+                explicit=None,
+                query_text=probe["text"],
+                query=probe["vector"],
+                history_vectors=history,
+                current_vectors=current,
+            )
+            got = resolve_include_history(**kwargs)
+            mainline = _mainline_resolve_include_history(**kwargs)
+            if got is not mainline or got is not probe["want_history"]:
+                mismatches.append(
+                    {
+                        "text": probe["text"],
+                        "got": got,
+                        "mainline": mainline,
+                        "want": probe["want_history"],
+                    }
+                )
+        self.assertEqual(mismatches, [])
 
 
 class PrototypeCacheTests(unittest.TestCase):

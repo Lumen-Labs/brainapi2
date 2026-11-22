@@ -372,6 +372,157 @@ class StageLogTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("api-key", output.lower())
 
 
+class IncludeHistoryPlumbingTests(unittest.IsolatedAsyncioTestCase):
+    def tearDown(self):
+        reset_prototype_cache()
+
+    async def test_explicit_true_false_none_reach_fact_screening(self):
+        from src.core.saving import source_passages as passages_mod
+        from src.services.api.controllers import retrieve as retrieve_mod
+
+        seen = []
+        original = passages_mod.current_fact_candidates
+
+        def wrapped(*args, **kwargs):
+            seen.append(kwargs.get("include_history"))
+            return original(*args, **kwargs)
+
+        cases = (
+            (True, True, "who is Alice"),
+            (False, False, "who is Alice"),
+            (None, False, "what is the current value"),
+            (None, True, "what did this say before the change"),
+        )
+        with (
+            _stubbed_adapters(retrieve_mod, _facts(1)),
+            patch.object(passages_mod, "current_fact_candidates", wrapped),
+        ):
+            for flag, expected, text in cases:
+                seen.clear()
+                await retrieve_mod.get_context(
+                    GetContextRequestBody(
+                        text=text,
+                        brain_id="brain-a",
+                        include_history=flag,
+                    )
+                )
+                self.assertEqual(seen, [expected], (flag, text, seen))
+
+
+class QueryEmbeddingCacheIsolationTests(unittest.IsolatedAsyncioTestCase):
+    def tearDown(self):
+        reset_prototype_cache()
+
+    def test_controller_has_no_process_query_vector_cache(self):
+        from src.services.api.controllers import retrieve as retrieve_mod
+
+        self.assertFalse(hasattr(retrieve_mod, "shared_vectors"))
+        self.assertIsInstance(retrieve_mod._io_state, dict)
+        self.assertNotIn("vectors", retrieve_mod._io_state)
+
+    async def test_same_text_does_not_reuse_vectors_across_brains_or_requests(self):
+        from src.services.api.controllers import retrieve as retrieve_mod
+
+        issued = []
+
+        def embed_text(text):
+            vector = [float(len(issued) + 1), 0.2, 0.3]
+            issued.append((text, tuple(vector)))
+            return Vector(id=f"q{len(issued)}", embeddings=list(vector), metadata={})
+
+        searches = []
+
+        def capture_search(embeddings, brain_id=None, **_kwargs):
+            searches.append((brain_id, tuple(embeddings)))
+            return [
+                Vector(
+                    id="n1",
+                    embeddings=list(embeddings),
+                    metadata={"uuid": "a", "name": "Alice"},
+                    distance=0.1,
+                )
+            ]
+
+        with _stubbed_adapters(retrieve_mod, _facts(1)) as (embeddings, mock_vs, _g, _d):
+            embeddings.embed_text.side_effect = embed_text
+            embeddings.embed_texts.side_effect = lambda texts: [
+                embed_text(item) for item in texts
+            ]
+            mock_vs.search_nodes.side_effect = capture_search
+            mock_vs.search_relationships.return_value = []
+            await retrieve_mod.get_context(
+                GetContextRequestBody(
+                    text="who is Alice",
+                    brain_id="tenant-a",
+                    include_history=False,
+                )
+            )
+            first = [item for item in searches if item[0] == "tenant-a"]
+            await retrieve_mod.get_context(
+                GetContextRequestBody(
+                    text="who is Alice",
+                    brain_id="tenant-b",
+                    include_history=False,
+                )
+            )
+
+        second = [item for item in searches if item[0] == "tenant-b"]
+        self.assertTrue(first)
+        self.assertTrue(second)
+        self.assertNotEqual(first[0][1], second[0][1])
+        self.assertGreaterEqual(len(issued), 2)
+
+    async def test_concurrent_brains_do_not_mix_query_vectors(self):
+        import contextvars
+
+        from src.services.api.controllers import retrieve as retrieve_mod
+
+        brain_var = contextvars.ContextVar("brain_id")
+        searches = []
+
+        def embed_text(_text):
+            brain_id = brain_var.get()
+            value = 0.11 if brain_id == "tenant-a" else 0.99
+            return Vector(id=brain_id, embeddings=[value, 0.0, 0.0], metadata={})
+
+        def capture_search(embeddings, brain_id=None, **_kwargs):
+            searches.append((brain_id, tuple(embeddings)))
+            return [
+                Vector(
+                    id="n1",
+                    embeddings=list(embeddings),
+                    metadata={"uuid": "a", "name": "Alice"},
+                    distance=0.1,
+                )
+            ]
+
+        async def one(brain_id):
+            token = brain_var.set(brain_id)
+            try:
+                await retrieve_mod.get_context(
+                    GetContextRequestBody(
+                        text="who is Alice",
+                        brain_id=brain_id,
+                        include_history=False,
+                    )
+                )
+            finally:
+                brain_var.reset(token)
+
+        with _stubbed_adapters(retrieve_mod, _facts(1)) as (embeddings, mock_vs, _g, _d):
+            embeddings.embed_text.side_effect = embed_text
+            embeddings.embed_texts.side_effect = lambda texts: [
+                embed_text(item) for item in texts
+            ]
+            mock_vs.search_nodes.side_effect = capture_search
+            mock_vs.search_relationships.return_value = []
+            await asyncio.gather(one("tenant-a"), one("tenant-b"))
+
+        by_brain = {brain: vector for brain, vector in searches}
+        self.assertEqual(by_brain["tenant-a"][0], 0.11)
+        self.assertEqual(by_brain["tenant-b"][0], 0.99)
+
+
 class ContextGetRouteTests(unittest.TestCase):
     def test_get_and_post_context_are_registered(self):
         from src.services.api.routes.retrieve import retrieve_router
