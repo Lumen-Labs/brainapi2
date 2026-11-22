@@ -149,7 +149,19 @@ def _preload_spacy() -> None:
         _retry(download, model)
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
+    args = list(sys.argv[1:] if argv is None else argv)
+    spacy_only = "--spacy-only" in args
+    local_ml_only = "--local-ml-only" in args
+    if spacy_only and local_ml_only:
+        raise SystemExit("choose one of --spacy-only or --local-ml-only")
+    if spacy_only:
+        _preload_spacy()
+        return
+    if local_ml_only:
+        _configure_hf_token()
+        _preload_sentence_transformers()
+        return
     _configure_hf_token()
     _preload_sentence_transformers()
     _preload_spacy()

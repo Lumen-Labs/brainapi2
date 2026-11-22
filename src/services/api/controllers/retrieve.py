@@ -1734,7 +1734,7 @@ def _collect_query_variants(text: str, elements) -> list[str]:
 
 
 _ENUMERATION_RE = re.compile(
-    r"\b(what|which|list|ways?|types?|kinds?|events?|books?|items?|"
+    r"\b(list|ways?|types?|kinds?|events?|books?|items?|"
     r"changes?|traits?|hobbies|activities)\b",
     re.IGNORECASE,
 )
@@ -2291,6 +2291,7 @@ async def _build_context(
     candidates: list[dict[str, Any]] = []
     seed_hits: list[tuple[str, float, str]] = []
     passage_hits: list[tuple[str, float, str]] = []
+    primary_passage_hits: list[tuple[str, float, str]] = []
     from src.core.saving.history_intent import (
         lexical_history_decision,
         lexical_history_intent,
@@ -2486,7 +2487,7 @@ async def _build_context(
             return list(seeds), local
 
     async def _collect_passages() -> None:
-        nonlocal passage_hits
+        nonlocal passage_hits, primary_passage_hits
         with profile_stage("passages.collect", blocking=False) as detail:
             queries = [request.text] + [
                 v
@@ -2501,26 +2502,35 @@ async def _build_context(
             fused_lists: list[list[str]] = []
             id_to_text: dict[str, str] = {}
             id_to_score: dict[str, float] = {}
+            collect_limit = max(max_passages, _PASSAGE_K)
+            primary_limit = max(collect_limit, request.historical_limit)
 
-            def _hits_for_query(query: str) -> list[tuple[str, float, str]]:
+            def _hits_for_query(query: str, limit: int) -> list[tuple[str, float, str]]:
                 return _retrieve_passages(
                     query,
                     request.brain_id,
-                    limit=max(max_passages, _PASSAGE_K),
+                    limit=limit,
                     embeddings=shared_vectors.get(query),
                 )
 
             query_hits = list(
                 await asyncio.gather(
                     *[
-                        asyncio.to_thread(_hits_for_query, query)
-                        for query in queries
+                        asyncio.to_thread(
+                            _hits_for_query,
+                            query,
+                            primary_limit if index == 0 else collect_limit,
+                        )
+                        for index, query in enumerate(queries)
                     ]
                 )
             )
-            for hits in query_hits:
+            if query_hits:
+                primary_passage_hits = query_hits[0]
+            for index, hits in enumerate(query_hits):
+                fusion_hits = hits[:collect_limit] if index == 0 else hits
                 ordered_ids: list[str] = []
-                for chunk_id, score, body in hits:
+                for chunk_id, score, body in fusion_hits:
                     ordered_ids.append(chunk_id)
                     id_to_text[chunk_id] = body
                     prev = id_to_score.get(chunk_id)
@@ -2599,13 +2609,7 @@ async def _build_context(
             return _merge_prior(texts, hits)
 
         with profile_stage("historical.context", blocking=False):
-            passages = await asyncio.to_thread(
-                _retrieve_passages,
-                request.text,
-                request.brain_id,
-                limit=max(request.historical_limit, _PASSAGE_K),
-                embeddings=shared_vectors.get(request.text),
-            )
+            passages = primary_passage_hits
             if passages:
                 historical_context = await asyncio.to_thread(
                     _history_from_hits, passages
@@ -2654,13 +2658,16 @@ async def _build_context(
     with profile_stage(
         "retrieval.fanout", blocking=False, variants=len(variants)
     ):
+        async def _collect_passages_and_history() -> None:
+            await _collect_passages()
+            await _get_historical_context()
+
         fact_futures = [
             asyncio.to_thread(_collect_facts_for_variant, variant)
             for variant in variants
         ]
         other_futures = [
-            _collect_passages(),
-            _get_historical_context(),
+            _collect_passages_and_history(),
         ]
         all_results = await asyncio.gather(*fact_futures, *other_futures)
         variant_outputs = all_results[: len(variants)]

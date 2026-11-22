@@ -49,8 +49,9 @@ RUN if [ "$INSTALL_LOCAL_ML" = "true" ]; then \
 COPY src/ ./src/
 COPY scripts/preload_docker_models.py ./scripts/
 
-RUN if [ "$INSTALL_LOCAL_ML" = "true" ]; then \
-        /app/.venv/bin/python scripts/preload_docker_models.py; \
+RUN /app/.venv/bin/python scripts/preload_docker_models.py --spacy-only \
+    && if [ "$INSTALL_LOCAL_ML" = "true" ]; then \
+        /app/.venv/bin/python scripts/preload_docker_models.py --local-ml-only; \
     fi \
     && rm -rf /root/.cache /tmp/*
 

@@ -98,6 +98,9 @@ async def lifespan(app: FastAPI):
     from src.core.plugins.loader import PluginLoader
 
     start_runtime_monitoring("brainapi-api")
+    from src.utils.nlp.spacy import warmup_default_model
+
+    warmup_default_model()
     ctx = PluginContext.from_app(app)
     loader = PluginLoader(plugins_dir=PLUGINS_DIR, context=ctx)
     results = loader.load_all()

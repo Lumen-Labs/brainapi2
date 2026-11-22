@@ -96,7 +96,35 @@ class CollectQueryVariantsTests(unittest.TestCase):
         )
         self.assertTrue(
             any("friend" in v.lower() for v in variants[1:]),
-            "enumeration decomposition should add relation-focused subqueries",
+            "noun-chunk variants should keep the friend mention",
+        )
+
+    def test_generic_brain_question_is_not_enumeration(self):
+        from src.services.api.controllers import retrieve as retrieve_mod
+
+        question = "what is this brain about?"
+        self.assertFalse(retrieve_mod._is_enumeration_question(question))
+        elements = ExtractElementsResponse(
+            tokens=[
+                {"text": "brain", "lemma": "brain", "pos": "NOUN"},
+                {"text": "this", "lemma": "this", "pos": "DET"},
+            ],
+            noun_chunks=["this brain"],
+        )
+        extras = retrieve_mod._decompose_enumeration_queries(question, elements)
+        self.assertEqual(extras, [])
+        variants = retrieve_mod._collect_query_variants(question, elements)
+        self.assertEqual(variants[0], question)
+        self.assertNotIn("brain about", " ".join(variants[1:]).lower())
+
+    def test_list_question_still_counts_as_enumeration(self):
+        from src.services.api.controllers import retrieve as retrieve_mod
+
+        self.assertTrue(
+            retrieve_mod._is_enumeration_question("what books has Caroline read?")
+        )
+        self.assertTrue(
+            retrieve_mod._is_enumeration_question("list the types of events")
         )
 
 
@@ -577,6 +605,55 @@ class ContextPassageModeTests(unittest.TestCase):
         mock_data.search.assert_called()
         mock_data.search_bm25.assert_not_called()
         self.assertEqual(hits[0][0], "ilike-2")
+
+
+class HistoricalContextReuseTests(unittest.IsolatedAsyncioTestCase):
+    async def test_historical_context_reuses_primary_passage_hits(self):
+        from src.services.api.controllers import retrieve as retrieve_mod
+
+        mock_embeddings = MagicMock()
+        mock_embeddings.embed_text.return_value = Vector(
+            id="q", embeddings=[0.1, 0.2, 0.3], metadata={}
+        )
+        mock_vs = MagicMock()
+        mock_vs.search_nodes.return_value = []
+        mock_vs.search_relationships.return_value = []
+        mock_graph = MagicMock()
+        mock_graph.get_event_centric_neighbors.return_value = []
+        mock_data = MagicMock()
+        mock_data.get_last_text_chunks.return_value = []
+        mock_data.get_last_structured_data.return_value = []
+        mock_data.get_text_chunks_by_ids.side_effect = RuntimeError("no lookup")
+        elements = ExtractElementsResponse(tokens=[], noun_chunks=[])
+        retrieve_calls: list[str] = []
+
+        def fake_retrieve(text, brain_id, *, limit, embeddings=None):
+            retrieve_calls.append(text)
+            return [("chunk-1", 0.1, "cached passage")]
+
+        with (
+            patch.object(retrieve_mod, "embeddings_adapter", mock_embeddings),
+            patch.object(retrieve_mod, "vector_search", mock_vs),
+            patch.object(retrieve_mod, "graph_adapter", mock_graph),
+            patch.object(retrieve_mod, "data_adapter", mock_data),
+            patch.object(
+                retrieve_mod._entity_extractor,
+                "extract_elements",
+                return_value=elements,
+            ),
+            patch.object(
+                retrieve_mod, "_retrieve_passages", side_effect=fake_retrieve
+            ),
+        ):
+            response = await retrieve_mod.get_context(
+                GetContextRequestBody(
+                    text="what is this brain about?",
+                    brain_id="brain-a",
+                )
+            )
+
+        self.assertEqual(retrieve_calls.count("what is this brain about?"), 1)
+        self.assertEqual(response.historical_context, ["cached passage"])
 
 
 if __name__ == "__main__":

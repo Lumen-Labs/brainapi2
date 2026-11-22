@@ -502,7 +502,7 @@ class SpacyConfig:
 
     def __init__(self):
         self.keep_models_in_memory = (
-            os.getenv("SPACY_KEEP_MODELS_IN_MEMORY", "false") == "true"
+            os.getenv("SPACY_KEEP_MODELS_IN_MEMORY", "true") == "true"
         )
 
 
