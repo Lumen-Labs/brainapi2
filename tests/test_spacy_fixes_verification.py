@@ -333,6 +333,35 @@ class TestSpacyManagerDownloadBehavior(unittest.TestCase):
             self.assertIs(mgr.get_model("pl"), nlp)
         self.assertEqual(mock_load.call_count, 2)
 
+    @patch("src.utils.nlp.spacy.spacy.load")
+    def test_stale_failed_sentinel_without_failure_record_retries(self, mock_load):
+        nlp = object()
+        mock_load.return_value = nlp
+        from src.utils.nlp.spacy import SpacyManager, _FAILED
+
+        mgr = SpacyManager()
+        mgr.keep_models_in_memory = True
+        mgr._cache["pl"] = _FAILED
+        self.assertIs(mgr.get_model("pl"), nlp)
+        mock_load.assert_called_once_with("pl_core_news_sm")
+
+    @patch("src.utils.nlp.spacy.spacy.load")
+    def test_unload_alias_clears_canonical_cache(self, mock_load):
+        mock_load.side_effect = OSError("missing")
+        from src.utils.nlp.spacy import SpacyManager
+
+        mgr = SpacyManager()
+        mgr.keep_models_in_memory = True
+        with patch("src.utils.nlp.spacy.logger"):
+            with self.assertRaises(OSError):
+                mgr.get_model("no")
+        mgr.unload("no")
+        nlp = object()
+        mock_load.side_effect = None
+        mock_load.return_value = nlp
+        self.assertIs(mgr.get_model("nb"), nlp)
+        self.assertEqual(mock_load.call_count, 2)
+
     def test_load_retry_ttl_defaults_to_five_minutes(self):
         from src.config import _spacy_load_retry_ttl_seconds
         from src.constants.spacy_models import DEFAULT_SPACY_LOAD_RETRY_TTL_SECONDS

@@ -51,7 +51,7 @@ class SpacyManager:
             return False
         failure = self._failures.get(lang)
         if failure is None:
-            return True
+            return False
         return (time.monotonic() - failure[1]) < ttl
 
     def _clear_failure(self, lang: str) -> None:
@@ -137,6 +137,7 @@ class SpacyManager:
         ).start()
 
     def unload(self, lang: str):
+        lang = resolve_spacy_lang(lang)
         self._cache.pop(lang, None)
         self._failures.pop(lang, None)
 
