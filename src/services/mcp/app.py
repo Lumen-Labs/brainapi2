@@ -12,6 +12,10 @@ from starlette.routing import Mount, Route
 _project_root = Path(__file__).resolve().parent.parent.parent.parent
 dotenv.load_dotenv(_project_root / ".env")
 
+from src.lib.disable_langchain_tracing import disable_langchain_tracing
+
+disable_langchain_tracing()
+
 from src.lib.tracing.middleware import TraceMiddleware
 from src.lib.tracing.runtime import start_runtime_monitoring, stop_runtime_monitoring
 from src.services.mcp.main import (

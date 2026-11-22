@@ -17,6 +17,10 @@ import dotenv
 _project_root = Path(__file__).resolve().parent.parent.parent
 dotenv.load_dotenv(_project_root / ".env")
 
+from src.lib.disable_langchain_tracing import disable_langchain_tracing
+
+disable_langchain_tracing()
+
 warnings.filterwarnings(
     "ignore",
     message=r"Unrecognized FinishReason enum value",
