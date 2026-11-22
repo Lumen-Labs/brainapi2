@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from redis.exceptions import RedisError
 from src.core.saving import ingest_cancellation
 from src.core.saving import ingest_staging
+from src.core.saving import unstaged_ocr
 from src.services.api.errors import cache_unavailable
 from src.utils.logging import log
 from fastapi import APIRouter, Depends, HTTPException, Request, Query
@@ -209,9 +210,10 @@ def customer_task(result, brain_id=None):
         if snapshot:
             result = {**result,"status":snapshot["status"],"stage":snapshot["stage"],"progress":snapshot["progress"]}
     # Task responses are also accessible through normal BrainPATs.
+    hidden = {"usage", "usage_events", "provider", "model", *unstaged_ocr.INTERNAL_TASK_KEYS}
     def scrub(value):
         if isinstance(value,dict):
-            return {key:scrub(item) for key,item in value.items() if not any(term in key.lower() for term in ("token", "cost", "configuration", "routing")) and key not in {"usage", "usage_events", "provider", "model"}}
+            return {key:scrub(item) for key,item in value.items() if not any(term in key.lower() for term in ("token", "cost", "configuration", "routing")) and key not in hidden}
         if isinstance(value,list):
             return [scrub(item) for item in value]
         return value

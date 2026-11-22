@@ -149,5 +149,49 @@ class RedisClient(CacheClient):
         except (json.JSONDecodeError, TypeError):
             return None
 
+    def _decode_hash_value(self, value):
+        if isinstance(value, bytes):
+            return value.decode("utf-8")
+        return value
+
+    def hset(self, key: str, field: str, value: str, brain_id: str) -> int:
+        return int(self.client.hset(self._get_key(key, brain_id), field, value))
+
+    def hsetnx(self, key: str, field: str, value: str, brain_id: str) -> bool:
+        return bool(self.client.hsetnx(self._get_key(key, brain_id), field, value))
+
+    def hgetall(self, key: str, brain_id: str) -> dict:
+        raw = self.client.hgetall(self._get_key(key, brain_id)) or {}
+        return {
+            self._decode_hash_value(field): self._decode_hash_value(item)
+            for field, item in raw.items()
+        }
+
+    def hdel(self, key: str, field: str, brain_id: str) -> int:
+        return int(self.client.hdel(self._get_key(key, brain_id), field))
+
+    def hincrby(self, key: str, field: str, amount: int, brain_id: str) -> int:
+        return int(self.client.hincrby(self._get_key(key, brain_id), field, amount))
+
+    def hmax(self, key: str, field: str, value: int, brain_id: str) -> int:
+        return int(
+            self.client.eval(
+                (
+                    "local current = tonumber(redis.call('HGET', KEYS[1], ARGV[1]) or '0') "
+                    "local incoming = tonumber(ARGV[2]) "
+                    "if incoming > current then "
+                    "redis.call('HSET', KEYS[1], ARGV[1], incoming) "
+                    "return incoming end return current"
+                ),
+                1,
+                self._get_key(key, brain_id),
+                field,
+                int(value),
+            )
+        )
+
+    def expire(self, key: str, seconds: int, brain_id: str) -> bool:
+        return bool(self.client.expire(self._get_key(key, brain_id), seconds))
+
 
 _redis_client = RedisClient()
