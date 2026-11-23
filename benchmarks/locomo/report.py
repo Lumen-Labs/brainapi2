@@ -9,6 +9,7 @@ from typing import Any
 from rich.console import Console
 from rich.table import Table
 
+from degraded import DEFAULT_MAX_DEGRADED_RATE, score_degraded_rows
 from locomo.config import BENCHMARKS_ROOT, CATEGORY_NAMES
 from locomo.evaluate import row_is_degraded
 from locomo.ingest import load_jsonl
@@ -63,7 +64,12 @@ def _latest_answer_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return list(latest.values())
 
 
-def build_report(run_dir: Path, *, include_degraded: bool = False) -> dict[str, Any]:
+def build_report(
+    run_dir: Path,
+    *,
+    include_degraded: bool = False,
+    max_degraded_rate: float = DEFAULT_MAX_DEGRADED_RATE,
+) -> dict[str, Any]:
     answers_path = run_dir / "answers.jsonl"
     ingest_path = run_dir / "ingest.jsonl"
     manifest_path = run_dir / "manifest.json"
@@ -88,6 +94,17 @@ def build_report(run_dir: Path, *, include_degraded: bool = False) -> dict[str, 
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
     metrics = aggregate_answers(scored_answers)
+    non_adv_answers = [r for r in answers if int(r.get("category") or 0) != 5]
+    degraded_stats = score_degraded_rows(
+        non_adv_answers, max_degraded_rate=max_degraded_rate
+    )
+    overall_degraded_stats = score_degraded_rows(
+        answers, max_degraded_rate=max_degraded_rate
+    )
+    metrics["headline_judge_accuracy_strict"] = degraded_stats["strict_accuracy"]
+    metrics["overall_judge_accuracy_strict"] = overall_degraded_stats[
+        "strict_accuracy"
+    ]
     ingest_summary = {
         "n": len(ingest_latest),
         "completed": sum(1 for r in ingest_latest if r.get("status") == "completed"),
@@ -151,6 +168,12 @@ def build_report(run_dir: Path, *, include_degraded: bool = False) -> dict[str, 
         "empty_predictions": empty_predictions,
         "rows_with_truncated_context": truncated_rows,
         "degraded_rows": len(degraded_answers),
+        "degraded_rate": overall_degraded_stats["degraded_rate"],
+        "max_degraded_rate": max_degraded_rate,
+        "strict_accuracy": degraded_stats["strict_accuracy"],
+        "exceeded_max_degraded_rate": overall_degraded_stats[
+            "exceeded_max_degraded_rate"
+        ],
         "include_degraded": include_degraded,
     }
 
@@ -180,6 +203,12 @@ def build_report(run_dir: Path, *, include_degraded: bool = False) -> dict[str, 
         report["warnings"].append(
             f"{len(degraded_answers)} rows had degraded retrieval and are "
             "excluded from accuracy scores."
+        )
+    if overall_degraded_stats["exceeded_max_degraded_rate"]:
+        rate = overall_degraded_stats["degraded_rate"]
+        report["warnings"].append(
+            f"Degraded retrieval rate {rate:.1%} exceeds max "
+            f"{max_degraded_rate:.1%}."
         )
     if truncated_rows:
         report["warnings"].append(
@@ -262,7 +291,9 @@ def render_markdown(report: dict[str, Any]) -> str:
             f"- Rows in answers.jsonl: {integrity.get('rows_in_file', 'n/a')}",
             f"- Scored unique questions: {integrity.get('scored_rows', 'n/a')}",
             f"- Errored rows (excluded): {integrity.get('errored_rows', 'n/a')}",
-            f"- Degraded retrieval rows: {integrity.get('degraded_rows', 0)}",
+            f"- Degraded retrieval rows: {integrity.get('degraded_rows', 0)} "
+            f"(rate {_pct(integrity.get('degraded_rate'))}, "
+            f"max {_pct(integrity.get('max_degraded_rate'))})",
             f"- Duplicate rows dropped: {integrity.get('duplicates_dropped', 'n/a')}",
             f"- Empty predictions: {integrity.get('empty_predictions', 'n/a')}",
             f"- Rows with truncated context: "
@@ -277,6 +308,8 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"**{_pct(metrics.get('headline_judge_accuracy'))}** "
         f"{_ci(metrics.get('headline_judge_accuracy_ci95'))} "
         f"(n={metrics.get('n_non_adversarial', 0)})",
+        f"- Strict judge accuracy (degraded counted wrong): "
+        f"**{_pct(metrics.get('headline_judge_accuracy_strict'))}**",
         f"- Judge accuracy (all categories): "
         f"**{_pct(metrics.get('overall_judge_accuracy'))}** "
         f"{_ci(metrics.get('overall_judge_accuracy_ci95'))} "
@@ -578,8 +611,17 @@ def update_reports_json(report: dict[str, Any]) -> None:
         raise
 
 
-def write_report(run_dir: Path, *, include_degraded: bool = False) -> dict[str, Any]:
-    report = build_report(run_dir, include_degraded=include_degraded)
+def write_report(
+    run_dir: Path,
+    *,
+    include_degraded: bool = False,
+    max_degraded_rate: float = DEFAULT_MAX_DEGRADED_RATE,
+) -> dict[str, Any]:
+    report = build_report(
+        run_dir,
+        include_degraded=include_degraded,
+        max_degraded_rate=max_degraded_rate,
+    )
     md = render_markdown(report)
     (run_dir / "report.json").write_text(
         json.dumps(report, indent=2), encoding="utf-8"
@@ -627,6 +669,13 @@ def print_report_table(report: dict[str, Any]) -> None:
         f"Headline judge accuracy (excl. cat 5): "
         f"[bold]{_pct(metrics.get('headline_judge_accuracy'))}[/bold] "
         f"{_ci(metrics.get('headline_judge_accuracy_ci95'))}"
+    )
+    integrity = report.get("integrity") or {}
+    console.print(
+        f"Strict judge accuracy (degraded counted wrong): "
+        f"[bold]{_pct(metrics.get('headline_judge_accuracy_strict'))}[/bold] | "
+        f"Degraded: {integrity.get('degraded_rows', 0)} "
+        f"({_pct(integrity.get('degraded_rate'))})"
     )
     channels = metrics.get("evidence_session_recall_by_channel") or {}
     console.print(

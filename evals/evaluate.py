@@ -1,9 +1,21 @@
 from __future__ import annotations
 
 import json
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+_BENCH_ROOT = Path(__file__).resolve().parents[1] / "benchmarks"
+if str(_BENCH_ROOT) not in sys.path:
+    sys.path.insert(0, str(_BENCH_ROOT))
+
+from degraded import (
+    DEFAULT_MAX_DEGRADED_RATE,
+    degraded_stages,
+    row_is_degraded,
+    score_degraded_rows,
+)
 
 from evals.adapters.base import QueryResult, SystemAdapter
 from evals.adapters.brainapi import (
@@ -43,18 +55,6 @@ def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
     with path.open("w", encoding="utf-8") as handle:
         for row in rows:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
-
-
-def degraded_stages(value: Any) -> list[str]:
-    if isinstance(value, str) and value.strip():
-        return [value.strip()]
-    if isinstance(value, (list, tuple, set)):
-        return [str(item) for item in value if str(item).strip()]
-    return []
-
-
-def row_is_degraded(row: dict[str, Any] | None) -> bool:
-    return bool(degraded_stages((row or {}).get("degraded")))
 
 
 def _degraded_from_result(result: QueryResult) -> list[str]:
@@ -269,11 +269,15 @@ def _query_records(
 
 
 def _aggregate(
-    records: list[dict[str, Any]], *, include_degraded: bool = False
+    records: list[dict[str, Any]],
+    *,
+    include_degraded: bool = False,
+    max_degraded_rate: float = DEFAULT_MAX_DEGRADED_RATE,
 ) -> dict[str, Any]:
     n = len(records)
     scored = [row for row in records if row.get("error") is None]
     n_unsupported = sum(1 for row in records if row.get("unsupported") and row.get("error") is None)
+    n_errors = sum(1 for row in records if row.get("error"))
     n_degraded = sum(
         1
         for row in records
@@ -281,6 +285,22 @@ def _aggregate(
     )
     excluded = n_unsupported + (0 if include_degraded else n_degraded)
     denom = n - excluded
+    answered = [
+        row
+        for row in records
+        if row.get("error") is None and not row.get("unsupported")
+    ]
+    degraded_stats = score_degraded_rows(
+        answered,
+        correct_key="correct",
+        max_degraded_rate=max_degraded_rate,
+    )
+    strict_rows = [row for row in records if not row.get("unsupported")]
+    strict_stats = score_degraded_rows(
+        strict_rows,
+        correct_key="correct",
+        max_degraded_rate=max_degraded_rate,
+    )
 
     def _counts_for_accuracy(row: dict[str, Any]) -> bool:
         if row.get("error") is not None or row.get("unsupported"):
@@ -298,9 +318,13 @@ def _aggregate(
     ]
     return {
         "n": n,
-        "n_errors": sum(1 for row in records if row.get("error")),
+        "n_errors": n_errors,
         "n_unsupported": n_unsupported,
         "n_degraded": n_degraded,
+        "degraded_rate": degraded_stats["degraded_rate"],
+        "max_degraded_rate": max_degraded_rate,
+        "strict_accuracy": strict_stats["strict_accuracy"],
+        "exceeded_max_degraded_rate": degraded_stats["exceeded_max_degraded_rate"],
         "include_degraded": include_degraded,
         "accuracy": (successes / denom) if denom else None,
         "wilson_lo": lo,
@@ -520,6 +544,7 @@ def evaluate_use_case(
     use_judge: bool,
     skip_enrichment: bool,
     include_brainapi: bool,
+    max_degraded_rate: float = DEFAULT_MAX_DEGRADED_RATE,
 ) -> dict[str, Any]:
     bundle = load_use_case(name, settings.datasets_dir)
     questions = bundle["questions"].get(split) or []
@@ -552,7 +577,7 @@ def evaluate_use_case(
             use_judge=use_judge,
         )
         all_records.extend(records)
-        headline = _aggregate(records)
+        headline = _aggregate(records, max_degraded_rate=max_degraded_rate)
         if gold_pairs:
             headline["conflict_pairs"] = _conflict_headline(records, gold_pairs)
         system_runs["hybrid_baseline"] = {
@@ -579,7 +604,7 @@ def evaluate_use_case(
             use_judge=use_judge,
         )
         all_records.extend(records)
-        headline = _aggregate(records)
+        headline = _aggregate(records, max_degraded_rate=max_degraded_rate)
         if gold_pairs:
             headline["conflict_pairs"] = _conflict_headline(records, gold_pairs)
         system_runs["brainapi"] = {
@@ -737,6 +762,7 @@ def evaluate(
     smoke: bool,
     use_judge: bool,
     skip_enrichment: bool,
+    max_degraded_rate: float = DEFAULT_MAX_DEGRADED_RATE,
 ) -> dict[str, Any]:
     include_brainapi = "brainapi" in systems and bool(settings.brainpat_token)
     smoke_run = smoke or split == "smoke"
@@ -777,6 +803,7 @@ def evaluate(
             use_judge=use_judge,
             skip_enrichment=skip_enrichment,
             include_brainapi=include_brainapi,
+            max_degraded_rate=max_degraded_rate,
         )
         comparison = compare_systems(
             result["systems"],

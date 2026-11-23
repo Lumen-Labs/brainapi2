@@ -26,6 +26,11 @@ from longmemeval.metrics import selftest_metrics, tokenize
 from longmemeval.prompts import ANSWER_SYSTEM
 from longmemeval.provenance import build_provenance
 from longmemeval.report import print_report_table, write_report
+from degraded import (
+    DEFAULT_MAX_DEGRADED_RATE,
+    add_max_degraded_rate_argument,
+    report_exit_code,
+)
 
 console = Console()
 
@@ -247,22 +252,32 @@ def cmd_evaluate(args: argparse.Namespace, settings: Settings) -> int:
         use_ppr=args.use_ppr,
         sufficiency_retry=args.sufficiency_retry,
     )
-    report = write_report(run_dir)
+    report = write_report(
+        run_dir,
+        max_degraded_rate=float(
+            getattr(args, "max_degraded_rate", DEFAULT_MAX_DEGRADED_RATE)
+        ),
+    )
     print_report_table(report)
     console.print(f"[green]Report:[/green] {run_dir / 'report.md'}")
-    return 0
+    return report_exit_code(report)
 
 
 def cmd_report(args: argparse.Namespace, settings: Settings) -> int:
     run_dir = settings.runs_dir / args.run
     if not run_dir.exists():
         raise SystemExit(f"Run directory not found: {run_dir}")
-    report = write_report(run_dir)
+    report = write_report(
+        run_dir,
+        max_degraded_rate=float(
+            getattr(args, "max_degraded_rate", DEFAULT_MAX_DEGRADED_RATE)
+        ),
+    )
     print_report_table(report)
     console.print(report["run_dir"] + "/report.md")
     if args.json:
         console.print_json(json.dumps(report))
-    return 0
+    return report_exit_code(report)
 
 
 def cmd_prompt_audit(args: argparse.Namespace, settings: Settings) -> int:
@@ -378,11 +393,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_eval.add_argument("--no-fact-filter", action="store_true")
     p_eval.add_argument("--use-ppr", action="store_true")
     p_eval.add_argument("--sufficiency-retry", action="store_true")
+    add_max_degraded_rate_argument(p_eval)
     p_eval.set_defaults(func=cmd_evaluate)
 
     p_report = sub.add_parser("report", help="Rebuild report from a run directory")
     p_report.add_argument("--run", required=True)
     p_report.add_argument("--json", action="store_true")
+    add_max_degraded_rate_argument(p_report)
     p_report.set_defaults(func=cmd_report)
 
     p_audit = sub.add_parser(

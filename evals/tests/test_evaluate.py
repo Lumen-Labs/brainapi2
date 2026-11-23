@@ -6,6 +6,7 @@ from evals.adapters.base import QueryResult
 from evals.evaluate import (
     _aggregate,
     _conflict_headline,
+    _record,
     _score_one,
     compare_systems,
 )
@@ -71,8 +72,6 @@ class CompareSystemsTests(unittest.TestCase):
         self.assertEqual(headline["accuracy"], 0.5)
 
     def test_degraded_rows_excluded_from_accuracy(self) -> None:
-        from evals.evaluate import _record
-
         rows = [
             {"correct": True, "degraded": None},
             {"correct": False, "degraded": ["data.keyword_search"]},
@@ -80,10 +79,28 @@ class CompareSystemsTests(unittest.TestCase):
         headline = _aggregate(rows)
         self.assertEqual(headline["n"], 2)
         self.assertEqual(headline["n_degraded"], 1)
+        self.assertEqual(headline["degraded_rate"], 0.5)
         self.assertEqual(headline["accuracy"], 1.0)
+        self.assertEqual(headline["strict_accuracy"], 0.5)
+        self.assertTrue(headline["exceeded_max_degraded_rate"])
         included = _aggregate(rows, include_degraded=True)
         self.assertEqual(included["n_degraded"], 1)
         self.assertEqual(included["accuracy"], 0.5)
+        self.assertEqual(included["strict_accuracy"], 0.5)
+        under_cap = _aggregate(rows, max_degraded_rate=0.5)
+        self.assertFalse(under_cap["exceeded_max_degraded_rate"])
+
+    def test_strict_accuracy_counts_correct_degraded_as_wrong(self) -> None:
+        rows = [
+            {"correct": True, "degraded": None},
+            {"correct": True, "degraded": ["data.keyword_search"]},
+        ]
+        headline = _aggregate(rows)
+        self.assertEqual(headline["accuracy"], 1.0)
+        self.assertEqual(headline["strict_accuracy"], 0.5)
+        included = _aggregate(rows, include_degraded=True)
+        self.assertEqual(included["accuracy"], 1.0)
+        self.assertEqual(included["strict_accuracy"], 0.5)
         result = QueryResult(
             answer="ok",
             raw={"context": {"degraded": ["vector.search_data"]}},

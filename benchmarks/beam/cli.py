@@ -30,6 +30,11 @@ from beam.metrics import selftest_metrics
 from beam.prompts import build_rubric_judge_prompt
 from beam.provenance import build_provenance
 from beam.report import print_report_table, write_report
+from degraded import (
+    DEFAULT_MAX_DEGRADED_RATE,
+    add_max_degraded_rate_argument,
+    report_exit_code,
+)
 
 console = Console()
 
@@ -219,20 +224,30 @@ def cmd_evaluate(args: argparse.Namespace, settings: Settings) -> int:
         use_ppr=use_ppr,
         sufficiency_retry=args.sufficiency_retry,
     )
-    report = write_report(run_dir)
+    report = write_report(
+        run_dir,
+        max_degraded_rate=float(
+            getattr(args, "max_degraded_rate", DEFAULT_MAX_DEGRADED_RATE)
+        ),
+    )
     print_report_table(report)
     console.print(f"[green]Report:[/green] {run_dir / 'report.md'}")
-    return 0 if report.get("status") != "failed" else 1
+    return report_exit_code(report)
 
 
 def cmd_report(args: argparse.Namespace, settings: Settings) -> int:
     run_dir = settings.runs_dir / args.run
     if not run_dir.exists():
         raise SystemExit(f"Run directory not found: {run_dir}")
-    report = write_report(run_dir)
+    report = write_report(
+        run_dir,
+        max_degraded_rate=float(
+            getattr(args, "max_degraded_rate", DEFAULT_MAX_DEGRADED_RATE)
+        ),
+    )
     print_report_table(report)
     console.print(f"[green]Report:[/green] {run_dir / 'report.md'}")
-    return 0 if report.get("status") != "failed" else 1
+    return report_exit_code(report)
 
 
 def cmd_selftest(args: argparse.Namespace, settings: Settings) -> int:
@@ -398,10 +413,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Disable PPR re-ranking",
     )
     p_eval.add_argument("--sufficiency-retry", action="store_true")
+    add_max_degraded_rate_argument(p_eval)
     p_eval.set_defaults(func=cmd_evaluate)
 
     p_report = sub.add_parser("report", help="Rebuild report from answers.jsonl")
     p_report.add_argument("--run", required=True)
+    add_max_degraded_rate_argument(p_report)
     p_report.set_defaults(func=cmd_report)
 
     p_self = sub.add_parser("selftest", help="Local unit checks (no API)")

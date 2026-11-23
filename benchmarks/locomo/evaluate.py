@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
@@ -11,6 +12,11 @@ from typing import Any
 from rich.console import Console
 from rich.progress import Progress
 
+_BENCH_ROOT = Path(__file__).resolve().parent.parent
+if str(_BENCH_ROOT) not in sys.path:
+    sys.path.insert(0, str(_BENCH_ROOT))
+
+from degraded import degraded_stages, row_is_degraded
 from locomo.answer import answer_question
 from locomo.client import BrainAPIClient
 from locomo.config import Settings
@@ -71,18 +77,6 @@ class AnswerRecord:
     is_adversarial: bool = False
     error: str | None = None
     timestamp: str = ""
-
-
-def degraded_stages(value: Any) -> list[str]:
-    if isinstance(value, str) and value.strip():
-        return [value.strip()]
-    if isinstance(value, (list, tuple, set)):
-        return [str(item) for item in value if str(item).strip()]
-    return []
-
-
-def row_is_degraded(row: dict[str, Any] | None) -> bool:
-    return bool(degraded_stages((row or {}).get("degraded")))
 
 
 def _extract_session_ids(*blobs: Any) -> list[str]:
