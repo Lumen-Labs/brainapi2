@@ -382,6 +382,91 @@ class VectorTimeoutFallbackTests(unittest.IsolatedAsyncioTestCase):
                     )
                 )
 
+    async def test_keyword_backend_error_degrades(self):
+        from src.services.api.controllers import retrieve as retrieve_mod
+
+        with _stubbed_adapters(retrieve_mod, _facts(1)) as (_emb, mock_vs, _g, mock_data):
+            mock_vs.search_data.return_value = []
+            mock_data.search.side_effect = ConnectionError("keyword down")
+            response = await retrieve_mod.get_context(
+                GetContextRequestBody(
+                    text="who is Alice",
+                    brain_id="brain-a",
+                    include_history=False,
+                )
+            )
+        self.assertIn("data.keyword_search", response.degraded or [])
+        self.assertTrue(response.triples or response.source_passages)
+
+    async def test_keyword_type_error_propagates(self):
+        from src.services.api.controllers import retrieve as retrieve_mod
+
+        with _stubbed_adapters(retrieve_mod, _facts(1)) as (_emb, mock_vs, _g, mock_data):
+            mock_vs.search_data.return_value = []
+            mock_data.search.side_effect = TypeError("keyword bug")
+            with self.assertRaises(TypeError):
+                await retrieve_mod.get_context(
+                    GetContextRequestBody(
+                        text="who is Alice",
+                        brain_id="brain-a",
+                        include_history=False,
+                    )
+                )
+
+    async def test_keyword_value_error_propagates(self):
+        from src.services.api.controllers import retrieve as retrieve_mod
+
+        with _stubbed_adapters(retrieve_mod, _facts(1)) as (_emb, mock_vs, _g, mock_data):
+            mock_vs.search_data.return_value = []
+            mock_data.search.side_effect = ValueError("keyword bug")
+            with self.assertRaises(ValueError):
+                await retrieve_mod.get_context(
+                    GetContextRequestBody(
+                        text="who is Alice",
+                        brain_id="brain-a",
+                        include_history=False,
+                    )
+                )
+
+    async def test_bm25_backend_error_degrades(self):
+        from src.services.api.controllers import retrieve as retrieve_mod
+
+        chunk = _keyword_chunk()
+        with _stubbed_adapters(retrieve_mod, _facts(1)) as (_emb, mock_vs, _g, mock_data):
+            mock_vs.search_data.return_value = []
+            mock_data.search_bm25.side_effect = TimeoutError("bm25 timeout")
+            mock_data.get_text_chunks_by_ids.return_value = ([chunk], [])
+            with patch.object(retrieve_mod.config, "search_enabled", True), patch.object(
+                retrieve_mod.config, "context_passage_mode", "hybrid"
+            ):
+                response = await retrieve_mod.get_context(
+                    GetContextRequestBody(
+                        text="who is Alice",
+                        brain_id="brain-a",
+                        include_history=False,
+                    )
+                )
+        self.assertIn("data.bm25_search", response.degraded or [])
+        self.assertTrue(response.triples or response.source_passages)
+
+    async def test_bm25_type_error_propagates(self):
+        from src.services.api.controllers import retrieve as retrieve_mod
+
+        with _stubbed_adapters(retrieve_mod, _facts(1)) as (_emb, mock_vs, _g, mock_data):
+            mock_vs.search_data.return_value = []
+            mock_data.search_bm25.side_effect = TypeError("bm25 bug")
+            with patch.object(retrieve_mod.config, "search_enabled", True), patch.object(
+                retrieve_mod.config, "context_passage_mode", "hybrid"
+            ):
+                with self.assertRaises(TypeError):
+                    await retrieve_mod.get_context(
+                        GetContextRequestBody(
+                            text="who is Alice",
+                            brain_id="brain-a",
+                            include_history=False,
+                        )
+                    )
+
 
 class ContextFallbackHttpTests(unittest.TestCase):
     def tearDown(self):
@@ -443,6 +528,21 @@ class ContextFallbackHttpTests(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.json()["detail"], "Retrieval backends unavailable")
+
+    def test_keyword_backend_error_get_context_is_200(self):
+        from src.services.api.controllers import retrieve as retrieve_mod
+
+        client = _client()
+        with _stubbed_adapters(retrieve_mod, _facts(1)) as (_emb, mock_vs, _g, mock_data):
+            mock_vs.search_data.return_value = []
+            mock_data.search.side_effect = ConnectionError("keyword down")
+            response = client.get(
+                "/retrieve/context",
+                params={"text": "who is Alice"},
+            )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertIn("data.keyword_search", body.get("degraded") or [])
 
 
 if __name__ == "__main__":
