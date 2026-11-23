@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,6 +10,10 @@ from rich.console import Console
 from rich.progress import Progress
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+_BENCH_ROOT = Path(__file__).resolve().parent.parent
+if str(_BENCH_ROOT) not in sys.path:
+    sys.path.insert(0, str(_BENCH_ROOT))
+
 from beam.answer import answer_question
 from beam.client import BrainAPIClient
 from beam.config import ABILITY_NAMES, Settings
@@ -16,6 +21,7 @@ from beam.dataset import brain_id_for, iter_probing_jobs
 from beam.ingest import append_jsonl, load_jsonl
 from beam.judge import judge_rubric_response
 from beam.sota import merge_contexts, ordering_aspect_queries, plan_gap_fill
+from degraded import degraded_stages, row_is_degraded
 
 console = Console()
 
@@ -49,18 +55,6 @@ class AnswerRecord:
     degraded: list[str] = field(default_factory=list)
     error: str | None = None
     timestamp: str = ""
-
-
-def degraded_stages(value: Any) -> list[str]:
-    if isinstance(value, str) and value.strip():
-        return [value.strip()]
-    if isinstance(value, (list, tuple, set)):
-        return [str(item) for item in value if str(item).strip()]
-    return []
-
-
-def row_is_degraded(row: dict[str, Any] | None) -> bool:
-    return bool(degraded_stages((row or {}).get("degraded")))
 
 
 def _utc_now() -> str:

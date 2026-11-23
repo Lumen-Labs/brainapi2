@@ -87,6 +87,39 @@ _health_var: contextvars.ContextVar[Any] = contextvars.ContextVar(
     "retrieve_health", default=None
 )
 _backend_error_types_cache: tuple[type[BaseException], ...] | None = None
+_POSTGRES_OUTAGE_SQLSTATES = frozenset(
+    {
+        "57014",
+        "57P01",
+        "57P02",
+        "57P03",
+        "57P04",
+        "57P05",
+        "25P03",
+        "53300",
+    }
+)
+_POSTGRES_OUTAGE_FRAGMENTS = (
+    "could not connect",
+    "connection refused",
+    "connection reset",
+    "connection timed out",
+    "connection already closed",
+    "server closed the connection",
+    "timeout expired",
+    "statement timeout",
+    "query_canceled",
+    "canceling statement",
+    "cancelling statement",
+    "connection pool",
+    "pool exhausted",
+    "ssl syscall",
+    "ssl connection has been closed",
+    "terminating connection",
+    "the database system is starting",
+    "the database system is shutting down",
+    "too many connections",
+)
 _PPR_DAMPING = 0.85
 _PPR_ITERS = 20
 _SESSION_RE = re.compile(r"session_(\d+)", re.IGNORECASE)
@@ -146,6 +179,8 @@ def _wait_all(futures, timeout: float = _IO_TIMEOUT_SECONDS):
             try:
                 results.append(fut.result(timeout=remaining))
             except _backend_error_types() as exc:
+                if not _is_degradable_backend_error(exc):
+                    raise
                 last_exc = exc
                 results.append(_IO_FAILED)
         if last_exc is not None:
@@ -254,6 +289,7 @@ def _backend_error_types() -> tuple[type[BaseException], ...]:
         ("psycopg2", "Error"),
         ("grpc", "RpcError"),
         ("neo4j.exceptions", "DriverError"),
+        ("src.lib.postgresql._provisioning", "PoolTimeout"),
     )
     for module_name, attr in optional:
         try:
@@ -265,6 +301,52 @@ def _backend_error_types() -> tuple[type[BaseException], ...]:
             types.append(cls)
     _backend_error_types_cache = tuple(types)
     return _backend_error_types_cache
+
+
+def _is_psycopg2_error(exc: BaseException) -> bool:
+    try:
+        import psycopg2
+    except ImportError:
+        return False
+    return isinstance(exc, psycopg2.Error)
+
+
+def _is_postgres_outage(exc: BaseException) -> bool:
+    try:
+        import psycopg2
+        import psycopg2.errors
+        import psycopg2.pool
+    except ImportError:
+        return False
+    types: list[type[BaseException]] = [
+        psycopg2.InterfaceError,
+        psycopg2.pool.PoolError,
+    ]
+    for name in ("QueryCanceled", "ConnectionException"):
+        cls = getattr(psycopg2.errors, name, None)
+        if isinstance(cls, type) and issubclass(cls, BaseException):
+            types.append(cls)
+    try:
+        from src.lib.postgresql._provisioning import PoolTimeout
+
+        types.append(PoolTimeout)
+    except ImportError:
+        pass
+    if isinstance(exc, tuple(types)):
+        return True
+    if not isinstance(exc, psycopg2.OperationalError):
+        return False
+    pgcode = str(getattr(exc, "pgcode", None) or "")
+    if pgcode.startswith("08") or pgcode in _POSTGRES_OUTAGE_SQLSTATES:
+        return True
+    text = str(exc).lower()
+    return any(fragment in text for fragment in _POSTGRES_OUTAGE_FRAGMENTS)
+
+
+def _is_degradable_backend_error(exc: BaseException) -> bool:
+    if _is_psycopg2_error(exc):
+        return _is_postgres_outage(exc)
+    return True
 
 
 class _RetrievalHealth:
@@ -337,6 +419,8 @@ def _backend_or_default(stage: str, brain_id: str, fn, default):
     except HTTPException:
         raise
     except _backend_error_types() as exc:
+        if not _is_degradable_backend_error(exc):
+            raise
         _note_degraded(stage, brain_id, exc)
         return default
     _ok_stage(stage)
@@ -2141,6 +2225,8 @@ def _seed_nodes_for_text(
             [_search_nodes, _search_relationships]
         )
     except _backend_error_types() as exc:
+        if not _is_degradable_backend_error(exc):
+            raise
         _note_degraded("facts.seed_search", brain_id, exc)
         node_vectors, rel_vectors = [], []
     else:
@@ -2374,6 +2460,8 @@ def _retrieve_passages(
             try:
                 dense_result, keyword_result = _parallel_io([_dense, _keyword])
             except _backend_error_types() as exc:
+                if not _is_degradable_backend_error(exc):
+                    raise
                 _note_degraded("passages.retrieve", brain_id, exc)
                 _note_degraded("vector.search_data", brain_id, exc)
                 dense_result, keyword_result = ([], {}), ([], {})

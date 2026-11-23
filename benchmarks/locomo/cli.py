@@ -30,6 +30,11 @@ from locomo.metrics import (
 from locomo.prompts import ANSWER_SYSTEM
 from locomo.provenance import build_provenance
 from locomo.report import print_comparison, print_report_table, write_report
+from degraded import (
+    DEFAULT_MAX_DEGRADED_RATE,
+    add_max_degraded_rate_argument,
+    report_exit_code,
+)
 
 console = Console()
 
@@ -211,11 +216,15 @@ def cmd_evaluate(args: argparse.Namespace, settings: Settings) -> int:
         brain_override=args.brain,
     )
     report = write_report(
-        run_dir, include_degraded=bool(getattr(args, "include_degraded", False))
+        run_dir,
+        include_degraded=bool(getattr(args, "include_degraded", False)),
+        max_degraded_rate=float(
+            getattr(args, "max_degraded_rate", DEFAULT_MAX_DEGRADED_RATE)
+        ),
     )
     print_report_table(report)
     console.print(f"[green]Report:[/green] {run_dir / 'report.md'}")
-    return 0
+    return report_exit_code(report)
 
 
 def cmd_report(args: argparse.Namespace, settings: Settings) -> int:
@@ -223,13 +232,17 @@ def cmd_report(args: argparse.Namespace, settings: Settings) -> int:
     if not run_dir.exists():
         raise SystemExit(f"Run directory not found: {run_dir}")
     report = write_report(
-        run_dir, include_degraded=bool(getattr(args, "include_degraded", False))
+        run_dir,
+        include_degraded=bool(getattr(args, "include_degraded", False)),
+        max_degraded_rate=float(
+            getattr(args, "max_degraded_rate", DEFAULT_MAX_DEGRADED_RATE)
+        ),
     )
     print_report_table(report)
     console.print(report["run_dir"] + "/report.md")
     if args.json:
         console.print_json(json.dumps(report))
-    return 0
+    return report_exit_code(report)
 
 
 def _load_run_answers(settings: Settings, run_id: str) -> list[dict[str, Any]]:
@@ -387,6 +400,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Include /retrieve/context degraded rows in accuracy scores",
     )
+    add_max_degraded_rate_argument(p_eval)
     p_eval.set_defaults(func=cmd_evaluate)
 
     p_report = sub.add_parser("report", help="Rebuild report from a run directory")
@@ -397,6 +411,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Include /retrieve/context degraded rows in accuracy scores",
     )
+    add_max_degraded_rate_argument(p_report)
     p_report.set_defaults(func=cmd_report)
 
     p_compare = sub.add_parser(

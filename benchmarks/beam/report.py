@@ -10,9 +10,14 @@ from rich.console import Console
 from rich.table import Table
 
 from beam.config import ABILITY_NAMES, BENCHMARKS_ROOT
-from beam.evaluate import row_is_degraded
 from beam.ingest import load_jsonl
 from beam.metrics import aggregate_answers
+from degraded import (
+    DEFAULT_MAX_DEGRADED_RATE,
+    row_is_degraded,
+    score_degraded_rows,
+    zero_degraded_scores,
+)
 
 console = Console()
 
@@ -67,7 +72,12 @@ def _latest_answer_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return list(latest.values())
 
 
-def build_report(run_dir: Path, *, include_degraded: bool = False) -> dict[str, Any]:
+def build_report(
+    run_dir: Path,
+    *,
+    include_degraded: bool = False,
+    max_degraded_rate: float = DEFAULT_MAX_DEGRADED_RATE,
+) -> dict[str, Any]:
     answers_path = run_dir / "answers.jsonl"
     ingest_path = run_dir / "ingest.jsonl"
     manifest_path = run_dir / "manifest.json"
@@ -91,6 +101,11 @@ def build_report(run_dir: Path, *, include_degraded: bool = False) -> dict[str, 
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
     metrics = aggregate_answers(scored_answers)
+    degraded_stats = score_degraded_rows(
+        answers, max_degraded_rate=max_degraded_rate
+    )
+    strict_metrics = aggregate_answers(zero_degraded_scores(answers))
+    metrics["headline_score_strict"] = strict_metrics.get("headline_score")
     ingest_summary = {
         "n": len(ingest_latest),
         "completed": sum(1 for r in ingest_latest if r.get("status") == "completed"),
@@ -109,6 +124,10 @@ def build_report(run_dir: Path, *, include_degraded: bool = False) -> dict[str, 
         "duplicates_dropped": duplicates_dropped,
         "empty_predictions": empty_predictions,
         "degraded_rows": len(degraded_answers),
+        "degraded_rate": degraded_stats["degraded_rate"],
+        "max_degraded_rate": max_degraded_rate,
+        "strict_accuracy": strict_metrics.get("headline_score"),
+        "exceeded_max_degraded_rate": degraded_stats["exceeded_max_degraded_rate"],
         "include_degraded": include_degraded,
     }
 
@@ -137,6 +156,12 @@ def build_report(run_dir: Path, *, include_degraded: bool = False) -> dict[str, 
         report["warnings"].append(
             f"{len(degraded_answers)} rows had degraded retrieval and are "
             "excluded from accuracy scores."
+        )
+    if degraded_stats["exceeded_max_degraded_rate"]:
+        rate = degraded_stats["degraded_rate"]
+        report["warnings"].append(
+            f"Degraded retrieval rate {rate:.1%} exceeds max "
+            f"{max_degraded_rate:.1%}."
         )
 
     failure_reasons: list[str] = []
@@ -201,7 +226,9 @@ def render_markdown(report: dict[str, Any]) -> str:
             f"- Rows in answers.jsonl: {integrity.get('rows_in_file', 'n/a')}",
             f"- Scored unique questions: {integrity.get('scored_rows', 'n/a')}",
             f"- Errored rows (excluded): {integrity.get('errored_rows', 'n/a')}",
-            f"- Degraded retrieval rows: {integrity.get('degraded_rows', 0)}",
+            f"- Degraded retrieval rows: {integrity.get('degraded_rows', 0)} "
+            f"(rate {_pct(integrity.get('degraded_rate'))}, "
+            f"max {_pct(integrity.get('max_degraded_rate'))})",
             f"- Duplicate rows dropped: {integrity.get('duplicates_dropped', 'n/a')}",
             f"- Empty predictions: {integrity.get('empty_predictions', 'n/a')}",
             "",
@@ -210,6 +237,8 @@ def render_markdown(report: dict[str, Any]) -> str:
             f"- Mean ability score: **{_pct(metrics.get('headline_score'))}** "
             f"(n_questions={metrics.get('n_questions', 0)}, "
             f"abilities={metrics.get('n_abilities_scored', 0)})",
+            f"- Strict mean ability score (degraded counted as 0): "
+            f"**{_pct(metrics.get('headline_score_strict'))}**",
             "",
             "## Per-ability",
             "",
@@ -417,8 +446,17 @@ def update_reports_json(report: dict[str, Any]) -> None:
         raise
 
 
-def write_report(run_dir: Path, *, include_degraded: bool = False) -> dict[str, Any]:
-    report = build_report(run_dir, include_degraded=include_degraded)
+def write_report(
+    run_dir: Path,
+    *,
+    include_degraded: bool = False,
+    max_degraded_rate: float = DEFAULT_MAX_DEGRADED_RATE,
+) -> dict[str, Any]:
+    report = build_report(
+        run_dir,
+        include_degraded=include_degraded,
+        max_degraded_rate=max_degraded_rate,
+    )
     md = render_markdown(report)
     (run_dir / "report.json").write_text(
         json.dumps(report, indent=2), encoding="utf-8"
@@ -451,6 +489,13 @@ def print_report_table(report: dict[str, Any]) -> None:
         f"Headline mean ability score: "
         f"[bold]{_pct(metrics.get('headline_score'))}[/bold] "
         f"(n={metrics.get('n_questions', 0)})"
+    )
+    integrity = report.get("integrity") or {}
+    console.print(
+        f"Strict mean ability score (degraded counted as 0): "
+        f"[bold]{_pct(metrics.get('headline_score_strict'))}[/bold] | "
+        f"Degraded: {integrity.get('degraded_rows', 0)} "
+        f"({_pct(integrity.get('degraded_rate'))})"
     )
     for warning in report.get("warnings") or []:
         console.print(f"[yellow]Warning: {warning}[/yellow]")

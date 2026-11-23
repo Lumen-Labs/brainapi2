@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import sys
+from pathlib import Path
 from typing import Any
 
 from rich.console import Console
@@ -10,6 +12,16 @@ from evals.config import OPTIONAL_USE_CASES, REQUIRED_USE_CASES, Settings, USE_C
 from evals.datasets.loader import load_use_case
 from evals.evaluate import evaluate, judge_agreement
 from evals.report import load_report, render_markdown, write_report
+
+_BENCH_ROOT = Path(__file__).resolve().parents[1] / "benchmarks"
+if str(_BENCH_ROOT) not in sys.path:
+    sys.path.insert(0, str(_BENCH_ROOT))
+
+from degraded import (
+    DEFAULT_MAX_DEGRADED_RATE,
+    add_max_degraded_rate_argument,
+    report_exit_code,
+)
 
 console = Console()
 
@@ -83,6 +95,9 @@ def cmd_evaluate(args: argparse.Namespace, settings: Settings) -> int:
         skip_enrichment=True
         if (args.smoke or args.split == "smoke")
         else bool(getattr(args, "skip_enrichment", False)),
+        max_degraded_rate=float(
+            getattr(args, "max_degraded_rate", DEFAULT_MAX_DEGRADED_RATE)
+        ),
     )
     run_dir = settings.runs_dir / report["run_id"]
     md_path = write_report(report, run_dir)
@@ -94,7 +109,7 @@ def cmd_evaluate(args: argparse.Namespace, settings: Settings) -> int:
             "Hybrid numbers only; scale remains local/small-scale.[/yellow]"
         )
     _print_summary(report)
-    return 0
+    return report_exit_code(report)
 
 
 def cmd_smoke(args: argparse.Namespace, settings: Settings) -> int:
@@ -115,11 +130,20 @@ def cmd_smoke(args: argparse.Namespace, settings: Settings) -> int:
 
 def cmd_report(args: argparse.Namespace, settings: Settings) -> int:
     report = load_report(settings, args.run)
+    max_rate = float(getattr(args, "max_degraded_rate", DEFAULT_MAX_DEGRADED_RATE))
+    for use in report.get("use_cases") or []:
+        for payload in (use.get("systems") or {}).values():
+            metrics = payload.get("metrics") or {}
+            rate = metrics.get("degraded_rate")
+            metrics["max_degraded_rate"] = max_rate
+            metrics["exceeded_max_degraded_rate"] = bool(
+                rate is not None and float(rate) > max_rate
+            )
     run_dir = settings.runs_dir / args.run
     path = write_report(report, run_dir)
     console.print(render_markdown(report))
     console.print(f"[dim]rewrote {path}[/dim]")
-    return 0
+    return report_exit_code(report)
 
 
 def cmd_download_far(args: argparse.Namespace, _settings: Settings) -> int:
@@ -141,9 +165,15 @@ def _print_summary(report: dict[str, Any]) -> None:
             lat = metrics.get("latency") or {}
             acc = metrics.get("accuracy")
             acc_s = "n/a" if acc is None else f"{100*acc:.1f}%"
+            strict = metrics.get("strict_accuracy")
+            if strict is not None:
+                acc_s += f" strict={100*strict:.1f}%"
             n_degraded = int(metrics.get("n_degraded") or 0)
             if n_degraded:
                 acc_s += f" degraded={n_degraded}"
+                rate = metrics.get("degraded_rate")
+                if rate is not None:
+                    acc_s += f" ({100*rate:.1f}%)"
             extra = metrics.get("conflict_pairs")
             if extra:
                 acc_s += f" pairF1={extra.get('f1', 0):.2f}"
@@ -184,6 +214,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ev.add_argument("--include-optional", action="store_true")
     ev.add_argument("--smoke", action="store_true")
+    add_max_degraded_rate_argument(ev)
     ev.set_defaults(func=cmd_evaluate)
 
     sm = sub.add_parser("smoke", help="Tiny local/small-scale run of all fixtures")
@@ -197,10 +228,12 @@ def build_parser() -> argparse.ArgumentParser:
     sm.add_argument("--include-optional", action="store_true")
     sm.add_argument("--split", default="smoke")
     sm.add_argument("--smoke", action="store_true", default=True)
+    add_max_degraded_rate_argument(sm)
     sm.set_defaults(func=cmd_smoke)
 
     rp = sub.add_parser("report", help="Rebuild markdown from report.json")
     rp.add_argument("--run", required=True)
+    add_max_degraded_rate_argument(rp)
     rp.set_defaults(func=cmd_report)
 
     dl = sub.add_parser("download-far", help="Fetch public-domain FAR HTML")
