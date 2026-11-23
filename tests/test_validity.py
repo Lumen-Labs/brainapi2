@@ -281,10 +281,17 @@ class ValidityIntervalTests(unittest.TestCase):
         )
         self.assertEqual(sourced["valid_from"], "2020-01-01T00:00:00Z")
         self.assertEqual(sourced["recorded_at"], "2026-11-18T12:00:00Z")
-        closed = close_validity(first, closed_at="2025-01-01T00:00:00Z", superseded_by="n2")
+        closed = close_validity(
+            first,
+            closed_at="2025-01-01T00:00:00Z",
+            superseded_by="n2",
+            reason="single-valued predicate replaced",
+        )
         again = close_validity(closed, closed_at="2026-01-01T00:00:00Z", superseded_by="n3")
         self.assertEqual(closed["valid_to"], again["valid_to"])
         self.assertEqual(closed["superseded_by"], "n2")
+        self.assertEqual(closed["retired_reason"], "single-valued predicate replaced")
+        self.assertEqual(again["retired_reason"], "single-valued predicate replaced")
         messy = close_validity({}, closed_at="15/01/2025")
         self.assertEqual(messy["invalid_at"], "2025-01-15T00:00:00Z")
         self.assertEqual(messy["valid_to"], "2025-01-15T00:00:00Z")

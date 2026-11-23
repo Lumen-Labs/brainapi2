@@ -706,7 +706,10 @@ def _invalidate_superseded_relationships(
     neighbors = _relationship_neighbor_map(
         relationship, brain_id=brain_id, neighbors=neighbors
     )
-    from src.core.saving.validity_cardinality import should_close_outgoing_edge
+    from src.core.saving.validity_cardinality import (
+        existing_edge_from_superseded_source,
+        should_close_outgoing_edge,
+    )
 
     pairs = (neighbors or {}).get(relationship.tail.uuid) or []
     valid_at = (relationship.properties or {}).get("valid_at") or (
@@ -738,10 +741,16 @@ def _invalidate_superseded_relationships(
             from src.core.saving.validity import close_validity, format_instant, parse_instant, utc_now
 
             closed_at = valid_at or format_instant(utc_now())
+            reason = (
+                "source revision replaced this edge"
+                if existing_edge_from_superseded_source(props, superseded_chunk_ids)
+                else "single-valued predicate replaced"
+            )
             closed = close_validity(
                 props,
                 closed_at=closed_at,
                 superseded_by=getattr(relationship, "uuid", None),
+                reason=reason,
             )
             graph_adapter.update_properties(
                 predicate.uuid,
@@ -754,6 +763,7 @@ def _invalidate_superseded_relationships(
                     or format_instant(parse_instant(closed_at) or utc_now()),
                     "superseded_by": closed.get("superseded_by")
                     or getattr(relationship, "uuid", None),
+                    "retired_reason": closed.get("retired_reason") or reason,
                 },
             )
         except Exception as exc:

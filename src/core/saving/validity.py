@@ -151,6 +151,7 @@ def close_validity(
     *,
     closed_at: str | None,
     superseded_by: str | None = None,
+    reason: str | None = None,
 ) -> dict[str, Any]:
     props = dict(_mapping(mapping))
     stamp = format_instant(parse_instant(closed_at) or utc_now())
@@ -163,6 +164,8 @@ def close_validity(
     props["deprecated"] = True
     if not props.get("superseded_at"):
         props["superseded_at"] = stamp
+    if reason and not props.get("retired_reason"):
+        props["retired_reason"] = str(reason).strip()
     return props
 
 

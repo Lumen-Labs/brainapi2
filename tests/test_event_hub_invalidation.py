@@ -183,6 +183,7 @@ class EventHubInvalidationTests(unittest.TestCase):
                         "deprecated": True,
                         "valid_to": "2024-02-02T00:00:00Z",
                         "superseded_by": "rel-2",
+                        "retired_reason": "single-valued predicate replaced",
                     },
                 )
             ],
@@ -321,6 +322,10 @@ class EventHubInvalidationTests(unittest.TestCase):
             )
         self.assertEqual(len(graph.updates), 1)
         self.assertEqual(graph.updates[0][0], "rel-1")
+        self.assertEqual(
+            graph.updates[0][2].get("retired_reason"),
+            "source revision replaced this edge",
+        )
         self.assertFalse(retrieve_mod._is_currently_valid(graph.predicate("rel-1")))
         self.assertTrue(retrieve_mod._is_currently_valid(graph.predicate("rel-2")))
 

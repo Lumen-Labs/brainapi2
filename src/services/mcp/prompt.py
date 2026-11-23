@@ -2,6 +2,50 @@ import json
 
 MCP_TOOL_SPECS: list[dict[str, object]] = [
     {
+        "name": "brainapi_recall",
+        "description": "Recall what is true now or as of a date. Use for what's true, as of, what changed, and who said.",
+        "parameters": {
+            "question": "str",
+            "as_of": "str ISO-8601 (optional)",
+            "response_format": "concise | detailed, default concise",
+            "include_rejected": "bool, default false",
+            "limit": "int, default 8",
+            "skip": "int, default 0",
+            "brain_id": "str (optional; default from OAuth token)",
+        },
+    },
+    {
+        "name": "brainapi_check",
+        "description": "Check whether a claim is still true. Returns supported, contradicted, superseded, or unknown.",
+        "parameters": {
+            "claim": "str",
+            "as_of": "str ISO-8601 (optional)",
+            "brain_id": "str (optional; default from OAuth token)",
+        },
+    },
+    {
+        "name": "brainapi_remember",
+        "description": "Remember a fact. Writes it unverified. source_key rewrites supersede the previous version.",
+        "parameters": {
+            "fact": "str",
+            "source": "str — document name or URL",
+            "valid_from": "str ISO-8601 (optional)",
+            "source_key": "str (optional)",
+            "brain_id": "str (optional; default from OAuth token)",
+        },
+    },
+    {
+        "name": "brainapi_correct",
+        "description": "Correct a stored fact without deleting history. Pass fact_id or text, a reason, and optional correction.",
+        "parameters": {
+            "reason": "str",
+            "fact_id": "str (optional if text is set)",
+            "text": "str (optional if fact_id is set)",
+            "correction": "str (optional; omit to reject)",
+            "brain_id": "str (optional; default from OAuth token)",
+        },
+    },
+    {
         "name": "get_search_operation_instructions",
         "description": "Returns instructions for searching the knowledge graph (backend type, recommended workflow, parameter reference).",
         "parameters": {"message": "str — optional context for the instructions request"},
@@ -164,7 +208,7 @@ def build_mcp_tools_instructions(brain_id: str) -> str:
     return f"""You can query the BrainAPI knowledge graph using MCP tools.
 
 Active brain_id for this session: {brain_id}
-Always pass this brain_id to tools that require it unless the user explicitly names another brain.
+brainapi_recall, brainapi_check, brainapi_remember, and brainapi_correct use the token's default brain; pass brain_id only when the token can access more than one. Graph tools that list brain_id still need it.
 
 To call a tool, respond with ONLY a JSON object (no markdown fences, no extra text):
 {{"tool_name": "<tool_name>", "tool_input": {{<parameters>}}}}
@@ -173,10 +217,11 @@ Available tools:
 {tools_block}
 
 Recommended workflow:
-1. Call get_search_operation_instructions when you are unsure how to search.
-2. search_semantically — when you do not know node UUIDs or exact names.
-3. traverse_graph — multi-hop exploration (preferred over hand-written queries). {HISTORY_NAVIGATION_GUIDE}
-4. search_memory — ad-hoc read queries not covered by traverse_graph.
+1. brainapi_recall — what's true now or as of a date.
+2. brainapi_check — is a claim still true.
+3. brainapi_remember / brainapi_correct — write or correct a fact.
+4. Call get_search_operation_instructions when you need graph query details.
+5. search_semantically / traverse_graph / search_memory — power-user graph reads. {HISTORY_NAVIGATION_GUIDE}
 
 After each tool call you will receive a tool result message. You may call another tool or reply to the user.
 When you have enough context to answer, respond in natural language without a tool call JSON object.

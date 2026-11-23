@@ -49,6 +49,7 @@ from src.core.verification.service import (
     list_fact_records,
     require_state,
 )
+from src.services.mcp.intent_tools import register_intent_tools
 from src.services.mcp.oauth_provider import BrainapiMcpOAuthProvider
 from src.services.mcp.prompt import HISTORY_NAVIGATION_GUIDE
 from src.services.mcp.errors import McpToolError, raise_if_tool_error_result
@@ -142,6 +143,8 @@ if _oauth_issuer:
     )
 else:
     mcp = FastMCP("brainapi-mcp", stateless_http=True, host="0.0.0.0")
+
+register_intent_tools(mcp)
 
 
 _CONSENT_HOST = re.compile(r"^[A-Za-z0-9.-]+(?::\d{1,5})?$")
@@ -261,9 +264,12 @@ def get_search_operation_instructions(message: str) -> str:
     {backend_desc}
 
     Recommended workflow:
-    1. search_semantically — when you do not know node UUIDs or exact names
-    2. traverse_graph — multi-hop expansion with filters (preferred over hand-written queries)
-    3. search_memory — ad-hoc read queries not covered by traverse_graph
+    1. brainapi_recall — what's true now or as of a date
+    2. brainapi_check — is a claim still true
+    3. brainapi_remember / brainapi_correct — write or correct a fact
+    4. search_semantically — when you do not know node UUIDs or exact names
+    5. traverse_graph — multi-hop expansion with filters (preferred over hand-written queries)
+    6. search_memory — ad-hoc read queries not covered by traverse_graph
 
     {HISTORY_NAVIGATION_GUIDE}
 
