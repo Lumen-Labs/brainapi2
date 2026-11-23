@@ -573,6 +573,15 @@ class BrainAPIAdapter:
             self._retrieve_payloads.append(payload)
         self._index_retrieve_payload(payload)
         passages = self._passages_from_context(payload, question=question)
+        degraded = []
+        if isinstance(payload, dict):
+            raw_degraded = payload.get("degraded") or []
+            if isinstance(raw_degraded, str):
+                degraded = [raw_degraded] if raw_degraded.strip() else []
+            elif isinstance(raw_degraded, (list, tuple, set)):
+                degraded = [str(item) for item in raw_degraded if str(item).strip()]
+        if degraded:
+            notes.append("degraded_retrieval")
         pairs: list[tuple[str, str]] = []
         http_calls = 1
         conflict_mode = str(self.capabilities.get("conflict_mode") or "n/a")
@@ -616,6 +625,7 @@ class BrainAPIAdapter:
                 "conflict_mode": conflict_mode,
                 "conflict_mapping": mapping_info,
                 "retrieve_extra_body": extra,
+                "degraded": degraded or None,
             },
             notes=notes,
         )

@@ -46,8 +46,21 @@ class AnswerRecord:
     judge_total_tokens: int | None = None
     sc_samples_used: int | None = None
     gap_fill_used: bool = False
+    degraded: list[str] = field(default_factory=list)
     error: str | None = None
     timestamp: str = ""
+
+
+def degraded_stages(value: Any) -> list[str]:
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    if isinstance(value, (list, tuple, set)):
+        return [str(item) for item in value if str(item).strip()]
+    return []
+
+
+def row_is_degraded(row: dict[str, Any] | None) -> bool:
+    return bool(degraded_stages((row or {}).get("degraded")))
 
 
 def _utc_now() -> str:
@@ -241,6 +254,7 @@ def evaluate_samples(
                 judge_total_tokens=judged.total_tokens,
                 sc_samples_used=answered.sc_samples_used,
                 gap_fill_used=gap_fill_used,
+                degraded=degraded_stages(context.get("degraded")),
                 timestamp=_utc_now(),
             )
         except Exception as exc:

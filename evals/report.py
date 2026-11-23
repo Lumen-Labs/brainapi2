@@ -95,6 +95,9 @@ def render_markdown(report: dict[str, Any]) -> str:
                 cap_note.append(f"conflicts={caps.get('conflict_mode')}")
             extra = metrics.get("conflict_pairs")
             acc = _pct(metrics.get("accuracy"))
+            n_degraded = int(metrics.get("n_degraded") or 0)
+            if n_degraded:
+                acc = f"{acc} ({n_degraded} degraded excluded)"
             if extra:
                 if extra.get("unsupported"):
                     acc = f"{acc} (pair F1 unsupported)"

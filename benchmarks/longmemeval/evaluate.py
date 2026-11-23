@@ -56,9 +56,22 @@ class AnswerRecord:
     historical_context: list[str] = field(default_factory=list)
     retrieved_session_ids: list[str] = field(default_factory=list)
     context_truncated: dict[str, int] = field(default_factory=dict)
+    degraded: list[str] = field(default_factory=list)
     is_abstention: bool = False
     error: str | None = None
     timestamp: str = ""
+
+
+def degraded_stages(value: Any) -> list[str]:
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    if isinstance(value, (list, tuple, set)):
+        return [str(item) for item in value if str(item).strip()]
+    return []
+
+
+def row_is_degraded(row: dict[str, Any] | None) -> bool:
+    return bool(degraded_stages((row or {}).get("degraded")))
 
 
 def _utc_now() -> str:
@@ -138,6 +151,7 @@ def extract_context_channels(
         "historical_context": historical_context,
         "retrieved_session_ids": session_ids,
         "context_truncated": truncated,
+        "degraded": degraded_stages(context.get("degraded")),
     }
 
 

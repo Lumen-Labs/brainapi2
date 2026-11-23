@@ -210,7 +210,9 @@ def cmd_evaluate(args: argparse.Namespace, settings: Settings) -> int:
         sufficiency_retry=args.sufficiency_retry,
         brain_override=args.brain,
     )
-    report = write_report(run_dir)
+    report = write_report(
+        run_dir, include_degraded=bool(getattr(args, "include_degraded", False))
+    )
     print_report_table(report)
     console.print(f"[green]Report:[/green] {run_dir / 'report.md'}")
     return 0
@@ -220,7 +222,9 @@ def cmd_report(args: argparse.Namespace, settings: Settings) -> int:
     run_dir = settings.runs_dir / args.run
     if not run_dir.exists():
         raise SystemExit(f"Run directory not found: {run_dir}")
-    report = write_report(run_dir)
+    report = write_report(
+        run_dir, include_degraded=bool(getattr(args, "include_degraded", False))
+    )
     print_report_table(report)
     console.print(report["run_dir"] + "/report.md")
     if args.json:
@@ -236,7 +240,7 @@ def _load_run_answers(settings: Settings, run_id: str) -> list[dict[str, Any]]:
     rows = load_jsonl(answers_path)
     latest: dict[tuple[str, int], dict[str, Any]] = {}
     for row in rows:
-        if row.get("error"):
+        if row.get("error") or row.get("degraded"):
             continue
         latest[(str(row.get("sample_id")), int(row.get("qa_index") or 0))] = row
     return list(latest.values())
@@ -378,11 +382,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_eval.add_argument("--no-fact-filter", action="store_true")
     p_eval.add_argument("--use-ppr", action="store_true")
     p_eval.add_argument("--sufficiency-retry", action="store_true")
+    p_eval.add_argument(
+        "--include-degraded",
+        action="store_true",
+        help="Include /retrieve/context degraded rows in accuracy scores",
+    )
     p_eval.set_defaults(func=cmd_evaluate)
 
     p_report = sub.add_parser("report", help="Rebuild report from a run directory")
     p_report.add_argument("--run", required=True)
     p_report.add_argument("--json", action="store_true")
+    p_report.add_argument(
+        "--include-degraded",
+        action="store_true",
+        help="Include /retrieve/context degraded rows in accuracy scores",
+    )
     p_report.set_defaults(func=cmd_report)
 
     p_compare = sub.add_parser(

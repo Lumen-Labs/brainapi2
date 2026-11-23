@@ -70,6 +70,27 @@ class CompareSystemsTests(unittest.TestCase):
         self.assertEqual(headline["n_errors"], 1)
         self.assertEqual(headline["accuracy"], 0.5)
 
+    def test_degraded_rows_excluded_from_accuracy(self) -> None:
+        from evals.evaluate import _record
+
+        rows = [
+            {"correct": True, "degraded": None},
+            {"correct": False, "degraded": ["data.keyword_search"]},
+        ]
+        headline = _aggregate(rows)
+        self.assertEqual(headline["n"], 2)
+        self.assertEqual(headline["n_degraded"], 1)
+        self.assertEqual(headline["accuracy"], 1.0)
+        included = _aggregate(rows, include_degraded=True)
+        self.assertEqual(included["n_degraded"], 1)
+        self.assertEqual(included["accuracy"], 0.5)
+        result = QueryResult(
+            answer="ok",
+            raw={"context": {"degraded": ["vector.search_data"]}},
+        )
+        recorded = _record("expert_knowhow", "brainapi", {"id": "q1"}, result, {"correct": True})
+        self.assertEqual(recorded["degraded"], ["vector.search_data"])
+
     def test_unsupported_conflict_metric_is_not_zero(self) -> None:
         records = [
             {

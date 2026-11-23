@@ -10,6 +10,7 @@ from rich.console import Console
 from rich.table import Table
 
 from beam.config import ABILITY_NAMES, BENCHMARKS_ROOT
+from beam.evaluate import row_is_degraded
 from beam.ingest import load_jsonl
 from beam.metrics import aggregate_answers
 
@@ -66,7 +67,7 @@ def _latest_answer_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return list(latest.values())
 
 
-def build_report(run_dir: Path) -> dict[str, Any]:
+def build_report(run_dir: Path, *, include_degraded: bool = False) -> dict[str, Any]:
     answers_path = run_dir / "answers.jsonl"
     ingest_path = run_dir / "ingest.jsonl"
     manifest_path = run_dir / "manifest.json"
@@ -76,8 +77,12 @@ def build_report(run_dir: Path) -> dict[str, Any]:
     answers = _latest_answer_rows(scored_rows)
     errored = [r for r in all_answer_rows if r.get("error")]
     duplicates_dropped = len(scored_rows) - len(answers)
+    degraded_answers = [r for r in answers if row_is_degraded(r)]
+    scored_answers = (
+        answers if include_degraded else [r for r in answers if not row_is_degraded(r)]
+    )
     empty_predictions = sum(
-        1 for r in answers if not str(r.get("prediction") or "").strip()
+        1 for r in scored_answers if not str(r.get("prediction") or "").strip()
     )
     ingest_rows = load_jsonl(ingest_path)
     ingest_latest = _latest_ingest_rows(ingest_rows)
@@ -85,7 +90,7 @@ def build_report(run_dir: Path) -> dict[str, Any]:
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
-    metrics = aggregate_answers(answers)
+    metrics = aggregate_answers(scored_answers)
     ingest_summary = {
         "n": len(ingest_latest),
         "completed": sum(1 for r in ingest_latest if r.get("status") == "completed"),
@@ -100,9 +105,11 @@ def build_report(run_dir: Path) -> dict[str, Any]:
     integrity = {
         "rows_in_file": len(all_answer_rows),
         "errored_rows": len(errored),
-        "scored_rows": len(answers),
+        "scored_rows": len(scored_answers),
         "duplicates_dropped": duplicates_dropped,
         "empty_predictions": empty_predictions,
+        "degraded_rows": len(degraded_answers),
+        "include_degraded": include_degraded,
     }
 
     report: dict[str, Any] = {
@@ -126,12 +133,17 @@ def build_report(run_dir: Path) -> dict[str, Any]:
         report["warnings"].append(
             f"{len(errored)} rows errored and are excluded from every metric."
         )
+    if degraded_answers and not include_degraded:
+        report["warnings"].append(
+            f"{len(degraded_answers)} rows had degraded retrieval and are "
+            "excluded from accuracy scores."
+        )
 
     failure_reasons: list[str] = []
-    if not answers:
+    if not scored_answers:
         failure_reasons.append("no answer rows were scored")
     else:
-        if empty_predictions == len(answers):
+        if empty_predictions == len(scored_answers):
             failure_reasons.append("every scored answer is empty")
         if metrics.get("headline_score") == 0.0:
             failure_reasons.append("headline score is 0.0 across scored abilities")
@@ -143,7 +155,7 @@ def build_report(run_dir: Path) -> dict[str, Any]:
             + "; ".join(failure_reasons)
             + ". The percentages below are not a measurement of quality.",
         )
-    elif errored or duplicates_dropped:
+    elif errored or duplicates_dropped or (degraded_answers and not include_degraded):
         report["status"] = "degraded"
     return report
 
@@ -189,6 +201,7 @@ def render_markdown(report: dict[str, Any]) -> str:
             f"- Rows in answers.jsonl: {integrity.get('rows_in_file', 'n/a')}",
             f"- Scored unique questions: {integrity.get('scored_rows', 'n/a')}",
             f"- Errored rows (excluded): {integrity.get('errored_rows', 'n/a')}",
+            f"- Degraded retrieval rows: {integrity.get('degraded_rows', 0)}",
             f"- Duplicate rows dropped: {integrity.get('duplicates_dropped', 'n/a')}",
             f"- Empty predictions: {integrity.get('empty_predictions', 'n/a')}",
             "",
@@ -404,8 +417,8 @@ def update_reports_json(report: dict[str, Any]) -> None:
         raise
 
 
-def write_report(run_dir: Path) -> dict[str, Any]:
-    report = build_report(run_dir)
+def write_report(run_dir: Path, *, include_degraded: bool = False) -> dict[str, Any]:
+    report = build_report(run_dir, include_degraded=include_degraded)
     md = render_markdown(report)
     (run_dir / "report.json").write_text(
         json.dumps(report, indent=2), encoding="utf-8"

@@ -45,6 +45,29 @@ def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def degraded_stages(value: Any) -> list[str]:
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    if isinstance(value, (list, tuple, set)):
+        return [str(item) for item in value if str(item).strip()]
+    return []
+
+
+def row_is_degraded(row: dict[str, Any] | None) -> bool:
+    return bool(degraded_stages((row or {}).get("degraded")))
+
+
+def _degraded_from_result(result: QueryResult) -> list[str]:
+    raw = result.raw or {}
+    stages = degraded_stages(raw.get("degraded"))
+    if stages:
+        return stages
+    context = raw.get("context")
+    if isinstance(context, dict):
+        return degraded_stages(context.get("degraded"))
+    return []
+
+
 def _record(
     use_case: str,
     system: str,
@@ -52,6 +75,7 @@ def _record(
     result: QueryResult,
     score: dict[str, Any],
 ) -> dict[str, Any]:
+    degraded = _degraded_from_result(result)
     return {
         "use_case": use_case,
         "system": system,
@@ -75,6 +99,7 @@ def _record(
         "llm_calls": result.llm_calls,
         "http_calls": result.http_calls,
         **score,
+        "degraded": degraded or None,
     }
 
 
@@ -243,22 +268,40 @@ def _query_records(
     return records
 
 
-def _aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
+def _aggregate(
+    records: list[dict[str, Any]], *, include_degraded: bool = False
+) -> dict[str, Any]:
     n = len(records)
     scored = [row for row in records if row.get("error") is None]
     n_unsupported = sum(1 for row in records if row.get("unsupported") and row.get("error") is None)
-    denom = n - n_unsupported
-    successes = sum(
+    n_degraded = sum(
         1
         for row in records
-        if row.get("correct") and row.get("error") is None and not row.get("unsupported")
+        if row_is_degraded(row) and row.get("error") is None and not row.get("unsupported")
     )
+    excluded = n_unsupported + (0 if include_degraded else n_degraded)
+    denom = n - excluded
+
+    def _counts_for_accuracy(row: dict[str, Any]) -> bool:
+        if row.get("error") is not None or row.get("unsupported"):
+            return False
+        if not include_degraded and row_is_degraded(row):
+            return False
+        return True
+
+    successes = sum(1 for row in records if row.get("correct") and _counts_for_accuracy(row))
     lo, hi = wilson_ci(successes, denom)
-    f1_rows = [row for row in records if not row.get("unsupported")]
+    f1_rows = [
+        row
+        for row in records
+        if not row.get("unsupported") and (include_degraded or not row_is_degraded(row))
+    ]
     return {
         "n": n,
         "n_errors": sum(1 for row in records if row.get("error")),
         "n_unsupported": n_unsupported,
+        "n_degraded": n_degraded,
+        "include_degraded": include_degraded,
         "accuracy": (successes / denom) if denom else None,
         "wilson_lo": lo,
         "wilson_hi": hi,
@@ -571,7 +614,9 @@ def _system_question_ids(records: list[dict[str, Any]], system: str) -> set[Any]
     return {
         row.get("question_id")
         for row in records
-        if row.get("system") == system and not row.get("unsupported")
+        if row.get("system") == system
+        and not row.get("unsupported")
+        and not row_is_degraded(row)
     }
 
 
@@ -637,8 +682,16 @@ def compare_systems(
             }
     h = system_runs["hybrid_baseline"]["metrics"]
     b = system_runs["brainapi"]["metrics"]
-    h_n = int(h.get("n") or 0) - int(h.get("n_unsupported") or 0)
-    b_n = int(b.get("n") or 0) - int(b.get("n_unsupported") or 0)
+    h_n = (
+        int(h.get("n") or 0)
+        - int(h.get("n_unsupported") or 0)
+        - int(h.get("n_degraded") or 0)
+    )
+    b_n = (
+        int(b.get("n") or 0)
+        - int(b.get("n_unsupported") or 0)
+        - int(b.get("n_degraded") or 0)
+    )
     if h_n != b_n:
         return {
             "verdict": "incomplete",
