@@ -67,9 +67,22 @@ class AnswerRecord:
     retrieved_session_ids_graph: list[str] = field(default_factory=list)
     retrieved_session_ids_passages: list[str] = field(default_factory=list)
     context_truncated: dict[str, int] = field(default_factory=dict)
+    degraded: list[str] = field(default_factory=list)
     is_adversarial: bool = False
     error: str | None = None
     timestamp: str = ""
+
+
+def degraded_stages(value: Any) -> list[str]:
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    if isinstance(value, (list, tuple, set)):
+        return [str(item) for item in value if str(item).strip()]
+    return []
+
+
+def row_is_degraded(row: dict[str, Any] | None) -> bool:
+    return bool(degraded_stages((row or {}).get("degraded")))
 
 
 def _extract_session_ids(*blobs: Any) -> list[str]:
@@ -136,6 +149,7 @@ def extract_context_channels(context: dict[str, Any]) -> dict[str, Any]:
         "retrieved_session_ids_graph": session_ids_graph,
         "retrieved_session_ids_passages": session_ids_passages,
         "context_truncated": truncated,
+        "degraded": degraded_stages(context.get("degraded")),
     }
 
 
@@ -313,6 +327,9 @@ def selftest_records() -> list[str]:
     gold, adversarial = qa_gold({"category": 4, "answer": "7 May 2023"})
     if gold != "7 May 2023" or adversarial:
         errors.append("non-adversarial gold must be read from answer")
+    flagged = extract_context_channels({"degraded": ["data.keyword_search"]})
+    if flagged.get("degraded") != ["data.keyword_search"]:
+        errors.append("degraded retrieve stages must be recorded on answer rows")
     return errors
 
 

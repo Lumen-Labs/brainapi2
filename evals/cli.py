@@ -141,6 +141,9 @@ def _print_summary(report: dict[str, Any]) -> None:
             lat = metrics.get("latency") or {}
             acc = metrics.get("accuracy")
             acc_s = "n/a" if acc is None else f"{100*acc:.1f}%"
+            n_degraded = int(metrics.get("n_degraded") or 0)
+            if n_degraded:
+                acc_s += f" degraded={n_degraded}"
             extra = metrics.get("conflict_pairs")
             if extra:
                 acc_s += f" pairF1={extra.get('f1', 0):.2f}"

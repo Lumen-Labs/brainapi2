@@ -397,7 +397,14 @@ def merge_contexts(
     primary: dict[str, Any], secondary: dict[str, Any]
 ) -> dict[str, Any]:
     out = dict(primary)
-    for key in ("source_passages", "historical_context", "triples", "paths", "topics"):
+    for key in (
+        "source_passages",
+        "historical_context",
+        "triples",
+        "paths",
+        "topics",
+        "degraded",
+    ):
         a = list(primary.get(key) or [])
         b = list(secondary.get(key) or [])
         seen: set[str] = set()

@@ -2343,29 +2343,29 @@ def _retrieve_passages(
             stage = "data.bm25_search" if use_bm25 else "data.keyword_search"
             if use_bm25:
                 with profile_stage("data.bm25_search"):
-                    _start_stage(stage)
-                    try:
+                    def _run_bm25():
                         ids, _, texts = collect_bm25_passages(
                             data,
                             text,
                             brain_id,
                             max(limit, _PASSAGE_K),
                         )
-                        _ok_stage(stage)
                         return ids, texts
-                    except Exception as exc:
-                        _note_degraded(stage, brain_id, exc)
-                        return [], {}
+
+                    return _backend_or_default(
+                        stage,
+                        brain_id,
+                        _run_bm25,
+                        ([], {}),
+                    )
             if use_ilike:
                 with profile_stage("data.keyword_search"):
-                    _start_stage(stage)
-                    try:
-                        ids, texts = collect_ilike_passages(data, text, brain_id)
-                        _ok_stage(stage)
-                        return ids, texts
-                    except Exception as exc:
-                        _note_degraded(stage, brain_id, exc)
-                        return [], {}
+                    return _backend_or_default(
+                        stage,
+                        brain_id,
+                        lambda: collect_ilike_passages(data, text, brain_id),
+                        ([], {}),
+                    )
             return [], {}
 
         keyword_ids: list[str] = []

@@ -505,7 +505,14 @@ def merge_contexts(
 ) -> dict[str, Any]:
     """Union passage/fact channels from a second retrieve into the first."""
     out = dict(primary)
-    for key in ("source_passages", "historical_context", "triples", "paths", "image_cues"):
+    for key in (
+        "source_passages",
+        "historical_context",
+        "triples",
+        "paths",
+        "image_cues",
+        "degraded",
+    ):
         a = list(primary.get(key) or [])
         b = list(secondary.get(key) or [])
         seen: set[str] = set()
