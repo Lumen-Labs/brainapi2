@@ -94,6 +94,10 @@ class IngestionTaskArgs(BaseModel):
             "knowledge-graph enrichment (Scout/Architect)."
         ),
     )
+    kind: Optional[Literal["text", "json", "file", "structured", "url"]] = Field(
+        default=None,
+        description="Ingest surface for telemetry: text, json, file, structured, or url.",
+    )
     group_tracking: Optional[str] = Field(
         default=None,
         description="Optional ingest-cost rollup key for this request (1-128 chars, [A-Za-z0-9._:-]).",
