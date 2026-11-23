@@ -13,6 +13,7 @@ from psycopg2.extras import Json, execute_values
 from starlette.concurrency import run_in_threadpool
 
 from src.core.saving.ingest_cost import IngestCostLedger
+from src.core.spreadsheets.gating import spreadsheet_experiment_enabled
 from src.core.spreadsheets.import_workbook import MAX_UPLOAD_BYTES, WorkbookError, read_workbook
 from src.core.spreadsheets.query import PAGE_SIZE, WorkbookQuery, query_workbook
 from src.lib.postgresql._provisioning import PoolTimeout
@@ -25,6 +26,18 @@ from src.services.api.constants.responses import (
 from src.services.api.dependencies import get_brain_id
 
 router = APIRouter(tags=["spreadsheets"])
+SCHEMA_VERSION = 1
+_schema_ready = set()
+MARKER_DDL = """
+CREATE TABLE IF NOT EXISTS spreadsheet_schema (
+    singleton boolean PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+    version integer NOT NULL
+)
+"""
+MARKER_UPSERT = (
+    "INSERT INTO spreadsheet_schema (singleton, version) VALUES (TRUE, %s) "
+    "ON CONFLICT (singleton) DO UPDATE SET version = EXCLUDED.version"
+)
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS spreadsheets (
     id uuid PRIMARY KEY, filename text NOT NULL, sheets jsonb NOT NULL,
@@ -56,8 +69,7 @@ RETRY_AFTER = {"Retry-After": "1"}
 
 
 def enabled(brain_id):
-    keys = {key.strip() for key in os.getenv("SPREADSHEET_EXPERIMENT_BRAINS", "").split(",") if key.strip()}
-    return "*" in keys or brain_id in keys
+    return spreadsheet_experiment_enabled(brain_id)
 
 
 def supports_file(filename):
@@ -81,6 +93,29 @@ def workbook_caps():
         env_int("SPREADSHEET_MAX_CELLS_PER_BRAIN", DEFAULT_MAX_CELLS),
         env_int("SPREADSHEET_MAX_BYTES_PER_BRAIN", DEFAULT_MAX_BYTES),
     )
+
+
+def mark_schema_migrated(brain_id):
+    _schema_ready.add(brain_id)
+
+
+def clear_schema_cache(brain_id=None):
+    if brain_id is None:
+        _schema_ready.clear()
+    else:
+        _schema_ready.discard(brain_id)
+
+
+def ensure_schema(cursor, brain_id):
+    if brain_id in _schema_ready:
+        return
+    cursor.execute(MARKER_DDL)
+    cursor.execute("SELECT version FROM spreadsheet_schema WHERE singleton")
+    row = cursor.fetchone()
+    if row and row[0] >= SCHEMA_VERSION:
+        return
+    cursor.execute(SCHEMA)
+    cursor.execute(MARKER_UPSERT, (SCHEMA_VERSION,))
 
 
 def postgres_connection():
@@ -185,16 +220,22 @@ def insert_workbook(cursor, workbook_id, filename, catalog, digest, cells, paylo
     execute_values(cursor, "INSERT INTO spreadsheet_rows VALUES %s", records, page_size=250)
 
 
-def commit_workbook(connect, filename, payload, workbook_id, sheets, catalog, cells, cost, digest):
+def commit_workbook(
+    connect, filename, payload, workbook_id, sheets,
+    catalog, cells, cost, digest, brain_id,
+):
     with connect as conn, conn, conn.cursor() as cursor:
         cursor.execute("SELECT pg_advisory_xact_lock(767947831)")
-        cursor.execute(SCHEMA)
+        ensure_schema(cursor, brain_id)
         existing = duplicated_workbook(cursor, digest, cells, cost)
         if existing:
-            return existing
-        enforce_caps(cursor, cells, len(payload))
-        insert_workbook(cursor, workbook_id, filename, catalog, digest, cells, payload, sheets)
-    return None
+            result = existing
+        else:
+            enforce_caps(cursor, cells, len(payload))
+            insert_workbook(cursor, workbook_id, filename, catalog, digest, cells, payload, sheets)
+            result = None
+    mark_schema_migrated(brain_id)
+    return result
 
 
 def save_workbook(connect, filename, payload, workbook_id, brain_id):
@@ -207,7 +248,8 @@ def save_workbook(connect, filename, payload, workbook_id, brain_id):
     cost = workbook_cost(sheets)
     digest = hashlib.sha256(payload).hexdigest()
     existing = commit_workbook(
-        connect, filename, payload, workbook_id, sheets, catalog, cells, cost, digest,
+        connect, filename, payload, workbook_id, sheets,
+        catalog, cells, cost, digest, brain_id,
     )
     if existing:
         remember_workbook(brain_id, existing["id"], task_id=workbook_id)
