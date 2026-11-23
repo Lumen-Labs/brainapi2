@@ -11,7 +11,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 
 from pydantic import BaseModel
 from src.lib.tracing.profiler import profile_stage
-from src.utils.nlp.spacy import MODEL_NAMES, _spacy_manager
+from src.utils.nlp.spacy import _spacy_manager
 from src.utils.nlp.lang_detect import langid_detect
 
 _DEFAULT_IGNORE_POS = frozenset(
@@ -43,8 +43,6 @@ class MultiLangEntityExtractor:
 
     def extract(self, text):
         lang, _ = langid_detect(text)
-        if lang not in MODEL_NAMES:
-            return []
         try:
             nlp = self.spacy_manager.get_model(lang)
         except Exception:
@@ -85,7 +83,7 @@ class MultiLangEntityExtractor:
             i += 1
         entity_spans = [(ent.start, ent.end) for ent in doc.ents]
         noun_chunks = []
-        for chunk in doc.noun_chunks:
+        for chunk in _iter_noun_chunks(doc):
             for start, end in entity_spans:
                 if start <= chunk.start and chunk.end <= end:
                     break
@@ -104,8 +102,6 @@ class MultiLangEntityExtractor:
         if lang is None:
             with profile_stage("nlp.detect_language"):
                 lang, _ = langid_detect(text)
-        if lang not in MODEL_NAMES:
-            return ExtractElementsResponse(tokens=[], noun_chunks=[])
         try:
             with profile_stage("nlp.load_model", lang=lang):
                 nlp = self.spacy_manager.get_model(lang)
@@ -133,8 +129,6 @@ class MultiLangEntityExtractor:
             return []
         if lang is None:
             lang, _ = langid_detect(texts[0])
-        if lang not in MODEL_NAMES:
-            return [{"tokens": [], "noun_chunks": []} for _ in texts]
         try:
             nlp = self.spacy_manager.get_model(lang)
         except Exception:
@@ -146,6 +140,17 @@ class MultiLangEntityExtractor:
         for doc in nlp.pipe(texts, batch_size=batch_size):
             out.append(self._process_doc(doc, ignore_pos_set))
         return out
+
+
+def _iter_noun_chunks(doc):
+    try:
+        chunks = doc.noun_chunks
+    except (ValueError, NotImplementedError):
+        chunks = ()
+    try:
+        yield from chunks
+    except (ValueError, NotImplementedError):
+        yield from ()
 
 
 _entity_extractor = MultiLangEntityExtractor()

@@ -495,6 +495,18 @@ class OllamaConfig:
             raise ValueError("Ollama configuration is not complete")
 
 
+def _spacy_load_retry_ttl_seconds() -> float:
+    """Seconds before a failed spaCy load is retried. Default 300."""
+    raw = os.getenv("SPACY_LOAD_RETRY_TTL_SECONDS", "300")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return 300.0
+    if value < 0:
+        return 300.0
+    return value
+
+
 class SpacyConfig:
     """
     Configuration class for the Spacy configuration.
@@ -504,6 +516,7 @@ class SpacyConfig:
         self.keep_models_in_memory = (
             os.getenv("SPACY_KEEP_MODELS_IN_MEMORY", "true") == "true"
         )
+        self.load_retry_ttl_seconds = _spacy_load_retry_ttl_seconds()
 
 
 SEARCH_FTS_REGCONFIGS = frozenset({"italian", "spanish", "simple"})
