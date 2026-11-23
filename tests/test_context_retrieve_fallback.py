@@ -467,6 +467,88 @@ class VectorTimeoutFallbackTests(unittest.IsolatedAsyncioTestCase):
                         )
                     )
 
+    async def test_postgres_connection_error_degrades(self):
+        import psycopg2
+
+        from src.services.api.controllers import retrieve as retrieve_mod
+
+        with _stubbed_adapters(retrieve_mod, _facts(1)) as (_emb, mock_vs, _g, mock_data):
+            mock_vs.search_data.return_value = []
+            mock_data.search.side_effect = psycopg2.OperationalError(
+                "could not connect to server: Connection refused"
+            )
+            response = await retrieve_mod.get_context(
+                GetContextRequestBody(
+                    text="who is Alice",
+                    brain_id="brain-a",
+                    include_history=False,
+                )
+            )
+        self.assertIn("data.keyword_search", response.degraded or [])
+        self.assertTrue(response.triples or response.source_passages)
+
+    async def test_postgres_programming_error_propagates(self):
+        import psycopg2
+
+        from src.services.api.controllers import retrieve as retrieve_mod
+
+        with _stubbed_adapters(retrieve_mod, _facts(1)) as (_emb, mock_vs, _g, mock_data):
+            mock_vs.search_data.return_value = []
+            mock_data.search.side_effect = psycopg2.ProgrammingError("syntax error")
+            with self.assertRaises(psycopg2.ProgrammingError):
+                await retrieve_mod.get_context(
+                    GetContextRequestBody(
+                        text="who is Alice",
+                        brain_id="brain-a",
+                        include_history=False,
+                    )
+                )
+
+
+class PostgresOutageFilterTests(unittest.TestCase):
+    def test_connection_and_timeout_errors_are_outages(self):
+        import psycopg2
+        import psycopg2.errors
+        import psycopg2.pool
+
+        from src.lib.postgresql._provisioning import PoolTimeout
+        from src.services.api.controllers import retrieve as retrieve_mod
+
+        cases = [
+            psycopg2.OperationalError("could not connect to server"),
+            psycopg2.InterfaceError("connection already closed"),
+            psycopg2.pool.PoolError("connection pool exhausted"),
+            psycopg2.errors.QueryCanceled("canceling statement due to statement timeout"),
+            PoolTimeout("connection pool timeout"),
+        ]
+        timeout = psycopg2.OperationalError("timeout expired")
+        cases.append(timeout)
+        for exc in cases:
+            self.assertTrue(
+                retrieve_mod._is_postgres_outage(exc),
+                msg=type(exc).__name__,
+            )
+            self.assertTrue(retrieve_mod._is_degradable_backend_error(exc))
+
+    def test_sql_and_data_errors_are_not_outages(self):
+        import psycopg2
+        import psycopg2.errors
+
+        from src.services.api.controllers import retrieve as retrieve_mod
+
+        deadlock = psycopg2.errors.lookup("40P01")("deadlock detected")
+        cases = [
+            psycopg2.ProgrammingError("syntax error at or near SELECT"),
+            psycopg2.DataError("invalid input syntax"),
+            deadlock,
+        ]
+        for exc in cases:
+            self.assertFalse(
+                retrieve_mod._is_postgres_outage(exc),
+                msg=type(exc).__name__,
+            )
+            self.assertFalse(retrieve_mod._is_degradable_backend_error(exc))
+
 
 class ContextFallbackHttpTests(unittest.TestCase):
     def tearDown(self):
