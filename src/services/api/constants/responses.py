@@ -270,6 +270,7 @@ class PurgeIngestionResponse(BaseModel):
     partial: bool = False
     completed: Optional[list[PurgeCompletedAction]] = None
     error: Optional[str] = None
+    workbooks: int = 0
 
 
 class SpreadsheetSheetInfo(BaseModel):
@@ -283,16 +284,25 @@ class SpreadsheetWorkbookResponse(BaseModel):
     id: str
     filename: str
     sheets: list[SpreadsheetSheetInfo]
+    deduplicated: bool = False
+    cells: Optional[int] = None
 
 
 class SpreadsheetWorkbookListResponse(BaseModel):
     workbooks: list[SpreadsheetWorkbookResponse]
+    next_offset: Optional[int] = None
+
+
+class SpreadsheetDeleteResponse(BaseModel):
+    id: str
+    deleted: bool = True
 
 
 class SpreadsheetCellValue(BaseModel):
     type: str
     value: JsonValue | None = None
     formula: str | None = None
+    display: str | None = None
     column: str | None = None
     source: str | None = None
     sources: list[str] | None = None
@@ -305,9 +315,16 @@ class SpreadsheetRowResult(BaseModel):
     calculation: SpreadsheetCellValue | None = None
 
 
+class SpreadsheetGroupResult(BaseModel):
+    key: list[SpreadsheetCellValue]
+    value: SpreadsheetCellValue
+    sources: list[str] | None = None
+
+
 class SpreadsheetQueryResponse(BaseModel):
     matched: int
     value: SpreadsheetCellValue | None = None
     sources: list[str] | None = None
     rows: list[SpreadsheetRowResult] | None = None
+    groups: list[SpreadsheetGroupResult] | None = None
     next_offset: int | None = None

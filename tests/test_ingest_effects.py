@@ -17,10 +17,14 @@ from src.core.saving.ingest_effects import (
     handle_purge,
     merge_effect,
     plan_purge,
+    purge_task,
     reconstruct_effect,
     reconstruct_live,
     remember,
+    summarize,
+    _workbook_id_for_task,
 )
+from src.lib.postgresql._provisioning import PoolTimeout
 
 
 def _screenshot_ops():
@@ -41,6 +45,7 @@ class _Sink:
         self.vectors: list[tuple[str, list[str]]] = []
         self.unlinked: list[tuple[str, str]] = []
         self.structured: list[str] = []
+        self.workbooks: list[str] = []
         self.observations: list[str] = []
 
     def delete_chunks(self, ids):
@@ -57,6 +62,9 @@ class _Sink:
 
     def delete_structured(self, structured_id):
         self.structured.append(structured_id)
+
+    def delete_workbook(self, workbook_id):
+        self.workbooks.append(workbook_id)
 
     def unlink_graph(self, kind, uuid, detail):
         self.unlinked.append((kind, uuid))
@@ -130,6 +138,30 @@ class PurgePlanTests(unittest.TestCase):
         self.assertIn(("unlink_chunk", "c-reused"), kinds)
         self.assertEqual(plan.reused, 1)
 
+    def test_workbook_is_deleted_with_the_import(self):
+        effect = IngestEffect(task_id="task-1", workbook_id="wb-1")
+        plan = plan_purge(effect, chunks={}, nodes={}, edges={}, claimed_chunks=set())
+        kinds = {(action.kind, action.id) for action in plan.actions}
+        self.assertIn(("delete_workbook", "wb-1"), kinds)
+        self.assertEqual(summarize(plan)["workbooks"], 1)
+        sink = _Sink()
+        apply_actions(plan, sink)
+        self.assertEqual(sink.workbooks, ["wb-1"])
+
+    def test_shared_workbook_is_kept_while_another_import_claims_it(self):
+        effect = IngestEffect(task_id="task-1", workbook_id="wb-1")
+        plan = plan_purge(
+            effect,
+            chunks={},
+            nodes={},
+            edges={},
+            claimed_chunks=set(),
+            claimed_workbooks={"wb-1"},
+        )
+        kinds = {(action.kind, action.id) for action in plan.actions}
+        self.assertNotIn(("delete_workbook", "wb-1"), kinds)
+        self.assertEqual(summarize(plan)["workbooks"], 0)
+
     def test_structured_edge_without_chunk_ids_is_deleted(self):
         chunks, nodes, edges = _snapshots()
         plan = plan_purge(_effect(), chunks=chunks, nodes=nodes, edges=edges, claimed_chunks=set())
@@ -181,6 +213,60 @@ class PurgePlanTests(unittest.TestCase):
 
 
 class ReconstructTests(unittest.TestCase):
+    def test_workbook_only_import_is_reconstructed(self):
+        with patch(
+            "src.core.saving.ingest_effects._workbook_id_for_task",
+            return_value="task-wb",
+        ), patch(
+            "src.core.saving.ingest_effects._structured_payload",
+            return_value=None,
+        ):
+            effect = reconstruct_live("brain", "task-wb")
+        self.assertEqual(effect.workbook_id, "task-wb")
+        plan = plan_purge(effect, chunks={}, nodes={}, edges={}, claimed_chunks=set())
+        self.assertEqual(plan.actions[0].kind, "delete_workbook")
+
+    def test_missing_workbook_and_graph_is_not_found(self):
+        with patch(
+            "src.core.saving.ingest_effects._workbook_id_for_task",
+            return_value=None,
+        ), patch(
+            "src.core.saving.ingest_effects._structured_payload",
+            return_value=None,
+        ):
+            self.assertIsNone(reconstruct_live("brain", "missing"))
+
+    def test_workbook_lookup_failure_is_not_treated_as_missing(self):
+        with patch(
+            "src.core.saving.ingest_effects._workbook_id_for_task",
+            side_effect=PoolTimeout("connection pool timeout"),
+        ), patch(
+            "src.core.saving.ingest_effects._structured_payload",
+            return_value=None,
+        ):
+            with self.assertRaises(PoolTimeout):
+                reconstruct_live("brain", "task-wb")
+
+    def test_purge_does_not_succeed_when_workbook_lookup_fails(self):
+        with patch(
+            "src.core.saving.ingest_effects.load_effect",
+            return_value=None,
+        ), patch(
+            "src.core.saving.ingest_effects.reconstruct_live",
+            side_effect=PoolTimeout("connection pool timeout"),
+        ):
+            with self.assertRaises(PoolTimeout):
+                purge_task("brain", "task-wb", digest="abc")
+
+    def test_workbook_id_for_task_propagates_lookup_failure(self):
+        with patch(
+            "src.services.api.routes.spreadsheets.lookup_workbook",
+            side_effect=PoolTimeout("connection pool timeout"),
+        ):
+            with self.assertRaises(PoolTimeout):
+                _workbook_id_for_task("brain", "task-wb")
+
+
     def test_dry_run_marks_shared_and_exclusive_without_deleting(self):
         effect = reconstruct_effect(
             "old-task",

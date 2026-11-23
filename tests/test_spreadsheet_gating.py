@@ -1,13 +1,16 @@
 import asyncio
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
+from src.lib.postgresql._provisioning import PoolTimeout
 from src.services.api.dependencies import get_brain_id
 from src.services.api.routes.spreadsheets import (
     enabled,
+    lookup_workbook,
     router,
     supports_file,
     try_import_file,
@@ -80,9 +83,11 @@ def test_retrieve_routes_404_when_flag_empty(api, monkeypatch):
         json={"workbook": "00000000-0000-0000-0000-000000000001"},
     )
     uploaded = api.post("/ingest/spreadsheets", files={"file": ("grid.csv", b"a,b\n1,2\n")})
+    empty = api.post("/ingest/spreadsheets", files={"file": ("grid.csv", b"")})
     assert listed.status_code == 404
     assert queried.status_code == 404
     assert uploaded.status_code == 404
+    assert empty.status_code == 404
 
 
 def test_retrieve_routes_404_for_ungated_brain(api, monkeypatch):
@@ -99,3 +104,129 @@ def test_star_gate_reaches_postgres_lookup(api, monkeypatch):
     with patch("src.services.api.routes.spreadsheets.postgres_connection", return_value=missing):
         response = api.get("/retrieve/spreadsheets")
     assert response.status_code == 404
+
+
+def test_try_import_file_rejects_xls_when_gated(monkeypatch):
+    monkeypatch.setenv("SPREADSHEET_EXPERIMENT_BRAINS", "demo")
+    upload = AsyncMock()
+    upload.filename = "grid.xls"
+    with patch("src.services.api.routes.spreadsheets.postgres_connection", return_value=object()):
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(try_import_file(upload, "demo", workbook_id="task-1"))
+    assert exc.value.status_code == 422
+    upload.read.assert_not_called()
+
+
+def test_try_import_file_rejects_corrupt_xlsx_when_gated(monkeypatch):
+    monkeypatch.setenv("SPREADSHEET_EXPERIMENT_BRAINS", "demo")
+    upload = AsyncMock()
+    upload.filename = "grid.xlsx"
+    upload.read = AsyncMock(return_value=b"not-a-workbook")
+    with patch("src.services.api.routes.spreadsheets.postgres_connection", return_value=object()):
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(try_import_file(upload, "demo", workbook_id="task-1"))
+    assert exc.value.status_code == 422
+    assert "xlsx" in str(exc.value.detail).lower()
+
+
+def test_query_pool_timeout_returns_503(api, monkeypatch):
+    monkeypatch.setenv("SPREADSHEET_EXPERIMENT_BRAINS", "*")
+
+    @contextmanager
+    def busy(_brain_id):
+        raise PoolTimeout("connection pool timeout")
+        yield
+
+    with patch("src.services.api.routes.spreadsheets.postgres_connection", return_value=busy):
+        response = api.post(
+            "/retrieve/spreadsheets/query",
+            json={"workbook": "00000000-0000-0000-0000-000000000001"},
+        )
+    assert response.status_code == 503
+    assert response.headers.get("retry-after") == "1"
+    assert response.json()["detail"]
+
+
+def test_list_accepts_pagination_query(api, monkeypatch):
+    monkeypatch.setenv("SPREADSHEET_EXPERIMENT_BRAINS", "")
+    response = api.get("/retrieve/spreadsheets", params={"offset": 0, "limit": 10})
+    assert response.status_code == 404
+
+
+def test_lookup_workbook_propagates_pool_timeout():
+    @contextmanager
+    def busy(_brain_id):
+        raise PoolTimeout("connection pool timeout")
+        yield
+
+    with patch("src.services.api.routes.spreadsheets.postgres_connection", return_value=busy):
+        with pytest.raises(PoolTimeout):
+            lookup_workbook("demo", "00000000-0000-0000-0000-000000000001")
+
+
+def test_lookup_workbook_returns_none_when_missing():
+    class Cursor:
+        def execute(self, sql, args=None):
+            return None
+
+        def fetchone(self):
+            return None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    class Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def cursor(self):
+            return Cursor()
+
+    @contextmanager
+    def connect(_brain_id):
+        yield Conn()
+
+    with patch("src.services.api.routes.spreadsheets.postgres_connection", return_value=connect):
+        assert lookup_workbook("demo", "00000000-0000-0000-0000-000000000001") is None
+
+
+def test_delete_workbook_returns_204(api, monkeypatch):
+    monkeypatch.setenv("SPREADSHEET_EXPERIMENT_BRAINS", "*")
+
+    class Cursor:
+        def execute(self, sql, args=None):
+            self.sql = sql
+
+        def fetchone(self):
+            return ("00000000-0000-0000-0000-000000000001",)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    class Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def cursor(self):
+            return Cursor()
+
+    @contextmanager
+    def connect(_brain_id):
+        yield Conn()
+
+    with patch("src.services.api.routes.spreadsheets.postgres_connection", return_value=connect):
+        response = api.delete("/retrieve/spreadsheets/00000000-0000-0000-0000-000000000001")
+    assert response.status_code == 200
+    assert response.json()["deleted"] is True

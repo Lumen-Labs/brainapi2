@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+Spreadsheet experiment QA fixes. Gate is still `SPREADSHEET_EXPERIMENT_BRAINS` (empty = off). No version bump.
+
+- Date filters compare timestamps, not text. A date-only equals matches the whole day; an inclusive end date includes that day.
+- Per-brain Postgres pool waits up to `POSTGRES_POOL_TIMEOUT` (default 5s) instead of failing immediately; timeout is 503 with `Retry-After`.
+- `DELETE /retrieve/spreadsheets/{id}` removes a workbook. Purge/rollback of the import task deletes workbook rows too. Identical uploads return the existing workbook id (content hash). Caps: `SPREADSHEET_MAX_WORKBOOKS_PER_BRAIN` (500), `SPREADSHEET_MAX_CELLS_PER_BRAIN`, `SPREADSHEET_MAX_BYTES_PER_BRAIN`, checked atomically with the insert.
+- Imports credit existing ingest-group metering as `source_chars` / `source_tokens` (cell text) plus `counts.cells` / `counts.sheets`.
+- Gated `.xlsx`/`.csv`/`.xls` that are empty, encrypted, corrupt, or malformed return 4xx instead of 202 queued.
+- CSV infers dates, currency, and percentages like xlsx. Percentages stay fractions with `display=percent`. Merged cells forward-fill. Listed `rows` is data rows (header excluded). Range queries skip the header row. Workbook list is paginated. `group_by` aggregation is supported.
+
 ## 2.21.2 — 2026-11-22
 
 Current `main` since 2.21.1. The 2.21.0 and 2.21.1 tags did not publish a container image because the tag workflow ran before the required smoke checks had succeeded. This release is the first stable tag that can publish that image, including the Cypher parameterization from 2.21.0.

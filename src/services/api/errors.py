@@ -18,6 +18,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from src.lib.cypher_safety import InvalidCypherIdentifier, RawCypherRejected
 from src.lib.embeddings.client import EmbeddingClientError, EmbeddingError
+from src.lib.postgresql._provisioning import PoolTimeout
 
 logger = logging.getLogger(__name__)
 CACHE_RETRY_AFTER = "5"
@@ -286,6 +287,15 @@ def install_error_handlers(app: FastAPI) -> None:
             status_code=503,
             detail="Cache unavailable",
             headers={"Retry-After": CACHE_RETRY_AFTER},
+        )
+
+    @app.exception_handler(PoolTimeout)
+    async def pool_timeout_handler(request: Request, _exc: PoolTimeout):
+        return error_response(
+            request,
+            status_code=503,
+            detail="Database is busy. Retry shortly.",
+            headers={"Retry-After": "1"},
         )
 
     @app.exception_handler(Exception)
