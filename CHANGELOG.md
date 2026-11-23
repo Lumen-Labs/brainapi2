@@ -4,6 +4,7 @@
 
 Spreadsheet experiment QA fixes. Gate is still `SPREADSHEET_EXPERIMENT_BRAINS` (empty = off). No version bump.
 
+- `SPREADSHEET_EXPERIMENT_BRAINS` parsing is shared: `*`, explicit brain ids, and empty (off) mean the same thing on spreadsheet routes and `spreadsheet_experiment_owns_upload`.
 - Date filters compare timestamps, not text. A date-only equals matches the whole day; an inclusive end date includes that day.
 - Per-brain Postgres pool waits up to `POSTGRES_POOL_TIMEOUT` (default 5s) instead of failing immediately; timeout is 503 with `Retry-After`.
 - `DELETE /retrieve/spreadsheets/{id}` removes a workbook. Purge/rollback of the import task deletes workbook rows too. Identical uploads return the existing workbook id (content hash). Caps: `SPREADSHEET_MAX_WORKBOOKS_PER_BRAIN` (500), `SPREADSHEET_MAX_CELLS_PER_BRAIN`, `SPREADSHEET_MAX_BYTES_PER_BRAIN`, checked atomically with the insert.

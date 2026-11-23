@@ -1,3 +1,5 @@
+from src.core.spreadsheets.gating import spreadsheet_experiment_enabled
+
 PLAIN_TEXT_EXTENSIONS = {
     ".csv",
     ".json",
@@ -61,6 +63,11 @@ def is_spreadsheet_upload(filename, content_type):
     if ext:
         return False
     return normalized_content_type(content_type) in SPREADSHEET_CONTENT_TYPES
+
+
+def spreadsheet_experiment_owns_upload(brain_id, filename, content_type):
+    gated = spreadsheet_experiment_enabled(brain_id)
+    return gated and is_spreadsheet_upload(filename, content_type)
 
 
 def is_plain_text_upload(filename, content_type):
