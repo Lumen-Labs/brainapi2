@@ -35,8 +35,16 @@ async def execute_mcp_tool(
 
     from src.services.mcp.main import (
         auth_token_var,
+        conflict_report,
+        dismiss_conflict,
+        get_changelog,
+        get_conflict,
         get_search_operation_instructions,
         list_brains,
+        list_changelogs,
+        list_conflicts,
+        list_source_versions,
+        resolve_conflict,
         search_memory,
         search_semantically,
         traverse_graph,
@@ -56,6 +64,11 @@ async def execute_mcp_tool(
             result = await search_semantically(
                 query=str(params.get("query") or ""),
                 brain_id=str(params.get("brain_id") or ""),
+                include_rejected=bool(params.get("include_rejected") or False),
+                as_of=str(params.get("as_of") or "") or None,
+                include_validity_unknown=bool(
+                    params.get("include_validity_unknown") or False
+                ),
             )
             return result if isinstance(result, str) else json.dumps(result, default=str)
         if tool_name == "traverse_graph":
@@ -75,6 +88,78 @@ async def execute_mcp_tool(
             result = await search_memory(
                 db_query=str(params.get("db_query") or ""),
                 brain_id=str(params.get("brain_id") or ""),
+            )
+            return result if isinstance(result, str) else json.dumps(result, default=str)
+        if tool_name == "list_changelogs":
+            result = await list_changelogs(
+                brain_id=str(params.get("brain_id") or ""),
+                query_text=str(params.get("query_text") or ""),
+                types=params.get("types"),
+                limit=int(params.get("limit") or 10),
+                skip=int(params.get("skip") or 0),
+                since=str(params.get("since") or ""),
+                until=str(params.get("until") or ""),
+            )
+            return result if isinstance(result, str) else json.dumps(result, default=str)
+        if tool_name == "get_changelog":
+            result = await get_changelog(
+                brain_id=str(params.get("brain_id") or ""),
+                id=str(params.get("id") or ""),
+            )
+            return result if isinstance(result, str) else json.dumps(result, default=str)
+        if tool_name == "list_source_versions":
+            result = await list_source_versions(
+                brain_id=str(params.get("brain_id") or ""),
+                source_key=str(params.get("source_key") or ""),
+                query=str(params.get("query") or ""),
+                limit=int(params.get("limit") or 10),
+                skip=int(params.get("skip") or 0),
+            )
+            return result if isinstance(result, str) else json.dumps(result, default=str)
+        if tool_name == "list_conflicts":
+            result = await list_conflicts(
+                brain_id=str(params.get("brain_id") or ""),
+                status=str(params.get("status") or ""),
+                source=str(params.get("source") or ""),
+                subject=str(params.get("subject") or ""),
+                since=str(params.get("since") or ""),
+                until=str(params.get("until") or ""),
+                limit=int(params.get("limit") or 10),
+                skip=int(params.get("skip") or 0),
+            )
+            return result if isinstance(result, str) else json.dumps(result, default=str)
+        if tool_name == "get_conflict":
+            result = await get_conflict(
+                brain_id=str(params.get("brain_id") or ""),
+                id=str(params.get("id") or ""),
+            )
+            return result if isinstance(result, str) else json.dumps(result, default=str)
+        if tool_name == "resolve_conflict":
+            result = await resolve_conflict(
+                brain_id=str(params.get("brain_id") or ""),
+                id=str(params.get("id") or ""),
+                winning_fact_id=str(params.get("winning_fact_id") or ""),
+                notes=str(params.get("notes") or ""),
+                method=str(params.get("method") or "manual"),
+            )
+            return result if isinstance(result, str) else json.dumps(result, default=str)
+        if tool_name == "dismiss_conflict":
+            result = await dismiss_conflict(
+                brain_id=str(params.get("brain_id") or ""),
+                id=str(params.get("id") or ""),
+                notes=str(params.get("notes") or ""),
+            )
+            return result if isinstance(result, str) else json.dumps(result, default=str)
+        if tool_name == "conflict_report":
+            result = await conflict_report(
+                brain_id=str(params.get("brain_id") or ""),
+                status=str(params.get("status") or ""),
+                source=str(params.get("source") or ""),
+                subject=str(params.get("subject") or ""),
+                since=str(params.get("since") or ""),
+                until=str(params.get("until") or ""),
+                format=str(params.get("format") or "json"),
+                limit=int(params.get("limit") or 200),
             )
             return result if isinstance(result, str) else json.dumps(result, default=str)
         return f"Error: tool '{tool_name}' is not implemented"

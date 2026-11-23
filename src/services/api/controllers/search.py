@@ -50,6 +50,7 @@ from src.services.api.constants.requests import (
 from src.services.data.main import data_adapter
 from src.services.kg_agent.main import embeddings_adapter, graph_adapter, vector_store_adapter
 from src.utils.vector_search import VectorSearchFacade
+from src.core.verification.facts import verification_scope
 
 vector_search = VectorSearchFacade(vector_store_adapter)
 
@@ -201,16 +202,24 @@ def _collect_graph_hits(
 
 async def search(request: SearchRequestBody) -> SearchResponse:
     _require_search_enabled()
-    with profile_request(
-        "retrieve.search", enabled=request.profile_stages
-    ) as profiler:
-        response = await _search(request)
+    with verification_scope(include_rejected=bool(request.include_rejected)):
+        with profile_request(
+            "retrieve.search", enabled=request.profile_stages
+        ) as profiler:
+            response = await _search(request)
     if profiler is not None:
         response.stage_timings = profiler.last_report
     return response
 
 
 async def _search(request: SearchRequestBody) -> SearchResponse:
+    from src.core.saving.source_passages import screen_passage_hits
+    from src.core.saving.validity import InvalidAsOf, optional_instant
+
+    try:
+        as_of = optional_instant(getattr(request, "as_of", None))
+    except InvalidAsOf as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     try:
         reranker = resolve_reranker(request.rerank)
         plugin_retrievers = resolve_retrievers(request.channels)
@@ -219,6 +228,8 @@ async def _search(request: SearchRequestBody) -> SearchResponse:
 
     k = request.k
     k_ret = retrieve_k_for_mode(request.mode, k)
+    if as_of is not None:
+        k_ret = min(200, max(k_ret, k * 8))
     rerank_max = rerank_max_k_for_mode(request.mode)
     brain_id = request.brain_id
     fusion = request.fusion or config.search_fusion
@@ -417,6 +428,46 @@ async def _search(request: SearchRequestBody) -> SearchResponse:
             for item_id in ranked_ids
             if hit_matches_extras(extras_by_id.get(item_id), request.extras)
         ]
+    unknown_items: list[dict[str, Any]] = []
+    if as_of is not None:
+        from src.core.saving.validity import unknown_fact
+
+        passage_ids = [
+            item_id for item_id in ranked_ids if item_id not in graph_by_id
+        ]
+        if passage_ids:
+            unknown_hits: list = []
+            screened = screen_passage_hits(
+                data_adapter,
+                brain_id,
+                [
+                    (item_id, 0.0, texts.get(item_id) or "")
+                    for item_id in passage_ids
+                ],
+                include_history=False,
+                as_of=as_of,
+                unknown_out=unknown_hits,
+            )
+            allowed = {item_id for item_id, _, _ in screened}
+            ranked_ids = [
+                item_id
+                for item_id in ranked_ids
+                if item_id in graph_by_id or item_id in allowed
+            ]
+            ranked_ids = ranked_ids[: retrieve_k_for_mode(request.mode, k)]
+            for chunk_id, _score, body, chunk in unknown_hits:
+                payload = (
+                    chunk.model_dump(mode="json")
+                    if hasattr(chunk, "model_dump")
+                    else body
+                )
+                unknown_items.append(
+                    unknown_fact(
+                        target="chunk",
+                        item_id=str(chunk_id),
+                        payload=payload,
+                    )
+                )
     node_id_by_hit: dict[str, str | None] = {}
     for item_id in ranked_ids:
         graph_hit = graph_by_id.get(item_id)
@@ -498,6 +549,14 @@ async def _search(request: SearchRequestBody) -> SearchResponse:
             continue
         seen_nodes.add(hit.node_id)
         node_ids.append(hit.node_id)
+    envelope: dict[str, Any] = {}
+    if as_of is not None:
+        from src.core.saving.validity import dedupe_unknown_items
+
+        unknown_items = dedupe_unknown_items(unknown_items)
+        envelope["validity_unknown_count"] = len(unknown_items)
+        if getattr(request, "include_validity_unknown", False):
+            envelope["validity_unknown"] = unknown_items
     return SearchResponse(
         hits=hits,
         facets=facet_counts_from_extras([hit.extras for hit in hits]),
@@ -511,4 +570,5 @@ async def _search(request: SearchRequestBody) -> SearchResponse:
             "literal": list(literal_ids),
         },
         node_ids=node_ids,
+        **envelope,
     )

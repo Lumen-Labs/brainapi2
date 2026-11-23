@@ -26,6 +26,54 @@ from src.adapters.interfaces.embeddings import VectorStoreClient
 from src.config import config
 from src.constants.embeddings import EMBEDDING_STORES_SIZES, Vector
 
+_SEARCH_TIMEOUT_SECONDS = 10.0
+
+
+def _collection_is_loaded(client, store: str, timeout: float | None) -> bool:
+    getter = getattr(client, "get_load_state", None)
+    if not callable(getter):
+        return False
+    try:
+        state = getter(store, timeout=timeout)
+    except Exception:
+        return False
+    value = state.get("state", state) if isinstance(state, dict) else state
+    name = getattr(value, "name", None) or value
+    return str(name).rsplit(".", 1)[-1] == "Loaded"
+
+
+def _collection_has_index(client, store: str, timeout: float | None) -> bool:
+    lister = getattr(client, "list_indexes", None)
+    if not callable(lister):
+        return False
+    try:
+        indexes = lister(store, field_name="embeddings", timeout=timeout)
+    except TypeError:
+        try:
+            indexes = lister(store, field_name="embeddings")
+        except Exception:
+            return False
+    except Exception:
+        return False
+    return bool(indexes)
+
+
+def _create_vector_index(client, store: str, timeout: float | None) -> None:
+    try:
+        index_params = IndexParams()
+        index_params.add_index(
+            field_name="embeddings",
+            index_type="AUTOINDEX",
+            metric_type="COSINE",
+        )
+        client.create_index(
+            collection_name=store,
+            index_params=index_params,
+            timeout=timeout,
+        )
+    except Exception as e:
+        print(f"[Milvus] Error creating index for collection {store}: {e}")
+
 
 def string_to_int64(s: str) -> int:
     sha256 = hashlib.sha256(s.encode()).digest()
@@ -178,7 +226,12 @@ class MilvusClient(VectorStoreClient):
         for collection in client.list_collections():
             client.drop_collection(collection_name=collection)
 
-    def _ensure_store(self, store: str, brain_id: str) -> None:
+    def _ensure_store(
+        self,
+        store: str,
+        brain_id: str,
+        timeout: float | None = _SEARCH_TIMEOUT_SECONDS,
+    ) -> None:
         """
         Ensure the store exists and is loaded in the specified database.
         """
@@ -186,32 +239,20 @@ class MilvusClient(VectorStoreClient):
         if store not in EMBEDDING_STORES_SIZES:
             raise ValueError(f"Store {store} not available")
 
-        collection_created = False
-        if not client.has_collection(store):
+        if not client.has_collection(store, timeout=timeout):
             client.create_collection(
                 store,
                 dimension=EMBEDDING_STORES_SIZES[store],
                 vector_field_name="embeddings",
+                timeout=timeout,
             )
-            collection_created = True
 
-        if collection_created:
-            try:
-                index_params = IndexParams()
-                index_params.add_index(
-                    field_name="embeddings",
-                    index_type="AUTOINDEX",
-                    metric_type="COSINE",
-                )
-                client.create_index(
-                    collection_name=store,
-                    index_params=index_params,
-                )
-            except Exception as e:
-                print(f"[Milvus] Error creating index for collection {store}: {e}")
-
+        if _collection_is_loaded(client, store, timeout):
+            return
+        if not _collection_has_index(client, store, timeout):
+            _create_vector_index(client, store, timeout)
         try:
-            client.load_collection(store)
+            client.load_collection(store, timeout=timeout)
         except Exception:
             pass
 
@@ -260,18 +301,17 @@ class MilvusClient(VectorStoreClient):
         Search vectors in the vector store and return the top k vectors.
         """
         client = self._get_client(brain_id)
-        self._ensure_store(store, brain_id)
-
-        try:
-            client.load_collection(store)
-        except Exception:
-            pass
+        self._ensure_store(store, brain_id, timeout=_SEARCH_TIMEOUT_SECONDS)
 
         from src.utils.vector_search import ann_overfetch_k, stable_top_k_vectors
 
         fetch_k = ann_overfetch_k(k)
         _results = client.search(
-            store, data=[data_vector], limit=fetch_k, output_fields=["$meta"]
+            store,
+            data=[data_vector],
+            limit=fetch_k,
+            output_fields=["$meta"],
+            timeout=_SEARCH_TIMEOUT_SECONDS,
         )
         results = []
         for query_results in _results:
@@ -401,6 +441,19 @@ class MilvusClient(VectorStoreClient):
 
         return out
 
+    def remove_vectors_by_resource_id(
+        self, resource_ids: list[str], store: str, brain_id: str
+    ) -> None:
+        if not resource_ids:
+            return
+        client = self._get_client(brain_id)
+        self._ensure_store(store, brain_id)
+        quoted = ",".join(f'"{str(item).replace(chr(34), "")}"' for item in resource_ids)
+        try:
+            client.delete(store, filter=f"resource_id in [{quoted}]")
+        except Exception as exc:
+            print(f"[Milvus] Failed to remove passage vectors from {store}: {exc}")
+
     def remove_vectors(self, ids: list[str], store: str, brain_id: str) -> None:
         """
         Remove vectors from the vector store.
@@ -409,10 +462,15 @@ class MilvusClient(VectorStoreClient):
             return
         client = self._get_client(brain_id)
         self._ensure_store(store, brain_id)
+        int_ids = [
+            item if isinstance(item, int) else string_to_int64(str(item))
+            for item in ids
+        ]
         try:
-            client.delete(store, ids=ids)
+            client.delete(store, ids=int_ids)
         except Exception as e:
             print(f"[Milvus] Failed to remove vectors from {store}: {e}")
+            raise
 
     def list_vectors(
         self,

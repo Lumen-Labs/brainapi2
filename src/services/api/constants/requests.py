@@ -13,6 +13,8 @@ from urllib.parse import urlparse, urlsplit
 
 from pydantic import (
     BaseModel,
+    ConfigDict,
+    Discriminator,
     Field,
     StringConstraints,
     ValidationInfo,
@@ -29,15 +31,101 @@ from src.constants.kg import (
     Predicate,
     Relationship,
 )
-from src.constants.tasks.ingestion import IngestionTaskArgs
+from src.constants.tasks.ingestion import (
+    IngestionTaskArgs,
+    IngestionTaskJsonArgs,
+    IngestionTaskTextArgs,
+)
 from src.core.saving.ingest_groups import InvalidGroupTracking, normalize_group_tracking
 from src.core.search.entity_info import MatchPath
+
+
+def jsonable_graph_value(obj: Any) -> Any:
+    try:
+        from neo4j.graph import Node as NeoNode
+        from neo4j.graph import Path as NeoPath
+        from neo4j.graph import Relationship as NeoRel
+    except Exception:
+        NeoNode = NeoRel = NeoPath = tuple()
+    from src.constants.kg import Node as KGNode
+
+    if obj is None:
+        return None
+    if isinstance(obj, (str, int, float, bool)):
+        return obj
+    if isinstance(obj, KGNode):
+        return obj.model_dump(mode="json")
+    dump = getattr(obj, "model_dump", None)
+    if callable(dump):
+        try:
+            return dump(mode="json")
+        except Exception:
+            pass
+    if isinstance(obj, dict):
+        return {k: jsonable_graph_value(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, set)):
+        return [jsonable_graph_value(v) for v in obj]
+    if NeoNode and isinstance(obj, NeoNode):
+        d = dict(obj)
+        labels = getattr(obj, "labels", None)
+        if labels is not None:
+            d["_labels"] = list(labels)
+        return d
+    if NeoRel and isinstance(obj, NeoRel):
+        d = dict(obj)
+        rel_type = getattr(obj, "type", None)
+        if rel_type is not None:
+            d["_type"] = rel_type
+        try:
+            nodes_attr = getattr(obj, "nodes", None)
+            if nodes_attr:
+                d["_start_id"] = getattr(nodes_attr[0], "id", None)
+                d["_end_id"] = getattr(nodes_attr[1], "id", None)
+        except Exception:
+            pass
+        return d
+    if NeoPath and isinstance(obj, NeoPath):
+        return {
+            "nodes": [jsonable_graph_value(n) for n in obj.nodes],
+            "relationships": [
+                jsonable_graph_value(r) for r in obj.relationships
+            ],
+        }
+    return str(obj)
 
 
 class IngestionRequestBody(IngestionTaskArgs):
     """
     Request body for the ingestion endpoint.
     """
+
+    model_config = ConfigDict(extra="allow")
+    data: Optional[
+        Annotated[
+            Union[IngestionTaskJsonArgs, IngestionTaskTextArgs],
+            Discriminator("data_type"),
+        ]
+    ] = None
+    status: Optional[str] = None
+    error: Optional[str] = None
+    page_index: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="0-based page index from a document-parser callback.",
+    )
+    total_pages: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description="Total pages in the document-parser job.",
+    )
+
+    @model_validator(mode="after")
+    def require_data_unless_failed_callback(self):
+        if self.data is not None:
+            return self
+        if str(self.status or "").lower() == "failed":
+            return self
+        raise ValueError("data is required")
 
 
 class IngestionUrlRequestBody(BaseModel):
@@ -314,61 +402,16 @@ class RetrieveRequestResponse(BaseModel):
     data: List[TextChunk]
     observations: List[Observation]
     relationships: List[dict]
+    validity_unknown_count: Optional[int] = None
+    validity_unknown: Optional[List[dict[str, Any]]] = None
 
     @field_serializer("relationships", when_used="json")
     def _serialize_relationships(self, value: List[Any]):
-        try:
-            from neo4j.graph import (
-                Node as NeoNode,
-            )
-            from neo4j.graph import (
-                Path as NeoPath,
-            )
-            from neo4j.graph import (
-                Relationship as NeoRel,
-            )
-        except Exception:
-            NeoNode = NeoRel = NeoPath = tuple()
-        from src.constants.kg import Node as KGNode
+        return [jsonable_graph_value(v) for v in value] if value is not None else []
 
-        def _ser(obj):
-            if obj is None:
-                return None
-            if isinstance(obj, (str, int, float, bool)):
-                return obj
-            if isinstance(obj, KGNode):
-                return obj.model_dump(mode="json")
-            if isinstance(obj, dict):
-                return {k: _ser(v) for k, v in obj.items()}
-            if isinstance(obj, (list, tuple, set)):
-                return [_ser(v) for v in obj]
-            if NeoNode and isinstance(obj, NeoNode):
-                d = dict(obj)
-                labels = getattr(obj, "labels", None)
-                if labels is not None:
-                    d["_labels"] = list(labels)
-                return d
-            if NeoRel and isinstance(obj, NeoRel):
-                d = dict(obj)
-                rel_type = getattr(obj, "type", None)
-                if rel_type is not None:
-                    d["_type"] = rel_type
-                try:
-                    nodes_attr = getattr(obj, "nodes", None)
-                    if nodes_attr:
-                        d["_start_id"] = getattr(nodes_attr[0], "id", None)
-                        d["_end_id"] = getattr(nodes_attr[1], "id", None)
-                except Exception:
-                    pass
-                return d
-            if NeoPath and isinstance(obj, NeoPath):
-                return {
-                    "nodes": [_ser(n) for n in obj.nodes],
-                    "relationships": [_ser(r) for r in obj.relationships],
-                }
-            return str(obj)
-
-        return [_ser(v) for v in value] if value is not None else []
+    @field_serializer("validity_unknown", when_used="json")
+    def _serialize_validity_unknown(self, value: Optional[List[Any]]):
+        return [jsonable_graph_value(v) for v in value] if value is not None else value
 
 
 class RetrievedNeighborNode(BaseModel):
@@ -429,6 +472,10 @@ class RetrieveNeighborsWithIdentificationParamsRequestBody(BaseModel):
     look_for: Optional[str] = Field(
         None, description="Optional filter for what type of neighbors to look for."
     )
+    include_rejected: bool = Field(
+        False,
+        description="If true, include expert-rejected facts.",
+    )
 
 
 class CreateBrainRequest(BaseModel):
@@ -442,9 +489,9 @@ class CreateBrainRequest(BaseModel):
 class AddEntityRequest(BaseModel):
     """Request model for adding a new entity to the graph."""
 
-    name: str
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
     brain_id: str = "default"
-    labels: list[str] = []
+    labels: list[str] = Field(default_factory=list)
     description: Optional[str] = None
     properties: Optional[dict] = None
     identification_params: Optional[dict] = None
@@ -467,7 +514,9 @@ class AddRelationshipRequest(BaseModel):
     """Request model for adding a new relationship between two entities."""
 
     subject_uuid: str
-    predicate_name: str
+    predicate_name: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1)
+    ]
     predicate_description: str
     object_uuid: str
     brain_id: str = "default"
@@ -480,6 +529,69 @@ class UpdateRelationshipRequest(BaseModel):
     brain_id: str = "default"
     new_properties: Optional[dict] = None
     properties_to_remove: Optional[list[str]] = None
+
+
+class FactVerificationInfo(BaseModel):
+    """Expert verification provenance for a retrieved fact."""
+
+    state: Literal["unverified", "verified", "rejected"] = "unverified"
+    verified_by: Optional[str] = None
+    verified_at: Optional[str] = None
+    verification_source: Optional[str] = None
+    note: Optional[str] = None
+    fact_id: Optional[str] = None
+    kind: Optional[Literal["relationship", "node"]] = None
+
+
+class VerifyFactRequest(BaseModel):
+    """Request body for verify, reject, or reset of a fact."""
+
+    verified_by: Optional[str] = Field(
+        default=None,
+        description=(
+            "Ignored. Actor identity is taken from the authenticated token "
+            "principal; caller-supplied verified_by is not stored."
+        ),
+    )
+    verification_source: Optional[str] = Field(
+        default=None,
+        description="Source, document, or reference id supporting the action.",
+    )
+    note: Optional[str] = Field(
+        default=None,
+        description="Optional note stored on the fact and in the audit history.",
+    )
+
+
+class FactVerificationHistoryEntry(BaseModel):
+    id: str
+    from_state: Literal["unverified", "verified", "rejected"]
+    to_state: Literal["unverified", "verified", "rejected"]
+    verified_by: Optional[str] = None
+    verified_at: str
+    verification_source: Optional[str] = None
+    note: Optional[str] = None
+
+
+class FactVerificationRecord(BaseModel):
+    kind: Literal["relationship", "node"]
+    fact_id: str
+    name: str = ""
+    description: str = ""
+    verification: FactVerificationInfo
+    history: List[FactVerificationHistoryEntry] = Field(default_factory=list)
+    subject_uuid: Optional[str] = None
+    subject_name: Optional[str] = None
+    subject_labels: List[str] = Field(default_factory=list)
+    object_uuid: Optional[str] = None
+    object_name: Optional[str] = None
+    object_labels: List[str] = Field(default_factory=list)
+    labels: List[str] = Field(default_factory=list)
+
+
+class FactVerificationListResponse(BaseModel):
+    facts: List[FactVerificationRecord]
+    total: int
 
 
 class GetEntityInfoResponse(BaseModel):
@@ -551,8 +663,21 @@ class GetEntityStatusResponse(BaseModel):
 class GetContextRequestBody(BaseModel):
     """Request body for the get context endpoint."""
 
-    text: str
+    text: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
     brain_id: str = "default"
+    as_of: Optional[str] = Field(
+        default=None,
+        description="ISO-8601 datetime. When set, return the knowledge state valid at that instant.",
+    )
+    include_validity_unknown: bool = Field(
+        default=False,
+        description="When as_of is set, include undated facts in validity_unknown.",
+    )
+    annotate_conflicts: bool = Field(
+        default=False,
+        description="When true, mark retrieved facts that are in an open cross-source conflict.",
+    )
+    include_history: Optional[bool] = None
     historical_limit: int = 10
     max_facts: int = Field(40, ge=0)
     max_passages: int = 8
@@ -561,6 +686,10 @@ class GetContextRequestBody(BaseModel):
     sufficiency_retry: bool = False
     profile_stages: bool = False
     cross_event_bridges: int = Field(3, ge=0)
+    include_rejected: bool = Field(
+        False,
+        description="If true, include expert-rejected facts in the response.",
+    )
 
 
 class GetContextTriple(BaseModel):
@@ -570,6 +699,8 @@ class GetContextTriple(BaseModel):
     triple: Tuple[Node, Predicate, Node, Predicate, Node]
     source_chunk_ids: Optional[List[str]] = None
     source_session_ids: Optional[List[str]] = None
+    open_conflicts: Optional[List[dict[str, Any]]] = None
+    verification: Optional[FactVerificationInfo] = None
 
 
 class GetContextResponse(BaseModel):
@@ -584,11 +715,40 @@ class GetContextResponse(BaseModel):
     paths: Optional[List[dict[str, Any]]] = None
     topics: Optional[List[dict[str, Any]]] = None
     stage_timings: Optional[dict[str, Any]] = None
+    degraded: Optional[List[str]] = None
+    validity_unknown_count: Optional[int] = None
+    validity_unknown: Optional[List[dict[str, Any]]] = None
+
+    @field_serializer("validity_unknown", when_used="json")
+    def _serialize_validity_unknown(self, value: Optional[List[Any]]):
+        return [jsonable_graph_value(v) for v in value] if value is not None else value
+
+
+class ConflictResolveRequest(BaseModel):
+    winning_fact_id: Optional[str] = None
+    notes: Optional[str] = None
+    method: Optional[str] = "manual"
+
+
+class ConflictDismissRequest(BaseModel):
+    notes: Optional[str] = None
+
+
+class ConflictScanRequest(BaseModel):
+    use_llm: bool = False
 
 
 class SearchRequestBody(BaseModel):
     query: str
     brain_id: str = "default"
+    as_of: Optional[str] = Field(
+        default=None,
+        description="ISO-8601 datetime. When set, search the knowledge state valid at that instant.",
+    )
+    include_validity_unknown: bool = Field(
+        default=False,
+        description="When as_of is set, include undated hits in validity_unknown.",
+    )
     k: int = Field(10, ge=1, le=200)
     channels: List[str] = Field(default_factory=lambda: ["passages"])
     node_labels: Optional[List[str]] = None
@@ -604,6 +764,10 @@ class SearchRequestBody(BaseModel):
     profile_stages: bool = False
     extras: Optional[Dict[str, str]] = None
     target: Optional[str] = None
+    include_rejected: bool = Field(
+        False,
+        description="If true, include expert-rejected facts in search hits.",
+    )
 
     @field_validator("target", mode="before")
     @classmethod
@@ -655,3 +819,9 @@ class SearchResponse(BaseModel):
     channel_lists: Optional[dict[str, list[str]]] = None
     facets: Optional[dict[str, dict[str, int]]] = None
     node_ids: List[str] = Field(default_factory=list)
+    validity_unknown_count: Optional[int] = None
+    validity_unknown: Optional[List[dict[str, Any]]] = None
+
+    @field_serializer("validity_unknown", when_used="json")
+    def _serialize_validity_unknown(self, value: Optional[List[Any]]):
+        return [jsonable_graph_value(v) for v in value] if value is not None else value

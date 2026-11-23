@@ -272,7 +272,7 @@ wheels = [
 
 [[package]]
 name = "brainapi2"
-version = "2.20.1.dev7"
+version = "2.21.2"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
@@ -283,6 +283,7 @@ dependencies = [
     { name = "cpp-chunker" },
     { name = "cryptography" },
     { name = "dnspython" },
+    { name = "et-xmlfile" },
     { name = "fastapi" },
     { name = "google-genai" },
     { name = "httpx" },
@@ -300,6 +301,7 @@ dependencies = [
     { name = "networkx" },
     { name = "numpy" },
     { name = "openai" },
+    { name = "openpyxl" },
     { name = "pgvector" },
     { name = "pillow" },
     { name = "psycopg2-binary" },
@@ -345,9 +347,10 @@ requires-dist = [
     { name = "celery", specifier = ">=5.5.3,<6.0.0" },
     { name = "certifi", specifier = ">=2026.10.18" },
     { name = "cpp-chunker", specifier = ">=0.1.4,<0.2.0" },
-    { name = "cryptography", specifier = ">=50.0.0,<51.0.0" },
+    { name = "cryptography", specifier = ">=43.0.0,<51.0.0" },
     { name = "dnspython", specifier = ">=2.9.0,<3.0.0" },
     { name = "docling", marker = "extra == 'docling-ocr'", specifier = ">=2.121.0,<3.0.0" },
+    { name = "et-xmlfile", specifier = ">=2.0.0,<3.0.0" },
     { name = "fastapi", specifier = ">=0.141.1,<0.142.0" },
     { name = "google-genai", specifier = ">=1.46.0,<2.0.0" },
     { name = "httpx", specifier = ">=0.27.0,<1.0.0" },
@@ -360,12 +363,13 @@ requires-dist = [
     { name = "langgraph-sdk", specifier = ">=0.4.4,<1.0.0" },
     { name = "langid", specifier = ">=1.1.6,<2.0.0" },
     { name = "levenshtein", specifier = ">=0.27.1,<0.28.0" },
-    { name = "mcp", specifier = ">=1.28.1,<2.0.0" },
+    { name = "mcp", specifier = ">=1.30.0,<2.0.0" },
     { name = "neo4j", specifier = ">=6.0.2,<7.0.0" },
     { name = "networkx", specifier = ">=3.0,<4.0.0" },
     { name = "networkx", marker = "extra == 'postgresql-backend'", specifier = ">=3.0,<4.0.0" },
     { name = "numpy", specifier = ">=1.26.0,<2.0.0" },
     { name = "openai", specifier = ">=2.5.0,<3.0.0" },
+    { name = "openpyxl", specifier = ">=3.1.5,<4.0.0" },
     { name = "pgvector", specifier = ">=0.3.0,<1.0.0" },
     { name = "pgvector", marker = "extra == 'postgresql-backend'", specifier = ">=0.3.0,<1.0.0" },
     { name = "pillow", specifier = ">=13.0.0,<14.0.0" },
@@ -2263,7 +2267,7 @@ wheels = [
 
 [[package]]
 name = "mcp"
-version = "1.29.0"
+version = "1.30.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -2281,9 +2285,9 @@ dependencies = [
     { name = "typing-inspection" },
     { name = "uvicorn", marker = "sys_platform != 'emscripten'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/30/d3/f9acc21dfc886e4f78e2add1a47db46ce16884346afde53f8a064c02c891/mcp-1.29.0.tar.gz", hash = "sha256:52d01f334de1868cc3bb2d6604931126a67631f99a6c5d3b82ba47290315ec36", size = 643148, upload-time = "2026-07-28T13:41:41.939Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ba/93/0142dc84a666daf8ad51a34268f34c12fd6fda4f3810c4be2504eecc8212/mcp-1.30.0.tar.gz", hash = "sha256:445414625fce5c295faa505bb11bacece661ab6f4028d57c935db57820b7a3e4", size = 680511, upload-time = "2026-09-07T14:34:15.845Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/01/c8/248b201f6d753d69fd5d6506011abbb35a946d9142b2ae311a948fd0be3d/mcp-1.29.0-py3-none-any.whl", hash = "sha256:f5a075bb611f23d6f4d080c6a1699fa62772eebc562ba9e66b306ddde1c755f7", size = 223436, upload-time = "2026-07-28T13:41:40.337Z" },
+    { url = "https://files.pythonhosted.org/packages/f5/f4/e58bc33317c92a0203664daaf00bf6f41166cc0149e5d6870a03f7cd004a/mcp-1.30.0-py3-none-any.whl", hash = "sha256:666edb5009503e1047c9d60346a756f94b261f05cc2625f23d41c728ffc484d0", size = 234581, upload-time = "2026-09-07T14:34:14.266Z" },
 ]
 
 [[package]]

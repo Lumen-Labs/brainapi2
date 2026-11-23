@@ -495,6 +495,18 @@ class OllamaConfig:
             raise ValueError("Ollama configuration is not complete")
 
 
+def _spacy_load_retry_ttl_seconds() -> float:
+    """Seconds before a failed spaCy load is retried. Default 300."""
+    raw = os.getenv("SPACY_LOAD_RETRY_TTL_SECONDS", "300")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return 300.0
+    if value < 0:
+        return 300.0
+    return value
+
+
 class SpacyConfig:
     """
     Configuration class for the Spacy configuration.
@@ -502,8 +514,9 @@ class SpacyConfig:
 
     def __init__(self):
         self.keep_models_in_memory = (
-            os.getenv("SPACY_KEEP_MODELS_IN_MEMORY", "false") == "true"
+            os.getenv("SPACY_KEEP_MODELS_IN_MEMORY", "true") == "true"
         )
+        self.load_retry_ttl_seconds = _spacy_load_retry_ttl_seconds()
 
 
 SEARCH_FTS_REGCONFIGS = frozenset({"italian", "spanish", "simple"})
@@ -713,6 +726,22 @@ class Config:
             "AGENTIC_ARCHITECTURE", "custom"
         )
         self.search_enabled = os.getenv("SEARCH_ENABLED", "false") == "true"
+        self.conflict_detect_on_ingest = (
+            os.getenv("CONFLICT_DETECT_ON_INGEST", "false") == "true"
+        )
+        self.conflict_detect_llm = os.getenv("CONFLICT_DETECT_LLM", "false") == "true"
+        self.conflict_detect_llm_max_pairs = int(
+            os.getenv("CONFLICT_DETECT_LLM_MAX_PAIRS", "20")
+        )
+        self.conflict_detect_max_relationships = int(
+            os.getenv("CONFLICT_DETECT_MAX_RELATIONSHIPS", "10000")
+        )
+        self.graph_raw_write_enabled = (
+            os.getenv("GRAPH_RAW_WRITE_ENABLED", "false") == "true"
+        )
+        self.verified_fact_rank_boost = float(
+            os.getenv("VERIFIED_FACT_RANK_BOOST", "0.15")
+        )
         self.search_use_dense = os.getenv("SEARCH_USE_DENSE", "true") == "true"
         self.search_use_bm25 = os.getenv("SEARCH_USE_BM25", "true") == "true"
         community_raw = os.getenv("SEARCH_COMMUNITY_LABELS", "TYPE,CLASS,TOPIC")

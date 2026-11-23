@@ -195,6 +195,7 @@ class GraphClient(ABC):
         self,
         nodes: list[Node | str],
         brain_id: str,
+        as_of: str | None = None,
     ) -> List[Tuple[Node, Predicate, Node, Predicate, Node]]:
         """
         Get the event-centric neighbors of a node.
@@ -503,3 +504,31 @@ class GraphClient(ABC):
         List the relationships between the subject and object.
         """
         raise NotImplementedError("list_relationships method not implemented")
+
+    def get_fact_record(self, fact_id: str, brain_id: str) -> Optional[dict]:
+        """Return a relationship or fact-node record identified by UUID."""
+        raise NotImplementedError("get_fact_record method not implemented")
+
+    def set_fact_verification(
+        self,
+        fact_id: str,
+        brain_id: str,
+        *,
+        kind: Literal["relationship", "node"],
+        properties: dict,
+        history_entry: object | None = None,
+    ) -> Optional[dict]:
+        """Write verification properties onto a fact relationship or node."""
+        raise NotImplementedError("set_fact_verification method not implemented")
+
+    def list_facts_by_verification(
+        self,
+        brain_id: str,
+        *,
+        state: Optional[str] = None,
+        include_rejected: bool = False,
+        limit: int = 50,
+        skip: int = 0,
+    ) -> tuple[list[dict], int]:
+        """List fact relationships and EVENT nodes filtered by verification state."""
+        raise NotImplementedError("list_facts_by_verification method not implemented")

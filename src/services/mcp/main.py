@@ -13,8 +13,10 @@ import asyncio
 import html
 import json
 import os
+import re
 from contextvars import ContextVar
 from typing import Any
+from urllib.parse import urlsplit
 
 from mcp.server import FastMCP
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions
@@ -28,11 +30,55 @@ from src.core.instances import (
     graph_adapter,
     vector_store_adapter,
 )
+from src.core.auth.scopes import (
+    DEFAULT_SCOPE,
+    VERIFICATION_PERMISSION_DENIED,
+    VERIFICATION_SCOPE,
+    grantable_oauth_scopes,
+    has_verification_scope,
+    resolve_token_identity,
+)
+from src.core.verification.facts import (
+    filter_raw_operation_result,
+    verification_scope,
+)
+from src.core.verification.service import (
+    FactNotFound,
+    apply_verification_action,
+    get_fact_record,
+    list_fact_records,
+    require_state,
+)
 from src.services.mcp.oauth_provider import BrainapiMcpOAuthProvider
+from src.services.mcp.prompt import HISTORY_NAVIGATION_GUIDE
+from src.services.mcp.errors import McpToolError, raise_if_tool_error_result
 from src.services.mcp.utils import guard_brainpat
+from src.services.mcp.conflicts import (
+    conflict_report_tool,
+    dismiss_conflict_tool,
+    read_conflict,
+    read_conflicts,
+    resolve_conflict_tool,
+)
+from src.services.mcp.versions import (
+    invalidated_hops,
+    read_changelog,
+    read_changelogs,
+    read_source_versions,
+)
 from src.utils.vector_search import VectorSearchFacade
 
 auth_token_var: ContextVar[str | None] = ContextVar("auth_token", default=None)
+
+
+def _require_brain_access(brain_id: str) -> None:
+    if not guard_brainpat(auth_token_var.get(), brain_id):
+        raise McpToolError("Unauthorized")
+
+auth_scopes_var: ContextVar[tuple[str, ...] | None] = ContextVar(
+    "auth_scopes", default=None
+)
+auth_principal_var: ContextVar[str | None] = ContextVar("auth_principal", default=None)
 vector_search = VectorSearchFacade(vector_store_adapter)
 
 _hosted_oauth_issuer = os.getenv("MCP_HOSTED_OAUTH_ISSUER_URL", "").strip()
@@ -42,26 +88,39 @@ if _oauth_issuer and not _oauth_resource:
     _oauth_resource = _oauth_issuer.rstrip("/") + "/mcp"
 
 _oauth_scopes = [
-    s for s in os.getenv("MCP_OAUTH_SCOPES", "brainapi").strip().split() if s
+    s for s in os.getenv("MCP_OAUTH_SCOPES", DEFAULT_SCOPE).strip().split() if s
 ]
 if not _oauth_scopes:
-    _oauth_scopes = ["brainapi"]
+    _oauth_scopes = [DEFAULT_SCOPE]
+_default_oauth_scopes = [scope for scope in _oauth_scopes if scope != VERIFICATION_SCOPE]
+if not _default_oauth_scopes:
+    _default_oauth_scopes = [DEFAULT_SCOPE]
+_valid_oauth_scopes = list(
+    dict.fromkeys([*_oauth_scopes, *_default_oauth_scopes, VERIFICATION_SCOPE])
+)
 
 _access_ttl = int(os.getenv("MCP_OAUTH_ACCESS_TOKEN_TTL", "3600"))
-_refresh_ttl_raw = os.getenv("MCP_OAUTH_REFRESH_TOKEN_TTL", "2592000").strip()
+_refresh_ttl_raw = os.getenv("MCP_OAUTH_REFRESH_TOKEN_TTL", "").strip()
 _refresh_ttl = int(_refresh_ttl_raw) if _refresh_ttl_raw else None
 _code_ttl = int(os.getenv("MCP_OAUTH_AUTH_CODE_TTL", "600"))
+_chatgpt_only = bool(_hosted_oauth_issuer) or os.getenv("MCP_OAUTH_CHATGPT_ONLY") == "true"
 
 oauth_provider: BrainapiMcpOAuthProvider | None = None
 if _oauth_issuer:
+    def _pat_scope_resolver(pat: str):
+        _principal, scopes = resolve_token_identity(pat)
+        return scopes
+
     oauth_provider = BrainapiMcpOAuthProvider(
         issuer_url=_oauth_issuer,
         resource_server_url=_oauth_resource,
-        valid_scopes=_oauth_scopes,
+        valid_scopes=_valid_oauth_scopes,
+        default_scopes=_default_oauth_scopes,
         access_token_ttl_seconds=_access_ttl,
         refresh_token_ttl_seconds=_refresh_ttl,
         auth_code_ttl_seconds=_code_ttl,
-        chatgpt_only=bool(_hosted_oauth_issuer) or os.getenv("MCP_OAUTH_CHATGPT_ONLY") == "true",
+        pat_scope_resolver=_pat_scope_resolver,
+        chatgpt_only=_chatgpt_only,
         credential_secret=os.getenv("BRAINPAT_TOKEN"),
     )
     _doc_url = os.getenv("MCP_OAUTH_SERVICE_DOCUMENTATION_URL", "").strip()
@@ -76,8 +135,8 @@ if _oauth_issuer:
             service_documentation_url=AnyHttpUrl(_doc_url) if _doc_url else None,
             client_registration_options=ClientRegistrationOptions(
                 enabled=True,
-                valid_scopes=_oauth_scopes,
-                default_scopes=_oauth_scopes,
+                valid_scopes=_valid_oauth_scopes,
+                default_scopes=_default_oauth_scopes,
             ),
         ),
     )
@@ -85,20 +144,46 @@ else:
     mcp = FastMCP("brainapi-mcp", stateless_http=True, host="0.0.0.0")
 
 
-if oauth_provider:
+_CONSENT_HOST = re.compile(r"^[A-Za-z0-9.-]+(?::\d{1,5})?$")
 
-    _consent_headers = {
+
+def _consent_headers(redirect_uri=None):
+    actions = ["'self'"]
+    origins = []
+    if redirect_uri:
+        parsed = urlsplit(str(redirect_uri))
+        if (
+            parsed.scheme in {"http", "https"}
+            and parsed.netloc
+            and not parsed.username
+            and _CONSENT_HOST.fullmatch(parsed.netloc)
+        ):
+            origins.append(f"{parsed.scheme}://{parsed.netloc}")
+    if _chatgpt_only:
+        origins.append("https://chatgpt.com")
+    for origin in origins:
+        if origin not in actions:
+            actions.append(origin)
+    return {
         "Cache-Control": "no-store",
-        "Content-Security-Policy": "default-src 'none'; form-action 'self' https://chatgpt.com; frame-ancestors 'none'; base-uri 'none'",
+        "Content-Security-Policy": (
+            "default-src 'none'; form-action "
+            + " ".join(actions)
+            + "; frame-ancestors 'none'; base-uri 'none'"
+        ),
         "Referrer-Policy": "same-origin",
     }
 
-    async def _mcp_oauth_consent(request: Request) -> HTMLResponse | RedirectResponse:
-        if request.method == "GET":
-            request_id = request.query_params.get("request_id", "")
-            if not oauth_provider.consent_request(request_id):
-                return HTMLResponse("Start a new connection in your MCP app.", status_code=400, headers=_consent_headers)
-            form = f"""<!DOCTYPE html>
+
+async def _mcp_oauth_consent(request: Request) -> HTMLResponse | RedirectResponse:
+    if oauth_provider is None:
+        return HTMLResponse("OAuth is not configured.", status_code=404, headers=_consent_headers())
+    if request.method == "GET":
+        request_id = request.query_params.get("request_id", "")
+        pending = oauth_provider.consent_request(request_id)
+        if not pending:
+            return HTMLResponse("Start a new connection in your MCP app.", status_code=400, headers=_consent_headers())
+        form = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Authorize BrainAPI MCP</title></head>
 <body>
 <h1>Connect to BrainAPI</h1>
@@ -110,39 +195,57 @@ if oauth_provider:
 <button type="submit">Authorize</button>
 </form>
 </body></html>"""
-            return HTMLResponse(form, headers=_consent_headers)
+        return HTMLResponse(form, headers=_consent_headers(pending.get("redirect_uri")))
 
-        if request.headers.get("origin") != _oauth_issuer.rstrip("/"):
-            return HTMLResponse("Invalid consent origin.", status_code=403, headers=_consent_headers)
-        form = await request.form()
-        request_id = str(form.get("request_id") or "")
-        pending = oauth_provider.consent_request(request_id)
-        if not pending:
-            return HTMLResponse("Start a new connection in your MCP app.", status_code=400, headers=_consent_headers)
+    if request.headers.get("origin") != _oauth_issuer.rstrip("/"):
+        return HTMLResponse("Invalid consent origin.", status_code=403, headers=_consent_headers())
+    form = await request.form()
+    request_id = str(form.get("request_id") or "")
+    pending = oauth_provider.consent_request(request_id)
+    if not pending:
+        return HTMLResponse("Start a new connection in your MCP app.", status_code=400, headers=_consent_headers())
 
-        brainpat = str(form.get("brainpat") or "").strip()
-        # The system PAT returns a boolean. Only a brain-scoped PAT can grant OAuth access.
-        if not brainpat or not isinstance(await asyncio.to_thread(guard_brainpat, brainpat), str):
-            return HTMLResponse("Enter a valid brain access key.", status_code=401, headers=_consent_headers)
-        pending = oauth_provider.consent_request(request_id, consume=True)
-        if not pending:
-            return HTMLResponse("Start a new connection in your MCP app.", status_code=400, headers=_consent_headers)
+    brainpat = str(form.get("brainpat") or "").strip()
+    if not brainpat or not isinstance(await asyncio.to_thread(guard_brainpat, brainpat), str):
+        return HTMLResponse("Enter a valid brain access key.", status_code=401, headers=_consent_headers(pending.get("redirect_uri")))
+    pending = oauth_provider.consent_request(request_id, consume=True)
+    if not pending:
+        return HTMLResponse("Start a new connection in your MCP app.", status_code=400, headers=_consent_headers())
 
-        code = oauth_provider.issue_auth_code(
-            client_id=pending["client_id"],
-            redirect_uri=AnyUrl(pending["redirect_uri"]),
-            redirect_uri_provided_explicitly=pending["redirect_uri_provided_explicitly"] == "1",
-            code_challenge=pending["code_challenge"],
-            scopes=pending["scope"].split(),
-            resource=pending.get("resource"),
-            state=pending.get("state"),
-            brainpat=brainpat,
-        )
-        url = oauth_provider.redirect_after_consent(
-            redirect_uri=pending["redirect_uri"], code=code, state=pending.get("state")
-        )
-        return RedirectResponse(url, status_code=303, headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
+    client = await oauth_provider.get_client(pending["client_id"])
+    if not client:
+        return HTMLResponse("Unknown client", status_code=400, headers=_consent_headers())
+    _principal, pat_scopes = resolve_token_identity(brainpat)
+    requested_scopes = (
+        pending["scope"].split() if pending.get("scope", "").strip() else list(_default_oauth_scopes)
+    )
+    scopes = grantable_oauth_scopes(
+        requested_scopes,
+        pat_scopes,
+        valid_scopes=_valid_oauth_scopes,
+    )
+    try:
+        ru = AnyUrl(pending["redirect_uri"])
+        ru = client.validate_redirect_uri(ru)
+    except Exception:
+        return HTMLResponse("Invalid redirect_uri", status_code=400, headers=_consent_headers(pending.get("redirect_uri")))
+    code = oauth_provider.issue_auth_code(
+        client_id=pending["client_id"],
+        redirect_uri=ru,
+        redirect_uri_provided_explicitly=pending["redirect_uri_provided_explicitly"] == "1",
+        code_challenge=pending["code_challenge"],
+        scopes=scopes,
+        resource=pending.get("resource"),
+        state=pending.get("state"),
+        brainpat=brainpat,
+    )
+    url = oauth_provider.redirect_after_consent(
+        redirect_uri=pending["redirect_uri"], code=code, state=pending.get("state")
+    )
+    return RedirectResponse(url, status_code=303, headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
 
+
+if oauth_provider:
     mcp.custom_route("/mcp-oauth/consent", methods=["GET", "POST"])(_mcp_oauth_consent)
 
 
@@ -161,6 +264,8 @@ def get_search_operation_instructions(message: str) -> str:
     1. search_semantically — when you do not know node UUIDs or exact names
     2. traverse_graph — multi-hop expansion with filters (preferred over hand-written queries)
     3. search_memory — ad-hoc read queries not covered by traverse_graph
+
+    {HISTORY_NAVIGATION_GUIDE}
 
     traverse_graph parameters:
     - brain_id (required)
@@ -187,26 +292,31 @@ def _traverse_graph_sync(
     node_labels: list[str] | None,
     direction: str,
     limit: int,
+    include_rejected: bool,
 ) -> Any:
     try:
-        if not guard_brainpat(auth_token_var.get(), brain_id):
-            return "Unauthorized"
+        _require_brain_access(brain_id)
         if direction not in {"in", "out", "both"}:
-            return "Error: direction must be in, out, or both"
-        result = graph_adapter.traverse_graph(
-            brain_id=brain_id,
-            start_uuid=start_uuid or None,
-            start_name=start_name or None,
-            start_labels=start_labels,
-            depth=depth,
-            rel_types=rel_types,
-            node_labels=node_labels,
-            direction=direction,
-            limit=limit,
-        )
+            raise McpToolError("Error: direction must be in, out, or both")
+        with verification_scope(include_rejected=include_rejected):
+            result = graph_adapter.traverse_graph(
+                brain_id=brain_id,
+                start_uuid=start_uuid or None,
+                start_name=start_name or None,
+                start_labels=start_labels,
+                depth=depth,
+                rel_types=rel_types,
+                node_labels=node_labels,
+                direction=direction,
+                limit=limit,
+            )
+        if isinstance(result, dict) and isinstance(result.get("hops"), list):
+            result["invalidated"] = invalidated_hops(result["hops"])
         return json.dumps(result, default=str)
+    except McpToolError:
+        raise
     except Exception as e:
-        return f"Error traversing graph: {e}"
+        raise McpToolError(f"Error traversing graph: {e}") from e
 
 
 @mcp.tool()
@@ -220,12 +330,15 @@ async def traverse_graph(
     node_labels: list[str] | None = None,
     direction: str = "both",
     limit: int = 50,
+    include_rejected: bool = False,
 ) -> Any:
     """
     Traverse the knowledge graph from a starting node up to N hops with optional filters.
     Prefer this over search_memory for multi-hop exploration.
 
+    The result keeps every hop and also lists superseded relationships in invalidated.
     Provide start_uuid, or both start_name and start_labels to identify the start node.
+    Rejected facts are excluded unless include_rejected is true.
     """
     return await asyncio.to_thread(
         _traverse_graph_sync,
@@ -238,51 +351,152 @@ async def traverse_graph(
         node_labels,
         direction,
         limit,
+        include_rejected,
     )
 
 
-def _search_memory_sync(db_query: str, brain_id: str) -> Any:
+def _search_memory_sync(
+    db_query: str, brain_id: str, include_rejected: bool
+) -> Any:
     try:
-        if not guard_brainpat(auth_token_var.get(), brain_id):
-            return "Unauthorized"
-        return graph_adapter.execute_operation(db_query, brain_id)
+        _require_brain_access(brain_id)
+        result = graph_adapter.execute_operation(db_query, brain_id)
+        if isinstance(result, str) and result.startswith("Error"):
+            raise McpToolError(result)
+        if include_rejected or not isinstance(result, str):
+            return result
+        try:
+            payload = json.loads(result)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return result
+        filtered = filter_raw_operation_result(
+            payload, include_rejected=include_rejected
+        )
+        if isinstance(filtered, str):
+            return filtered
+        return json.dumps(filtered, default=str)
+    except McpToolError:
+        raise
     except Exception as e:
-        return f"Error executing graph operation: {e}"
+        raise McpToolError(f"Error executing graph operation: {e}") from e
 
 
 @mcp.tool()
-async def search_memory(db_query: str, brain_id: str) -> Any:
+async def search_memory(
+    db_query: str, brain_id: str, include_rejected: bool = False
+) -> Any:
     """
     Search the brain for memories and information.
     This tool will search into the knowledge graph using the active graph backend query language.
 
+    Rejected facts are dropped from result rows that contain graph entities with
+    verification_state=rejected, unless include_rejected is true. Aggregations
+    and rows with no graph entities are not verification-filtered.
+
     Input must be a JSON object with the following fields:
     - db_query: str: read-only graph query (Cypher on Neo4j, SQL on PostgreSQL).
+      Neo4j runs this in a READ transaction on the selected brain only, with a
+      timeout and result cap. Writes, DELETE, USE, CALL dbms.*, LOAD CSV,
+      CALL apoc.*, and database admin are rejected.
     - brain_id: str: the brain to search in.
+    - include_rejected: bool: keep rejected facts in raw rows (default false).
     """
-    return await asyncio.to_thread(_search_memory_sync, db_query, brain_id)
+    return await asyncio.to_thread(
+        _search_memory_sync, db_query, brain_id, include_rejected
+    )
 
 
-def _search_semantically_sync(query: str, brain_id: str) -> Any:
+def _search_semantically_sync(
+    query: str,
+    brain_id: str,
+    include_rejected: bool,
+    as_of: str | None = None,
+    include_validity_unknown: bool = False,
+) -> Any:
     try:
-        if not guard_brainpat(auth_token_var.get(), brain_id):
-            return "Unauthorized"
+        _require_brain_access(brain_id)
+        from src.core.saving.validity import (
+            InvalidAsOf,
+            VALIDITY_UNKNOWN,
+            VALIDITY_VALID,
+            dedupe_unknown_items,
+            format_instant,
+            optional_instant,
+            predicate_validity_status,
+            unknown_fact,
+            unknown_relationship_id,
+        )
+        from src.services.api.constants.requests import jsonable_graph_value
+
+        try:
+            as_of_dt = optional_instant(as_of)
+        except InvalidAsOf as exc:
+            raise McpToolError(f"Error: {exc}") from exc
         query_embedding = embeddings_adapter.embed_text(query)
         data_vectors = vector_search.search_nodes(
             query_embedding.embeddings,
             brain_id=brain_id,
             k=5,
         )
-        triplets = graph_adapter.get_event_centric_neighbors(
-            [v.metadata.get("uuid") for v in data_vectors], brain_id=brain_id
-        )
-        return triplets
+        as_of_stamp = format_instant(as_of_dt) if as_of_dt is not None else None
+        seed_uuids = [v.metadata.get("uuid") for v in data_vectors]
+        with verification_scope(include_rejected=include_rejected):
+            try:
+                triplets = graph_adapter.get_event_centric_neighbors(
+                    seed_uuids, brain_id=brain_id, as_of=as_of_stamp
+                )
+            except TypeError:
+                triplets = graph_adapter.get_event_centric_neighbors(
+                    seed_uuids, brain_id=brain_id
+                )
+        if as_of_dt is None:
+            return triplets
+        kept = []
+        unknown_items: list[dict[str, Any]] = []
+        for triple in triplets or []:
+            if not isinstance(triple, (list, tuple)) or len(triple) < 4:
+                kept.append(triple)
+                continue
+            rel = triple[1]
+            rel2 = triple[3]
+            status_r = predicate_validity_status(rel, as_of_dt)
+            status_r2 = predicate_validity_status(rel2, as_of_dt)
+            if status_r == VALIDITY_UNKNOWN or status_r2 == VALIDITY_UNKNOWN:
+                unknown_items.append(
+                    unknown_fact(
+                        target="relationship",
+                        item_id=unknown_relationship_id(
+                            rel, rel2, status_r, status_r2
+                        ),
+                        payload=jsonable_graph_value(triple),
+                    )
+                )
+                continue
+            if status_r != VALIDITY_VALID or status_r2 != VALIDITY_VALID:
+                continue
+            kept.append(triple)
+        unknown_items = dedupe_unknown_items(unknown_items)
+        envelope: dict[str, Any] = {
+            "results": kept,
+            "validity_unknown_count": len(unknown_items),
+        }
+        if include_validity_unknown:
+            envelope["validity_unknown"] = unknown_items
+        return envelope
+    except McpToolError:
+        raise
     except Exception as e:
-        return f"Error executing graph operation: {e}"
+        raise McpToolError(f"Error executing graph operation: {e}") from e
 
 
 @mcp.tool()
-async def search_semantically(query: str, brain_id: str) -> Any:
+async def search_semantically(
+    query: str,
+    brain_id: str,
+    include_rejected: bool = False,
+    as_of: str | None = None,
+    include_validity_unknown: bool = False,
+) -> Any:
     """
     Search information semantically, given a query and a brain to search in,
     this tool will return a list of graph nodes that are semantically related to the query.
@@ -292,14 +506,25 @@ async def search_semantically(query: str, brain_id: str) -> Any:
     Input must be a JSON object with the following fields:
     - query: str: the query to search for.
     - brain_id: str: the brain to search in.
+    - include_rejected: bool: include expert-rejected facts (default false).
+    - as_of: str ISO-8601 (optional): return the knowledge state valid at that instant.
+    - include_validity_unknown: bool: when as_of is set, include undated facts
+      in validity_unknown (default false).
     """
-    return await asyncio.to_thread(_search_semantically_sync, query, brain_id)
+    return await asyncio.to_thread(
+        _search_semantically_sync,
+        query,
+        brain_id,
+        include_rejected,
+        as_of,
+        include_validity_unknown,
+    )
 
 
 def _list_brains_sync() -> list[str] | str:
     brain_key = guard_brainpat(auth_token_var.get())
     if not brain_key:
-        return "Unauthorized"
+        raise McpToolError("Unauthorized")
     if type(brain_key) == str:
         return [brain_key]
     brains = data_adapter.get_brains_list()
@@ -312,3 +537,554 @@ async def list_brains() -> list[str] | str:
     This tool lists all the brains/memory stores available
     """
     return await asyncio.to_thread(_list_brains_sync)
+
+
+def _current_principal_and_scopes() -> tuple[str | None, tuple[str, ...] | list[str]]:
+    scopes = auth_scopes_var.get()
+    principal = auth_principal_var.get()
+    if scopes is None or not principal:
+        resolved_principal, resolved_scopes = resolve_token_identity(auth_token_var.get())
+        principal = principal or resolved_principal
+        if scopes is None:
+            scopes = resolved_scopes
+    return principal, scopes or ()
+
+
+def _require_verification_actor() -> str | None:
+    principal, scopes = _current_principal_and_scopes()
+    if not has_verification_scope(scopes):
+        return None
+    return principal
+
+
+def _mutate_fact_sync(
+    action: str,
+    fact_id: str,
+    brain_id: str,
+    verification_source: str,
+    note: str,
+) -> Any:
+    try:
+        _require_brain_access(brain_id)
+        actor = _require_verification_actor()
+        if not actor:
+            raise McpToolError(
+                f"Error: {VERIFICATION_PERMISSION_DENIED}: "
+                "verification scope is required"
+            )
+        record = apply_verification_action(
+            graph_adapter,
+            fact_id=fact_id,
+            brain_id=brain_id,
+            action=action,  # type: ignore[arg-type]
+            actor=actor,
+            verification_source=verification_source or None,
+            note=note or None,
+        )
+        if action == "verify":
+            from src.core.saving.conflict_verification import (
+                close_open_conflicts_for_verified_fact,
+            )
+
+            close_open_conflicts_for_verified_fact(
+                data_adapter,
+                brain_id,
+                fact_id,
+                graph=graph_adapter,
+                notes=note or None,
+            )
+        return json.dumps(record.model_dump(mode="json"), default=str)
+    except McpToolError:
+        raise
+    except FactNotFound:
+        raise McpToolError("Fact not found")
+    except Exception as e:
+        detail = getattr(e, "detail", None)
+        if detail:
+            raise McpToolError(f"Error: {detail}") from e
+        raise McpToolError(f"Error updating fact verification: {e}") from e
+
+
+@mcp.tool()
+async def verify_fact(
+    fact_id: str,
+    brain_id: str,
+    verification_source: str = "",
+    note: str = "",
+    verified_by: str = "",
+) -> Any:
+    """
+    Mark a fact (relationship UUID or EVENT node UUID) as verified.
+
+    Requires the verification OAuth/PAT scope. Actor identity is taken from
+    the authenticated token; verified_by is ignored.
+    """
+    return await asyncio.to_thread(
+        _mutate_fact_sync,
+        "verify",
+        fact_id,
+        brain_id,
+        verification_source,
+        note,
+    )
+
+
+@mcp.tool()
+async def reject_fact(
+    fact_id: str,
+    brain_id: str,
+    verification_source: str = "",
+    note: str = "",
+    verified_by: str = "",
+) -> Any:
+    """
+    Mark a fact as rejected so retrieve/search/traverse hide it by default.
+
+    Requires the verification OAuth/PAT scope. Actor identity is taken from
+    the authenticated token; verified_by is ignored.
+    """
+    return await asyncio.to_thread(
+        _mutate_fact_sync,
+        "reject",
+        fact_id,
+        brain_id,
+        verification_source,
+        note,
+    )
+
+
+@mcp.tool()
+async def reset_fact_verification(
+    fact_id: str,
+    brain_id: str,
+    note: str = "",
+    verified_by: str = "",
+) -> Any:
+    """
+    Reset a fact back to unverified. Append-only audit history is retained.
+
+    Requires the verification OAuth/PAT scope. Actor identity is taken from
+    the authenticated token; verified_by is ignored.
+    """
+    return await asyncio.to_thread(
+        _mutate_fact_sync,
+        "reset",
+        fact_id,
+        brain_id,
+        "",
+        note,
+    )
+
+
+def _list_facts_sync(
+    brain_id: str,
+    state: str,
+    include_rejected: bool,
+    limit: int,
+    skip: int,
+) -> Any:
+    try:
+        _require_brain_access(brain_id)
+        normalized = require_state(state or None)
+        records, total = list_fact_records(
+            graph_adapter,
+            brain_id,
+            state=normalized,
+            include_rejected=include_rejected,
+            limit=limit,
+            skip=skip,
+        )
+        return json.dumps(
+            {
+                "total": total,
+                "facts": [record.model_dump(mode="json") for record in records],
+            },
+            default=str,
+        )
+    except McpToolError:
+        raise
+    except Exception as e:
+        detail = getattr(e, "detail", None)
+        if detail:
+            raise McpToolError(f"Error: {detail}") from e
+        raise McpToolError(f"Error listing facts: {e}") from e
+
+
+@mcp.tool()
+async def list_facts_by_verification(
+    brain_id: str,
+    state: str = "",
+    include_rejected: bool = False,
+    limit: int = 50,
+    skip: int = 0,
+) -> Any:
+    """
+    List facts in a brain filtered by verification state:
+    unverified, verified, or rejected. Default listing hides rejected facts
+    unless include_rejected is true or state is rejected.
+    """
+    return await asyncio.to_thread(
+        _list_facts_sync, brain_id, state, include_rejected, limit, skip
+    )
+
+
+def _get_fact_sync(fact_id: str, brain_id: str) -> Any:
+    try:
+        _require_brain_access(brain_id)
+        record = get_fact_record(graph_adapter, fact_id, brain_id)
+        return json.dumps(record.model_dump(mode="json"), default=str)
+    except McpToolError:
+        raise
+    except FactNotFound:
+        raise McpToolError("Fact not found")
+    except Exception as e:
+        raise McpToolError(f"Error reading fact verification: {e}") from e
+
+
+@mcp.tool()
+async def get_fact_verification(
+    fact_id: str,
+    brain_id: str,
+) -> Any:
+    """
+    Get the current verification state, verifier info, and append-only audit
+    history for a fact.
+    """
+    return await asyncio.to_thread(_get_fact_sync, fact_id, brain_id)
+
+
+def _string_list(value: Any) -> list[str] | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, str):
+        parts = [part.strip() for part in value.split(",") if part.strip()]
+        return parts or None
+    if isinstance(value, list):
+        parts = [str(part).strip() for part in value if str(part).strip()]
+        return parts or None
+    return None
+
+
+def _list_changelogs_sync(
+    brain_id: str,
+    query_text: str,
+    types: Any,
+    limit: int,
+    skip: int,
+    since: str,
+    until: str,
+) -> Any:
+    result = read_changelogs(
+        data_adapter,
+        brain_id,
+        authorized=bool(guard_brainpat(auth_token_var.get(), brain_id)),
+        query_text=query_text or None,
+        types=_string_list(types),
+        limit=limit,
+        skip=skip,
+        since=since or None,
+        until=until or None,
+        graph=graph_adapter,
+    )
+    if isinstance(result, str):
+        return raise_if_tool_error_result(result)
+    return json.dumps(result, default=str)
+
+
+@mcp.tool()
+async def list_changelogs(
+    brain_id: str,
+    query_text: str = "",
+    types: list[str] | None = None,
+    limit: int = 10,
+    skip: int = 0,
+    since: str = "",
+    until: str = "",
+) -> Any:
+    """
+    List graph changelog entries for a brain, newest first.
+
+    Optional query_text matches the stored change. Optional types restrict the page
+    to relationship_created, relationship_deprecated, node_properties_updated,
+    or relationship_properties_updated. Optional since/until ISO-8601 datetimes
+    return added, superseded, and invalidated facts in that window.
+    """
+    return await asyncio.to_thread(
+        _list_changelogs_sync,
+        brain_id,
+        query_text,
+        types,
+        limit,
+        skip,
+        since,
+        until,
+    )
+
+
+def _get_changelog_sync(brain_id: str, changelog_id: str) -> Any:
+    result = read_changelog(
+        data_adapter,
+        brain_id,
+        changelog_id,
+        authorized=bool(guard_brainpat(auth_token_var.get(), brain_id)),
+    )
+    if isinstance(result, str):
+        return raise_if_tool_error_result(result)
+    return json.dumps(result, default=str)
+
+
+@mcp.tool()
+async def get_changelog(brain_id: str, id: str = "") -> Any:
+    """
+    Read one graph changelog entry by id.
+    """
+    return await asyncio.to_thread(_get_changelog_sync, brain_id, id)
+
+
+def _embed_query(text: str) -> Any:
+    return embeddings_adapter.embed_text(text)
+
+
+def _search_passages(vector: Any, brain_id: str) -> Any:
+    return vector_search.search_data(vector, brain_id=brain_id, k=10)
+
+
+def _list_source_versions_sync(
+    brain_id: str,
+    source_key: str,
+    query: str,
+    limit: int,
+    skip: int,
+) -> Any:
+    result = read_source_versions(
+        data_adapter,
+        brain_id,
+        authorized=bool(guard_brainpat(auth_token_var.get(), brain_id)),
+        source_key=source_key,
+        query=query,
+        limit=limit,
+        skip=skip,
+        embed=_embed_query,
+        search=_search_passages,
+    )
+    if isinstance(result, str):
+        return raise_if_tool_error_result(result)
+    return json.dumps(result, default=str)
+
+
+@mcp.tool()
+async def list_source_versions(
+    brain_id: str,
+    source_key: str = "",
+    query: str = "",
+    limit: int = 10,
+    skip: int = 0,
+) -> Any:
+    """
+    Read the current copy and previous copies of a source.
+
+    Pass source_key when it is known. Otherwise pass a query; passage search
+    only discovers the source key, then every stored copy for that key is returned.
+    Use skip to page previous copies (source_key) or discovered keys (query).
+    """
+    return await asyncio.to_thread(
+        _list_source_versions_sync,
+        brain_id,
+        source_key,
+        query,
+        limit,
+        skip,
+    )
+
+
+def _list_conflicts_sync(
+    brain_id: str,
+    status: str,
+    source: str,
+    subject: str,
+    since: str,
+    until: str,
+    limit: int,
+    skip: int,
+) -> Any:
+    result = read_conflicts(
+        data_adapter,
+        brain_id,
+        authorized=bool(guard_brainpat(auth_token_var.get(), brain_id)),
+        status=status or None,
+        source=source or None,
+        subject=subject or None,
+        since=since or None,
+        until=until or None,
+        limit=limit,
+        skip=skip,
+        graph=graph_adapter,
+    )
+    if isinstance(result, str):
+        return raise_if_tool_error_result(result)
+    return json.dumps(result, default=str)
+
+
+@mcp.tool()
+async def list_conflicts(
+    brain_id: str,
+    status: str = "",
+    source: str = "",
+    subject: str = "",
+    since: str = "",
+    until: str = "",
+    limit: int = 10,
+    skip: int = 0,
+) -> Any:
+    """
+    List cross-source fact conflicts for a brain.
+    """
+    return await asyncio.to_thread(
+        _list_conflicts_sync,
+        brain_id,
+        status,
+        source,
+        subject,
+        since,
+        until,
+        limit,
+        skip,
+    )
+
+
+def _get_conflict_sync(brain_id: str, conflict_id: str) -> Any:
+    result = read_conflict(
+        data_adapter,
+        brain_id,
+        conflict_id,
+        authorized=bool(guard_brainpat(auth_token_var.get(), brain_id)),
+        graph=graph_adapter,
+    )
+    if isinstance(result, str):
+        return raise_if_tool_error_result(result)
+    return json.dumps(result, default=str)
+
+
+@mcp.tool()
+async def get_conflict(brain_id: str, id: str = "") -> Any:
+    """
+    Read one conflict with full provenance for both sides.
+    """
+    return await asyncio.to_thread(_get_conflict_sync, brain_id, id)
+
+
+def _resolve_conflict_sync(
+    brain_id: str,
+    conflict_id: str,
+    winning_fact_id: str,
+    notes: str,
+    method: str,
+) -> Any:
+    principal, scopes = _current_principal_and_scopes()
+    result = resolve_conflict_tool(
+        data_adapter,
+        brain_id,
+        conflict_id,
+        authorized=bool(guard_brainpat(auth_token_var.get(), brain_id)),
+        winning_fact_id=winning_fact_id or None,
+        notes=notes or None,
+        method=method or "manual",
+        graph=graph_adapter,
+        actor=principal,
+        has_verification=has_verification_scope(scopes),
+    )
+    if isinstance(result, str):
+        return raise_if_tool_error_result(result)
+    return json.dumps(result, default=str)
+
+
+@mcp.tool()
+async def resolve_conflict(
+    brain_id: str,
+    id: str = "",
+    winning_fact_id: str = "",
+    notes: str = "",
+    method: str = "manual",
+) -> Any:
+    """
+    Resolve a conflict. Pass winning_fact_id to choose a side; method=verified_side
+    verifies the winner and rejects the other side via the fact verification API.
+    """
+    return await asyncio.to_thread(
+        _resolve_conflict_sync, brain_id, id, winning_fact_id, notes, method
+    )
+
+
+def _dismiss_conflict_sync(brain_id: str, conflict_id: str, notes: str) -> Any:
+    result = dismiss_conflict_tool(
+        data_adapter,
+        brain_id,
+        conflict_id,
+        authorized=bool(guard_brainpat(auth_token_var.get(), brain_id)),
+        notes=notes or None,
+    )
+    if isinstance(result, str):
+        return raise_if_tool_error_result(result)
+    return json.dumps(result, default=str)
+
+
+@mcp.tool()
+async def dismiss_conflict(brain_id: str, id: str = "", notes: str = "") -> Any:
+    """
+    Dismiss a conflict without choosing a winning fact.
+    """
+    return await asyncio.to_thread(_dismiss_conflict_sync, brain_id, id, notes)
+
+
+def _conflict_report_sync(
+    brain_id: str,
+    status: str,
+    source: str,
+    subject: str,
+    since: str,
+    until: str,
+    fmt: str,
+    limit: int,
+) -> Any:
+    result = conflict_report_tool(
+        data_adapter,
+        brain_id,
+        authorized=bool(guard_brainpat(auth_token_var.get(), brain_id)),
+        status=status or None,
+        source=source or None,
+        subject=subject or None,
+        since=since or None,
+        until=until or None,
+        fmt=fmt or "json",
+        limit=limit,
+    )
+    if isinstance(result, str):
+        return raise_if_tool_error_result(result)
+    return json.dumps(result, default=str)
+
+
+@mcp.tool()
+async def conflict_report(
+    brain_id: str,
+    status: str = "",
+    source: str = "",
+    subject: str = "",
+    since: str = "",
+    until: str = "",
+    format: str = "json",
+    limit: int = 200,
+) -> Any:
+    """
+    Conflict report with summary counts and per-conflict details.
+    """
+    return await asyncio.to_thread(
+        _conflict_report_sync,
+        brain_id,
+        status,
+        source,
+        subject,
+        since,
+        until,
+        format,
+        limit,
+    )

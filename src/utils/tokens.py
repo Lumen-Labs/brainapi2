@@ -11,6 +11,15 @@ def generate_pat() -> str:
 
 
 def pat_matches(provided: Optional[str], expected: Optional[str]) -> bool:
+    if provided is None or expected is None:
+        return False
+    if not isinstance(provided, str) or not isinstance(expected, str):
+        return False
     if not provided or not expected:
         return False
-    return hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8"))
+    left = provided.encode("utf-8")
+    right = expected.encode("utf-8")
+    if len(left) != len(right):
+        hmac.compare_digest(left, left)
+        return False
+    return hmac.compare_digest(left, right)

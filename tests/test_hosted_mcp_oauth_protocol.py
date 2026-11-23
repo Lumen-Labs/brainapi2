@@ -34,7 +34,34 @@ def verify_protocol():
     resource = issuer + "/mcp"
     pat = "local-test-brain-pat"
     system_pat = "local-test-system-pat"
-    os.environ.update(MCP_HOSTED_OAUTH_ISSUER_URL=issuer, MCP_OAUTH_ISSUER_URL="", MCP_OAUTH_CHATGPT_ONLY="", BRAINPAT_TOKEN=system_pat)
+    os.environ.update(
+        MCP_HOSTED_OAUTH_ISSUER_URL=issuer,
+        MCP_OAUTH_ISSUER_URL="",
+        MCP_OAUTH_CHATGPT_ONLY="",
+        BRAINPAT_TOKEN=system_pat,
+        MODELS_MODE="local",
+        EMBEDDINGS_LOCAL_MODEL="local-model",
+        EMBEDDINGS_SMALL_MODEL="small-model",
+        EMBEDDING_NODES_DIMENSION="3",
+        EMBEDDING_TRIPLETS_DIMENSION="3",
+        EMBEDDING_OBSERVATIONS_DIMENSION="3",
+        EMBEDDING_DATA_DIMENSION="3",
+        EMBEDDING_RELATIONSHIPS_DIMENSION="3",
+        REDIS_HOST="localhost",
+        REDIS_PORT="6379",
+        NEO4J_HOST="localhost",
+        NEO4J_PORT="7687",
+        NEO4J_USERNAME="neo4j",
+        NEO4J_PASSWORD="password",
+        MILVUS_HOST="localhost",
+        MILVUS_PORT="19530",
+        MONGO_CONNECTION_STRING="mongodb://localhost:27017",
+        CELERY_WORKER_CONCURRENCY="1",
+        OLLAMA_HOST="localhost",
+        OLLAMA_PORT="11434",
+        OLLAMA_LLM_SMALL_MODEL="small",
+        OLLAMA_LLM_LARGE_MODEL="large",
+    )
 
     def stub(name, **values):
         module = ModuleType(name)
@@ -46,7 +73,13 @@ def verify_protocol():
     stub("src.lib.redis.client", _redis_client=SimpleNamespace(client=redis))
     stub("src.utils.vector_search", VectorSearchFacade=lambda _: None)
 
-    from src.services.mcp.main import mcp, oauth_provider
+    from src.services.mcp import main as mcp_main
+
+    mcp_main.resolve_token_identity = lambda token: (
+        ("brainpat:test-brain", ["brainapi"]) if token == pat else (None, [])
+    )
+    mcp = mcp_main.mcp
+    oauth_provider = mcp_main.oauth_provider
 
     with TestClient(mcp.streamable_http_app(), base_url=issuer) as client:
         assert client.get("/.well-known/oauth-protected-resource/mcp").json()["resource"] == resource

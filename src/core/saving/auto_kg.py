@@ -8,7 +8,6 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
-import os
 import uuid
 from dataclasses import dataclass, field
 from functools import partial
@@ -37,8 +36,6 @@ from src.services.input.agents import (
     vector_store_adapter,
 )
 from src.utils.text_chunking import chunk_text
-
-import langsmith
 
 _PRIOR_UNIT_WINDOW = 4
 
@@ -156,28 +153,15 @@ def enrich_kg_from_input(
     """
 
     ingestion_session_id = str(uuid.uuid4())
-    project_name = os.getenv("LANGSMITH_PROJECT", "brainapi")
-    with langsmith.tracing_context(
-        project_name=project_name,
-        enabled=True,
-        tags=["enrich_kg", "scout", "architect"],
-        metadata={
-            "ingestion_session_id": ingestion_session_id,
-            "brain_id": brain_id,
-            "flow": "enrich_kg_from_input",
-            "source_chunk_id": source_chunk_id,
-            "source_timestamp": source_timestamp,
-        },
-    ):
-        return _enrich_kg_impl(
-            input,
-            targeting,
-            brain_id,
-            ingestion_session_id,
-            source_chunk_id=source_chunk_id,
-            source_timestamp=source_timestamp,
-            preferred_extraction_entities=preferred_extraction_entities,
-        )
+    return _enrich_kg_impl(
+        input,
+        targeting,
+        brain_id,
+        ingestion_session_id,
+        source_chunk_id=source_chunk_id,
+        source_timestamp=source_timestamp,
+        preferred_extraction_entities=preferred_extraction_entities,
+    )
 
 
 def _enrich_kg_impl(
@@ -383,13 +367,6 @@ def _enrich_kg_impl(
         and config.run_graph_consolidator
         and enrichment_relationships
     )
-
-    try:
-        from langchain_core.tracers.langchain import wait_for_all_tracers
-
-        wait_for_all_tracers()
-    except ImportError:
-        pass
 
     return EnrichmentOrchestrationResult(
         session_id=architect_agent.session_id,

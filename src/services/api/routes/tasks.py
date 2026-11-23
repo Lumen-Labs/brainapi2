@@ -12,12 +12,21 @@ import json
 from typing import Literal
 
 from pydantic import BaseModel
+from redis.exceptions import RedisError
 from src.core.saving import ingest_cancellation
+from src.core.saving import ingest_staging
+from src.core.saving import unstaged_ocr
+from src.services.api.errors import cache_unavailable
 from src.utils.logging import log
 from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from src.services.api.dependencies import get_brain_id
 from src.services.kg_agent.main import cache_adapter
-from src.services.api.constants.responses import TaskListResponse, TaskStateResponse, IngestionActivityResponse
+from src.services.api.constants.responses import (
+    IngestionActivityResponse,
+    PurgeIngestionResponse,
+    TaskListResponse,
+    TaskStateResponse,
+)
 
 tasks_router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -32,17 +41,17 @@ async def get_tasks(brain_id: str = Depends(get_brain_id)):
             str_result = cache_adapter.get_task(task_id, brain_id=brain_id)
             if str_result is None:
                 continue
-            result = json.loads(str_result)
+            result = _parse_task_cache(str_result)
             results.append(
                 {
-                    **ingest_cancellation.public_state(
-                        brain_id, task_id,
-                        {**customer_task(result, brain_id), "status": result.get("status", "unknown")},
-                    ),
+                    **_polled_task_state(brain_id, task_id, result),
                     "id": task_id,
                 }
             )
         return {"tasks": results}
+    except RedisError as e:
+        log(f"Error in get_tasks: {type(e).__name__}: {str(e)}")
+        raise cache_unavailable() from e
     except Exception as e:
         log(f"Error in get_tasks: {type(e).__name__}: {str(e)}")
         raise HTTPException(
@@ -58,30 +67,60 @@ async def get_task(task_id: str, brain_id: str = Depends(get_brain_id)):
     """
     try:
         str_result = cache_adapter.get_task(task_id, brain_id=brain_id)
-        if str_result is None:
-            durable = ingest_cancellation.public_state(brain_id, task_id, {})
+        result = _parse_task_cache(str_result)
+        if result is None:
+            durable = _polled_task_state(brain_id, task_id, {})
             if not durable:
                 raise HTTPException(status_code=404, detail="Task not found")
             return {**durable, "task_id": task_id}
-        if isinstance(str_result, bytes):
-            result = json.loads(str_result.decode("utf-8"))
-        else:
-            result = json.loads(str_result)
         return {
-            **ingest_cancellation.public_state(
-                brain_id, task_id,
-                {**customer_task(result, brain_id), "status": result.get("status", "unknown")},
-            ),
+            **_polled_task_state(brain_id, task_id, result),
             "task_id": task_id,
         }
     except HTTPException:
         raise
+    except RedisError as e:
+        log(f"Error in get_task: {type(e).__name__}: {str(e)}")
+        raise cache_unavailable() from e
     except Exception as e:
         log(f"Error in get_task: {type(e).__name__}: {str(e)}")
         raise HTTPException(
             status_code=500,
             detail="Could not retrieve task",
         ) from e
+
+
+class PurgeIngestionRequest(BaseModel):
+    digest: str | None = None
+    source_key: str | None = None
+
+
+@tasks_router.post("/{task_id}/purge", response_model=PurgeIngestionResponse)
+async def purge_ingestion(
+    task_id: str,
+    body: PurgeIngestionRequest,
+    brain_id: str = Depends(get_brain_id),
+):
+    from src.core.saving.ingest_effects import (
+        DigestMismatch,
+        PurgeNotFound,
+        PurgeUnsafe,
+        purge_task,
+    )
+
+    try:
+        return purge_task(
+            brain_id,
+            task_id,
+            digest=body.digest,
+            source_key=body.source_key,
+        )
+    except PurgeNotFound as exc:
+        raise HTTPException(404, "This import has no recorded additions") from exc
+    except PurgeUnsafe as exc:
+        raise HTTPException(409, exc.preview or str(exc)) from exc
+    except DigestMismatch as exc:
+        raise HTTPException(409, "This import changed since it was previewed. Preview it again.") from exc
 
 
 class CancelIngestionRequest(BaseModel):
@@ -143,6 +182,27 @@ async def control_import(task_id: str, request: Request, brain_id: str = Depends
     return result
 
 
+def _parse_task_cache(str_result):
+    if str_result is None:
+        return None
+    if isinstance(str_result, bytes):
+        str_result = str_result.decode("utf-8")
+    if isinstance(str_result, str):
+        return json.loads(str_result)
+    return dict(str_result)
+
+
+def _polled_task_state(brain_id, task_id, result):
+    refreshed = ingest_staging.fail_expired_remote_ocr(brain_id, task_id, result)
+    payload = refreshed or result or {}
+    if payload:
+        payload = {
+            **customer_task(payload, brain_id),
+            "status": payload.get("status", "unknown"),
+        }
+    return ingest_cancellation.public_state(brain_id, task_id, payload)
+
+
 def customer_task(result, brain_id=None):
     if brain_id and (result.get("counts") or {}).get("manifest_version"):
         from src.core.saving.ingest_manifest import manifest_snapshot
@@ -150,9 +210,10 @@ def customer_task(result, brain_id=None):
         if snapshot:
             result = {**result,"status":snapshot["status"],"stage":snapshot["stage"],"progress":snapshot["progress"]}
     # Task responses are also accessible through normal BrainPATs.
+    hidden = {"usage", "usage_events", "provider", "model", *unstaged_ocr.INTERNAL_TASK_KEYS}
     def scrub(value):
         if isinstance(value,dict):
-            return {key:scrub(item) for key,item in value.items() if not any(term in key.lower() for term in ("token", "cost", "configuration", "routing")) and key not in {"usage", "usage_events", "provider", "model"}}
+            return {key:scrub(item) for key,item in value.items() if not any(term in key.lower() for term in ("token", "cost", "configuration", "routing")) and key not in hidden}
         if isinstance(value,list):
             return [scrub(item) for item in value]
         return value

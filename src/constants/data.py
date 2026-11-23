@@ -238,3 +238,10 @@ class Brain(BaseModel):
         description="The personal access token for the brain.",
         default_factory=_random_pat,
     )
+    pat_scopes: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Optional extra scopes for this brain's PAT. Empty means the default "
+            "brainapi scope only; verification is never implied."
+        ),
+    )

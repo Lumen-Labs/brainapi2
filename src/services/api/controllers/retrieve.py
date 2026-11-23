@@ -9,9 +9,14 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 """
 
 import asyncio
-import json
+import contextvars
+import logging
+import os
 import re
+import threading
+import time
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import datetime
 from typing import Any, Optional
 
@@ -33,7 +38,12 @@ from src.core.search.hybrid import (
     fuse_passage_lists,
 )
 from src.core.search.relationships import search_relationships
-from src.lib.tracing.profiler import profile_request, profile_stage
+from src.lib.tracing.profiler import (
+    log_stage_report,
+    profile_request,
+    profile_stage,
+    stage_profiling_enabled,
+)
 from src.utils.vector_search import VectorSearchFacade
 from src.services.api.constants.requests import (
     GetContextRequestBody,
@@ -42,6 +52,7 @@ from src.services.api.constants.requests import (
     RetrieveRequestResponse,
     RetrieveNeighborsRequestResponse,
     RetrievedNeighborNode,
+    jsonable_graph_value,
 )
 from src.services.kg_agent.main import graph_adapter, kg_agent
 from src.services.data.main import data_adapter
@@ -50,35 +61,36 @@ from src.utils.dates import parse_date_string, to_naive_utc
 from src.utils.similarity.vectors import cosine_similarity
 from src.utils.nlp.ner import _entity_extractor
 from src.config import config
+from src.core.verification.facts import (
+    chunk_ids_with_only_rejected_support,
+    combined_verification,
+    fact_pair_allowed,
+    fact_tuple_is_verified,
+    filter_items_with_rejected_support,
+    verification_scope,
+)
+from src.services.api.constants.requests import FactVerificationInfo
 
 vector_search = VectorSearchFacade(vector_store_adapter)
+logger = logging.getLogger(__name__)
 
 _MAX_NOUN_CHUNKS = 5
 _SEED_K = 25
 _PASSAGE_K = 24
+_IO_TIMEOUT_SECONDS = 10.0
+_IO_MAX_WORKERS = 8
+_IO_MAX_INFLIGHT = 8
+_IO_THREAD_PREFIX = "ctx-io"
+_io_state: dict[str, Any] = {"pool": None, "pid": 0, "inflight": 0}
+_io_state_lock = threading.Lock()
+_health_var: contextvars.ContextVar[Any] = contextvars.ContextVar(
+    "retrieve_health", default=None
+)
+_backend_error_types_cache: tuple[type[BaseException], ...] | None = None
 _PPR_DAMPING = 0.85
 _PPR_ITERS = 20
 _SESSION_RE = re.compile(r"session_(\d+)", re.IGNORECASE)
 _BATCH_TURN_RE = re.compile(r"\bb(\d+)_t(\d+)\b", re.IGNORECASE)
-_HISTORY_MODE_RE = re.compile(
-    r"\b("
-    r"order(?:ing|ed)?|chronolog|sequence|walk me through|"
-    r"contradict|conflict(?:ing)?|inconsisten|"
-    r"previously|originally|before (?:the |that )?(?:update|change|extension)|"
-    r"first (?:said|stated|mentioned|sprint|deadline)|"
-    r"how many (?:weeks|days)|"
-    r"between .+ and |"
-    r"have i|did i"
-    r")\b",
-    re.I,
-)
-_CURRENT_TRUTH_RE = re.compile(
-    r"\b("
-    r"now|currently|latest|updated (?:to|value)|after the (?:update|change)|"
-    r"how many commits|average response time|response time of"
-    r")\b",
-    re.I,
-)
 _SPINE_ACTOR = ("MADE", "INITIATED", "PERFORMED", "EXPERIENCED", "COVERED")
 _SPINE_TARGET = ("TARGETED", "AFFECTED", "RESULTED")
 _CONTEXT_REL = ("OCCURRED", "WITHIN")
@@ -88,6 +100,249 @@ _BRIDGE_SEED_HUB_CAP = 12
 _BRIDGE_RESERVE_HUB_CAP = 6
 _BRIDGE_RESERVE_MIN = 3
 _BRIDGE_RESERVE_FRAC_DENOM = 4
+
+
+def _io_executor() -> ThreadPoolExecutor:
+    pid = os.getpid()
+    pool = _io_state["pool"]
+    if pool is None or _io_state["pid"] != pid:
+        with _io_state_lock:
+            pool = _io_state["pool"]
+            if pool is None or _io_state["pid"] != pid:
+                previous_pid = _io_state["pid"]
+                pool = ThreadPoolExecutor(
+                    max_workers=_IO_MAX_WORKERS, thread_name_prefix=_IO_THREAD_PREFIX
+                )
+                _io_state["pool"] = pool
+                _io_state["pid"] = pid
+                if previous_pid != 0 and previous_pid != pid:
+                    _io_state["inflight"] = 0
+    return pool
+
+
+def _on_io_worker() -> bool:
+    return threading.current_thread().name.startswith(_IO_THREAD_PREFIX)
+
+
+def _submit_io(fn, *args, **kwargs):
+    ctx = contextvars.copy_context()
+    return _io_executor().submit(ctx.run, fn, *args, **kwargs)
+
+
+_IO_FAILED = object()
+
+
+def _io_result(value, default):
+    return default if value is _IO_FAILED else value
+
+
+def _wait_all(futures, timeout: float = _IO_TIMEOUT_SECONDS):
+    results = []
+    last_exc = None
+    deadline = time.monotonic() + timeout
+    try:
+        for fut in futures:
+            remaining = max(0.0, deadline - time.monotonic())
+            try:
+                results.append(fut.result(timeout=remaining))
+            except _backend_error_types() as exc:
+                last_exc = exc
+                results.append(_IO_FAILED)
+        if last_exc is not None:
+            for fut in futures:
+                fut.cancel()
+            if all(value is _IO_FAILED for value in results):
+                raise last_exc
+        return results
+    except Exception:
+        for fut in futures:
+            fut.cancel()
+        raise
+
+
+def _reserve_io_jobs(n: int) -> bool:
+    with _io_state_lock:
+        inflight = int(_io_state.get("inflight") or 0)
+        if inflight + n > _IO_MAX_INFLIGHT:
+            return False
+        _io_state["inflight"] = inflight + n
+        return True
+
+
+def _release_io_jobs(n: int) -> None:
+    with _io_state_lock:
+        inflight = int(_io_state.get("inflight") or 0)
+        _io_state["inflight"] = max(0, inflight - n)
+
+
+def _parallel_io(fns: list):
+    if len(fns) <= 1 or _on_io_worker():
+        return [fn() for fn in fns]
+    n = len(fns)
+    _io_executor()
+    if not _reserve_io_jobs(n):
+        return [fn() for fn in fns]
+    released = [False] * n
+    released_lock = threading.Lock()
+
+    def release_slot(index: int) -> None:
+        with released_lock:
+            if released[index]:
+                return
+            released[index] = True
+        _release_io_jobs(1)
+
+    def wrap(index: int, fn):
+        def run():
+            try:
+                return fn()
+            finally:
+                release_slot(index)
+
+        return run
+
+    futures = []
+    try:
+        futures = [_submit_io(wrap(index, fn)) for index, fn in enumerate(fns)]
+        results = _wait_all(futures, timeout=_IO_TIMEOUT_SECONDS)
+        for index, fut in enumerate(futures):
+            if fut.cancelled():
+                release_slot(index)
+        return results
+    except Exception:
+        for index, fut in enumerate(futures):
+            if fut.cancelled() or fut.cancel():
+                release_slot(index)
+        for index in range(len(futures), n):
+            release_slot(index)
+        raise
+
+
+def _embed_query_vector(text: str) -> Vector:
+    try:
+        vector = embeddings_adapter.embed_text(text)
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Embedding request failed")
+        raise HTTPException(
+            status_code=503,
+            detail="Embedding service unavailable",
+        ) from None
+    values = getattr(vector, "embeddings", None)
+    if not values:
+        logger.error("Embedding request failed")
+        raise HTTPException(
+            status_code=503,
+            detail="Embedding service unavailable",
+        )
+    return vector
+
+
+def _backend_error_types() -> tuple[type[BaseException], ...]:
+    global _backend_error_types_cache
+    if _backend_error_types_cache is not None:
+        return _backend_error_types_cache
+    types: list[type[BaseException]] = [
+        TimeoutError,
+        FuturesTimeoutError,
+        ConnectionError,
+        BrokenPipeError,
+    ]
+    optional = (
+        ("pymilvus.exceptions", "MilvusException"),
+        ("psycopg2", "Error"),
+        ("grpc", "RpcError"),
+        ("neo4j.exceptions", "DriverError"),
+    )
+    for module_name, attr in optional:
+        try:
+            module = __import__(module_name, fromlist=[attr])
+        except ImportError:
+            continue
+        cls = getattr(module, attr, None)
+        if isinstance(cls, type) and issubclass(cls, BaseException):
+            types.append(cls)
+    _backend_error_types_cache = tuple(types)
+    return _backend_error_types_cache
+
+
+class _RetrievalHealth:
+    def __init__(self) -> None:
+        self._gen: dict[str, int] = {}
+        self._pending: dict[str, int] = {}
+        self._ok: dict[str, int] = {}
+        self._error: set[str] = set()
+
+    def start(self, stage: str) -> None:
+        generation = self._gen.get(stage, 0) + 1
+        self._gen[stage] = generation
+        self._pending[stage] = generation
+
+    def ok(self, stage: str) -> None:
+        generation = self._pending.get(stage)
+        if generation is None or self._gen.get(stage) != generation:
+            return
+        del self._pending[stage]
+        self._ok[stage] = generation
+
+    def error(self, stage: str) -> None:
+        generation = self._pending.pop(stage, self._gen.get(stage))
+        self._error.add(stage)
+        if generation is not None and self._ok.get(stage) == generation:
+            del self._ok[stage]
+
+    @property
+    def failed_stages(self) -> list[str]:
+        return sorted(self._error | set(self._pending))
+
+    def all_failed(self) -> bool:
+        tracked = set(self._pending) | set(self._ok) | self._error
+        return bool(tracked) and not self._ok
+
+
+def _health() -> _RetrievalHealth | None:
+    value = _health_var.get()
+    return value if isinstance(value, _RetrievalHealth) else None
+
+
+def _note_degraded(stage: str, brain_id: str, exc: BaseException) -> None:
+    logger.warning(
+        "Retrieval stage %s failed for brain_id=%s (%s)",
+        stage,
+        brain_id,
+        type(exc).__name__,
+    )
+    health = _health()
+    if health is not None:
+        health.error(stage)
+
+
+def _start_stage(stage: str) -> None:
+    health = _health()
+    if health is not None:
+        health.start(stage)
+
+
+def _ok_stage(stage: str) -> None:
+    health = _health()
+    if health is not None:
+        health.ok(stage)
+
+
+def _backend_or_default(stage: str, brain_id: str, fn, default):
+    _start_stage(stage)
+    try:
+        result = fn()
+    except HTTPException:
+        raise
+    except _backend_error_types() as exc:
+        _note_degraded(stage, brain_id, exc)
+        return default
+    _ok_stage(stage)
+    return result
+
+
 _DISTANCE_QUANT_DECIMALS = 3
 
 
@@ -232,6 +487,8 @@ def _expand_cross_event_bridges(
     *,
     max_per_hub: int,
     include_history: bool = False,
+    as_of: datetime | None = None,
+    unknown_out: list | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     from src.core.saving.hub_bridges import (
         HubBridge,
@@ -375,7 +632,31 @@ def _expand_cross_event_bridges(
             score = max(0.0, score - min(0.05, 0.02 * len(novel)))
         reserve_ok = seed in reserve_hubs
         for n, r, m, r2, b in facts_by_hub.get(event_uuid, []):
-            if not _fact_predicates_allowed(r, r2, include_history=include_history):
+            if as_of is not None:
+                from src.core.saving.validity import (
+                    VALIDITY_UNKNOWN,
+                    predicate_validity_status,
+                    unknown_fact,
+                    unknown_relationship_id,
+                )
+
+                status_r = predicate_validity_status(r, as_of)
+                status_r2 = predicate_validity_status(r2, as_of)
+                if status_r == VALIDITY_UNKNOWN or status_r2 == VALIDITY_UNKNOWN:
+                    if unknown_out is not None:
+                        unknown_out.append(
+                            unknown_fact(
+                                target="relationship",
+                                item_id=unknown_relationship_id(
+                                    r, r2, status_r, status_r2
+                                ),
+                                payload=_format_event_fact(n, r, m, r2, b),
+                            )
+                        )
+                    continue
+            if not _fact_predicates_allowed(
+                r, r2, include_history=include_history, as_of=as_of
+            ):
                 continue
             key = _fact_key(r, r2)
             if key in existing_keys:
@@ -384,7 +665,7 @@ def _expand_cross_event_bridges(
             chunk_ids = _extract_source_chunk_ids(n, r, m, r2, b)
             session_ids = _sessions_from_chunk_map(chunk_ids, chunk_sessions)
             fact_text = _format_event_fact(n, r, m, r2, b)
-            if include_history and not (
+            if as_of is None and include_history and not (
                 _is_currently_valid(r) and _is_currently_valid(r2)
             ):
                 fact_text = f"[superseded] {fact_text}"
@@ -410,11 +691,32 @@ def _expand_cross_event_bridges(
 
 
 async def retrieve_data(
-    text: str, limit: int, preferred_entities: str, brain_id: str = "default"
+    text: str,
+    limit: int,
+    preferred_entities: str,
+    brain_id: str = "default",
+    include_rejected: bool = False,
+    as_of: Optional[str] = None,
+    include_validity_unknown: bool = False,
 ) -> RetrieveRequestResponse:
     """
     Retrieve data from the knowledge graph and data store.
     """
+    from src.core.saving.validity import (
+        InvalidAsOf,
+        VALIDITY_UNKNOWN,
+        VALIDITY_VALID,
+        dedupe_unknown_items,
+        chunk_validity_status,
+        optional_instant,
+        unknown_fact,
+        validity_status,
+    )
+
+    try:
+        as_of_dt = optional_instant(as_of)
+    except InvalidAsOf as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if preferred_entities:
         preferred_entities = [
             e.strip() for e in preferred_entities.split(",") if e.strip()
@@ -423,7 +725,7 @@ async def retrieve_data(
         preferred_entities = []
 
     def _get_data():
-        text_embeddings = embeddings_adapter.embed_text(text)
+        text_embeddings = _embed_query_vector(text)
 
         data_vectors = vector_search.search_data(
             text_embeddings.embeddings,
@@ -462,16 +764,111 @@ async def retrieve_data(
             ],
             preferred_labels=preferred_entities or [],
         )
+        if not include_rejected:
+            chunk_ids = [
+                item.id
+                for item in [*ts_text_chunks, *v_text_chunks]
+                if getattr(item, "id", None)
+            ]
+            resource_ids = [
+                getattr(obs, "resource_id", None)
+                for obs in [*ts_observations, *v_observations]
+            ]
+            citing_ids = [item for item in [*chunk_ids, *resource_ids] if item]
+            citing_nodes, citing_triples = [], []
+            lookup = getattr(graph_adapter, "nodes_and_edges_citing", None)
+            if citing_ids and callable(lookup):
+                found = lookup(brain_id, citing_ids, [])
+                if isinstance(found, (tuple, list)) and len(found) >= 2:
+                    citing_nodes = found[0] or []
+                    citing_triples = found[1] or []
+            rejected_chunks = chunk_ids_with_only_rejected_support(
+                citing_nodes, citing_triples
+            )
+            ts_text_chunks = filter_items_with_rejected_support(
+                ts_text_chunks, rejected_chunks
+            )
+            v_text_chunks = filter_items_with_rejected_support(
+                v_text_chunks, rejected_chunks
+            )
+            ts_observations = filter_items_with_rejected_support(
+                ts_observations, rejected_chunks
+            )
+            v_observations = filter_items_with_rejected_support(
+                v_observations, rejected_chunks
+            )
         return ts_text_chunks, ts_observations, v_text_chunks, v_observations, nodes
 
-    ts_text_chunks, ts_observations, v_text_chunks, v_observations, nodes = (
-        await asyncio.to_thread(_get_data)
-    )
+    with verification_scope(include_rejected=include_rejected):
+        ts_text_chunks, ts_observations, v_text_chunks, v_observations, nodes = (
+            await asyncio.to_thread(_get_data)
+        )
+    unknown_items: list[dict] = []
+    if as_of_dt is not None:
+        unknown_chunk_ids: set[str] = set()
+        excluded_chunk_ids: set[str] = set()
+        kept_ts: list = []
+        for chunk in ts_text_chunks:
+            status = chunk_validity_status(chunk, as_of_dt)
+            if status == VALIDITY_UNKNOWN:
+                if chunk.id not in unknown_chunk_ids:
+                    unknown_chunk_ids.add(chunk.id)
+                    unknown_items.append(_unknown_chunk_item(chunk, unknown_fact))
+            elif status == VALIDITY_VALID:
+                kept_ts.append(chunk)
+            else:
+                excluded_chunk_ids.add(chunk.id)
+        kept_v: list = []
+        for chunk in v_text_chunks:
+            status = chunk_validity_status(chunk, as_of_dt)
+            if status == VALIDITY_UNKNOWN:
+                if chunk.id not in unknown_chunk_ids:
+                    unknown_chunk_ids.add(chunk.id)
+                    unknown_items.append(_unknown_chunk_item(chunk, unknown_fact))
+            elif status == VALIDITY_VALID:
+                kept_v.append(chunk)
+            else:
+                excluded_chunk_ids.add(chunk.id)
+        drop_chunk_ids = unknown_chunk_ids | excluded_chunk_ids
+        ts_text_chunks = kept_ts
+        v_text_chunks = kept_v
+        ts_observations = [
+            obs
+            for obs in ts_observations
+            if getattr(obs, "resource_id", None) not in drop_chunk_ids
+        ]
+        v_observations = [
+            obs
+            for obs in v_observations
+            if getattr(obs, "resource_id", None) not in drop_chunk_ids
+        ]
+        kept_nodes = []
+        for hit in nodes:
+            status = _retrieve_hit_validity_status(hit, as_of_dt, validity_status)
+            if status == VALIDITY_UNKNOWN:
+                unknown_items.append(
+                    unknown_fact(
+                        target="relationship",
+                        item_id=_retrieve_hit_id(hit),
+                        payload=jsonable_graph_value(hit),
+                    )
+                )
+            elif status == VALIDITY_VALID:
+                kept_nodes.append(hit)
+        nodes = kept_nodes
+
+    envelope = {}
+    if as_of_dt is not None:
+        unknown_items = dedupe_unknown_items(unknown_items)
+        envelope["validity_unknown_count"] = len(unknown_items)
+        if include_validity_unknown:
+            envelope["validity_unknown"] = unknown_items
 
     return RetrieveRequestResponse(
         data=[*ts_text_chunks, *v_text_chunks],
         observations=[*ts_observations, *v_observations],
         relationships=nodes,
+        **envelope,
     )
 
 
@@ -481,6 +878,7 @@ async def retrieve_neighbors(
     identification_params: Optional[IdentificationParams] = None,
     limit: int = 10,
     brain_id: str = "default",
+    include_rejected: bool = False,
 ) -> RetrieveNeighborsRequestResponse:
     """
     Retrieve neighboring nodes related to a specified main node.
@@ -526,7 +924,7 @@ async def retrieve_neighbors(
         node = await asyncio.to_thread(_get_node)
         target_node_types = node.labels
 
-        looking_for_v = embeddings_adapter.embed_text(look_for) if look_for else None
+        looking_for_v = _embed_query_vector(look_for) if look_for else None
 
         # ---------------------------------------------------------
         # ===== Getting 1st degree neighbors of the main node =====
@@ -630,7 +1028,8 @@ async def retrieve_neighbors(
             neighbors=unique_neighbors[:limit],
         )
 
-    return await _get_neighbors()
+    with verification_scope(include_rejected=include_rejected):
+        return await _get_neighbors()
 
 
 async def retrieve_neighbors_ai_mode(
@@ -676,6 +1075,7 @@ async def get_relationships(
     query_text: Optional[str] = None,
     query_search_target: Optional[str] = "all",
     brain_id: str = "default",
+    include_rejected: bool = False,
 ):
     """
     Retrieve relationships from the knowledge graph with optional filtering and pagination.
@@ -696,17 +1096,18 @@ async def get_relationships(
             - relationships: List of serialized relationship objects.
             - total: Total number of matching relationships.
     """
-    relationships = await asyncio.to_thread(
-        search_relationships,
-        limit,
-        skip,
-        relationship_types,
-        from_node_labels,
-        to_node_labels,
-        query_text,
-        query_search_target,
-        brain_id,
-    )
+    with verification_scope(include_rejected=include_rejected):
+        relationships = await asyncio.to_thread(
+            search_relationships,
+            limit,
+            skip,
+            relationship_types,
+            from_node_labels,
+            to_node_labels,
+            query_text,
+            query_search_target,
+            brain_id,
+        )
 
     return JSONResponse(
         content={
@@ -723,6 +1124,7 @@ async def get_entities(
     node_labels: Optional[list[str]] = None,
     query_text: Optional[str] = None,
     brain_id: str = "default",
+    include_rejected: bool = False,
 ):
     """
     Retrieve entities from the knowledge graph with optional label and text filters.
@@ -740,9 +1142,10 @@ async def get_entities(
             - entities (list): Serialized entity objects.
             - total (int): Total number of matching entities.
     """
-    entities = await asyncio.to_thread(
-        search_entities, limit, skip, node_labels, query_text, brain_id
-    )
+    with verification_scope(include_rejected=include_rejected):
+        entities = await asyncio.to_thread(
+            search_entities, limit, skip, node_labels, query_text, brain_id
+        )
 
     return JSONResponse(
         content={
@@ -893,12 +1296,19 @@ def _relevance_score(
     completeness = _hub_completeness_score(candidate) / 3.8
     recency = _fact_recency_score(candidate, now=now)
     topic_boost = 0.08 if candidate.get("topic_preferred") else 0.0
+    triple = candidate.get("triple") or ()
+    verified_boost = 0.0
+    if fact_tuple_is_verified(*triple[:5] if len(triple) >= 5 else triple):
+        from src.core.verification.facts import verified_rank_boost
+
+        verified_boost = verified_rank_boost()
     return (
         0.45 * distance_term
         + 0.25 * ppr_term
         + 0.20 * completeness
         + 0.10 * recency
         + topic_boost
+        + verified_boost
     )
 
 
@@ -1286,22 +1696,123 @@ def _merge_variant_candidate_lists(
     return merged
 
 
-def _is_currently_valid(predicate: Predicate) -> bool:
-    props = getattr(predicate, "properties", None) or {}
-    if props.get("invalid_at"):
-        return False
-    if getattr(predicate, "deprecated", False):
-        return False
-    return True
+def _relationship_fields(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        nested = value.get("properties")
+        if isinstance(nested, dict):
+            return nested
+        return value
+    props = getattr(value, "properties", None)
+    if isinstance(props, dict):
+        return props
+    getter = getattr(value, "get", None)
+    if callable(getter):
+        fields: dict[str, Any] = {}
+        for key in (
+            "valid_from",
+            "valid_to",
+            "valid_at",
+            "invalid_at",
+            "superseded_at",
+            "deprecated",
+        ):
+            item = getter(key)
+            if item is not None:
+                fields[key] = item
+        return fields
+    return {}
 
 
-def _wants_historical_facts(query: str) -> bool:
-    text = (query or "").strip()
-    if not text:
-        return False
-    if _CURRENT_TRUTH_RE.search(text) and not _HISTORY_MODE_RE.search(text):
-        return False
-    return bool(_HISTORY_MODE_RE.search(text))
+def _retrieve_hit_valid_at(hit: Any, as_of, is_valid_at) -> bool:
+    if not isinstance(hit, dict):
+        return True
+    rels = hit.get("relationships")
+    if rels is None:
+        predicate = hit.get("predicate")
+        if predicate is None:
+            return True
+        return is_valid_at(_relationship_fields(predicate), as_of)
+    items = rels if isinstance(rels, (list, tuple)) else [rels]
+    return all(
+        is_valid_at(_relationship_fields(rel), as_of)
+        for rel in items
+        if rel is not None
+    )
+
+
+def _retrieve_hit_validity_status(hit: Any, as_of, validity_status) -> str:
+    if not isinstance(hit, dict):
+        return "valid"
+    rels = hit.get("relationships")
+    if rels is None:
+        predicate = hit.get("predicate")
+        if predicate is None:
+            return "valid"
+        return validity_status(_relationship_fields(predicate), as_of)
+    items = rels if isinstance(rels, (list, tuple)) else [rels]
+    statuses = [
+        validity_status(_relationship_fields(rel), as_of)
+        for rel in items
+        if rel is not None
+    ]
+    if not statuses:
+        return "valid"
+    if any(status == "invalid" for status in statuses):
+        return "invalid"
+    if any(status == "unknown" for status in statuses):
+        return "unknown"
+    return "valid"
+
+
+def _retrieve_hit_id(hit: Any) -> str:
+    if not isinstance(hit, dict):
+        return ""
+    rels = hit.get("relationships")
+    if isinstance(rels, dict):
+        return str(rels.get("uuid") or rels.get("name") or "")
+    predicate = hit.get("predicate")
+    if isinstance(predicate, dict):
+        return str(predicate.get("uuid") or predicate.get("name") or "")
+    uuid = getattr(predicate, "uuid", None) if predicate is not None else None
+    return str(uuid or "")
+
+
+def _unknown_chunk_item(chunk: Any, unknown_fact) -> dict:
+    payload = chunk.model_dump(mode="json") if hasattr(chunk, "model_dump") else chunk
+    return unknown_fact(
+        target="chunk",
+        item_id=str(getattr(chunk, "id", "") or ""),
+        payload=payload,
+    )
+
+
+def _is_currently_valid(
+    predicate: Predicate, as_of: datetime | None = None
+) -> bool:
+    from src.core.saving.validity import predicate_is_valid_at
+
+    return predicate_is_valid_at(predicate, as_of)
+
+
+def _wants_historical_facts(
+    query: str,
+    *,
+    explicit: bool | None = None,
+    query_vector: list[float] | None = None,
+    history_vectors: list[list[float]] | None = None,
+    current_vectors: list[list[float]] | None = None,
+) -> bool:
+    from src.core.saving.history_intent import resolve_include_history
+
+    return resolve_include_history(
+        explicit,
+        query_text=query,
+        query=query_vector,
+        history_vectors=history_vectors,
+        current_vectors=current_vectors,
+    )
 
 
 def _fact_predicates_allowed(
@@ -1309,7 +1820,12 @@ def _fact_predicates_allowed(
     r2: Predicate,
     *,
     include_history: bool,
+    as_of: datetime | None = None,
 ) -> bool:
+    if not fact_pair_allowed(r, r2):
+        return False
+    if as_of is not None:
+        return _is_currently_valid(r, as_of) and _is_currently_valid(r2, as_of)
     if include_history:
         return True
     return _is_currently_valid(r) and _is_currently_valid(r2)
@@ -1352,7 +1868,7 @@ def _collect_query_variants(text: str, elements) -> list[str]:
 
 
 _ENUMERATION_RE = re.compile(
-    r"\b(what|which|list|ways?|types?|kinds?|events?|books?|items?|"
+    r"\b(list|ways?|types?|kinds?|events?|books?|items?|"
     r"changes?|traits?|hobbies|activities)\b",
     re.IGNORECASE,
 )
@@ -1458,6 +1974,7 @@ def _build_adjacency_from_seeds(
     query: str | None = None,
     query_embedding: list[float] | None = None,
     include_history: bool = False,
+    as_of: datetime | None = None,
 ) -> dict[str, list[tuple[str, float]]]:
     weighted: dict[str, dict[str, float]] = {}
     if not seed_uuids:
@@ -1469,7 +1986,9 @@ def _build_adjacency_from_seeds(
     except Exception:
         return {}
     for n, r, m, r2, b in neighbors:
-        if not _fact_predicates_allowed(r, r2, include_history=include_history):
+        if not _fact_predicates_allowed(
+            r, r2, include_history=include_history, as_of=as_of
+        ):
             continue
         n_uuid = getattr(n, "uuid", None)
         m_uuid = getattr(m, "uuid", None)
@@ -1578,19 +2097,59 @@ def _stabilize_seed_hits(
     )
 
 
-def _seed_nodes_for_text(text: str, brain_id: str) -> list[tuple[str, float, str]]:
+def _seed_nodes_for_text(
+    text: str,
+    brain_id: str,
+    embeddings: list[float] | None = None,
+) -> list[tuple[str, float, str]]:
     """Return (node_uuid, distance, entity_name) seeds from nodes + relationships."""
-    with profile_stage("embed.query"):
-        text_embeddings = embeddings_adapter.embed_text(text)
-    embeddings = text_embeddings.embeddings
+    if embeddings is None:
+        with profile_stage("embed.query"):
+            text_embeddings = _embed_query_vector(text)
+        embeddings = text_embeddings.embeddings
     seeds: list[tuple[str, float, str]] = []
+    vs = vector_search
 
-    with profile_stage("vector.search_nodes", k=_SEED_K):
-        node_vectors = vector_search.search_nodes(
-            embeddings,
-            brain_id=brain_id,
-            k=_SEED_K,
+    def _search_nodes():
+        with profile_stage("vector.search_nodes", k=_SEED_K):
+            return _backend_or_default(
+                "vector.search_nodes",
+                brain_id,
+                lambda: vs.search_nodes(
+                    embeddings,
+                    brain_id=brain_id,
+                    k=_SEED_K,
+                ),
+                [],
+            )
+
+    def _search_relationships():
+        with profile_stage("vector.search_relationships", k=_SEED_K):
+            return _backend_or_default(
+                "vector.search_relationships",
+                brain_id,
+                lambda: vs.search_relationships(
+                    embeddings,
+                    brain_id=brain_id,
+                    k=_SEED_K,
+                ),
+                [],
+            )
+
+    try:
+        node_vectors, rel_vectors = _parallel_io(
+            [_search_nodes, _search_relationships]
         )
+    except _backend_error_types() as exc:
+        _note_degraded("facts.seed_search", brain_id, exc)
+        node_vectors, rel_vectors = [], []
+    else:
+        if node_vectors is _IO_FAILED:
+            _note_degraded("vector.search_nodes", brain_id, TimeoutError())
+        if rel_vectors is _IO_FAILED:
+            _note_degraded("vector.search_relationships", brain_id, TimeoutError())
+        node_vectors = _io_result(node_vectors, [])
+        rel_vectors = _io_result(rel_vectors, [])
     for vector in node_vectors:
         meta = vector.metadata or {}
         uuid = meta.get("uuid") or getattr(vector, "id", None)
@@ -1601,13 +2160,6 @@ def _seed_nodes_for_text(text: str, brain_id: str) -> list[tuple[str, float, str
         )
         name = meta.get("name") or text
         seeds.append((str(uuid), float(distance), str(name)))
-
-    with profile_stage("vector.search_relationships", k=_SEED_K):
-        rel_vectors = vector_search.search_relationships(
-            embeddings,
-            brain_id=brain_id,
-            k=_SEED_K,
-        )
     for vector in rel_vectors:
         meta = vector.metadata or {}
         distance = (
@@ -1668,6 +2220,51 @@ def _session_ids_for_chunks(
     return found
 
 
+def _fact_ids_from_context_triple(triple: Any) -> list[str]:
+    ids: list[str] = []
+    if not triple or len(triple) < 5:
+        return ids
+    for predicate in (triple[1], triple[3]):
+        props = getattr(predicate, "properties", None) or {}
+        uid = getattr(predicate, "uuid", None) or props.get("uuid")
+        if uid:
+            ids.append(str(uid))
+    return ids
+
+
+def _annotate_open_conflicts(
+    adapter: Any,
+    brain_id: str,
+    triples: list[GetContextTriple],
+    text_lines: list[str],
+) -> tuple[list[GetContextTriple], list[str]]:
+    from src.core.saving.conflicts import annotation_payload, open_conflicts_by_fact_ids
+
+    fact_ids: list[str] = []
+    for item in triples:
+        fact_ids.extend(_fact_ids_from_context_triple(item.triple))
+    mapping = open_conflicts_by_fact_ids(adapter, brain_id, fact_ids)
+    annotated_lines: list[str] = []
+    for index, item in enumerate(triples):
+        payloads: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for fact_id in _fact_ids_from_context_triple(item.triple):
+            for conflict in mapping.get(fact_id) or []:
+                if conflict.id in seen:
+                    continue
+                seen.add(conflict.id)
+                payloads.append(annotation_payload(conflict, fact_id))
+        if payloads:
+            item.open_conflicts = payloads
+            line = text_lines[index] if index < len(text_lines) else ""
+            if line and not line.startswith("[open conflict]"):
+                line = f"[open conflict] {line}"
+            annotated_lines.append(line)
+        else:
+            annotated_lines.append(text_lines[index] if index < len(text_lines) else "")
+    return triples, annotated_lines
+
+
 def _build_fact_channel(
     curated: list[dict[str, Any]],
     chunk_sessions: dict[str, list[str]],
@@ -1686,12 +2283,14 @@ def _build_fact_channel(
         if session_ids:
             line = f"{line} ({', '.join(session_ids)})"
         text_lines.append(line)
+        verification = combined_verification(r, r2, m)
         triples.append(
             GetContextTriple(
                 identified_entity=candidate["identified_entity"],
                 triple=(n, r, m, r2, b),
                 source_chunk_ids=chunk_ids or None,
                 source_session_ids=session_ids or None,
+                verification=FactVerificationInfo(**verification.model_dump()),
             )
         )
         for sid in session_ids:
@@ -1703,7 +2302,11 @@ def _build_fact_channel(
 
 
 def _retrieve_passages(
-    text: str, brain_id: str, *, limit: int
+    text: str,
+    brain_id: str,
+    *,
+    limit: int,
+    embeddings: list[float] | None = None,
 ) -> list[tuple[str, float, str]]:
     """Return (chunk_id, score, text) ranked passages via vector + keyword fusion."""
     mode = (
@@ -1715,38 +2318,79 @@ def _retrieve_passages(
     with profile_stage("passages.retrieve", blocking=True, queries=1):
         vector_ids: list[str] = []
         id_to_distance: dict[str, float] = {}
-        if use_dense:
+        query_embeddings = embeddings
+        if use_dense and query_embeddings is None:
             with profile_stage("embed.query"):
-                text_embeddings = embeddings_adapter.embed_text(text)
+                query_embeddings = _embed_query_vector(text).embeddings
+        vs = vector_search
+        data = data_adapter
+
+        def _dense() -> tuple[list[str], dict[str, float]]:
             with profile_stage("vector.search_data", k=max(limit, _PASSAGE_K)):
-                vector_ids, id_to_distance = collect_dense_passages(
-                    vector_search,
-                    text_embeddings.embeddings,
+                return _backend_or_default(
+                    "vector.search_data",
                     brain_id,
-                    max(limit, _PASSAGE_K),
+                    lambda: collect_dense_passages(
+                        vs,
+                        query_embeddings or [],
+                        brain_id,
+                        max(limit, _PASSAGE_K),
+                    ),
+                    ([], {}),
                 )
+
+        def _keyword() -> tuple[list[str], dict[str, str]]:
+            stage = "data.bm25_search" if use_bm25 else "data.keyword_search"
+            if use_bm25:
+                with profile_stage("data.bm25_search"):
+                    _start_stage(stage)
+                    try:
+                        ids, _, texts = collect_bm25_passages(
+                            data,
+                            text,
+                            brain_id,
+                            max(limit, _PASSAGE_K),
+                        )
+                        _ok_stage(stage)
+                        return ids, texts
+                    except Exception as exc:
+                        _note_degraded(stage, brain_id, exc)
+                        return [], {}
+            if use_ilike:
+                with profile_stage("data.keyword_search"):
+                    _start_stage(stage)
+                    try:
+                        ids, texts = collect_ilike_passages(data, text, brain_id)
+                        _ok_stage(stage)
+                        return ids, texts
+                    except Exception as exc:
+                        _note_degraded(stage, brain_id, exc)
+                        return [], {}
+            return [], {}
 
         keyword_ids: list[str] = []
         id_to_text: dict[str, str] = {}
-        if use_bm25:
-            with profile_stage("data.bm25_search"):
-                try:
-                    keyword_ids, _, id_to_text = collect_bm25_passages(
-                        data_adapter,
-                        text,
-                        brain_id,
-                        max(limit, _PASSAGE_K),
-                    )
-                except Exception:
-                    pass
-        elif use_ilike:
-            with profile_stage("data.keyword_search"):
-                try:
-                    keyword_ids, id_to_text = collect_ilike_passages(
-                        data_adapter, text, brain_id
-                    )
-                except Exception:
-                    pass
+        if use_dense and (use_bm25 or use_ilike):
+            try:
+                dense_result, keyword_result = _parallel_io([_dense, _keyword])
+            except _backend_error_types() as exc:
+                _note_degraded("passages.retrieve", brain_id, exc)
+                _note_degraded("vector.search_data", brain_id, exc)
+                dense_result, keyword_result = ([], {}), ([], {})
+            else:
+                if dense_result is _IO_FAILED:
+                    _note_degraded("vector.search_data", brain_id, TimeoutError())
+                    dense_result = ([], {})
+                if keyword_result is _IO_FAILED:
+                    stage = "data.bm25_search" if use_bm25 else "data.keyword_search"
+                    _note_degraded(stage, brain_id, TimeoutError())
+                    keyword_result = ([], {})
+            vector_ids, id_to_distance = dense_result
+            keyword_ids, id_to_text = keyword_result
+        elif use_dense:
+            vector_ids, id_to_distance = _dense()
+        else:
+            keyword_ids, id_to_text = _keyword()
 
         fused = fuse_passage_lists(
             vector_ids if use_dense else [],
@@ -1791,21 +2435,48 @@ async def get_context(
     and publishes it as a latency trace event; it is off unless the caller asks
     for it or `TRACE_STAGE_PROFILER_ENABLED` is set.
     """
-    with profile_request(
-        "retrieve.context", enabled=request.profile_stages
-    ) as profiler:
-        response = await _build_context(request, fact_filter_adapter)
-    if profiler is not None:
-        response.stage_timings = profiler.last_report
-    return response
+    attach_timings = bool(request.profile_stages) or stage_profiling_enabled(False)
+    health = _RetrievalHealth()
+    token = _health_var.set(health)
+    try:
+        with verification_scope(include_rejected=bool(request.include_rejected)):
+            with profile_request(
+                "retrieve.context",
+                enabled=True,
+                publish=attach_timings,
+            ) as profiler:
+                response = await _build_context(request, fact_filter_adapter)
+        if profiler is not None:
+            log_stage_report(profiler.last_report, logger)
+            if attach_timings:
+                response.stage_timings = profiler.last_report
+        if health.all_failed():
+            raise HTTPException(
+                status_code=503,
+                detail="Retrieval backends unavailable",
+            )
+        if health.failed_stages:
+            response.degraded = health.failed_stages
+        return response
+    finally:
+        _health_var.reset(token)
 
 
 async def _build_context(
     request: GetContextRequestBody,
     fact_filter_adapter: Any,
 ) -> GetContextResponse:
-    with profile_stage("nlp.extract_elements"):
-        elements = _entity_extractor.extract_elements(request.text)
+    from src.core.saving.validity import InvalidAsOf, optional_instant
+
+    try:
+        as_of = optional_instant(getattr(request, "as_of", None))
+    except InvalidAsOf as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    def _extract_elements():
+        with profile_stage("nlp.extract_elements"):
+            return _entity_extractor.extract_elements(request.text)
+
+    elements = await asyncio.to_thread(_extract_elements)
     with profile_stage("nlp.query_variants") as detail:
         variants = _collect_query_variants(request.text, elements)
         detail["variants"] = len(variants)
@@ -1815,14 +2486,121 @@ async def _build_context(
     candidates: list[dict[str, Any]] = []
     seed_hits: list[tuple[str, float, str]] = []
     passage_hits: list[tuple[str, float, str]] = []
-    include_history = _wants_historical_facts(request.text)
+    primary_passage_hits: list[tuple[str, float, str]] = []
+    from src.core.saving.history_intent import (
+        lexical_history_decision,
+        lexical_history_intent,
+        prototype_vectors,
+        resolve_include_history,
+    )
+
+    shared_vectors: dict[str, list[float]] = {}
+
+    def _embed_query(text: str) -> list[float]:
+        cached = shared_vectors.get(text)
+        if cached is None:
+            cached = _embed_query_vector(text).embeddings
+            shared_vectors[text] = cached
+        return cached
+
+    def _embed_queries(texts: list[str]) -> list[list[float]]:
+        vectors: list[list[float] | None] = [shared_vectors.get(text) for text in texts]
+        missing = [
+            (index, text)
+            for index, text in enumerate(texts)
+            if vectors[index] is None
+        ]
+        if not missing:
+            return [item or [] for item in vectors]
+        batch = getattr(embeddings_adapter, "embed_texts", None)
+        raw = None
+        if callable(batch):
+            try:
+                raw = batch([text for _index, text in missing])
+            except HTTPException:
+                raise
+            except Exception:
+                logger.exception("Embedding request failed")
+                raise HTTPException(
+                    status_code=503,
+                    detail="Embedding service unavailable",
+                ) from None
+            if not isinstance(raw, (list, tuple)) or len(raw) != len(missing):
+                raw = None
+        if raw is None:
+            for index, text in missing:
+                vectors[index] = _embed_query(text)
+            return [item or [] for item in vectors]
+        for (index, text), item in zip(missing, raw):
+            vector = getattr(item, "embeddings", None)
+            if vector is None:
+                vector = item
+            if not vector:
+                logger.error("Embedding request failed")
+                raise HTTPException(
+                    status_code=503,
+                    detail="Embedding service unavailable",
+                )
+            shared_vectors[text] = vector
+            vectors[index] = vector
+        return [item or [] for item in vectors]
+
+    query_vector: list[float] | None = None
+    explicit_history = request.include_history
+    unknown_facts: list[dict[str, Any]] = []
+    unknown_passages: list[dict[str, Any]] = []
+    unique_texts: list[str] = []
+    seen_texts: set[str] = set()
+    for text in [request.text, *variants]:
+        key = text.strip().lower()
+        if not text or key in seen_texts:
+            continue
+        seen_texts.add(key)
+        unique_texts.append(text)
+
+    with profile_stage("history.intent", blocking=False) as history_detail:
+        if as_of is not None:
+            include_history = False
+            history_detail["source"] = "as_of"
+        elif explicit_history is not None:
+            include_history = explicit_history
+            history_detail["source"] = "explicit"
+        else:
+            lexical = lexical_history_decision(request.text)
+            if lexical is not None:
+                include_history = lexical
+                history_detail["source"] = "lexical"
+            else:
+                history_detail["source"] = "similarity"
+
+                def _resolve_history_flag() -> tuple[bool, list[float] | None]:
+                    try:
+                        with profile_stage("history.prototypes"):
+                            history_vectors, current_vectors = prototype_vectors(
+                                _embed_query, _embed_queries
+                            )
+                        qv = _embed_query(request.text)
+                        flag = resolve_include_history(
+                            None,
+                            query_text=request.text,
+                            query=qv,
+                            history_vectors=history_vectors,
+                            current_vectors=current_vectors,
+                        )
+                        return flag, qv
+                    except Exception:
+                        return lexical_history_intent(request.text), None
+
+                include_history, query_vector = await asyncio.to_thread(_resolve_history_flag)
 
     def _collect_facts_for_variant(
         text: str,
     ) -> tuple[list[tuple[str, float, str]], list[dict[str, Any]]]:
         with profile_stage("facts.variant") as detail:
             with profile_stage("facts.seed_search"):
-                seeds = _seed_nodes_for_text(text, request.brain_id)
+                seeds = _seed_nodes_for_text(
+                    text, request.brain_id, embeddings=shared_vectors.get(text)
+                )
             detail["seeds"] = len(seeds)
             if not seeds:
                 return [], []
@@ -1839,15 +2617,48 @@ async def _build_context(
             with profile_stage(
                 "graph.event_neighbors", seed_uuids=len(seed_uuids)
             ) as neighbors_detail:
-                neighbors = graph_adapter.get_event_centric_neighbors(
-                    seed_uuids, brain_id=request.brain_id
+                as_of_stamp = None
+                if as_of is not None:
+                    from src.core.saving.validity import format_instant
+
+                    as_of_stamp = format_instant(as_of)
+                neighbors = _backend_or_default(
+                    "graph.event_neighbors",
+                    request.brain_id,
+                    lambda: graph_adapter.get_event_centric_neighbors(
+                        seed_uuids,
+                        brain_id=request.brain_id,
+                        as_of=as_of_stamp,
+                    ),
+                    [],
                 )
                 neighbors_detail["rows"] = len(neighbors)
             local: list[dict[str, Any]] = []
             with profile_stage("facts.assemble"):
                 for n, r, m, r2, b in neighbors:
+                    if as_of is not None:
+                        from src.core.saving.validity import (
+                            VALIDITY_UNKNOWN,
+                            predicate_validity_status,
+                            unknown_fact,
+                            unknown_relationship_id,
+                        )
+
+                        status_r = predicate_validity_status(r, as_of)
+                        status_r2 = predicate_validity_status(r2, as_of)
+                        if status_r == VALIDITY_UNKNOWN or status_r2 == VALIDITY_UNKNOWN:
+                            unknown_facts.append(
+                                unknown_fact(
+                                    target="relationship",
+                                    item_id=unknown_relationship_id(
+                                        r, r2, status_r, status_r2
+                                    ),
+                                    payload=_format_event_fact(n, r, m, r2, b),
+                                )
+                            )
+                            continue
                     if not _fact_predicates_allowed(
-                        r, r2, include_history=include_history
+                        r, r2, include_history=include_history, as_of=as_of
                     ):
                         continue
                     distances = [
@@ -1861,7 +2672,7 @@ async def _build_context(
                     ]
                     score = min(distances) if distances else float("inf")
                     fact_text = _format_event_fact(n, r, m, r2, b)
-                    if include_history and not (
+                    if as_of is None and include_history and not (
                         _is_currently_valid(r) and _is_currently_valid(r2)
                     ):
                         fact_text = f"[superseded] {fact_text}"
@@ -1877,9 +2688,9 @@ async def _build_context(
                     )
             return list(seeds), local
 
-    def _collect_passages() -> None:
-        nonlocal passage_hits
-        with profile_stage("passages.collect") as detail:
+    async def _collect_passages() -> None:
+        nonlocal passage_hits, primary_passage_hits
+        with profile_stage("passages.collect", blocking=False) as detail:
             queries = [request.text] + [
                 v
                 for v in variants
@@ -1893,14 +2704,35 @@ async def _build_context(
             fused_lists: list[list[str]] = []
             id_to_text: dict[str, str] = {}
             id_to_score: dict[str, float] = {}
-            for query in queries:
-                hits = _retrieve_passages(
+            collect_limit = max(max_passages, _PASSAGE_K)
+            primary_limit = max(collect_limit, request.historical_limit)
+
+            def _hits_for_query(query: str, limit: int) -> list[tuple[str, float, str]]:
+                return _retrieve_passages(
                     query,
                     request.brain_id,
-                    limit=max(max_passages, _PASSAGE_K),
+                    limit=limit,
+                    embeddings=shared_vectors.get(query),
                 )
+
+            query_hits = list(
+                await asyncio.gather(
+                    *[
+                        asyncio.to_thread(
+                            _hits_for_query,
+                            query,
+                            primary_limit if index == 0 else collect_limit,
+                        )
+                        for index, query in enumerate(queries)
+                    ]
+                )
+            )
+            if query_hits:
+                primary_passage_hits = query_hits[0]
+            for index, hits in enumerate(query_hits):
+                fusion_hits = hits[:collect_limit] if index == 0 else hits
                 ordered_ids: list[str] = []
-                for chunk_id, score, body in hits:
+                for chunk_id, score, body in fusion_hits:
                     ordered_ids.append(chunk_id)
                     id_to_text[chunk_id] = body
                     prev = id_to_score.get(chunk_id)
@@ -1921,48 +2753,133 @@ async def _build_context(
 
     async def _get_historical_context():
         nonlocal historical_context
-        with profile_stage("historical.context", blocking=False):
-            passages = await asyncio.to_thread(
-                _retrieve_passages,
-                request.text,
+        from src.core.saving.source_passages import (
+            current_record_texts,
+            prior_revision_texts,
+            screened_passage_texts,
+        )
+
+        def _merge_prior(texts: list[str], hits: list[tuple[str, float, str]]) -> list[str]:
+            if not include_history:
+                return texts[: request.historical_limit]
+            extra = prior_revision_texts(
+                data_adapter,
                 request.brain_id,
-                limit=max(request.historical_limit, _PASSAGE_K),
+                hits,
+                limit=request.historical_limit,
+                query_text=request.text,
+                query_vector=query_vector or shared_vectors.get(request.text),
+                embed=_embed_query,
+                embed_many=_embed_queries,
             )
+            merged = list(texts)
+            for text in extra:
+                if text not in merged:
+                    merged.append(text)
+            return merged[: request.historical_limit]
+
+        def _history_from_hits(
+            hits: list[tuple[str, float, str]],
+            extra: list[str] | None = None,
+        ) -> list[str]:
+            extra_unknown: list = []
+            texts = screened_passage_texts(
+                data_adapter,
+                request.brain_id,
+                hits,
+                include_history=include_history,
+                limit=request.historical_limit,
+                as_of=as_of,
+                unknown_out=extra_unknown if as_of is not None else None,
+            )
+            if as_of is not None:
+                from src.core.saving.validity import unknown_fact
+
+                for chunk_id, _score, body, chunk in extra_unknown:
+                    payload = (
+                        chunk.model_dump(mode="json")
+                        if hasattr(chunk, "model_dump")
+                        else body
+                    )
+                    unknown_passages.append(
+                        unknown_fact(
+                            target="chunk", item_id=str(chunk_id), payload=payload
+                        )
+                    )
+            if extra:
+                texts = texts + extra
+            return _merge_prior(texts, hits)
+
+        with profile_stage("historical.context", blocking=False):
+            passages = primary_passage_hits
             if passages:
-                historical_context = [
-                    text for _, _, text in passages[: request.historical_limit]
-                ]
+                historical_context = await asyncio.to_thread(
+                    _history_from_hits, passages
+                )
                 return historical_context
             with profile_stage("historical.fallback", blocking=False):
                 text_chunks, structured_data = await asyncio.gather(
                     asyncio.to_thread(
-                        data_adapter.get_last_text_chunks,
-                        brain_id=request.brain_id,
-                        limit=request.historical_limit,
+                        _backend_or_default,
+                        "data.last_text_chunks",
+                        request.brain_id,
+                        lambda: data_adapter.get_last_text_chunks(
+                            brain_id=request.brain_id,
+                            limit=request.historical_limit,
+                        ),
+                        [],
                     ),
                     asyncio.to_thread(
-                        data_adapter.get_last_structured_data,
-                        brain_id=request.brain_id,
-                        limit=request.historical_limit,
+                        _backend_or_default,
+                        "data.last_structured_data",
+                        request.brain_id,
+                        lambda: data_adapter.get_last_structured_data(
+                            brain_id=request.brain_id,
+                            limit=request.historical_limit,
+                        ),
+                        [],
                     ),
                 )
-            historical_context = [text_chunk.text for text_chunk in text_chunks] + [
-                json.dumps(structured_data.data)
-                for structured_data in structured_data
-                if len(structured_data.data.items()) > 0
+            chunk_hits = [
+                (str(getattr(text_chunk, "id", "") or ""), 0.0, text_chunk.text or "")
+                for text_chunk in text_chunks
             ]
+
+            def _fallback_history() -> list[str]:
+                extra = current_record_texts(
+                    data_adapter,
+                    request.brain_id,
+                    structured_data,
+                    text_chunks,
+                    include_history=include_history,
+                    as_of=as_of,
+                )
+                return _history_from_hits(chunk_hits, extra)
+
+            historical_context = await asyncio.to_thread(_fallback_history)
             return historical_context
+
+    with profile_stage("embed.query", blocking=False) as embed_detail:
+        pending = [text for text in unique_texts if text not in shared_vectors]
+        if pending:
+            await asyncio.to_thread(_embed_queries, pending)
+        if query_vector is None:
+            query_vector = shared_vectors.get(request.text)
+        embed_detail["texts"] = len(pending)
 
     with profile_stage(
         "retrieval.fanout", blocking=False, variants=len(variants)
     ):
+        async def _collect_passages_and_history() -> None:
+            await _collect_passages()
+            await _get_historical_context()
+
         fact_futures = [
             asyncio.to_thread(_collect_facts_for_variant, variant)
             for variant in variants
         ]
         other_futures = [
-            asyncio.to_thread(_collect_passages),
-            _get_historical_context(),
+            _collect_passages_and_history(),
         ]
         all_results = await asyncio.gather(*fact_futures, *other_futures)
         variant_outputs = all_results[: len(variants)]
@@ -1975,18 +2892,24 @@ async def _build_context(
     candidates = _merge_variant_candidate_lists(variant_lists)
 
     bridge_paths: list[dict[str, Any]] = []
-    with profile_stage(
-        "facts.bridge_expand",
-        bridges=request.cross_event_bridges,
-    ) as detail:
-        candidates, bridge_paths = _expand_cross_event_bridges(
-            candidates,
-            request.brain_id,
-            max_per_hub=request.cross_event_bridges,
-            include_history=include_history,
-        )
-        detail["candidates"] = len(candidates)
-        detail["paths"] = len(bridge_paths)
+    def _bridge_expand():
+        with profile_stage(
+            "facts.bridge_expand",
+            bridges=request.cross_event_bridges,
+        ) as detail:
+            expanded, paths = _expand_cross_event_bridges(
+                candidates,
+                request.brain_id,
+                max_per_hub=request.cross_event_bridges,
+                include_history=include_history,
+                as_of=as_of,
+                unknown_out=unknown_facts if as_of is not None else None,
+            )
+            detail["candidates"] = len(expanded)
+            detail["paths"] = len(paths)
+            return expanded, paths
+
+    candidates, bridge_paths = await asyncio.to_thread(_bridge_expand)
 
     with profile_stage("facts.dedup_rank") as detail:
         ranked = _dedupe_candidates(candidates)
@@ -1994,18 +2917,23 @@ async def _build_context(
         detail["deduped"] = len(ranked)
 
     if request.use_ppr and seed_hits and ranked:
-        with profile_stage("ppr"):
+        with profile_stage("ppr", blocking=False):
             personalization = _seed_personalization(seed_hits)
-            with profile_stage(
-                "ppr.adjacency", seeds=len(personalization)
-            ) as adjacency_detail:
-                adjacency = _build_adjacency_from_seeds(
-                    sorted(personalization.keys()),
-                    request.brain_id,
-                    query=request.text,
-                    include_history=include_history,
-                )
-                adjacency_detail["nodes"] = len(adjacency)
+            def _adjacency():
+                with profile_stage(
+                    "ppr.adjacency", seeds=len(personalization)
+                ) as adjacency_detail:
+                    built = _build_adjacency_from_seeds(
+                        sorted(personalization.keys()),
+                        request.brain_id,
+                        query=request.text,
+                        include_history=include_history,
+                        as_of=as_of,
+                    )
+                    adjacency_detail["nodes"] = len(built)
+                    return built
+
+            adjacency = await asyncio.to_thread(_adjacency)
             with profile_stage("ppr.iterations", iterations=_PPR_ITERS):
                 ppr_scores = personalized_pagerank(
                     adjacency,
@@ -2028,6 +2956,39 @@ async def _build_context(
                     )
 
     max_facts = max(0, request.max_facts)
+
+    from src.core.saving.source_passages import (
+        current_chunk_body,
+        current_fact_candidates,
+        screen_passage_hits,
+    )
+
+    unknown_passage_hits: list = []
+    passage_hits = screen_passage_hits(
+        data_adapter,
+        request.brain_id,
+        passage_hits,
+        include_history=include_history,
+        as_of=as_of,
+        unknown_out=unknown_passage_hits if as_of is not None else None,
+    )
+    if as_of is not None:
+        from src.core.saving.validity import unknown_fact
+
+        for chunk_id, _score, body, chunk in unknown_passage_hits:
+            payload = (
+                chunk.model_dump(mode="json") if hasattr(chunk, "model_dump") else body
+            )
+            unknown_passages.append(
+                unknown_fact(target="chunk", item_id=str(chunk_id), payload=payload)
+            )
+    ranked = current_fact_candidates(
+        data_adapter,
+        request.brain_id,
+        ranked,
+        include_history=include_history,
+        as_of=as_of,
+    )
 
     provenance_ids: list[str] = []
     for candidate in ranked:
@@ -2052,13 +3013,22 @@ async def _build_context(
                     False,
                     request.brain_id,
                 )
+                passage_cache: dict[str, set[str] | None] = {}
                 for chunk in chunks:
-                    body = (chunk.text or "").strip()
+                    raw = (chunk.text or "").strip()
                     chunk_id = str(getattr(chunk, "id", "") or "")
-                    if chunk_id and body:
-                        sessions = _session_ids_from_text(body)
+                    if chunk_id and raw:
+                        sessions = _session_ids_from_text(raw)
                         if sessions:
                             chunk_sessions[chunk_id] = sessions
+                    body = current_chunk_body(
+                        data_adapter,
+                        request.brain_id,
+                        chunk,
+                        include_history=include_history,
+                        cache=passage_cache,
+                        as_of=as_of,
+                    )
                     if body and body not in source_passages:
                         source_passages.append(body)
             except Exception:
@@ -2153,20 +3123,50 @@ async def _build_context(
             detail["followups"] = len(followups[:3])
             extra_passages: list[tuple[str, float, str]] = []
             extra_variant_lists: list[list[dict[str, Any]]] = []
-            for query in followups[:3]:
-                extra_passages.extend(
-                    await asyncio.to_thread(
-                        _retrieve_passages,
-                        query,
-                        request.brain_id,
-                        limit=max_passages,
+            retry_queries = followups[:3]
+            if retry_queries:
+                retry_results = await asyncio.gather(
+                    *[
+                        asyncio.gather(
+                            asyncio.to_thread(
+                                _retrieve_passages,
+                                query,
+                                request.brain_id,
+                                limit=max_passages,
+                                embeddings=shared_vectors.get(query),
+                            ),
+                            asyncio.to_thread(_collect_facts_for_variant, query),
+                        )
+                        for query in retry_queries
+                    ]
+                )
+                for passages, (seeds, local) in retry_results:
+                    extra_passages.extend(passages)
+                    seed_hits.extend(seeds)
+                    extra_variant_lists.append(local)
+            extra_unknown: list = []
+            extra_passages = screen_passage_hits(
+                data_adapter,
+                request.brain_id,
+                extra_passages,
+                include_history=include_history,
+                as_of=as_of,
+                unknown_out=extra_unknown if as_of is not None else None,
+            )
+            if as_of is not None:
+                from src.core.saving.validity import unknown_fact
+
+                for chunk_id, _score, body, chunk in extra_unknown:
+                    payload = (
+                        chunk.model_dump(mode="json")
+                        if hasattr(chunk, "model_dump")
+                        else body
                     )
-                )
-                seeds, local = await asyncio.to_thread(
-                    _collect_facts_for_variant, query
-                )
-                seed_hits.extend(seeds)
-                extra_variant_lists.append(local)
+                    unknown_passages.append(
+                        unknown_fact(
+                            target="chunk", item_id=str(chunk_id), payload=payload
+                        )
+                    )
             for chunk_id, _, body in extra_passages:
                 if body and body not in source_passages:
                     source_passages.append(body)
@@ -2208,6 +3208,13 @@ async def _build_context(
                                 chunk_sessions[chunk_id] = sessions
                 except Exception:
                     pass
+            curated = current_fact_candidates(
+                data_adapter,
+                request.brain_id,
+                curated,
+                include_history=include_history,
+                as_of=as_of,
+            )
             text_lines, triples, graph_session_ids = _build_fact_channel(
                 curated, chunk_sessions
             )
@@ -2215,6 +3222,10 @@ async def _build_context(
     response_paths = _paths_for_curated(bridge_paths, curated)
 
     with profile_stage("context.render", passages=len(source_passages)):
+        if getattr(request, "annotate_conflicts", False):
+            triples, text_lines = _annotate_open_conflicts(
+                data_adapter, request.brain_id, triples, text_lines
+            )
         topic_block = [
             f"[topic] {t.get('label')}"
             for t in response_topics
@@ -2222,6 +3233,15 @@ async def _build_context(
         ]
         passage_block = [f"[passage] {p}" for p in source_passages]
         text_context = "\n".join(topic_block + passage_block + text_lines)
+
+    from src.core.saving.validity import dedupe_unknown_items
+
+    unknown_items = dedupe_unknown_items(unknown_passages + unknown_facts)
+    envelope: dict[str, Any] = {}
+    if as_of is not None:
+        envelope["validity_unknown_count"] = len(unknown_items)
+        if getattr(request, "include_validity_unknown", False):
+            envelope["validity_unknown"] = unknown_items
 
     return GetContextResponse(
         text_context=text_context,
@@ -2232,4 +3252,5 @@ async def _build_context(
         temporal_conflicts=temporal_conflicts or None,
         paths=response_paths or None,
         topics=response_topics or None,
+        **envelope,
     )

@@ -17,11 +17,14 @@ MCP_TOOL_SPECS: list[dict[str, object]] = [
         "parameters": {
             "query": "str",
             "brain_id": "str — use the active brain_id for this session",
+            "include_rejected": "bool (optional, default false)",
+            "as_of": "str ISO-8601 (optional): knowledge state valid at that instant",
+            "include_validity_unknown": "bool (optional, default false): include undated facts in validity_unknown",
         },
     },
     {
         "name": "traverse_graph",
-        "description": "Multi-hop graph traversal from a start node (preferred over hand-written queries).",
+        "description": "Multi-hop graph traversal from a start node. The result includes hops and invalidated hops for superseded relationships.",
         "parameters": {
             "brain_id": "str",
             "start_uuid": "str (optional if start_name + start_labels provided)",
@@ -35,6 +38,94 @@ MCP_TOOL_SPECS: list[dict[str, object]] = [
         },
     },
     {
+        "name": "list_changelogs",
+        "description": "Lists graph changelog entries, newest first. Filter with query_text, changelog types, or a since/until window of added, superseded, and invalidated facts.",
+        "parameters": {
+            "brain_id": "str",
+            "query_text": "str (optional)",
+            "types": "list[str] (optional): relationship_created, relationship_deprecated, node_properties_updated, relationship_properties_updated",
+            "limit": "int 1-50, default 10",
+            "skip": "int, default 0",
+            "since": "str ISO-8601 (optional, inclusive)",
+            "until": "str ISO-8601 (optional, exclusive)",
+        },
+    },
+    {
+        "name": "get_changelog",
+        "description": "Reads one graph changelog entry by id.",
+        "parameters": {
+            "brain_id": "str",
+            "id": "str",
+        },
+    },
+    {
+        "name": "list_source_versions",
+        "description": "Reads the current copy and previous copies of a source. Pass source_key, or a query when the key is unknown.",
+        "parameters": {
+            "brain_id": "str",
+            "source_key": "str (optional if query is set)",
+            "query": "str (optional if source_key is set)",
+            "limit": "int 1-20, default 10",
+            "skip": "int, default 0",
+        },
+    },
+    {
+        "name": "list_conflicts",
+        "description": "Lists cross-source fact conflicts. Filter by status, source_key, subject, or detected_at window.",
+        "parameters": {
+            "brain_id": "str",
+            "status": "open | resolved | dismissed (optional)",
+            "source": "str source_key (optional)",
+            "subject": "str subject name (optional)",
+            "since": "str ISO-8601 (optional)",
+            "until": "str ISO-8601 (optional)",
+            "limit": "int 1-50, default 10",
+            "skip": "int, default 0",
+        },
+    },
+    {
+        "name": "get_conflict",
+        "description": "Reads one conflict with full provenance for both sides.",
+        "parameters": {
+            "brain_id": "str",
+            "id": "str",
+        },
+    },
+    {
+        "name": "resolve_conflict",
+        "description": "Resolves a conflict. Pass winning_fact_id when one side is chosen; method=verified_side verifies the winner and rejects the other side via the fact verification API.",
+        "parameters": {
+            "brain_id": "str",
+            "id": "str",
+            "winning_fact_id": "str (optional)",
+            "notes": "str (optional)",
+            "method": "manual | verified_side, default manual",
+        },
+    },
+    {
+        "name": "dismiss_conflict",
+        "description": "Dismisses a conflict without choosing a winning fact.",
+        "parameters": {
+            "brain_id": "str",
+            "id": "str",
+            "notes": "str (optional)",
+        },
+    },
+    {
+        "name": "conflict_report",
+        "description": "Conflict report with summary counts and per-conflict details. format=json or markdown.",
+        "parameters": {
+            "brain_id": "str",
+            "status": "open | resolved | dismissed (optional)",
+            "source": "str (optional)",
+            "subject": "str (optional)",
+            "since": "str ISO-8601 (optional)",
+            "until": "str ISO-8601 (optional)",
+            "format": "json | markdown, default json",
+            "limit": "int 1-200, default 200",
+        },
+    },
+    {
         "name": "search_memory",
         "description": "Ad-hoc read-only graph query when traverse_graph is not sufficient.",
         "parameters": {
@@ -43,6 +134,15 @@ MCP_TOOL_SPECS: list[dict[str, object]] = [
         },
     },
 ]
+
+
+HISTORY_NAVIGATION_GUIDE = (
+    "traverse_graph returns hops plus invalidated hops whose relationship properties "
+    "include invalid_at or deprecated. "
+    "list_changelogs and get_changelog read prior graph changes; pass since and until for the knowledge-state diff. "
+    "list_source_versions reads the current copy and previous copies of a source. "
+    "list_conflicts, get_conflict, resolve_conflict, dismiss_conflict, and conflict_report cover cross-source contradictions."
+)
 
 
 def _format_tool_specs() -> str:
@@ -75,7 +175,7 @@ Available tools:
 Recommended workflow:
 1. Call get_search_operation_instructions when you are unsure how to search.
 2. search_semantically — when you do not know node UUIDs or exact names.
-3. traverse_graph — multi-hop exploration (preferred over hand-written queries).
+3. traverse_graph — multi-hop exploration (preferred over hand-written queries). {HISTORY_NAVIGATION_GUIDE}
 4. search_memory — ad-hoc read queries not covered by traverse_graph.
 
 After each tool call you will receive a tool result message. You may call another tool or reply to the user.

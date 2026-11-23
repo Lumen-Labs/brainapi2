@@ -8,6 +8,8 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
+import os
+import threading
 import requests
 import base64
 import struct
@@ -23,11 +25,32 @@ from src.config import config
 
 from src.adapters.interfaces.embeddings import EmbeddingsClient
 
+_http_state: dict = {"session": None, "pid": 0}
+_http_state_lock = threading.Lock()
+_EMBED_TIMEOUT_SECONDS = 60.0
+
+
+def _http_session() -> requests.Session:
+    pid = os.getpid()
+    session = _http_state["session"]
+    if session is None or _http_state["pid"] != pid:
+        with _http_state_lock:
+            session = _http_state["session"]
+            if session is None or _http_state["pid"] != pid:
+                session = requests.Session()
+                _http_state["session"] = session
+                _http_state["pid"] = pid
+    return session
+
 
 class EmbeddingError(Exception):
     """Custom exception for embedding failures after retries."""
 
     pass
+
+
+class EmbeddingClientError(Exception):
+    """Upstream embedding client failed."""
 
 
 class EmbeddingsClient(EmbeddingsClient):
@@ -48,14 +71,14 @@ class EmbeddingsClient(EmbeddingsClient):
         """
         Internal method to embed text with retry logic for network errors.
         """
-        response = requests.post(
+        response = _http_session().post(
             config.azure.embedding_full_endpoint,
             json={"input": [text], "encoding_format": "base64"},
             headers={
                 "api-key": config.azure.embedding_key,
                 "Content-Type": "application/json",
             },
-            timeout=60.0,
+            timeout=_EMBED_TIMEOUT_SECONDS,
         )
         response.raise_for_status()
         _b64_result = response.json()["data"][0]["embedding"]
@@ -73,20 +96,18 @@ class EmbeddingsClient(EmbeddingsClient):
         """
         Internal method to embed multiple texts with retry logic for network errors.
         """
-        response = requests.post(
+        response = _http_session().post(
             config.azure.embedding_full_endpoint,
             json={"input": texts, "encoding_format": "base64"},
             headers={
                 "api-key": config.azure.embedding_key,
                 "Content-Type": "application/json",
             },
-            timeout=60.0,
+            timeout=_EMBED_TIMEOUT_SECONDS,
         )
         response.raise_for_status()
 
         data = response.json()["data"]
-        # Ensure we return results in the same order as input
-        # Azure/OpenAI usually guarantees order in 'data' list
         data.sort(key=lambda x: x["index"])
 
         results = []

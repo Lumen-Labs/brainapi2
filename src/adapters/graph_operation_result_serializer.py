@@ -55,7 +55,7 @@ class Neo4jResultSerializer(GraphOperationResultSerializer):
                 keys = None
         payload = {
             "records": serialized_records,
-            "truncated": len(records) > 20,
+            "truncated": bool(getattr(result, "truncated", False)) or len(records) > 20,
         }
         if keys is not None:
             payload["keys"] = keys

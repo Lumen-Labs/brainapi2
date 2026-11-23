@@ -48,8 +48,16 @@ async def get_entity_info(
     Returns:
         GetEntityInfoResponse: Contains the located target node (`target_node`) and the retrieved paths (`path`).
     """
+    target = (target or "").strip()
+    if not target:
+        raise HTTPException(status_code=422, detail="target is required")
     event_synergy_retriever = EventSynergyRetriever(brain_id)
     paths = event_synergy_retriever.retrieve_matches(target, query, max_depth)
+    if paths.target_node is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No entity found matching the target.",
+        )
 
     return GetEntityInfoResponse(target_node=paths.target_node, path=paths)
 
@@ -72,10 +80,18 @@ async def get_entity_context(
             text_contexts: Relevant text excerpts or documents associated with the target and neighborhood.
             natural_language_web: A natural-language representation or summary of the surrounding context.
     """
+    target = (target or "").strip()
+    if not target:
+        raise HTTPException(status_code=422, detail="target is required")
     entity_context = EntityContext(target, brain_id)
     target_node, neighborhood, text_contexts, natural_language_web = (
         entity_context.get_context(context_depth=context_depth)
     )
+    if target_node is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No entity found matching the target.",
+        )
     return GetEntityContextResponse(
         target_node=target_node,
         neighborhood=neighborhood,

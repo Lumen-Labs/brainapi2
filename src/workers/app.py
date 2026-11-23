@@ -17,6 +17,10 @@ import dotenv
 _project_root = Path(__file__).resolve().parent.parent.parent
 dotenv.load_dotenv(_project_root / ".env")
 
+from src.lib.disable_langchain_tracing import disable_langchain_tracing
+
+disable_langchain_tracing()
+
 warnings.filterwarnings(
     "ignore",
     message=r"Unrecognized FinishReason enum value",
@@ -61,7 +65,11 @@ ingestion_app = Celery(
         if os.getenv("CELERY_BACKEND") == "rabbitmq"
         else REDIS_URL
     ),
-    include=["src.workers.tasks.ingestion", "src.workers.tasks.explore"],
+    include=[
+        "src.workers.tasks.ingestion",
+        "src.workers.tasks.explore",
+        "src.workers.tasks.conflicts",
+    ],
 )
 
 _PLUGIN_QUEUES, _PLUGIN_ROUTES = discover_plugin_celery(default_plugins_dir(_project_root))
@@ -75,6 +83,7 @@ TASK_QUEUES = (
     Queue("consolidate_graph", routing_key="consolidate_graph"),
     Queue("finalize_ingestion", routing_key="finalize_ingestion"),
     Queue("ingest_file", routing_key="ingest_file"),
+    Queue("conflict_scan", routing_key="conflict_scan"),
 ) + _PLUGIN_QUEUES
 
 TASK_ROUTES = {
@@ -94,6 +103,10 @@ TASK_ROUTES = {
         "queue": "finalize_ingestion"
     },
     "src.workers.tasks.ingestion.ingest_file": {"queue": "ingest_file"},
+    "src.workers.tasks.conflicts.scan_conflicts": {"queue": "conflict_scan"},
+    "src.workers.tasks.conflicts.detect_conflicts_incremental": {
+        "queue": "conflict_scan"
+    },
     **_PLUGIN_ROUTES,
 }
 

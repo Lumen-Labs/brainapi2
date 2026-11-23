@@ -172,6 +172,7 @@ class ExecuteReadQueryTests(unittest.TestCase):
         mock_cursor.__exit__ = MagicMock(return_value=False)
 
         mock_conn = MagicMock()
+        mock_conn.autocommit = True
         mock_conn.cursor.return_value = mock_cursor
         mock_conn.__enter__ = MagicMock(return_value=mock_conn)
         mock_conn.__exit__ = MagicMock(return_value=False)
@@ -180,6 +181,8 @@ class ExecuteReadQueryTests(unittest.TestCase):
             with patch.object(store, "_ensure_brain_schema"):
                 result = store.execute_read_query("default", "SELECT uuid, data FROM kg_nodes")
 
+        executed = [call.args[0] for call in mock_cursor.execute.call_args_list]
+        self.assertTrue(any("SET TRANSACTION READ ONLY" in str(sql) for sql in executed))
         self.assertTrue(result["truncated"])
         self.assertEqual(len(result["records"]), 100)
 

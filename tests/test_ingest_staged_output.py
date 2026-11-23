@@ -1,4 +1,5 @@
-from unittest.mock import Mock
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -92,6 +93,27 @@ def test_staged_vector_write_uses_replayable_identity():
     client.upsert_staged_vectors.assert_called_with([vector], "data", "brain")
 
 
+def test_rollback_vector_operation_deletes_int64_primary_keys():
+    from src.core.saving.ingest_publication import rollback_vector_operation
+    from src.lib.postgresql.vectors import string_to_int64
+
+    client = Mock()
+    rollback_vector_operation(
+        client,
+        "brain",
+        {
+            "method": "add_vectors",
+            "args": {
+                "store": "data",
+                "vectors": [{"id": "stable", "embeddings": [1.0]}],
+            },
+        },
+    )
+    client.remove_vectors.assert_called_once_with(
+        [string_to_int64("stable")], "data", "brain"
+    )
+
+
 def test_worker_commits_only_while_claim_is_current(monkeypatch):
     from src.core.saving import ingest_worker
 
@@ -132,16 +154,290 @@ def test_run_publisher_holds_gate_through_completion(monkeypatch):
         lambda client, brain, operation: events.append(("replay", brain, operation)),
     )
     monkeypatch.setattr(
-        publisher, "finish_publication",
-        lambda brain, root: events.append(("finish", brain, root)),
+        publisher.ingest_cancellation, "_runs",
+        lambda brain: SimpleNamespace(find_one=lambda query: {"status": "publishing"}),
     )
-
+    monkeypatch.setattr(
+        publisher, "finish_publication",
+        lambda brain, root: events.append(("finish", brain, root)) or {"status": "completed"},
+    )
     monkeypatch.setattr(
         publisher, "discard_outputs",
         lambda brain, root: events.append(("cleanup", brain, root)),
     )
+    monkeypatch.setattr(publisher.ingest_staging, "mark_cleanup_complete", lambda brain, root: None)
     publisher.publish_staged_run("brain", "root", gate, Mock(), Mock())
-    assert [event[0] for event in events] == ["enter", "replay", "cleanup", "finish", "exit"]
+    assert [event[0] for event in events] == ["enter", "replay", "finish", "cleanup", "exit"]
+
+
+def test_publish_runs_conflict_check_when_flag_on(monkeypatch):
+    from contextlib import contextmanager
+    from src.core.saving import ingest_publication as publisher
+
+    events = []
+
+    @contextmanager
+    def gate(brain, root):
+        yield
+
+    def publish_unit(brain, root, replay):
+        if events:
+            return False
+        replay(
+            brain,
+            "op:0",
+            {
+                "adapter": "graph",
+                "method": "add_relationship",
+                "args": {
+                    "predicate": {"uuid": "fact-1"},
+                    "subject": {"uuid": "policy-1"},
+                },
+            },
+        )
+        events.append("replay")
+        return True
+
+    monkeypatch.setattr(publisher, "publish_next_unit", publish_unit)
+    monkeypatch.setattr(publisher, "replay_graph_operation", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        publisher.ingest_cancellation,
+        "_runs",
+        lambda brain: SimpleNamespace(find_one=lambda query: {"status": "publishing"}),
+    )
+    monkeypatch.setattr(publisher, "finish_publication", lambda brain, root: {"status": "completed"})
+    monkeypatch.setattr(publisher, "discard_outputs", lambda brain, root: None)
+    monkeypatch.setattr(publisher.ingest_staging, "mark_cleanup_complete", lambda brain, root: None)
+
+    called = {}
+
+    def fake_detect(brain_id, fact_ids, subject_uuids=None):
+        called["brain_id"] = brain_id
+        called["fact_ids"] = list(fact_ids)
+        called["subject_uuids"] = list(subject_uuids or [])
+
+    monkeypatch.setattr(
+        "src.core.saving.conflicts.maybe_detect_after_ingest", fake_detect
+    )
+    monkeypatch.setenv("CONFLICT_DETECT_ON_INGEST", "true")
+    publisher.publish_staged_run("brain", "root", gate, Mock(), Mock(), Mock())
+    assert called == {
+        "brain_id": "brain",
+        "fact_ids": ["fact-1"],
+        "subject_uuids": ["policy-1"],
+    }
+
+
+def test_publish_includes_subjects_from_units_before_resume(monkeypatch):
+    from contextlib import contextmanager
+    from src.core.saving import ingest_publication as publisher
+
+    events = []
+
+    @contextmanager
+    def gate(brain, root):
+        yield
+
+    def publish_unit(brain, root, replay):
+        if events:
+            return False
+        replay(
+            brain,
+            "op:1",
+            {
+                "adapter": "graph",
+                "method": "add_relationship",
+                "args": {
+                    "predicate": {"uuid": "fact-2"},
+                    "subject": {"uuid": "policy-2"},
+                },
+            },
+        )
+        events.append("replay")
+        return True
+
+    monkeypatch.setattr(publisher, "publish_next_unit", publish_unit)
+    monkeypatch.setattr(publisher, "replay_graph_operation", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        publisher.ingest_cancellation,
+        "_runs",
+        lambda brain: SimpleNamespace(find_one=lambda query: {"status": "publishing"}),
+    )
+    monkeypatch.setattr(
+        publisher.ingest_staging,
+        "published_units_before_cursor",
+        lambda brain, root: [{"output_ref": "prior"}],
+    )
+    monkeypatch.setattr(
+        publisher,
+        "load_output",
+        lambda brain, root, ref: [
+            {
+                "adapter": "graph",
+                "method": "add_relationship",
+                "args": {
+                    "predicate": {"uuid": "fact-0"},
+                    "subject": {"uuid": "policy-0"},
+                },
+            }
+        ]
+        if ref == "prior"
+        else [],
+    )
+    monkeypatch.setattr(publisher, "finish_publication", lambda brain, root: {"status": "completed"})
+    monkeypatch.setattr(publisher, "discard_outputs", lambda brain, root: None)
+    monkeypatch.setattr(publisher.ingest_staging, "mark_cleanup_complete", lambda brain, root: None)
+
+    called = {}
+
+    def fake_detect(brain_id, fact_ids, subject_uuids=None):
+        called["fact_ids"] = list(fact_ids)
+        called["subject_uuids"] = list(subject_uuids or [])
+
+    monkeypatch.setattr(
+        "src.core.saving.conflicts.maybe_detect_after_ingest", fake_detect
+    )
+    monkeypatch.setenv("CONFLICT_DETECT_ON_INGEST", "true")
+    publisher.publish_staged_run("brain", "root", gate, Mock(), Mock(), Mock())
+    assert called["fact_ids"] == ["fact-0", "fact-2"]
+    assert called["subject_uuids"] == ["policy-0", "policy-2"]
+
+
+def test_publish_skips_conflict_scan_when_prior_output_unreadable(monkeypatch):
+    from contextlib import contextmanager
+    from src.core.saving import ingest_publication as publisher
+
+    events = []
+    order = []
+
+    @contextmanager
+    def gate(brain, root):
+        order.append("enter")
+        yield
+        order.append("exit")
+
+    def publish_unit(brain, root, replay):
+        if events:
+            return False
+        replay(
+            brain,
+            "op:1",
+            {
+                "adapter": "graph",
+                "method": "add_relationship",
+                "args": {
+                    "predicate": {"uuid": "fact-2"},
+                    "subject": {"uuid": "policy-2"},
+                },
+            },
+        )
+        events.append("replay")
+        return True
+
+    def prior_units(brain, root):
+        order.append("prior")
+        return [{"output_ref": "missing"}]
+
+    monkeypatch.setattr(publisher, "publish_next_unit", publish_unit)
+    monkeypatch.setattr(publisher, "replay_graph_operation", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        publisher.ingest_cancellation,
+        "_runs",
+        lambda brain: SimpleNamespace(find_one=lambda query: {"status": "publishing"}),
+    )
+    monkeypatch.setattr(
+        publisher.ingest_staging, "published_units_before_cursor", prior_units
+    )
+    monkeypatch.setattr(
+        publisher, "load_output", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("gone"))
+    )
+    monkeypatch.setattr(publisher, "finish_publication", lambda brain, root: {"status": "completed"})
+    monkeypatch.setattr(publisher, "discard_outputs", lambda brain, root: None)
+    monkeypatch.setattr(publisher.ingest_staging, "mark_cleanup_complete", lambda brain, root: None)
+    called = {}
+
+    def fake_detect(*args, **kwargs):
+        called["ran"] = True
+
+    monkeypatch.setattr("src.core.saving.conflicts.maybe_detect_after_ingest", fake_detect)
+    monkeypatch.setenv("CONFLICT_DETECT_ON_INGEST", "true")
+    with patch.object(publisher.logger, "exception") as logged:
+        finished = publisher.publish_staged_run(
+            "brain", "root", gate, Mock(), Mock(), Mock()
+        )
+    assert finished == {"status": "completed"}
+    assert "ran" not in called
+    assert order[:2] == ["enter", "prior"]
+    logged.assert_called()
+
+
+def test_publish_logs_conflict_detection_errors(monkeypatch):
+    from contextlib import contextmanager
+    from src.core.saving import ingest_publication as publisher
+
+    events = []
+
+    @contextmanager
+    def gate(brain, root):
+        yield
+
+    def publish_unit(brain, root, replay):
+        if events:
+            return False
+        replay(
+            brain,
+            "op:0",
+            {
+                "adapter": "graph",
+                "method": "add_relationship",
+                "args": {
+                    "predicate": {"uuid": "fact-1"},
+                    "subject": {"uuid": "policy-1"},
+                },
+            },
+        )
+        events.append("replay")
+        return True
+
+    monkeypatch.setattr(publisher, "publish_next_unit", publish_unit)
+    monkeypatch.setattr(publisher, "replay_graph_operation", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        publisher.ingest_cancellation,
+        "_runs",
+        lambda brain: SimpleNamespace(find_one=lambda query: {"status": "publishing"}),
+    )
+    monkeypatch.setattr(publisher, "finish_publication", lambda brain, root: {"status": "completed"})
+    monkeypatch.setattr(publisher, "discard_outputs", lambda brain, root: None)
+    monkeypatch.setattr(publisher.ingest_staging, "mark_cleanup_complete", lambda brain, root: None)
+    monkeypatch.setenv("CONFLICT_DETECT_ON_INGEST", "true")
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("detect failed")
+
+    monkeypatch.setattr(
+        "src.core.saving.conflicts.maybe_detect_after_ingest", boom
+    )
+    with patch.object(publisher.logger, "exception") as logged:
+        publisher.publish_staged_run("brain", "root", gate, Mock(), Mock(), Mock())
+    logged.assert_called_once()
+    assert "conflict detection after staged publish failed" in logged.call_args.args[0]
+
+
+def test_maybe_detect_skips_while_writes_are_staged(monkeypatch):
+    from src.core.saving.conflicts import maybe_detect_after_ingest
+    from src.core.saving.ingest_write_buffer import capture_writes
+
+    fake_tasks = Mock()
+    monkeypatch.setenv("CONFLICT_DETECT_ON_INGEST", "true")
+    monkeypatch.setattr(
+        "src.workers.tasks.conflicts.detect_conflicts_incremental",
+        fake_tasks,
+        raising=False,
+    )
+    with patch.dict("sys.modules", {"src.workers.tasks.conflicts": fake_tasks}):
+        with capture_writes("brain"):
+            maybe_detect_after_ingest("brain", ["fact-1"], subject_uuids=["policy-1"])
+    fake_tasks.detect_conflicts_incremental.apply_async.assert_not_called()
 
 
 def test_http_gate_spans_response_and_allows_task_polling(monkeypatch):

@@ -56,6 +56,7 @@ def flatten_neighborhood(
     limit: int,
     current_depth: int = 1,
     via_uuid: str | None = None,
+    include_rejected: bool = False,
 ) -> tuple[list[dict], bool]:
     hops: list[dict] = []
     truncated = False
@@ -67,6 +68,11 @@ def flatten_neighborhood(
         predicate = entry["predicate"]
         node = entry["node"]
 
+        if not include_rejected:
+            from src.core.verification.facts import entity_is_rejected
+
+            if entity_is_rejected(predicate) or entity_is_rejected(node):
+                continue
         if not _matches_rel_types(predicate, rel_types):
             continue
         if not _matches_node_labels(node, node_labels):
@@ -95,6 +101,7 @@ def flatten_neighborhood(
                 limit=limit - len(hops),
                 current_depth=current_depth + 1,
                 via_uuid=node_uuid,
+                include_rejected=include_rejected,
             )
             hops.extend(nested_hops)
             if nested_truncated:

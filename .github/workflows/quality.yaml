@@ -24,6 +24,18 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 12
+      pipeline-neo4j:
+        image: neo4j:5.26.16
+        env:
+          NEO4J_AUTH: neo4j/pipeline-test-only
+        ports:
+          - 7687:7687
+        options: >-
+          --health-cmd "cypher-shell -u neo4j -p pipeline-test-only 'RETURN 1'"
+          --health-interval 10s
+          --health-timeout 10s
+          --health-retries 20
+          --health-start-period 40s
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -42,6 +54,11 @@ jobs:
       - run: poetry run pytest -q
         env:
           PROGRESSIVE_POSTGRES_TEST_URI: postgresql://postgres:pipeline-test-only@localhost:5432/postgres
+          NEO4J_HOST: localhost
+          NEO4J_PORT: "7687"
+          NEO4J_USERNAME: neo4j
+          NEO4J_PASSWORD: pipeline-test-only
+          NEO4J_E2E_REQUIRED: "true"
       - name: Audit actual Python environment
         run: uvx pip-audit --path .venv/lib/python3.12/site-packages
 
@@ -55,6 +72,21 @@ jobs:
       - run: python -m venv benchmarks/.venv
       - run: benchmarks/.venv/bin/pip install -r benchmarks/requirements.txt pytest
       - run: benchmarks/.venv/bin/pytest -q benchmarks/locomo/test_sota_helpers.py benchmarks/beam/test_beam_helpers.py
+
+  eval-harness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m venv evals/.venv
+      - run: evals/.venv/bin/pip install -r evals/requirements.txt pytest
+      - run: evals/.venv/bin/pytest -q evals/tests
+        env:
+          PYTHONPATH: .
+          EVAL_EMBEDDING_PROVIDER: hash
+          EVAL_RERANKER: lexical
 
   frontend:
     runs-on: ubuntu-latest

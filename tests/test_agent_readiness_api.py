@@ -124,6 +124,32 @@ class StructuredErrorTests(unittest.TestCase):
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.json()["error"]["code"], "AUTH_INVALID")
 
+    def test_pat_store_failure_is_structured_service_unavailable(self):
+        app = FastAPI()
+        install_error_handlers(app)
+        app.add_middleware(BrainPATMiddleware)
+
+        @app.middleware("http")
+        async def inject_brain(request, call_next):
+            request.state.brain_id = "validbrain"
+            return await call_next(request)
+
+        @app.get("/protected")
+        async def protected():
+            return {"ok": True}
+
+        with patch.dict(os.environ, {"BRAINPAT_TOKEN": "system-token"}), patch(
+            "src.services.api.middlewares.auth.cache_adapter.get",
+            side_effect=ConnectionError("mongo secret"),
+        ):
+            response = TestClient(app).get(
+                "/protected",
+                headers={"BrainPAT": "user-token"},
+            )
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["error"]["code"], "SERVICE_UNAVAILABLE")
+        self.assertNotIn("mongo secret", response.text)
+
     def test_brain_middleware_validates_before_backing_store_access(self):
         app = FastAPI()
         install_error_handlers(app)
@@ -185,6 +211,10 @@ class PublicApiTests(unittest.TestCase):
         self.assertEqual(protected.status_code, 401)
         self.assertEqual(protected.json()["error"]["code"], "AUTH_INVALID")
         self.assertEqual(protected.headers["X-Request-ID"], "auth-check")
+
+        unknown = client.get("/this-route-does-not-exist")
+        self.assertEqual(unknown.status_code, 404)
+        self.assertEqual(unknown.json()["error"]["code"], "RESOURCE_NOT_FOUND")
 
     def test_demo_is_disabled_by_default(self):
         with patch.dict(os.environ, {"PUBLIC_DEMO_ENABLED": "false"}):
@@ -337,6 +367,23 @@ class OpenApiContractTests(unittest.TestCase):
         self.assertIn(
             "503",
             schema["paths"]["/ingest/url"]["post"]["responses"],
+        )
+        self.assertTrue(schema["servers"])
+        self.assertTrue(all(item.get("url") for item in schema["servers"]))
+        retrieve_params = schema["paths"]["/retrieve/context"]["post"].get(
+            "parameters", []
+        )
+        self.assertTrue(
+            any(
+                param.get("name") == "X-Brain-ID"
+                and param.get("in") == "header"
+                and param.get("required") is not True
+                for param in retrieve_params
+            )
+        )
+        health_params = schema["paths"]["/health"]["get"].get("parameters", [])
+        self.assertFalse(
+            any(param.get("name") == "X-Brain-ID" for param in health_params)
         )
 
         generic_refs = [

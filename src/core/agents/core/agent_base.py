@@ -1,7 +1,5 @@
-import os
 import warnings
 
-import langsmith
 from langchain.tools import BaseTool
 from langchain_core.language_models import BaseChatModel
 from pydantic import BaseModel
@@ -105,14 +103,4 @@ class AgentBase:
 
     def invoke(self, messages: MessagesDict, config: dict | None = None):
         config = config or {}
-        project_name = os.getenv("LANGSMITH_PROJECT", "brainapi")
-        tags = list(config.get("tags", [])) + ["agent_base"]
-        metadata = dict(config.get("metadata", {}))
-
-        with langsmith.tracing_context(
-            project_name=project_name,
-            enabled=True,
-            tags=tags,
-            metadata=metadata,
-        ):
-            return run_invoke_loop(self, messages.get("messages"), config)
+        return run_invoke_loop(self, messages.get("messages"), config)

@@ -106,7 +106,7 @@ class _BrainGraph:
                     incoming["description"] = incoming_desc
             elif existing_desc and not incoming_desc:
                 incoming["description"] = existing_desc
-        for list_key in ("source_chunk_ids", "aliases"):
+        for list_key in ("source_chunk_ids", "aliases", "ingest_task_ids"):
             if list_key in incoming or list_key in merged:
                 seen = []
                 for value in list(merged.get(list_key) or []) + list(
@@ -172,6 +172,20 @@ class PostgreSQLGraphStore:
     );
     CREATE INDEX IF NOT EXISTS idx_kg_relationships_endpoints
         ON kg_relationships(source_uuid, target_uuid);
+    CREATE INDEX IF NOT EXISTS idx_kg_relationships_valid_from
+        ON kg_relationships ((data->>'valid_from'));
+    CREATE INDEX IF NOT EXISTS idx_kg_relationships_valid_to
+        ON kg_relationships ((data->>'valid_to'));
+    CREATE INDEX IF NOT EXISTS idx_kg_relationships_recorded_at
+        ON kg_relationships ((data->>'recorded_at'));
+    CREATE INDEX IF NOT EXISTS idx_kg_relationships_valid_at
+        ON kg_relationships ((data->>'valid_at'));
+    CREATE INDEX IF NOT EXISTS idx_kg_relationships_inserted_at
+        ON kg_relationships ((data->>'inserted_at'));
+    CREATE INDEX IF NOT EXISTS idx_kg_relationships_invalid_at
+        ON kg_relationships ((data->>'invalid_at'));
+    CREATE INDEX IF NOT EXISTS idx_kg_relationships_superseded_at
+        ON kg_relationships ((data->>'superseded_at'));
     CREATE TABLE IF NOT EXISTS kg_hub_bridges (
         event_a TEXT NOT NULL,
         event_b TEXT NOT NULL,
@@ -596,10 +610,30 @@ class PostgreSQLGraphStore:
             raise GraphDatabaseError(str(exc)) from exc
         self._ensure_brain_schema(brain_id)
         with self._connection(brain_id) as conn:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute(f"SET LOCAL statement_timeout = {READ_QUERY_TIMEOUT_MS}")
-                cur.execute(sql)
-                rows = cur.fetchmany(max_rows + 1)
+            previous_autocommit = conn.autocommit
+            try:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                conn.autocommit = False
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    cur.execute("SET TRANSACTION READ ONLY")
+                    cur.execute(f"SET LOCAL statement_timeout = {READ_QUERY_TIMEOUT_MS}")
+                    cur.execute(sql)
+                    rows = cur.fetchmany(max_rows + 1)
+                conn.rollback()
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise
+            finally:
+                try:
+                    conn.autocommit = previous_autocommit
+                except Exception:
+                    pass
         truncated = len(rows) > max_rows
         if truncated:
             rows = rows[:max_rows]
@@ -752,34 +786,56 @@ class PostgreSQLGraphStore:
         is_relationship: bool,
         new_properties: dict[str, Any],
         properties_to_remove: list[str],
+        history_entry: object | None = None,
     ) -> Optional[dict]:
-        brain = self._load_brain(brain_id)
-        if is_relationship:
-            for source, target, key, data in brain.graph.edges(keys=True, data=True):
-                if data.get("uuid") != entity_uuid:
-                    continue
-                for prop, value in new_properties.items():
-                    data[prop] = value
-                for prop in properties_to_remove:
-                    data.pop(prop, None)
-                self._persist_relationship(
-                    brain_id, key, data.get("rel_type"), source, target, data
-                )
-                return {
-                    "rel_type": data.get("rel_type"),
-                    "rel_description": data.get("description"),
-                    "properties": dict(data),
-                }
-            return None
-        if entity_uuid not in brain.graph:
-            return None
-        data = brain.node_data(entity_uuid)
+        from src.core.verification.facts import serialize_history_entry
+
+        appended = serialize_history_entry(history_entry)
+        with self._brains_lock:
+            brain = self._ensure_brain_in_memory_locked(brain_id)
+            if is_relationship:
+                for source, target, key, data in brain.graph.edges(keys=True, data=True):
+                    if data.get("uuid") != entity_uuid and key != entity_uuid:
+                        continue
+                    self._apply_property_update(data, new_properties, properties_to_remove, appended)
+                    self._persist_relationship(
+                        brain_id, key, data.get("rel_type"), source, target, data
+                    )
+                    return {
+                        "rel_type": data.get("rel_type"),
+                        "rel_description": data.get("description"),
+                        "properties": dict(data),
+                    }
+                return None
+            if entity_uuid not in brain.graph:
+                return None
+            data = brain.graph.nodes[entity_uuid]
+            self._apply_property_update(data, new_properties, properties_to_remove, appended)
+            self._persist_node(brain_id, entity_uuid, dict(data))
+            return self.node_to_record(brain, entity_uuid)
+
+    def _apply_property_update(
+        self,
+        data: dict[str, Any],
+        new_properties: dict[str, Any],
+        properties_to_remove: list[str],
+        history_entry: str | None,
+    ) -> None:
         for prop, value in new_properties.items():
+            if prop == "verification_history" and history_entry:
+                continue
             data[prop] = value
         for prop in properties_to_remove:
             data.pop(prop, None)
-        self._persist_node(brain_id, entity_uuid, data)
-        return self.node_to_record(brain, entity_uuid)
+        if history_entry:
+            history = data.get("verification_history") or []
+            if isinstance(history, str):
+                history = [history] if history else []
+            elif not isinstance(history, list):
+                history = [history]
+            history = list(history)
+            history.append(history_entry)
+            data["verification_history"] = history
 
     def delete_nodes_by_uuids(self, brain_id: str, uuids: list[str]) -> list[dict]:
         brain = self._load_brain(brain_id)

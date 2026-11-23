@@ -1,0 +1,639 @@
+{
+  "fetched_at": "2026-11-16T20:09:21+00:00",
+  "n_xml": 90,
+  "n_changing_clauses": 317,
+  "n_docs": 825,
+  "n_candidate_questions": 373,
+  "fetch_log": [
+    {
+      "date": "2018-01-03",
+      "part": "13",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part13-2018-01-03.xml",
+      "n_sections": 45,
+      "sha256_16": "f84854c9c275ee9c"
+    },
+    {
+      "date": "2018-01-03",
+      "part": "15",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part15-2018-01-03.xml",
+      "n_sections": 75,
+      "sha256_16": "34d5d048660b9b24"
+    },
+    {
+      "date": "2018-01-03",
+      "part": "16",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part16-2018-01-03.xml",
+      "n_sections": 66,
+      "sha256_16": "3fa045a164d22b0e"
+    },
+    {
+      "date": "2018-01-03",
+      "part": "19",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part19-2018-01-03.xml",
+      "n_sections": 109,
+      "sha256_16": "7180caed29d09e59"
+    },
+    {
+      "date": "2018-01-03",
+      "part": "2",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part2-2018-01-03.xml",
+      "n_sections": 3,
+      "sha256_16": "cac2a1a3bb5a6ac1"
+    },
+    {
+      "date": "2018-01-03",
+      "part": "22",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part22-2018-01-03.xml",
+      "n_sections": 199,
+      "sha256_16": "f1f06120a4a1b016"
+    },
+    {
+      "date": "2018-01-03",
+      "part": "32",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part32-2018-01-03.xml",
+      "n_sections": 161,
+      "sha256_16": "5710f14b57e1d967"
+    },
+    {
+      "date": "2018-01-03",
+      "part": "36",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part36-2018-01-03.xml",
+      "n_sections": 77,
+      "sha256_16": "f12cbd3f3bee04f6"
+    },
+    {
+      "date": "2018-01-03",
+      "part": "4",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part4-2018-01-03.xml",
+      "n_sections": 95,
+      "sha256_16": "91c55428e852343e"
+    },
+    {
+      "date": "2018-01-03",
+      "part": "42",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part42-2018-01-03.xml",
+      "n_sections": 79,
+      "sha256_16": "c0b65e70ee68150b"
+    },
+    {
+      "date": "2019-01-03",
+      "part": "13",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part13-2019-01-03.xml",
+      "n_sections": 45,
+      "sha256_16": "03984df5de5b058e"
+    },
+    {
+      "date": "2019-01-03",
+      "part": "15",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part15-2019-01-03.xml",
+      "n_sections": 75,
+      "sha256_16": "34d5d048660b9b24"
+    },
+    {
+      "date": "2019-01-03",
+      "part": "16",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part16-2019-01-03.xml",
+      "n_sections": 66,
+      "sha256_16": "3ed8f3ccc45dd9f0"
+    },
+    {
+      "date": "2019-01-03",
+      "part": "19",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part19-2019-01-03.xml",
+      "n_sections": 109,
+      "sha256_16": "9e94de92bf28a033"
+    },
+    {
+      "date": "2019-01-03",
+      "part": "2",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part2-2019-01-03.xml",
+      "n_sections": 3,
+      "sha256_16": "bb99468078fd0c37"
+    },
+    {
+      "date": "2019-01-03",
+      "part": "22",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part22-2019-01-03.xml",
+      "n_sections": 199,
+      "sha256_16": "e41155d325ac680d"
+    },
+    {
+      "date": "2019-01-03",
+      "part": "32",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part32-2019-01-03.xml",
+      "n_sections": 161,
+      "sha256_16": "2cfffb2c84c053bc"
+    },
+    {
+      "date": "2019-01-03",
+      "part": "36",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part36-2019-01-03.xml",
+      "n_sections": 77,
+      "sha256_16": "56cb675a7b734aba"
+    },
+    {
+      "date": "2019-01-03",
+      "part": "4",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part4-2019-01-03.xml",
+      "n_sections": 99,
+      "sha256_16": "f81dc67da2e7a83b"
+    },
+    {
+      "date": "2019-01-03",
+      "part": "42",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part42-2019-01-03.xml",
+      "n_sections": 79,
+      "sha256_16": "c0b65e70ee68150b"
+    },
+    {
+      "date": "2020-01-02",
+      "part": "13",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part13-2020-01-02.xml",
+      "n_sections": 45,
+      "sha256_16": "987da03900c78148"
+    },
+    {
+      "date": "2020-01-02",
+      "part": "15",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part15-2020-01-02.xml",
+      "n_sections": 75,
+      "sha256_16": "f97b53a3d28b6945"
+    },
+    {
+      "date": "2020-01-02",
+      "part": "16",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part16-2020-01-02.xml",
+      "n_sections": 66,
+      "sha256_16": "2ca41371f24764ef"
+    },
+    {
+      "date": "2020-01-02",
+      "part": "19",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part19-2020-01-02.xml",
+      "n_sections": 109,
+      "sha256_16": "9392513656107614"
+    },
+    {
+      "date": "2020-01-02",
+      "part": "2",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part2-2020-01-02.xml",
+      "n_sections": 3,
+      "sha256_16": "3a941bf967d21576"
+    },
+    {
+      "date": "2020-01-02",
+      "part": "22",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part22-2020-01-02.xml",
+      "n_sections": 199,
+      "sha256_16": "526c7c74dc74a45d"
+    },
+    {
+      "date": "2020-01-02",
+      "part": "32",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part32-2020-01-02.xml",
+      "n_sections": 161,
+      "sha256_16": "2cfffb2c84c053bc"
+    },
+    {
+      "date": "2020-01-02",
+      "part": "36",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part36-2020-01-02.xml",
+      "n_sections": 77,
+      "sha256_16": "56cb675a7b734aba"
+    },
+    {
+      "date": "2020-01-02",
+      "part": "4",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part4-2020-01-02.xml",
+      "n_sections": 105,
+      "sha256_16": "9f26fc7e795c2f24"
+    },
+    {
+      "date": "2020-01-02",
+      "part": "42",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part42-2020-01-02.xml",
+      "n_sections": 79,
+      "sha256_16": "2d3bfed4904d19a7"
+    },
+    {
+      "date": "2021-01-04",
+      "part": "13",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part13-2021-01-04.xml",
+      "n_sections": 45,
+      "sha256_16": "ca4da527f5fd6188"
+    },
+    {
+      "date": "2021-01-04",
+      "part": "15",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part15-2021-01-04.xml",
+      "n_sections": 76,
+      "sha256_16": "4f98e517cce6cd8f"
+    },
+    {
+      "date": "2021-01-04",
+      "part": "16",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part16-2021-01-04.xml",
+      "n_sections": 66,
+      "sha256_16": "8967313338347d80"
+    },
+    {
+      "date": "2021-01-04",
+      "part": "19",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part19-2021-01-04.xml",
+      "n_sections": 114,
+      "sha256_16": "a19dc626d4d83b35"
+    },
+    {
+      "date": "2021-01-04",
+      "part": "2",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part2-2021-01-04.xml",
+      "n_sections": 3,
+      "sha256_16": "9ce1caf537ab2da0"
+    },
+    {
+      "date": "2021-01-04",
+      "part": "22",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part22-2021-01-04.xml",
+      "n_sections": 186,
+      "sha256_16": "38f8a79d61c0f40c"
+    },
+    {
+      "date": "2021-01-04",
+      "part": "32",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part32-2021-01-04.xml",
+      "n_sections": 161,
+      "sha256_16": "f599f67cda3e055f"
+    },
+    {
+      "date": "2021-01-04",
+      "part": "36",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part36-2021-01-04.xml",
+      "n_sections": 77,
+      "sha256_16": "3a97d0ac6f4cd060"
+    },
+    {
+      "date": "2021-01-04",
+      "part": "4",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part4-2021-01-04.xml",
+      "n_sections": 105,
+      "sha256_16": "96abf2904b040a5f"
+    },
+    {
+      "date": "2021-01-04",
+      "part": "42",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part42-2021-01-04.xml",
+      "n_sections": 79,
+      "sha256_16": "01e4ef16fdc88202"
+    },
+    {
+      "date": "2022-01-03",
+      "part": "13",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part13-2022-01-03.xml",
+      "n_sections": 45,
+      "sha256_16": "2dd10c19c358497b"
+    },
+    {
+      "date": "2022-01-03",
+      "part": "15",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part15-2022-01-03.xml",
+      "n_sections": 76,
+      "sha256_16": "5b29a72451aa413b"
+    },
+    {
+      "date": "2022-01-03",
+      "part": "16",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part16-2022-01-03.xml",
+      "n_sections": 66,
+      "sha256_16": "dea12708e8ea21b7"
+    },
+    {
+      "date": "2022-01-03",
+      "part": "19",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part19-2022-01-03.xml",
+      "n_sections": 110,
+      "sha256_16": "38c11fe93e118fda"
+    },
+    {
+      "date": "2022-01-03",
+      "part": "2",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part2-2022-01-03.xml",
+      "n_sections": 3,
+      "sha256_16": "0e16b176b67e3fff"
+    },
+    {
+      "date": "2022-01-03",
+      "part": "22",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part22-2022-01-03.xml",
+      "n_sections": 186,
+      "sha256_16": "e03a2b5c4b719518"
+    },
+    {
+      "date": "2022-01-03",
+      "part": "32",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part32-2022-01-03.xml",
+      "n_sections": 162,
+      "sha256_16": "d67a55f497606d7f"
+    },
+    {
+      "date": "2022-01-03",
+      "part": "36",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part36-2022-01-03.xml",
+      "n_sections": 77,
+      "sha256_16": "3a97d0ac6f4cd060"
+    },
+    {
+      "date": "2022-01-03",
+      "part": "4",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part4-2022-01-03.xml",
+      "n_sections": 105,
+      "sha256_16": "f3cb4faa5e372076"
+    },
+    {
+      "date": "2022-01-03",
+      "part": "42",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part42-2022-01-03.xml",
+      "n_sections": 79,
+      "sha256_16": "ab3c1e1e13821deb"
+    },
+    {
+      "date": "2023-01-03",
+      "part": "13",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part13-2023-01-03.xml",
+      "n_sections": 45,
+      "sha256_16": "5baae5932c3137d9"
+    },
+    {
+      "date": "2023-01-03",
+      "part": "15",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part15-2023-01-03.xml",
+      "n_sections": 76,
+      "sha256_16": "193fb29b89426797"
+    },
+    {
+      "date": "2023-01-03",
+      "part": "16",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part16-2023-01-03.xml",
+      "n_sections": 66,
+      "sha256_16": "f4cc0aa865eb86b0"
+    },
+    {
+      "date": "2023-01-03",
+      "part": "19",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part19-2023-01-03.xml",
+      "n_sections": 109,
+      "sha256_16": "51e048f90f1966e8"
+    },
+    {
+      "date": "2023-01-03",
+      "part": "2",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part2-2023-01-03.xml",
+      "n_sections": 3,
+      "sha256_16": "ca7b58bfe6b44a26"
+    },
+    {
+      "date": "2023-01-03",
+      "part": "22",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part22-2023-01-03.xml",
+      "n_sections": 186,
+      "sha256_16": "50123b745e89bcfe"
+    },
+    {
+      "date": "2023-01-03",
+      "part": "32",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part32-2023-01-03.xml",
+      "n_sections": 162,
+      "sha256_16": "5e1c19680d27a85a"
+    },
+    {
+      "date": "2023-01-03",
+      "part": "36",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part36-2023-01-03.xml",
+      "n_sections": 77,
+      "sha256_16": "01856d2a8322a5b0"
+    },
+    {
+      "date": "2023-01-03",
+      "part": "4",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part4-2023-01-03.xml",
+      "n_sections": 105,
+      "sha256_16": "0ec1f56ddaa40a3d"
+    },
+    {
+      "date": "2023-01-03",
+      "part": "42",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part42-2023-01-03.xml",
+      "n_sections": 79,
+      "sha256_16": "780b146263ab57c1"
+    },
+    {
+      "date": "2024-01-02",
+      "part": "13",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part13-2024-01-02.xml",
+      "n_sections": 45,
+      "sha256_16": "11e3de899aa0d13b"
+    },
+    {
+      "date": "2024-01-02",
+      "part": "15",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part15-2024-01-02.xml",
+      "n_sections": 76,
+      "sha256_16": "80020ec8c4e210a9"
+    },
+    {
+      "date": "2024-01-02",
+      "part": "16",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part16-2024-01-02.xml",
+      "n_sections": 66,
+      "sha256_16": "2d748378bec73866"
+    },
+    {
+      "date": "2024-01-02",
+      "part": "19",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part19-2024-01-02.xml",
+      "n_sections": 109,
+      "sha256_16": "b58f74434b9e0e4d"
+    },
+    {
+      "date": "2024-01-02",
+      "part": "2",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part2-2024-01-02.xml",
+      "n_sections": 3,
+      "sha256_16": "296df18da1a6b4b9"
+    },
+    {
+      "date": "2024-01-02",
+      "part": "22",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part22-2024-01-02.xml",
+      "n_sections": 186,
+      "sha256_16": "0fdd76f1bbac34d0"
+    },
+    {
+      "date": "2024-01-02",
+      "part": "32",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part32-2024-01-02.xml",
+      "n_sections": 163,
+      "sha256_16": "13bbfcc2c03223c5"
+    },
+    {
+      "date": "2024-01-02",
+      "part": "36",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part36-2024-01-02.xml",
+      "n_sections": 77,
+      "sha256_16": "7839323d5f2a3beb"
+    },
+    {
+      "date": "2024-01-02",
+      "part": "4",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part4-2024-01-02.xml",
+      "n_sections": 115,
+      "sha256_16": "bccb02a6f2086a69"
+    },
+    {
+      "date": "2024-01-02",
+      "part": "42",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part42-2024-01-02.xml",
+      "n_sections": 79,
+      "sha256_16": "70b910ba53d6724d"
+    },
+    {
+      "date": "2025-01-02",
+      "part": "13",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part13-2025-01-02.xml",
+      "n_sections": 45,
+      "sha256_16": "de0ecc67115f73e2"
+    },
+    {
+      "date": "2025-01-02",
+      "part": "15",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part15-2025-01-02.xml",
+      "n_sections": 76,
+      "sha256_16": "233351bbd4e9e787"
+    },
+    {
+      "date": "2025-01-02",
+      "part": "16",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part16-2025-01-02.xml",
+      "n_sections": 66,
+      "sha256_16": "90f3557ede76860e"
+    },
+    {
+      "date": "2025-01-02",
+      "part": "19",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part19-2025-01-02.xml",
+      "n_sections": 109,
+      "sha256_16": "520d014537fd1535"
+    },
+    {
+      "date": "2025-01-02",
+      "part": "2",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part2-2025-01-02.xml",
+      "n_sections": 3,
+      "sha256_16": "8955b41fd6b20d26"
+    },
+    {
+      "date": "2025-01-02",
+      "part": "22",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part22-2025-01-02.xml",
+      "n_sections": 186,
+      "sha256_16": "e930920300ffc2fc"
+    },
+    {
+      "date": "2025-01-02",
+      "part": "32",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part32-2025-01-02.xml",
+      "n_sections": 163,
+      "sha256_16": "13bbfcc2c03223c5"
+    },
+    {
+      "date": "2025-01-02",
+      "part": "36",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part36-2025-01-02.xml",
+      "n_sections": 77,
+      "sha256_16": "710df9e78db0e6de"
+    },
+    {
+      "date": "2025-01-02",
+      "part": "4",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part4-2025-01-02.xml",
+      "n_sections": 111,
+      "sha256_16": "afc00799b2ccb188"
+    },
+    {
+      "date": "2025-01-02",
+      "part": "42",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part42-2025-01-02.xml",
+      "n_sections": 79,
+      "sha256_16": "7fc141455cfbbb58"
+    },
+    {
+      "date": "2026-10-28",
+      "part": "13",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part13-2026-10-28.xml",
+      "n_sections": 45,
+      "sha256_16": "bb3a1fd29a0e56ab"
+    },
+    {
+      "date": "2026-10-28",
+      "part": "15",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part15-2026-10-28.xml",
+      "n_sections": 76,
+      "sha256_16": "9d187b342d8a1dd4"
+    },
+    {
+      "date": "2026-10-28",
+      "part": "16",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part16-2026-10-28.xml",
+      "n_sections": 66,
+      "sha256_16": "f8e2725d39bfb352"
+    },
+    {
+      "date": "2026-10-28",
+      "part": "19",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part19-2026-10-28.xml",
+      "n_sections": 109,
+      "sha256_16": "1f3b491fb34310b7"
+    },
+    {
+      "date": "2026-10-28",
+      "part": "2",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part2-2026-10-28.xml",
+      "n_sections": 3,
+      "sha256_16": "2c5e2b8c5490618c"
+    },
+    {
+      "date": "2026-10-28",
+      "part": "22",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part22-2026-10-28.xml",
+      "n_sections": 186,
+      "sha256_16": "8e237994c15dafdd"
+    },
+    {
+      "date": "2026-10-28",
+      "part": "32",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part32-2026-10-28.xml",
+      "n_sections": 163,
+      "sha256_16": "d50e88fdad42fdf7"
+    },
+    {
+      "date": "2026-10-28",
+      "part": "36",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part36-2026-10-28.xml",
+      "n_sections": 77,
+      "sha256_16": "df96a48d5f8e7cff"
+    },
+    {
+      "date": "2026-10-28",
+      "part": "4",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part4-2026-10-28.xml",
+      "n_sections": 111,
+      "sha256_16": "01d95f2b4ff935dd"
+    },
+    {
+      "date": "2026-10-28",
+      "part": "42",
+      "path": "/workspace/evals/datasets/.cache/far/title48-part42-2026-10-28.xml",
+      "n_sections": 79,
+      "sha256_16": "c99e1a11d2e3c058"
+    }
+  ]
+}

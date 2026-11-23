@@ -19,6 +19,7 @@ from starlette import status
 
 from src.services.api.console_static import is_console_path
 from src.services.api.errors import error_response
+from src.services.api.middlewares.routing import request_matches_registered_route
 from src.services.data.main import data_adapter
 from src.services.kg_agent.main import cache_adapter
 
@@ -58,6 +59,9 @@ class BrainMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         if request.url.path in self.brain_exempt_paths:
+            return await call_next(request)
+
+        if not request_matches_registered_route(request):
             return await call_next(request)
 
         brainpat = request.headers.get("BrainPAT")

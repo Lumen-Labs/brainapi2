@@ -8,11 +8,15 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
-from datetime import datetime, timezone
+from dataclasses import dataclass, field
+from datetime import datetime
+import json
+import logging
 import os
+import threading
 import time
 from typing import Any, Dict, List, Literal, Optional, Tuple, TypedDict
-from neo4j import GraphDatabase
+from neo4j import GraphDatabase, Query, READ_ACCESS, WRITE_ACCESS
 from neo4j.exceptions import ClientError
 from src.adapters.interfaces.embeddings import VectorStoreClient
 from src.adapters.interfaces.graph import GraphClient, PredicateWithFlowKey
@@ -27,8 +31,173 @@ from src.constants.kg import (
     SearchRelationshipsResult,
     Triple,
 )
+from src.lib.cypher_safety import (
+    MAX_RAW_QUERY_ROWS,
+    RAW_QUERY_TIMEOUT_SECONDS,
+    InvalidCypherIdentifier,
+    clean_label,
+    clean_property_key,
+    create_database_query,
+    optional_node_labels,
+    original_type_properties,
+    quote_identifier,
+    quote_rel_type,
+    quote_rel_types_pattern,
+    relationship_as_of_match_clause,
+    relationship_changed_in_window_clause,
+    require_database_name,
+    require_int,
+    require_limit,
+    require_path_depth,
+    static_property_key,
+    validate_raw_cypher,
+)
+
 from src.utils.logging import log
 from src.utils.serialization.data import always_dict
+
+logger = logging.getLogger(__name__)
+
+_VALIDITY_REL_INDEX_KEYS = (
+    "valid_from",
+    "valid_to",
+    "recorded_at",
+    "valid_at",
+    "inserted_at",
+    "invalid_at",
+    "superseded_at",
+)
+VALIDITY_INDEX_REFRESH_TTL_SECONDS = 60.0
+VALIDITY_INDEX_FAIL_BACKOFF_INITIAL_SECONDS = 30.0
+VALIDITY_INDEX_FAIL_BACKOFF_MAX_SECONDS = 600.0
+
+
+_PRED_KEY_KEEP = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+
+
+def normalized_predicate_cypher(source_expr: str) -> str:
+    """Cypher matching Python ``normalize_predicate`` for an arbitrary string.
+
+    APOC is not a required dependency (raw Cypher also rejects ``apoc.*``), so
+    this is an apoc-free reduce over characters: uppercase, map every
+    non-[A-Z0-9] character to ``_``, collapse repeats, strip edges.
+    """
+    src = f"toUpper(coalesce({source_expr}, ''))"
+    length = f"size({src})"
+    mapped = (
+        f"reduce(s = '', i IN range(0, {length} - 1) | "
+        f"s + CASE WHEN substring({src}, i, 1) =~ '[A-Z0-9]' "
+        f"THEN substring({src}, i, 1) ELSE '_' END)"
+    )
+    collapsed = (
+        f"reduce(t = {mapped}, i IN range(0, {length}) | replace(t, '__', '_'))"
+    )
+    return (
+        f"reduce(s = {collapsed}, j IN range(0, {length}) | "
+        "CASE WHEN s STARTS WITH '_' THEN substring(s, 1) "
+        "WHEN s ENDS WITH '_' THEN substring(s, 0, size(s) - 1) "
+        "ELSE s END)"
+    )
+
+
+def normalized_rel_type_cypher(rel_alias: str = "r") -> str:
+    """Cypher expression matching ``normalize_predicate`` for relationship types."""
+    return normalized_predicate_cypher(f"type({rel_alias})")
+
+
+def cypher_normalize_predicate(name: str | None) -> str:
+    """Python counterpart of ``normalized_predicate_cypher``.
+
+    Same steps as the Cypher reduce: uppercase, map non-[A-Z0-9] to ``_``,
+    collapse repeats, strip edges. Must match ``normalize_predicate``.
+    """
+    mapped = "".join(
+        ch if ch in _PRED_KEY_KEEP else "_" for ch in (name or "").upper()
+    )
+    collapsed = mapped
+    for _ in range(len(collapsed) + 1):
+        nxt = collapsed.replace("__", "_")
+        if nxt == collapsed:
+            break
+        collapsed = nxt
+    stripped = collapsed
+    for _ in range(len(stripped) + 1):
+        if stripped.startswith("_"):
+            stripped = stripped[1:]
+        elif stripped.endswith("_"):
+            stripped = stripped[:-1]
+        else:
+            break
+    return stripped
+
+
+def _validity_index_now() -> float:
+    return time.monotonic()
+
+
+@dataclass
+class _ValidityIndexState:
+    indexed: set[str] = field(default_factory=set)
+    pending: set[str] = field(default_factory=set)
+    failed_until: dict[str, float] = field(default_factory=dict)
+    failed_backoff: dict[str, float] = field(default_factory=dict)
+    logged_failures: set[str] = field(default_factory=set)
+    last_refresh: float = 0.0
+    stale: bool = True
+
+
+_validity_index_lock = threading.Lock()
+_VALIDITY_INDEX_CACHE: dict[str, _ValidityIndexState] = {}
+
+
+def reset_validity_index_cache() -> None:
+    """Drop process-level validity-index setup state. Tests only."""
+    with _validity_index_lock:
+        _VALIDITY_INDEX_CACHE.clear()
+
+
+def _validity_index_state(database: str) -> _ValidityIndexState:
+    state = _VALIDITY_INDEX_CACHE.get(database)
+    if state is None:
+        state = _ValidityIndexState()
+        _VALIDITY_INDEX_CACHE[database] = state
+    return state
+
+
+def _jsonable_neo4j_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _jsonable_neo4j_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable_neo4j_value(item) for item in value]
+    iso = getattr(value, "isoformat", None)
+    if callable(iso) and not isinstance(value, str):
+        try:
+            text = iso()
+        except TypeError:
+            return value
+        if isinstance(text, str):
+            return text.replace("+00:00", "Z") if text.endswith("+00:00") else text
+    return value
+
+
+def _is_homogeneous_neo4j_list(items: list) -> bool:
+    """True when every item is the same non-null Neo4j primitive type."""
+    if not items:
+        return True
+    kind = type(items[0])
+    if kind not in (bool, int, float, str):
+        return False
+    return all(type(item) is kind for item in items)
+
+
+class _RawQueryResult:
+    def __init__(self, records: list[Any], keys: list[str], truncated: bool):
+        self.records = records
+        self._keys = keys
+        self.truncated = truncated
+
+    def keys(self) -> list[str]:
+        return self._keys
 
 
 class Neo4jClient(GraphClient):
@@ -49,20 +218,51 @@ class Neo4jClient(GraphClient):
 
     def execute_operation(self, operation: str, brain_id: str) -> Any:
         """
-        Execute a Neo4j operation with database override.
+        Execute caller-supplied Cypher against the caller's brain database.
+
+        Default is a READ access-mode session with a timeout and result cap so
+        writes, DELETE, and admin procedures fail. GRAPH_RAW_WRITE_ENABLED=true
+        switches the session to WRITE while still confining the query to this
+        brain and rejecting USE / database admin / CALL dbms.*.
         """
-        db = brain_id
-        return self.driver.execute_query(operation, database_=db)
+        db = require_database_name(brain_id)
+        query_text = validate_raw_cypher(operation)
+        write_enabled = bool(getattr(config, "graph_raw_write_enabled", False))
+        access_mode = WRITE_ACCESS if write_enabled else READ_ACCESS
+        records: list[Any] = []
+        keys: list[str] = []
+        truncated = False
+        with self.driver.session(
+            database=db,
+            default_access_mode=access_mode,
+        ) as session:
+            result = session.run(
+                Query(query_text, timeout=RAW_QUERY_TIMEOUT_SECONDS)
+            )
+            keys = list(result.keys())
+            for index, record in enumerate(result):
+                if index >= MAX_RAW_QUERY_ROWS:
+                    truncated = True
+                    break
+                records.append(record)
+            consume = getattr(result, "consume", None)
+            if callable(consume):
+                consume()
+        if write_enabled:
+            self._mark_validity_indexes_stale(db)
+        return _RawQueryResult(records=records, keys=keys, truncated=truncated)
 
     def ensure_database(self, database: str) -> None:
         """
         Ensure a database exists.
         """
+        database = require_database_name(database)
         if self._verify_database_accessible(database):
+            self._ensure_validity_indexes(database)
             return
 
         try:
-            cypher_query = f"CREATE DATABASE {database}"
+            cypher_query = create_database_query(database)
             self.driver.execute_query(cypher_query, database_="system")
         except Exception as e:
             error_msg = str(e).lower()
@@ -79,6 +279,7 @@ class Neo4jClient(GraphClient):
         max_wait_retries = 30
         while retries < max_wait_retries:
             if self._verify_database_accessible(database):
+                self._ensure_validity_indexes(database)
                 return
             time.sleep(0.2)
             retries += 1
@@ -88,6 +289,168 @@ class Neo4jClient(GraphClient):
                 f"Database '{database}' could not be created or is not accessible. "
                 "If using Neo4j Community Edition, you can only use the default 'neo4j' database."
             )
+        self._ensure_validity_indexes(database)
+
+    def _relationship_types(self, database: str) -> list[str] | None:
+        try:
+            result = self.driver.execute_query(
+                "CALL db.relationshipTypes() YIELD relationshipType "
+                "RETURN relationshipType",
+                database_=database,
+            )
+        except Exception:
+            return None
+        names: list[str] = []
+        for record in getattr(result, "records", None) or []:
+            getter = getattr(record, "get", None)
+            name = getter("relationshipType") if callable(getter) else None
+            if name:
+                names.append(str(name))
+        return names
+
+    def _mark_validity_indexes_stale(self, database: str) -> None:
+        database = require_database_name(database)
+        with _validity_index_lock:
+            _validity_index_state(database).stale = True
+
+    def _note_written_relationship_type(self, database: str, rel_type: str) -> None:
+        database = require_database_name(database)
+        try:
+            name = clean_label(rel_type)
+        except InvalidCypherIdentifier:
+            return
+        now = _validity_index_now()
+        with _validity_index_lock:
+            state = _validity_index_state(database)
+            if name in state.indexed:
+                return
+            until = state.failed_until.get(name)
+            if until is not None and now < until:
+                return
+            state.pending.add(name)
+
+    def _ensure_validity_indexes(
+        self,
+        database: str,
+        *,
+        force: bool = False,
+        pending_only: bool = False,
+    ) -> None:
+        database = require_database_name(database)
+        now = _validity_index_now()
+        with _validity_index_lock:
+            state = _validity_index_state(database)
+            pending = set(state.pending)
+            retryable = {
+                rel_type
+                for rel_type, until in state.failed_until.items()
+                if now >= until
+            }
+            refresh_all = (not pending_only) and (
+                force
+                or state.stale
+                or state.last_refresh <= 0.0
+                or (now - state.last_refresh) >= VALIDITY_INDEX_REFRESH_TTL_SECONDS
+            )
+            if not refresh_all and not pending and not retryable:
+                return
+            if not refresh_all:
+                state.pending.clear()
+        types: set[str] = set(pending) | retryable
+        if refresh_all:
+            listed = self._relationship_types(database)
+            with _validity_index_lock:
+                state = _validity_index_state(database)
+                pending = set(state.pending)
+                state.pending.clear()
+                retryable = {
+                    rel_type
+                    for rel_type, until in state.failed_until.items()
+                    if _validity_index_now() >= until
+                }
+                if listed is None:
+                    state.stale = True
+                    types = pending | retryable
+                else:
+                    state.last_refresh = _validity_index_now()
+                    state.stale = False
+                    types = set(listed) | pending | retryable
+        if types:
+            self._create_validity_indexes_for_types(database, types)
+
+    def _record_validity_index_failure(
+        self, database: str, rel_type: str, error: BaseException
+    ) -> None:
+        now = _validity_index_now()
+        should_log = False
+        with _validity_index_lock:
+            state = _validity_index_state(database)
+            backoff = state.failed_backoff.get(
+                rel_type, VALIDITY_INDEX_FAIL_BACKOFF_INITIAL_SECONDS
+            )
+            state.failed_until[rel_type] = now + backoff
+            state.failed_backoff[rel_type] = min(
+                backoff * 2, VALIDITY_INDEX_FAIL_BACKOFF_MAX_SECONDS
+            )
+            if rel_type not in state.logged_failures:
+                state.logged_failures.add(rel_type)
+                should_log = True
+        if should_log:
+            logger.warning(
+                "validity range index setup failed database=%s relationship_type=%s error=%s",
+                database,
+                rel_type,
+                error,
+            )
+
+    def _create_validity_indexes_for_types(
+        self, database: str, rel_types: set[str]
+    ) -> None:
+        now = _validity_index_now()
+        work: list[tuple[str, str]] = []
+        with _validity_index_lock:
+            state = _validity_index_state(database)
+            for rel_type in rel_types:
+                if not rel_type or rel_type in state.indexed:
+                    continue
+                until = state.failed_until.get(rel_type)
+                if until is not None and now < until:
+                    continue
+                try:
+                    work.append((rel_type, quote_rel_type(rel_type)))
+                except InvalidCypherIdentifier:
+                    continue
+        for rel_type, quoted_type in work:
+            type_stem = clean_label(rel_type)[:80]
+            created = True
+            failure: BaseException | None = None
+            for key in _VALIDITY_REL_INDEX_KEYS:
+                name = quote_identifier("rel_" + type_stem + "_" + key)
+                prop = static_property_key(key)
+                query = (
+                    "CREATE RANGE INDEX "
+                    + name
+                    + " IF NOT EXISTS FOR ()-[r:"
+                    + quoted_type
+                    + "]-() ON (r."
+                    + prop
+                    + ")"
+                )
+                try:
+                    self.driver.execute_query(query, database_=database)
+                except Exception as exc:
+                    created = False
+                    failure = exc
+                    continue
+            if created:
+                with _validity_index_lock:
+                    state = _validity_index_state(database)
+                    state.indexed.add(rel_type)
+                    state.failed_until.pop(rel_type, None)
+                    state.failed_backoff.pop(rel_type, None)
+                continue
+            if failure is not None:
+                self._record_validity_index_failure(database, rel_type, failure)
 
     def clear_brain_data(self, brain_id: str) -> None:
         if not self._verify_database_accessible(brain_id):
@@ -101,6 +464,7 @@ class Neo4jClient(GraphClient):
         """
         Verify that a database is accessible by executing a simple query.
         """
+        database = require_database_name(database)
         try:
             self.driver.execute_query("RETURN 1 AS test", database_=database)
             return True
@@ -111,16 +475,24 @@ class Neo4jClient(GraphClient):
             raise
 
     def _execute_query_with_retry(
-        self, query: str, database: str, max_retries: int = 3, retry_delay: float = 0.1
+        self,
+        query: str,
+        database: str,
+        max_retries: int = 3,
+        retry_delay: float = 0.1,
+        parameters: Optional[dict] = None,
     ):
         """
         Execute a query with retry logic for DatabaseNotFound errors.
         Verifies database accessibility instead of using sleep.
         """
         last_exception = None
+        params = parameters or {}
         for attempt in range(max_retries):
             try:
-                return self.driver.execute_query(query, database_=database)
+                return self.driver.execute_query(
+                    query, parameters_=params, database_=database
+                )
             except ClientError as e:
                 error_code = getattr(e, "code", None)
                 if error_code == "Neo.ClientError.Database.DatabaseNotFound":
@@ -138,6 +510,26 @@ class Neo4jClient(GraphClient):
         if last_exception:
             raise last_exception
 
+    def _run_query(
+        self,
+        query: str,
+        brain_id: str,
+        parameters: Optional[dict] = None,
+        *,
+        retry: bool = False,
+        ensure: bool = True,
+    ):
+        if ensure:
+            self.ensure_database(brain_id)
+        else:
+            require_database_name(brain_id)
+        params = parameters or {}
+        if retry:
+            return self._execute_query_with_retry(query, brain_id, parameters=params)
+        return self.driver.execute_query(
+            query, parameters_=params, database_=brain_id
+        )
+
     @property
     def graphdb_type(self) -> str:
         """
@@ -151,63 +543,253 @@ class Neo4jClient(GraphClient):
         Get the description of the graph database.
         It is used to let the agent know which syntax to use.
         """
-        return "The graph database is Neo4j. Cyphter is the language used to operate with it."
+        return (
+            "The graph database is Neo4j. Cypher is the language used to operate with it. "
+            "Raw queries are read-only by default against the caller's brain database, "
+            "with a timeout and result-size cap. USE, CALL dbms.*, and database admin "
+            "are always rejected. Writes and DELETE are rejected unless "
+            "GRAPH_RAW_WRITE_ENABLED is on. Use structured graph tools to mutate the graph."
+        )
 
     def _clean_labels(self, labels: list[str]) -> list[str]:
         """
-        Clean a label to be used in a Cypher query.
+        Clean labels to be used in a Cypher query.
         """
-        return [
-            label.replace(" ", "_")
-            .upper()
-            .replace("-", "_")
-            .replace(".", "_")
-            .replace(",", "_")
-            .replace(":", "_")
-            .replace(";", "_")
-            .replace("(", "_")
-            .replace(")", "_")
-            .replace("[", "_")
-            .replace("]", "_")
-            .replace("{", "_")
-            .replace("}", "_")
-            .replace("'", "_")
-            for label in labels
-        ]
+        return [clean_label(label) for label in labels]
+
+    def _quoted_labels(self, labels: list[str]) -> str:
+        return ":".join(
+            quote_identifier(label, kind="label") for label in self._clean_labels(labels)
+        )
+
+    def _quoted_rel_type(self, name: str) -> str:
+        cleaned = self._clean_labels([name])[0]
+        return quote_identifier(cleaned, kind="relationship type")
 
     def _clean_property_key(self, property_key: str) -> str:
         """
         Clean a property key to be used in a Cypher query.
         """
-        words = property_key.split()
-        return words[0].lower() + "".join(word.capitalize() for word in words[1:])
+        return clean_property_key(property_key)
 
     def _format_property_key(self, property_key: str) -> str:
         """
         Format a property key for use in a Cypher query, including sanitization and quoting.
         """
-        sanitized_key = property_key.rstrip("`").lstrip("`")
-        needs_quoting = any(
-            char in sanitized_key
-            for char in ["-", " ", ".", "+", "*", "/", "%", ":", "@", "#", "$"]
-        )
-        cleaned_key = self._clean_property_key(sanitized_key)
-        return f"`{cleaned_key}`" if needs_quoting else cleaned_key
+        return quote_identifier(self._clean_property_key(property_key), kind="property key")
 
     def _format_value(self, value: Any) -> str:
-        """
-        Format a value for use in a Cypher query, including sanitization and quoting.
-        """
-        if isinstance(value, str):
-            v = value.replace("'", "\\'")
-            return f"'{v}'"
-        elif isinstance(value, (int, float, bool)):
+        """Deprecated: values must be passed as query parameters, not interpolated."""
+        raise RuntimeError(
+            "Cypher values must be passed as query parameters; do not interpolate them"
+        )
+
+    def _bind_property_value(self, value: Any) -> Any:
+        """Coerce a value to a Neo4j-storable property (no nested maps)."""
+        if value is None or isinstance(value, (bool, int, float, str)):
+            return value
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, (list, tuple)):
+            items = list(value)
+            if items and all(hasattr(item, "model_dump") for item in items):
+                return json.dumps(
+                    [item.model_dump(mode="json") for item in items],
+                    default=str,
+                )
+            if _is_homogeneous_neo4j_list(items):
+                return items
+            return json.dumps(items, default=str)
+        if hasattr(value, "model_dump"):
+            return json.dumps(value.model_dump(mode="json"), default=str)
+        if isinstance(value, dict):
+            return json.dumps(value, default=str)
+        try:
+            return json.dumps(value, default=str)
+        except TypeError:
             return str(value)
-        elif value is None:
-            return "null"
-        else:
-            v = str(value).replace("'", "\\'")
-            return f"'{v}'"
+
+    def _neo4j_property_value(self, value: Any) -> Any:
+        """Bind a property, storing datetimes as canonical ISO UTC strings."""
+        if isinstance(value, datetime):
+            from src.core.saving.validity import format_instant
+
+            return format_instant(value)
+        return self._bind_property_value(value)
+
+    def _relationship_property_primitives(
+        self, properties: Optional[dict]
+    ) -> dict[str, Any]:
+        from src.core.saving.validity import validity_props_from_mapping
+
+        props = dict(properties or {})
+        extra: dict[str, Any] = {}
+        extra.update(validity_props_from_mapping(props))
+        for key in (
+            "valid_at",
+            "invalid_at",
+            "source_timestamp",
+            "source_chunk_ids",
+            "v_id",
+            "deprecated",
+        ):
+            if props.get(key) not in (None, "", []) and key not in extra:
+                extra[key] = self._neo4j_property_value(props[key])
+        from src.core.verification.facts import is_reserved_verification_key
+
+        for key, value in props.items():
+            cleaned = self._clean_property_key(key)
+            if (
+                key in extra
+                or cleaned in extra
+                or key == "uuid"
+                or cleaned == "uuid"
+                or is_reserved_verification_key(key)
+                or is_reserved_verification_key(cleaned)
+                or value in (None, "", {}, [])
+            ):
+                continue
+            extra[cleaned] = self._neo4j_property_value(value)
+        return extra
+
+    def _python_value(self, value: Any) -> Any:
+        """Convert Neo4j driver values (temporals, maps) into Python objects."""
+        if value is None or isinstance(value, (bool, int, float, str, bytes)):
+            return value
+        to_native = getattr(value, "to_native", None)
+        if callable(to_native):
+            try:
+                value = to_native()
+            except Exception:
+                return str(value)
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, dict):
+            return {str(key): self._python_value(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [self._python_value(item) for item in value]
+        items = getattr(value, "items", None)
+        if callable(items):
+            try:
+                return {
+                    str(key): self._python_value(item) for key, item in items()
+                }
+            except Exception:
+                return str(value)
+        return value
+
+    def _python_properties(self, value: Any) -> dict:
+        if not value:
+            return {}
+        if isinstance(value, str):
+            value = always_dict(value)
+        coerced = self._python_value(value)
+        return coerced if isinstance(coerced, dict) else {}
+
+    def _python_datetime(
+        self, value: Any, *, default: datetime | None = None
+    ) -> datetime | None:
+        if value is None or value == "":
+            return default
+        coerced = self._python_value(value)
+        if isinstance(coerced, datetime):
+            return coerced
+        if isinstance(coerced, str):
+            try:
+                return datetime.fromisoformat(coerced.replace("Z", "+00:00"))
+            except ValueError:
+                return default
+        return default
+
+    def _decode_observations(self, value: Any) -> list | None:
+        if value is None:
+            return None
+        if value == "":
+            return []
+        coerced = self._python_value(value)
+        if isinstance(coerced, str):
+            try:
+                coerced = json.loads(coerced)
+            except Exception:
+                return None
+        if isinstance(coerced, list):
+            return coerced
+        return None
+
+    def _stored_happened_at(self, value: Any) -> str | None:
+        if value in (None, ""):
+            return None
+        parsed = self._python_datetime(value)
+        if parsed is None:
+            return None
+        return parsed.isoformat()
+
+    def _record_field(self, record: Any, key: str, default: Any = None) -> Any:
+        if record is None:
+            return default
+        getter = getattr(record, "get", None)
+        if callable(getter):
+            try:
+                return getter(key, default)
+            except TypeError:
+                try:
+                    value = getter(key)
+                except Exception:
+                    return default
+                return default if value is None else value
+            except Exception:
+                return default
+        if isinstance(record, dict):
+            return record.get(key, default)
+        return default
+
+    def _node_from_stored_fields(self, record: Any) -> Node:
+        properties = self._python_properties(
+            self._record_field(record, "properties") or {}
+        )
+        polarity = (
+            self._record_field(record, "polarity")
+            or properties.get("polarity")
+            or "neutral"
+        )
+        if polarity not in {"positive", "negative", "neutral"}:
+            polarity = "neutral"
+        kwargs: dict[str, Any] = {
+            "uuid": str(
+                self._record_field(record, "uuid") or properties.get("uuid") or ""
+            ),
+            "name": str(
+                self._record_field(record, "name") or properties.get("name") or ""
+            ),
+            "labels": list(self._record_field(record, "labels") or []),
+            "description": self._record_field(record, "description") or "",
+            "properties": properties,
+            "polarity": polarity,
+        }
+        observations = self._decode_observations(
+            self._record_field(record, "observations")
+        )
+        if observations is None and "observations" in properties:
+            observations = self._decode_observations(properties.get("observations"))
+        if observations is not None:
+            kwargs["observations"] = observations
+        metadata = self._record_field(record, "metadata")
+        if metadata not in (None, ""):
+            kwargs["metadata"] = self._python_properties(metadata)
+        elif properties.get("metadata") not in (None, ""):
+            kwargs["metadata"] = self._python_properties(properties.get("metadata"))
+        last_updated = self._record_field(record, "last_updated")
+        if last_updated not in (None, ""):
+            kwargs["last_updated"] = self._python_datetime(last_updated)
+        happened_at = self._stored_happened_at(
+            self._record_field(record, "happened_at")
+        )
+        if happened_at is not None:
+            kwargs["happened_at"] = happened_at
+        return Node(**kwargs)
+
+    def _node_from_stored(self, payload: Any) -> Node:
+        return self._node_from_stored_fields(payload)
 
     def add_nodes(
         self,
@@ -228,25 +810,47 @@ class Neo4jClient(GraphClient):
         Returns:
             list[Node]: A list of Node objects representing the added nodes. Each returned Node preserves the original node fields and has its metadata set to the merge of the node's own metadata and the provided `metadata`.
         """
+        from src.core.verification.facts import is_reserved_verification_key
+
         results = []
+        added_nodes: list[Node] = []
+        last_invalid: InvalidCypherIdentifier | None = None
         self.ensure_database(brain_id)
 
         for node in nodes:
             if not node.uuid:
                 raise ValueError("Node uuid is required for upsert")
 
+            try:
+                clean_label_names = [clean_label(label) for label in node.labels]
+                if not clean_label_names:
+                    raise InvalidCypherIdentifier(
+                        "At least one label is required",
+                        kind="label",
+                        value=node.labels,
+                    )
+            except InvalidCypherIdentifier as exc:
+                print(
+                    f"[!] Skipping node {node.uuid} with invalid labels {node.labels}: {exc}"
+                )
+                last_invalid = exc
+                continue
+
             merged_metadata = {**(metadata or {}), **(node.metadata or {})}
             all_properties = {
                 **(node.properties or {}),
+                **original_type_properties(node.labels),
                 "metadata": merged_metadata or None,
                 "name": node.name,
             }
 
+            identification_keys: set[str] = set()
             if identification_params:
                 for key, value in identification_params.items():
                     normalized_key = self._clean_property_key(key)
                     if normalized_key not in {"uuid", "name"}:
                         all_properties[normalized_key] = value
+                        identification_keys.add(normalized_key)
 
             attributes = [
                 "description",
@@ -263,55 +867,82 @@ class Neo4jClient(GraphClient):
                 if getattr(node, attr, None) is not None:
                     all_properties[attr] = getattr(node, attr)
 
-            property_assignments = []
+            regular_props: dict[str, Any] = {}
+            description_value = None
+            list_props: dict[str, Any] = {}
             for key, value in all_properties.items():
-                cypher_key = self._format_property_key(key)
-                escaped_value = self._format_value(value)
+                cleaned_key = (
+                    key if key in identification_keys else self._clean_property_key(key)
+                )
                 if key == "description":
-                    property_assignments.append(
-                        f"n.{cypher_key} = CASE "
-                        f"WHEN n.{cypher_key} IS NULL OR n.{cypher_key} = '' THEN {escaped_value} "
-                        f"WHEN {escaped_value} IS NULL OR {escaped_value} = '' THEN n.{cypher_key} "
-                        f"WHEN toLower(n.{cypher_key}) CONTAINS toLower({escaped_value}) THEN n.{cypher_key} "
-                        f"WHEN toLower({escaped_value}) CONTAINS toLower(n.{cypher_key}) THEN {escaped_value} "
-                        f"ELSE n.{cypher_key} + ' | ' + {escaped_value} END"
+                    description_value = value
+                elif key in {"source_chunk_ids", "aliases", "ingest_task_ids"}:
+                    list_props[static_property_key(key)] = self._bind_property_value(
+                        value
                     )
-                elif key in {"source_chunk_ids", "aliases"}:
-                    property_assignments.append(
-                        f"n.{cypher_key} = CASE "
-                        f"WHEN n.{cypher_key} IS NULL THEN {escaped_value} "
-                        f"WHEN {escaped_value} IS NULL THEN n.{cypher_key} "
-                        f"ELSE n.{cypher_key} + [x IN {escaped_value} WHERE NOT x IN n.{cypher_key}] END"
-                    )
+                elif (
+                    cleaned_key == "uuid"
+                    or is_reserved_verification_key(key)
+                    or is_reserved_verification_key(cleaned_key)
+                ):
+                    continue
                 else:
-                    property_assignments.append(f"n.{cypher_key} = {escaped_value}")
+                    regular_props[cleaned_key] = self._bind_property_value(value)
 
-            properties_set = f"{', '.join(property_assignments)}"
+            params: dict[str, Any] = {"uuid": node.uuid, "props": regular_props}
+            assignments = ["n += $props"]
+            if description_value is not None:
+                params["description"] = description_value
+                desc = static_property_key("description")
+                assignments.append(
+                    "n." + desc + " = CASE "
+                    "WHEN n." + desc + " IS NULL OR n." + desc + " = '' THEN $description "
+                    "WHEN $description IS NULL OR $description = '' THEN n." + desc + " "
+                    "WHEN toLower(n." + desc + ") CONTAINS toLower($description) THEN n." + desc + " "
+                    "WHEN toLower($description) CONTAINS toLower(n." + desc + ") THEN $description "
+                    "ELSE n." + desc + " + ' | ' + $description END"
+                )
+            for list_key, list_value in list_props.items():
+                params[list_key] = list_value
+                assignments.append(
+                    "n." + list_key + " = CASE "
+                    "WHEN n." + list_key + " IS NULL THEN $" + list_key + " "
+                    "WHEN $" + list_key + " IS NULL THEN n." + list_key + " "
+                    "ELSE n." + list_key + " + [x IN $" + list_key + " WHERE NOT x IN n." + list_key + "] END"
+                )
 
-            labels_expression = ":".join(self._clean_labels(node.labels))
-            cypher_query = f"""
-    MERGE (n:{labels_expression} {{uuid: {self._format_value(node.uuid)}}})
-    SET {properties_set}
-    RETURN n
-            """
+            labels_expression = self._quoted_labels(node.labels)
+            cypher_query = (
+                "MERGE (n:" + labels_expression + " {uuid: $uuid})\n"
+                "SET " + ", ".join(assignments) + "\n"
+                "RETURN n"
+            )
             try:
-                result = self._execute_query_with_retry(cypher_query, brain_id)
+                result = self._run_query(
+                    cypher_query, brain_id, params, retry=True, ensure=False
+                )
                 results.append(result)
             except Exception as e:
                 print(f"Error adding node: {e} - {cypher_query}")
                 raise
-
-        return [
-            Node(
-                uuid=node.uuid,
-                labels=node.labels,
-                name=node.name,
-                description=node.description,
-                properties=node.properties,
-                metadata={**(node.metadata or {}), **(metadata or {})},
+            stored_properties = {
+                **(node.properties or {}),
+                **original_type_properties(node.labels),
+            }
+            added_nodes.append(
+                Node(
+                    uuid=node.uuid,
+                    labels=node.labels,
+                    name=node.name,
+                    description=node.description,
+                    properties=stored_properties,
+                    metadata={**(node.metadata or {}), **(metadata or {})},
+                )
             )
-            for node in nodes
-        ]
+
+        if not added_nodes and last_invalid is not None:
+            raise last_invalid
+        return added_nodes
 
     def add_relationship(
         self,
@@ -332,7 +963,7 @@ class Neo4jClient(GraphClient):
                 brain_id (str): Database name to run the query against.
 
         Returns:
-                query_result: The raw result returned by the Neo4j driver for the executed Cypher query.
+                str: ``ok`` when the relationship was merged.
         """
 
         objects = [subject, to_object, predicate]
@@ -348,30 +979,52 @@ class Neo4jClient(GraphClient):
         if not subject.uuid or not to_object.uuid or not predicate.uuid:
             raise ValueError("Subject, object, and predicate uuids are required for upsert")
 
-        extra_ops = ""
+        extra_props: dict[str, Any] = {}
         for obj in objects:
             for attr in attributes:
                 value = getattr(obj, attr, None)
-                if value:
-                    extra_ops += f"""
-            SET r['{attr}'] = {self._format_value(value)}
-            """
+                if value is None or value == "":
+                    continue
+                if attr == "properties":
+                    continue
+                extra_props[static_property_key(attr)] = self._neo4j_property_value(
+                    value
+                )
+        extra_props.update(self._relationship_property_primitives(predicate.properties))
+        extra_props.pop("uuid", None)
+        from src.core.verification.facts import VERIFICATION_PROPERTY_FIELDS
 
-        rel_type = ":".join(self._clean_labels([predicate.name]))
-        cypher_query = f"""
-        MATCH (a) WHERE a['uuid'] = {self._format_value(subject.uuid)}
-        MATCH (b) WHERE b['uuid'] = {self._format_value(to_object.uuid)}
-        MERGE (a)-[r:{rel_type} {{uuid: {self._format_value(predicate.uuid)}}}]->(b)
-        SET r['description'] = {self._format_value(predicate.description)},
-            r['v_id'] = {self._format_value((predicate.properties or {}).get("v_id"))},
-            r['flow_key'] = {self._format_value(predicate.flow_key)}
-        {extra_ops}
-        RETURN a, b, r
-        """
+        for key in VERIFICATION_PROPERTY_FIELDS:
+            extra_props.pop(key, None)
 
-        self.ensure_database(brain_id)
-        result = self.driver.execute_query(cypher_query, database_=brain_id)
-        return result
+        rel_type = self._quoted_rel_type(predicate.name)
+        params = {
+            "subject_uuid": subject.uuid,
+            "object_uuid": to_object.uuid,
+            "predicate_uuid": predicate.uuid,
+            "description": predicate.description,
+            "v_id": (predicate.properties or {}).get("v_id"),
+            "flow_key": predicate.flow_key,
+            "extra_props": extra_props,
+        }
+        extra_set = "SET r += $extra_props" if extra_props else ""
+        cypher_query = (
+            "MATCH (a) WHERE a['uuid'] = $subject_uuid\n"
+            "MATCH (b) WHERE b['uuid'] = $object_uuid\n"
+            "MERGE (a)-[r:" + rel_type + " {uuid: $predicate_uuid}]->(b)\n"
+            "SET r['description'] = $description,\n"
+            "    r['v_id'] = $v_id,\n"
+            "    r['flow_key'] = $flow_key\n"
+            + extra_set
+            + "\nRETURN a, b, r"
+        )
+
+        result = self._run_query(cypher_query, brain_id, params)
+        if not getattr(result, "records", None):
+            raise ValueError("Relationship endpoints were not found")
+        self._note_written_relationship_type(brain_id, predicate.name)
+        self._ensure_validity_indexes(brain_id, pending_only=True)
+        return "ok"
 
     def search_graph(self, nodes: list[Node], brain_id: str) -> list[Node]:
         """
@@ -380,39 +1033,36 @@ class Neo4jClient(GraphClient):
         if not nodes:
             return []
 
-        queries = []
-        for node in nodes:
-            query = f"""MATCH (n:{":".join(self._clean_labels(node.labels))}) WHERE n['name'] = {self._format_value(node.name)}
-    OPTIONAL MATCH (n)-[r*1]-(m)
-    RETURN n, r, m"""
-            queries.append(query)
-
-        cypher_query = " UNION ".join(queries)
-        self.ensure_database(brain_id)
-        result = self.driver.execute_query(cypher_query, database_=brain_id)
+        payload = [
+            {"name": node.name, "labels": self._clean_labels(node.labels)}
+            for node in nodes
+        ]
+        cypher_query = (
+            "UNWIND $nodes AS node\n"
+            "MATCH (n)\n"
+            "WHERE n['name'] = node.name AND all(l IN node.labels WHERE l IN labels(n))\n"
+            "OPTIONAL MATCH (n)-[r*1]-(m)\n"
+            "RETURN n, r, m"
+        )
+        result = self._run_query(cypher_query, brain_id, {"nodes": payload})
         return result
 
     def node_text_search(self, text: str, brain_id: str) -> list[Node]:
         """
         Search the graph for nodes by partial text match into the name of the nodes.
         """
-        cypher_query = f"""
-        MATCH (n) 
-        WHERE toLower(n['name']) CONTAINS toLower({self._format_value(text)})
-        RETURN n
-        """
-        self.ensure_database(brain_id)
-        result = self.driver.execute_query(cypher_query, database_=brain_id)
-        return [
-            Node(
-                uuid=node.get("uuid", "") or "",
-                name=node.get("name", "") or "",
-                labels=node.get("labels", []) or [],
-                description=node.get("description", "") or "",
-                properties=node.get("properties", {}) or {},
-            )
-            for node in result.records
-        ]
+        cypher_query = (
+            "MATCH (n)\n"
+            "WHERE toLower(n['name']) CONTAINS toLower($text)\n"
+            "RETURN n['uuid'] as uuid, n['name'] as name, labels(n) as labels, "
+            "n['description'] as description,\n"
+            "properties(n) as properties,\n"
+            "n['polarity'] as polarity, n['happened_at'] as happened_at, "
+            "n['last_updated'] as last_updated,\n"
+            "n['observations'] as observations, n['metadata'] as metadata"
+        )
+        result = self._run_query(cypher_query, brain_id, {"text": text})
+        return [self._node_from_stored_fields(record) for record in result.records]
 
     def get_nodes_by_uuid(
         self,
@@ -426,39 +1076,47 @@ class Neo4jClient(GraphClient):
         """
         Get nodes by their UUIDs with optional relationships.
         """
-        cypher_query = f"""
-        MATCH (n) WHERE n['uuid'] IN ["{'","'.join(uuids)}"]
-        """
+        params: dict[str, Any] = {"uuids": list(uuids)}
+        cypher_query = "MATCH (n) WHERE n['uuid'] IN $uuids\n"
 
         if with_relationships:
+            depth = require_path_depth(relationships_depth or 1, name="relationships_depth")
             if relationships_type and len(relationships_type) > 0:
-                rel_pattern = "|".join([f"`{rt}`" for rt in relationships_type])
-                cypher_query += f"""
-                            OPTIONAL MATCH (n)-[r:{rel_pattern}*1..{relationships_depth}]-(m)
-                            """
+                rel_pattern = quote_rel_types_pattern(relationships_type)
+                cypher_query += (
+                    "OPTIONAL MATCH (n)-[r:"
+                    + rel_pattern
+                    + "*1.."
+                    + str(depth)
+                    + "]-(m)\n"
+                )
             else:
-                cypher_query += f"""
-                OPTIONAL MATCH (n)-[r*1..{relationships_depth}]-(m)
-                """
+                cypher_query += (
+                    "OPTIONAL MATCH (n)-[r*1.." + str(depth) + "]-(m)\n"
+                )
             if preferred_labels and len(preferred_labels) > 0:
-                cypher_query += f"""
-                WHERE any(lbl IN labels(m) WHERE lbl IN ["{'","'.join(self._clean_labels(preferred_labels))}"])
-                """
-            cypher_query += """
-            WITH n, r, m
-            WHERE r IS NOT NULL OR m IS NOT NULL
-            """
+                params["preferred_labels"] = self._clean_labels(preferred_labels)
+                cypher_query += (
+                    "WHERE any(lbl IN labels(m) WHERE lbl IN $preferred_labels)\n"
+                )
+            cypher_query += (
+                "WITH n, r, m\n"
+                "WHERE r IS NOT NULL OR m IS NOT NULL\n"
+            )
 
-        cypher_query += """
-        RETURN 
-            n['uuid'] as uuid, n['name'] as name, labels(n) as labels, n['description'] as description, properties(n) as properties
-        """
+        cypher_query += (
+            "RETURN\n"
+            "    n['uuid'] as uuid, n['name'] as name, labels(n) as labels, "
+            "n['description'] as description, properties(n) as properties"
+        )
 
         if with_relationships:
-            cypher_query += ", r, m['uuid'] as m_uuid, m['name'] as m_name, labels(m) as m_labels, m['description'] as m_description, properties(m) as m_properties"
+            cypher_query += (
+                ", r, m['uuid'] as m_uuid, m['name'] as m_name, labels(m) as m_labels, "
+                "m['description'] as m_description, properties(m) as m_properties"
+            )
 
-        self.ensure_database(brain_id)
-        result = self.driver.execute_query(cypher_query, database_=brain_id)
+        result = self._run_query(cypher_query, brain_id, params)
 
         if with_relationships:
             return [
@@ -468,7 +1126,7 @@ class Neo4jClient(GraphClient):
                         name=record["name"],
                         labels=record["labels"],
                         description=record["description"],
-                        properties=record["properties"],
+                        properties=self._python_properties(record["properties"]),
                     ),
                     "relationships": record["r"] if record["r"] else None,
                     "related_nodes": (
@@ -477,7 +1135,7 @@ class Neo4jClient(GraphClient):
                             name=record["m_name"],
                             labels=record["m_labels"],
                             description=record["m_description"],
-                            properties=record["m_properties"],
+                            properties=self._python_properties(record["m_properties"]),
                         )
                         if record["m_uuid"]
                         else None
@@ -492,7 +1150,7 @@ class Neo4jClient(GraphClient):
                     name=record["name"],
                     labels=record["labels"],
                     description=record["description"],
-                    properties=record["properties"],
+                    properties=self._python_properties(record["properties"]),
                 )
                 for record in result.records
             ]
@@ -547,13 +1205,7 @@ class Neo4jClient(GraphClient):
         )
         if not result.records or len(result.records) == 0:
             return None
-        return Node(
-            uuid=result.records[0].get("uuid", ""),
-            name=result.records[0].get("name", "") or "",
-            labels=result.records[0].get("labels", []) or [],
-            description=result.records[0].get("description", "") or "",
-            properties=result.records[0].get("properties", {}) or {},
-        )
+        return self._node_from_stored_fields(result.records[0])
 
     def get_by_uuids(self, uuids: list[str], brain_id: str) -> list[Node]:
         """
@@ -566,51 +1218,17 @@ class Neo4jClient(GraphClient):
         Returns:
             list[Node]: Nodes with identifiers, names, labels, descriptions, and properties; includes, when available, polarity, happened_at, last_updated, observations, and metadata.
         """
-        cypher_query = f"""
-        MATCH (n) WHERE n['uuid'] IN ["{'","'.join(uuids)}"]
-        RETURN n['uuid'] as uuid, n['name'] as name, labels(n) as labels, n['description'] as description,
-        properties(n) as properties,
-        n['polarity'] as polarity, n['happened_at'] as happened_at, n['last_updated'] as last_updated,
-        n['observations'] as observations, n['metadata'] as metadata
-        """
-        self.ensure_database(brain_id)
-        result = self.driver.execute_query(cypher_query, database_=brain_id)
-        return [
-            Node(
-                uuid=record.get("uuid", ""),
-                name=record.get("name", ""),
-                labels=record.get("labels", []),
-                description=record.get("description", ""),
-                properties=record.get("properties", {}),
-                polarity=record.get("polarity", "neutral"),
-                **(
-                    {"happened_at": record.get("happened_at", None)}
-                    if record.get("happened_at", None) is not None
-                    else {}
-                ),
-                **(
-                    {
-                        "last_updated": record.get(
-                            "last_updated", datetime.now(timezone.utc)
-                        )
-                    }
-                    if record.get("last_updated", datetime.now(timezone.utc))
-                    is not None
-                    else {}
-                ),
-                **(
-                    {"observations": record.get("observations", [])}
-                    if record.get("observations", []) is not None
-                    else {}
-                ),
-                **(
-                    {"metadata": record.get("metadata", {})}
-                    if record.get("metadata", {}) is not None
-                    else {}
-                ),
-            )
-            for record in result.records
-        ]
+        cypher_query = (
+            "MATCH (n) WHERE n['uuid'] IN $uuids\n"
+            "RETURN n['uuid'] as uuid, n['name'] as name, labels(n) as labels, "
+            "n['description'] as description,\n"
+            "properties(n) as properties,\n"
+            "n['polarity'] as polarity, n['happened_at'] as happened_at, "
+            "n['last_updated'] as last_updated,\n"
+            "n['observations'] as observations, n['metadata'] as metadata"
+        )
+        result = self._run_query(cypher_query, brain_id, {"uuids": list(uuids)})
+        return [self._node_from_stored_fields(record) for record in result.records]
 
     def get_by_identification_params(
         self,
@@ -635,39 +1253,36 @@ class Neo4jClient(GraphClient):
         )
 
         where_clauses = []
-        query_params = {}
+        query_params: dict[str, Any] = {}
 
         for idx, (key, value) in enumerate(params_dict.items()):
-            param_name = f"param_{idx}"
-            where_clauses.append(f"n.{self._format_property_key(key)} = ${param_name}")
-            query_params[param_name] = value
+            key_name = "key_" + str(idx)
+            value_name = "param_" + str(idx)
+            where_clauses.append("n[$" + key_name + "] = $" + value_name)
+            query_params[key_name] = self._clean_property_key(key)
+            query_params[value_name] = self._bind_property_value(value)
 
-        labels_str = (
-            (":" + ":".join(self._clean_labels(entity_types))) if entity_types else ""
-        )
+        if entity_types:
+            query_params["entity_types"] = self._clean_labels(entity_types)
+            where_clauses.append(
+                "ANY(lbl IN labels(n) WHERE lbl IN $entity_types)"
+            )
         where_str = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
 
-        cypher_query = f"""
-        MATCH (n{labels_str}) {where_str}
-        RETURN n['uuid'] as uuid, n['name'] as name, labels(n) as labels, n['description'] as description,
-        properties(n) as properties,
-        n['polarity'] as polarity, n['happened_at'] as happened_at, n['last_updated'] as last_updated,
-        n['observations'] as observations, n['metadata'] as metadata
-        """
-
-        self.ensure_database(brain_id)
-        result = self.driver.execute_query(
-            cypher_query, parameters_=query_params, database_=brain_id
+        cypher_query = (
+            "MATCH (n) " + where_str + "\n"
+            "RETURN n['uuid'] as uuid, n['name'] as name, labels(n) as labels, "
+            "n['description'] as description,\n"
+            "properties(n) as properties,\n"
+            "n['polarity'] as polarity, n['happened_at'] as happened_at, "
+            "n['last_updated'] as last_updated,\n"
+            "n['observations'] as observations, n['metadata'] as metadata"
         )
+
+        result = self._run_query(cypher_query, brain_id, query_params)
         if not result.records or len(result.records) == 0:
             return None
-        return Node(
-            uuid=result.records[0].get("uuid", ""),
-            name=result.records[0].get("name", "") or "",
-            labels=result.records[0].get("labels", []) or [],
-            description=result.records[0].get("description", "") or "",
-            properties=result.records[0].get("properties", {}) or {},
-        )
+        return self._node_from_stored_fields(result.records[0])
 
     def get_neighbors(
         self,
@@ -700,36 +1315,38 @@ class Neo4jClient(GraphClient):
         else:
             node_uuids = [node.uuid for node in nodes]
 
-        uuids_list = '", "'.join(node_uuids)
-        cypher_query = f"""
-        MATCH (n)-[r]-(c)
-        WHERE n['uuid'] IN ["{uuids_list}"]
-        """
+        params: dict[str, Any] = {"uuids": list(node_uuids)}
+        cypher_query = (
+            "MATCH (n)-[r]-(c)\n"
+            "WHERE n['uuid'] IN $uuids\n"
+        )
 
         if same_type_only:
             cypher_query += " AND size([l IN labels(n) WHERE l IN labels(c)]) > 0"
 
         if of_types:
-            cypher_query += (
-                " AND ANY(l IN labels(c) WHERE l IN ["
-                + ",".join(f"'{t}'" for t in self._clean_labels(of_types))
-                + "])"
-            )
+            params["of_types"] = self._clean_labels(of_types)
+            cypher_query += " AND ANY(l IN labels(c) WHERE l IN $of_types)"
 
-        cypher_query += """
-        RETURN n['uuid'] as uuid, n['name'] as name, labels(n) as labels, n['description'] as description,
-        properties(n) as properties,
-        n['polarity'] as polarity, n['happened_at'] as happened_at, n['last_updated'] as last_updated,
-        n['observations'] as observations, n['metadata'] as metadata, r AS rel,
-        CASE WHEN startNode(r) = n THEN 'out' ELSE 'in' END AS direction,
-        type(r) AS rel_type, r['description'] AS rel_description, properties(r) AS rel_properties, r['flow_key'] as rel_flowkey, r['uuid'] as rel_uuid,
-        c['uuid'] AS c_uuid, c['name'] AS c_name, labels(c) AS c_labels, c['description'] AS c_description, properties(c) AS c_properties
-        """
-        if limit:
-            cypher_query += f" LIMIT {limit}"
+        cypher_query += (
+            "\nRETURN n['uuid'] as uuid, n['name'] as name, labels(n) as labels, "
+            "n['description'] as description,\n"
+            "properties(n) as properties,\n"
+            "n['polarity'] as polarity, n['happened_at'] as happened_at, "
+            "n['last_updated'] as last_updated,\n"
+            "n['observations'] as observations, n['metadata'] as metadata, r AS rel,\n"
+            "CASE WHEN startNode(r) = n THEN 'out' ELSE 'in' END AS direction,\n"
+            "type(r) AS rel_type, r['description'] AS rel_description, "
+            "properties(r) AS rel_properties, r['flow_key'] as rel_flowkey, "
+            "r['uuid'] as rel_uuid,\n"
+            "c['uuid'] AS c_uuid, c['name'] AS c_name, labels(c) AS c_labels, "
+            "c['description'] AS c_description, properties(c) AS c_properties\n"
+        )
+        if limit is not None:
+            params["limit"] = require_limit(limit)
+            cypher_query += " LIMIT $limit"
 
-        self.ensure_database(brain_id)
-        result = self.driver.execute_query(cypher_query, database_=brain_id)
+        result = self._run_query(cypher_query, brain_id, params)
 
         neighbors_dict: Dict[str, List[Tuple[Predicate, Node]]] = {
             uuid: [] for uuid in node_uuids
@@ -742,7 +1359,7 @@ class Neo4jClient(GraphClient):
                     name=record.get("rel_type", "") or "",
                     description=record.get("rel_description", "") or "",
                     direction=record.get("direction", "neutral"),
-                    properties=record.get("rel_properties", {}) or {},
+                    properties=self._python_properties(record.get("rel_properties", {}) or {}),
                     flow_key=record.get("rel_flowkey", "") or "",
                     uuid=record.get("rel_uuid", "") or "",
                 ),
@@ -751,7 +1368,7 @@ class Neo4jClient(GraphClient):
                     name=record.get("c_name", "") or "",
                     labels=record.get("c_labels", []) or [],
                     description=record.get("c_description", "") or "",
-                    properties=record.get("c_properties", {}) or {},
+                    properties=self._python_properties(record.get("c_properties", {}) or {}),
                 ),
             )
             if source_uuid in neighbors_dict:
@@ -772,18 +1389,18 @@ class Neo4jClient(GraphClient):
         """
         Get the neighbor node tuples by their UUIDs.
         """
-        b_uuids_str = ",".join([f'"{nid}"' for nid in b_uuids])
-        cypher_query = f"""
-        MATCH (n)-[r]-(m)
-        WHERE n['uuid'] = '{a_uuid}' AND m['uuid'] IN [{b_uuids_str}]
-        RETURN
-            n['uuid'] as n_uuid, n['name'] as n_name, labels(n) as n_labels,
-            n['description'] as n_description, properties(n) as n_properties,
-            m['uuid'] as m_uuid, m['name'] as m_name, labels(m) as m_labels,
-            m['description'] as m_description, properties(m) as m_properties, r as rel
-        """
-        self.ensure_database(brain_id)
-        result = self.driver.execute_query(cypher_query, database_=brain_id)
+        cypher_query = (
+            "MATCH (n)-[r]-(m)\n"
+            "WHERE n['uuid'] = $a_uuid AND m['uuid'] IN $b_uuids\n"
+            "RETURN\n"
+            "    n['uuid'] as n_uuid, n['name'] as n_name, labels(n) as n_labels,\n"
+            "    n['description'] as n_description, properties(n) as n_properties,\n"
+            "    m['uuid'] as m_uuid, m['name'] as m_name, labels(m) as m_labels,\n"
+            "    m['description'] as m_description, properties(m) as m_properties, r as rel"
+        )
+        result = self._run_query(
+            cypher_query, brain_id, {"a_uuid": a_uuid, "b_uuids": list(b_uuids)}
+        )
 
         if not result.records:
             if os.getenv("DEBUG") == "true":
@@ -827,7 +1444,7 @@ class Neo4jClient(GraphClient):
                         name=record.get("n_name", "") or "",
                         labels=record.get("n_labels", []) or [],
                         description=record.get("n_description", "") or "",
-                        properties=record.get("n_properties", {}) or {},
+                        properties=self._python_properties(record.get("n_properties", {}) or {}),
                     ),
                     Predicate(
                         name=rel_type,
@@ -839,7 +1456,7 @@ class Neo4jClient(GraphClient):
                         name=record.get("m_name", "") or "",
                         labels=record.get("m_labels", []) or [],
                         description=record.get("m_description", "") or "",
-                        properties=record.get("m_properties", {}) or {},
+                        properties=self._python_properties(record.get("m_properties", {}) or {}),
                     ),
                 )
             )
@@ -857,28 +1474,30 @@ class Neo4jClient(GraphClient):
         """
         Get the connected nodes by their UUIDs.
         """
-        labels_str = ""
-        if with_labels:
-            labels_list = ",".join([f"'{label}'" for label in with_labels])
-            labels_str = f"AND ANY(l IN labels(m) WHERE l IN [{labels_list}])"
-        identification_str = ""
+        params: dict[str, Any] = {}
+        clauses = []
         if node:
-            identification_str = f"WHERE n['uuid'] = '{node.uuid}'"
+            params["node_uuid"] = node.uuid
+            clauses.append("n['uuid'] = $node_uuid")
         elif uuids:
-            uuids_str = ",".join([f'"{uuid}"' for uuid in uuids])
-            identification_str = f"WHERE n['uuid'] IN [{uuids_str}]"
-        cypher_query = f"""
-        MATCH (n)-[r]-(m)
-        {identification_str}
-        {labels_str}
-        RETURN
-            m['uuid'] as uuid, m['name'] as name, labels(m) as labels, m['description'] as description, properties(m) as properties,
-            r as rel, type(r) as rel_type, r['description'] as rel_description,
-            n['uuid'] as n_uuid, n['name'] as n_name, labels(n) as n_labels, n['description'] as n_description, properties(n) as n_properties,
-            CASE WHEN startNode(r) = n THEN 'out' ELSE 'in' END AS direction
-        """
-        self.ensure_database(brain_id)
-        result = self.driver.execute_query(cypher_query, database_=brain_id)
+            params["uuids"] = list(uuids)
+            clauses.append("n['uuid'] IN $uuids")
+        if with_labels:
+            params["with_labels"] = list(with_labels)
+            clauses.append("ANY(l IN labels(m) WHERE l IN $with_labels)")
+        where_str = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        cypher_query = (
+            "MATCH (n)-[r]-(m)\n"
+            + where_str
+            + "\nRETURN\n"
+            "    m['uuid'] as uuid, m['name'] as name, labels(m) as labels, "
+            "m['description'] as description, properties(m) as properties,\n"
+            "    r as rel, type(r) as rel_type, r['description'] as rel_description,\n"
+            "    n['uuid'] as n_uuid, n['name'] as n_name, labels(n) as n_labels, "
+            "n['description'] as n_description, properties(n) as n_properties,\n"
+            "    CASE WHEN startNode(r) = n THEN 'out' ELSE 'in' END AS direction"
+        )
+        result = self._run_query(cypher_query, brain_id, params)
         return [
             (
                 Node(
@@ -886,7 +1505,7 @@ class Neo4jClient(GraphClient):
                     name=record.get("name", "") or "",
                     labels=record.get("labels", []) or [],
                     description=record.get("description", "") or "",
-                    properties=record.get("properties", {}) or {},
+                    properties=self._python_properties(record.get("properties", {}) or {}),
                 ),
                 Predicate(
                     name=record.get("rel_type", "") or "",
@@ -898,7 +1517,7 @@ class Neo4jClient(GraphClient):
                     name=record.get("n_name", "") or "",
                     labels=record.get("n_labels", []) or [],
                     description=record.get("n_description", "") or "",
-                    properties=record.get("n_properties", {}) or {},
+                    properties=self._python_properties(record.get("n_properties", {}) or {}),
                 ),
             )
             for record in result.records
@@ -920,62 +1539,52 @@ class Neo4jClient(GraphClient):
         Search the relationships of the graph.
         """
         filters = []
+        params: dict[str, Any] = {
+            "skip": require_limit(skip, name="skip"),
+            "limit": require_limit(limit),
+        }
         if relationship_types:
-            filters.append(
-                "type(r) IN [" + ",".join(f"'{t}'" for t in relationship_types) + "]"
-            )
+            params["relationship_types"] = list(relationship_types)
+            filters.append("type(r) IN $relationship_types")
         if from_node_labels:
-            filters.append(
-                "ANY(lbl IN labels(n) WHERE lbl IN ["
-                + ",".join(
-                    f"'{label}'" for label in self._clean_labels(from_node_labels)
-                )
-                + "])"
-            )
+            params["from_node_labels"] = self._clean_labels(from_node_labels)
+            filters.append("ANY(lbl IN labels(n) WHERE lbl IN $from_node_labels)")
         if to_node_labels:
-            filters.append(
-                "ANY(lbl IN labels(m) WHERE lbl IN ["
-                + ",".join(f"'{label}'" for label in self._clean_labels(to_node_labels))
-                + "])"
-            )
+            params["to_node_labels"] = self._clean_labels(to_node_labels)
+            filters.append("ANY(lbl IN labels(m) WHERE lbl IN $to_node_labels)")
         if relationship_uuids:
-            filters.append(
-                "r['uuid'] IN [" + ",".join(f"'{u}'" for u in relationship_uuids) + "]"
-            )
+            params["relationship_uuids"] = list(relationship_uuids)
+            filters.append("r['uuid'] IN $relationship_uuids")
         if query_text:
+            params["query_text"] = query_text
             if query_search_target == "all":
                 filters.append(
-                    f"(toLower(coalesce(n['name'], n['name'], '')) CONTAINS toLower('{query_text}') OR "
-                    f"toLower(coalesce(m['name'], m['name'], '')) CONTAINS toLower('{query_text}') OR "
-                    f"toLower(coalesce(r['description'], r['description'], '')) CONTAINS toLower('{query_text}'))"
+                    "(toLower(coalesce(n['name'], n['name'], '')) CONTAINS toLower($query_text) OR "
+                    "toLower(coalesce(m['name'], m['name'], '')) CONTAINS toLower($query_text) OR "
+                    "toLower(coalesce(r['description'], r['description'], '')) CONTAINS toLower($query_text))"
                 )
             elif query_search_target == "node_name":
-                filters.append(f"toLower(n['name']) CONTAINS toLower('{query_text}')")
+                filters.append("toLower(n['name']) CONTAINS toLower($query_text)")
             elif query_search_target == "relationship_description":
-                filters.append(
-                    f"toLower(r['description']) CONTAINS toLower('{query_text}')"
-                )
+                filters.append("toLower(r['description']) CONTAINS toLower($query_text)")
             elif query_search_target == "relationship_name":
-                filters.append(f"toLower(r['name']) CONTAINS toLower('{query_text}')")
-        cypher_query = f"""
-        MATCH (n)-[r]->(m)
-        {"WHERE " + " AND ".join(filters) if filters else ""}
-        RETURN n['uuid'] AS n_uuid, n['name'] AS n_name, labels(n) AS n_labels,
-            n['description'] AS n_description, properties(n) AS n_properties,
-            r AS rel, type(r) AS rel_type, r['description'] AS rel_description,
-            m['uuid'] AS m_uuid, m['name'] AS m_name, labels(m) AS m_labels,
-            m['description'] AS m_description, properties(m) AS m_properties
-        SKIP {skip}
-        LIMIT {limit}
-        """
-        cypher_count = f"""
-        MATCH (n)-[r]-(m)
-        {"WHERE " + " AND ".join(filters) if filters else ""}
-        RETURN count(r) AS total
-        """
-        self.ensure_database(brain_id)
-        result = self.driver.execute_query(cypher_query, database_=brain_id)
-        count_result = self.driver.execute_query(cypher_count, database_=brain_id)
+                filters.append("toLower(r['name']) CONTAINS toLower($query_text)")
+        where_str = ("WHERE " + " AND ".join(filters)) if filters else ""
+        return_clause = (
+            "RETURN n['uuid'] AS n_uuid, n['name'] AS n_name, labels(n) AS n_labels,\n"
+            "    n['description'] AS n_description, properties(n) AS n_properties,\n"
+            "    r AS rel, type(r) AS rel_type, r['description'] AS rel_description,\n"
+            "    m['uuid'] AS m_uuid, m['name'] AS m_name, labels(m) AS m_labels,\n"
+            "    m['description'] AS m_description, properties(m) AS m_properties\n"
+            "SKIP $skip\n"
+            "LIMIT $limit"
+        )
+        cypher_query = "MATCH (n)-[r]->(m)\n" + where_str + "\n" + return_clause
+        cypher_count = (
+            "MATCH (n)-[r]->(m)\n" + where_str + "\nRETURN count(r) AS total"
+        )
+        result = self._run_query(cypher_query, brain_id, params)
+        count_result = self._run_query(cypher_count, brain_id, params, ensure=False)
         total = 0
         if count_result and count_result.records:
             total = count_result.records[0].get("total") or 0
@@ -985,9 +1594,9 @@ class Neo4jClient(GraphClient):
             relationship = record.get("rel")
             if relationship is None:
                 continue
-            subject_properties = dict(record.get("n_properties") or {})
-            object_properties = dict(record.get("m_properties") or {})
-            relationship_properties = dict(relationship)
+            subject_properties = self._python_properties(record.get("n_properties"))
+            object_properties = self._python_properties(record.get("m_properties"))
+            relationship_properties = self._python_properties(relationship)
             subject_uuid = record.get("n_uuid") or subject_properties.get("uuid")
             object_uuid = record.get("m_uuid") or object_properties.get("uuid")
             subject_name = (
@@ -1046,9 +1655,11 @@ class Neo4jClient(GraphClient):
                         properties=subject_properties,
                     ),
                     predicate=Predicate(
+                        uuid=str(relationship_properties.get("uuid") or ""),
                         name=str(relationship_type),
                         description=relationship_description or "",
                         direction=direction,
+                        properties=relationship_properties,
                         observations=None,
                         level=None,
                         deprecated=relationship_properties.get("deprecated", False),
@@ -1064,6 +1675,129 @@ class Neo4jClient(GraphClient):
             )
         return SearchRelationshipsResult(results=triples, total=total)
 
+    def list_validity_relationships(
+        self,
+        brain_id: str,
+        skip: int = 0,
+        limit: int = 100,
+        since: str | None = None,
+        until: str | None = None,
+        subject_uuids: list[str] | None = None,
+        relationship_uuids: list[str] | None = None,
+        after_subject_uuid: str | None = None,
+        after_predicate: str | None = None,
+        after_relationship_uuid: str | None = None,
+    ) -> tuple[list[tuple[Node, Predicate, Node]], int]:
+        params: dict[str, Any] = {
+            "skip": require_int(skip, name="skip", minimum=0, maximum=10_000_000),
+            "limit": require_limit(limit),
+        }
+        filters: list[str] = []
+        if since and until:
+            filters.append(relationship_changed_in_window_clause("r"))
+            params["since"] = since
+            params["until"] = until
+        if subject_uuids:
+            params["subject_uuids"] = list(subject_uuids)
+            filters.append("n['uuid'] IN $subject_uuids")
+        if relationship_uuids:
+            params["relationship_uuids"] = list(relationship_uuids)
+            filters.append("r['uuid'] IN $relationship_uuids")
+        count_filters = list(filters)
+        pred_key = normalized_rel_type_cypher("r")
+        cursor_filters: list[str] = []
+        if after_subject_uuid or after_predicate or after_relationship_uuid:
+            from src.core.saving.conflicts import normalize_predicate
+
+            params["after_subject_uuid"] = after_subject_uuid or ""
+            params["after_predicate"] = normalize_predicate(after_predicate or "")
+            filters.append("n['uuid'] >= $after_subject_uuid")
+            if after_relationship_uuid:
+                params["after_relationship_uuid"] = after_relationship_uuid
+                cursor_filters.append(
+                    "(n['uuid'] > $after_subject_uuid OR "
+                    "(n['uuid'] = $after_subject_uuid AND pred_key > $after_predicate) OR "
+                    "(n['uuid'] = $after_subject_uuid AND pred_key = $after_predicate "
+                    "AND r['uuid'] > $after_relationship_uuid))"
+                )
+            else:
+                cursor_filters.append(
+                    "(n['uuid'] > $after_subject_uuid OR "
+                    "(n['uuid'] = $after_subject_uuid AND pred_key > $after_predicate))"
+                )
+        where_str = ("WHERE " + " AND ".join(filters) + "\n") if filters else ""
+        cursor_where = (
+            ("WHERE " + " AND ".join(cursor_filters) + "\n") if cursor_filters else ""
+        )
+        count_where = (
+            ("WHERE " + " AND ".join(count_filters) + "\n") if count_filters else ""
+        )
+        cypher_query = (
+            "MATCH (n)-[r]->(m)\n"
+            + where_str
+            + "WITH n, r, m, "
+            + pred_key
+            + " AS pred_key\n"
+            + cursor_where
+            + "RETURN n['uuid'] AS n_uuid, n['name'] AS n_name, labels(n) AS n_labels,\n"
+            "    n['description'] AS n_description, properties(n) AS n_properties,\n"
+            "    type(r) AS rel_type, r['description'] AS rel_description,\n"
+            "    properties(r) AS rel_properties, r['uuid'] AS rel_uuid,\n"
+            "    m['uuid'] AS m_uuid, m['name'] AS m_name, labels(m) AS m_labels,\n"
+            "    m['description'] AS m_description, properties(m) AS m_properties\n"
+            "ORDER BY n['uuid'], pred_key, r['uuid'], elementId(r)\n"
+            "SKIP $skip LIMIT $limit"
+        )
+        count_query = (
+            "MATCH (n)-[r]->(m)\n" + count_where + "RETURN count(r) AS total"
+        )
+        count_params = {
+            key: value
+            for key, value in params.items()
+            if key
+            not in {
+                "after_subject_uuid",
+                "after_predicate",
+                "after_relationship_uuid",
+            }
+        }
+        result = self._run_query(cypher_query, brain_id, params)
+        count_result = self._run_query(
+            count_query, brain_id, count_params, ensure=False
+        )
+        total = 0
+        if count_result and count_result.records:
+            total = count_result.records[0].get("total") or 0
+        triples: list[tuple[Node, Predicate, Node]] = []
+        for record in result.records:
+            rel_props = self._python_properties(record.get("rel_properties"))
+            triples.append(
+                (
+                    Node(
+                        uuid=str(record.get("n_uuid") or ""),
+                        name=str(record.get("n_name") or ""),
+                        labels=list(record.get("n_labels") or []),
+                        description=record.get("n_description") or "",
+                        properties=self._python_properties(record.get("n_properties")),
+                    ),
+                    Predicate(
+                        uuid=str(record.get("rel_uuid") or rel_props.get("uuid") or ""),
+                        name=str(record.get("rel_type") or ""),
+                        description=record.get("rel_description") or "",
+                        properties=rel_props,
+                        deprecated=rel_props.get("deprecated", False),
+                    ),
+                    Node(
+                        uuid=str(record.get("m_uuid") or ""),
+                        name=str(record.get("m_name") or ""),
+                        labels=list(record.get("m_labels") or []),
+                        description=record.get("m_description") or "",
+                        properties=self._python_properties(record.get("m_properties")),
+                    ),
+                )
+            )
+        return triples, int(total)
+
     def search_entities(
         self,
         brain_id: str,
@@ -1077,38 +1811,39 @@ class Neo4jClient(GraphClient):
         Search the entities of the graph.
         """
         filters = []
+        params: dict[str, Any] = {
+            "skip": require_limit(skip, name="skip"),
+            "limit": require_limit(limit),
+        }
         if node_labels:
-            filters.append(
-                "ANY(lbl IN labels(n) WHERE lbl IN ["
-                + ",".join(f"'{label}'" for label in self._clean_labels(node_labels))
-                + "])"
-            )
+            params["node_labels"] = self._clean_labels(node_labels)
+            filters.append("ANY(lbl IN labels(n) WHERE lbl IN $node_labels)")
         if node_uuids:
-            filters.append(
-                f"n['uuid'] IN [{','.join(self._format_value(u) for u in node_uuids)}]"
-            )
+            params["node_uuids"] = list(node_uuids)
+            filters.append("n['uuid'] IN $node_uuids")
         if query_text:
+            params["query_text"] = query_text
             filters.append(
-                f"(toLower(coalesce(n['name'], n['name'], '')) CONTAINS toLower({self._format_value(query_text)}))"
+                "(toLower(coalesce(n['name'], n['name'], '')) CONTAINS toLower($query_text))"
             )
-        cypher_query = f"""
-        MATCH (n)
-        {"WHERE " + " AND ".join(filters) if filters else ""}
-        RETURN n['uuid'] as uuid, n['name'] as name, labels(n) as labels, n['description'] as description,
-        properties(n) as properties,
-        n['polarity'] as polarity, n['happened_at'] as happened_at, n['last_updated'] as last_updated,
-        n['observations'] as observations, n['metadata'] as metadata
-        SKIP {skip}
-        LIMIT {limit}
-        """
-        cypher_count = f"""
-        MATCH (n)
-        {"WHERE " + " AND ".join(filters) if filters else ""}
-        RETURN count(n) AS total
-        """
-        self.ensure_database(brain_id)
-        result = self._execute_query_with_retry(cypher_query, brain_id)
-        count_result = self._execute_query_with_retry(cypher_count, brain_id)
+        where_str = ("WHERE " + " AND ".join(filters)) if filters else ""
+        cypher_query = (
+            "MATCH (n)\n"
+            + where_str
+            + "\nRETURN n['uuid'] as uuid, n['name'] as name, labels(n) as labels, "
+            "n['description'] as description,\n"
+            "properties(n) as properties,\n"
+            "n['polarity'] as polarity, n['happened_at'] as happened_at, "
+            "n['last_updated'] as last_updated,\n"
+            "n['observations'] as observations, n['metadata'] as metadata\n"
+            "SKIP $skip\n"
+            "LIMIT $limit"
+        )
+        cypher_count = "MATCH (n)\n" + where_str + "\nRETURN count(n) AS total"
+        result = self._run_query(cypher_query, brain_id, params, retry=True)
+        count_result = self._run_query(
+            cypher_count, brain_id, params, retry=True, ensure=False
+        )
         total = 0
         if count_result and count_result.records:
             total = count_result.records[0].get("total") or 0
@@ -1129,7 +1864,9 @@ class Neo4jClient(GraphClient):
             )
             uuid = record.get("uuid") or properties_record.get("uuid") or name
             labels = record.get("labels") or properties_record.get("labels") or []
-            properties = dict(properties_record)
+            properties = _jsonable_neo4j_value(
+                self._python_properties(properties_record)
+            )
             nodes.append(
                 Node(
                     uuid=str(uuid),
@@ -1151,17 +1888,34 @@ class Neo4jClient(GraphClient):
         """
         Deprecate a relationship from the graph.
         """
-        cypher_query = f"""
-        MATCH (a:{":".join(self._clean_labels(subject.labels))}) WHERE a['name'] = '{subject.name}'
-        MATCH (b:{":".join(self._clean_labels(object.labels))}) WHERE b['name'] = '{object.name}'
-        MATCH (a)-[r:{":".join(self._clean_labels([predicate.name]))}]->(b)
-        SET r['deprecated'] = true
-        RETURN a['uuid'] as a_uuid, a['name'] as a_name, labels(a) as a_labels, a['description'] as a_description, properties(a) as a_properties,
-            b['uuid'] as b_uuid, b['name'] as b_name, labels(b) as b_labels, b['description'] as b_description, properties(b) as b_properties,
-            r['uuid'] as r_uuid, type(r) as r_type, r['description'] as r_description, properties(r) as r_properties
-        """
-        self.ensure_database(brain_id)
-        result = self.driver.execute_query(cypher_query, database_=brain_id)
+        subject_labels = self._quoted_labels(subject.labels)
+        object_labels = self._quoted_labels(object.labels)
+        rel_type = self._quoted_rel_type(predicate.name)
+        cypher_query = (
+            "MATCH (a:" + subject_labels + ") WHERE a['name'] = $subject_name\n"
+            "MATCH (b:" + object_labels + ") WHERE b['name'] = $object_name\n"
+            "MATCH (a)-[r:" + rel_type + "]->(b)\n"
+            "SET r['deprecated'] = true,\n"
+            "    r['valid_to'] = coalesce(r['valid_to'], $closed_at),\n"
+            "    r['invalid_at'] = coalesce(r['invalid_at'], $closed_at)\n"
+            "RETURN a['uuid'] as a_uuid, a['name'] as a_name, labels(a) as a_labels, "
+            "a['description'] as a_description, properties(a) as a_properties,\n"
+            "    b['uuid'] as b_uuid, b['name'] as b_name, labels(b) as b_labels, "
+            "b['description'] as b_description, properties(b) as b_properties,\n"
+            "    r['uuid'] as r_uuid, type(r) as r_type, r['description'] as r_description, "
+            "properties(r) as r_properties"
+        )
+        from src.core.saving.validity import format_instant, utc_now
+
+        result = self._run_query(
+            cypher_query,
+            brain_id,
+            {
+                "subject_name": subject.name,
+                "object_name": object.name,
+                "closed_at": format_instant(utc_now()),
+            },
+        )
         if result.records:
             return (
                 Node(
@@ -1169,7 +1923,7 @@ class Neo4jClient(GraphClient):
                     name=result.records[0].get("a_name", "") or "",
                     labels=result.records[0].get("a_labels", []) or [],
                     description=result.records[0].get("a_description", "") or "",
-                    properties=result.records[0].get("a_properties", {}) or {},
+                    properties=self._python_properties(result.records[0].get("a_properties", {}) or {}),
                 ),
                 Predicate(
                     name=result.records[0].get("r_type", "") or "",
@@ -1181,7 +1935,7 @@ class Neo4jClient(GraphClient):
                     name=result.records[0].get("b_name", "") or "",
                     labels=result.records[0].get("b_labels", []) or [],
                     description=result.records[0].get("b_description", "") or "",
-                    properties=result.records[0].get("b_properties", {}) or {},
+                    properties=self._python_properties(result.records[0].get("b_properties", {}) or {}),
                 ),
             )
         return None
@@ -1210,49 +1964,44 @@ class Neo4jClient(GraphClient):
             Node | Predicate | None: A `Node` when a node was updated, a `Predicate` when a relationship was updated, or `None` if no matching entity was found.
         """
 
-        property_set_operations = []
-        for property, value in new_properties.items():
-            cypher_key = self._format_property_key(property)
-            key_str = cypher_key.strip("`")
-            formatted_value = self._format_value(value)
-            property_set_operations.append(f"t['{key_str}'] = {formatted_value}")
+        params: dict[str, Any] = {"uuid": uuid}
+        set_parts = []
+        for idx, (property_name, value) in enumerate(new_properties.items()):
+            key_name = "set_key_" + str(idx)
+            value_name = "set_val_" + str(idx)
+            params[key_name] = self._clean_property_key(property_name)
+            params[value_name] = self._bind_property_value(value)
+            set_parts.append("t[$" + key_name + "] = $" + value_name)
 
-        property_remove_operations = []
-        for property in properties_to_remove:
-            cypher_key = self._format_property_key(property)
-            key_str = cypher_key.strip("`")
-            property_remove_operations.append(f"t['{key_str}']")
+        remove_parts = []
+        for idx, property_name in enumerate(properties_to_remove):
+            key_name = "rm_key_" + str(idx)
+            params[key_name] = self._clean_property_key(property_name)
+            remove_parts.append("t[$" + key_name + "] = null")
 
-        properties_set_op = (
-            f"SET {', '.join(property_set_operations)}"
-            if property_set_operations
-            else ""
-        )
-        properties_remove_op = (
-            f"REMOVE {', '.join(property_remove_operations)}"
-            if property_remove_operations
-            else ""
-        )
+        properties_set_op = ("SET " + ", ".join(set_parts)) if set_parts else ""
+        properties_remove_op = ("SET " + ", ".join(remove_parts)) if remove_parts else ""
 
         if updating == "node":
-            cypher_query = f"""
-            MATCH (t) WHERE t['uuid'] = $uuid
-            {properties_set_op}
-            {properties_remove_op}
-            RETURN t['uuid'] as uuid, t['name'] as name, labels(t) as labels, t['description'] as description, properties(t) as properties
-            """
+            cypher_query = (
+                "MATCH (t) WHERE t['uuid'] = $uuid\n"
+                + properties_set_op
+                + "\n"
+                + properties_remove_op
+                + "\nRETURN t['uuid'] as uuid, t['name'] as name, labels(t) as labels, "
+                "t['description'] as description, properties(t) as properties"
+            )
         elif updating == "relationship":
-            cypher_query = f"""
-            MATCH ()-[t]->() WHERE t['uuid'] = $uuid
-            {properties_set_op}
-            {properties_remove_op}
-            RETURN t, type(t) AS rel_type, t['description'] AS rel_description, properties(t) as properties
-            """
+            cypher_query = (
+                "MATCH ()-[t]->() WHERE t['uuid'] = $uuid\n"
+                + properties_set_op
+                + "\n"
+                + properties_remove_op
+                + "\nRETURN t, type(t) AS rel_type, t['description'] AS rel_description, "
+                "properties(t) as properties"
+            )
 
-        self.ensure_database(brain_id)
-        result = self.driver.execute_query(
-            cypher_query, parameters_={"uuid": uuid}, database_=brain_id
-        )
+        result = self._run_query(cypher_query, brain_id, params)
 
         if result.records:
             if updating == "node":
@@ -1261,7 +2010,7 @@ class Neo4jClient(GraphClient):
                     name=result.records[0].get("name", "") or "",
                     labels=result.records[0].get("labels", []) or [],
                     description=result.records[0].get("description", "") or "",
-                    properties=result.records[0].get("properties", {}) or {},
+                    properties=self._python_properties(result.records[0].get("properties", {}) or {}),
                 )
             elif updating == "relationship":
                 return Predicate(
@@ -1352,6 +2101,7 @@ class Neo4jClient(GraphClient):
             Node or None: The updated Node when the update succeeds, the existing Node if no changes were requested, or `None` if the node does not exist or no update occurred.
         """
         operations = []
+        params: dict[str, Any] = {"uuid": uuid}
 
         existing_node = None
         if new_properties:
@@ -1360,73 +2110,72 @@ class Neo4jClient(GraphClient):
                 return None
 
         if new_name:
-            operations.append(f"n['name'] = {self._format_value(new_name)}")
+            params["new_name"] = new_name
+            operations.append("n['name'] = $new_name")
 
         if new_description:
-            operations.append(
-                f"n['description'] = {self._format_value(new_description)}"
-            )
+            params["new_description"] = new_description
+            operations.append("n['description'] = $new_description")
 
+        property_items = []
         if new_properties and existing_node:
             existing_properties = existing_node.properties or {}
-
             for property_key, new_value in new_properties.items():
                 existing_value = existing_properties.get(property_key)
-
                 if (
                     property_key not in existing_properties
                     or existing_value != new_value
                 ):
-                    key_str = self._clean_property_key(property_key)
-                    formatted_value = self._format_value(new_value)
-                    operations.append(f"n['{key_str}'] = {formatted_value}")
+                    property_items.append((property_key, new_value))
         elif new_properties:
-            for property_key, value in new_properties.items():
-                key_str = self._clean_property_key(property_key)
-                formatted_value = self._format_value(value)
-                operations.append(f"n['{key_str}'] = {formatted_value}")
+            property_items = list(new_properties.items())
 
-        set_clause = f"SET {', '.join(operations)}" if operations else ""
+        for idx, (property_key, new_value) in enumerate(property_items):
+            key_name = "prop_key_" + str(idx)
+            value_name = "prop_val_" + str(idx)
+            params[key_name] = self._clean_property_key(property_key)
+            params[value_name] = self._bind_property_value(new_value)
+            operations.append("n[$" + key_name + "] = $" + value_name)
+
+        set_clause = ("SET " + ", ".join(operations)) if operations else ""
 
         remove_clause = ""
         if properties_to_remove:
-            remove_operations = [
-                f"n['{self._clean_property_key(prop)}']"
-                for prop in properties_to_remove
-            ]
-            remove_clause = f"REMOVE {', '.join(remove_operations)}"
+            remove_parts = []
+            for idx, prop in enumerate(properties_to_remove):
+                key_name = "rm_key_" + str(idx)
+                params[key_name] = self._clean_property_key(prop)
+                remove_parts.append("n[$" + key_name + "] = null")
+            remove_clause = "SET " + ", ".join(remove_parts)
 
         labels_clause = ""
         if new_labels:
-            cleaned_labels = self._clean_labels(new_labels)
+            cleaned_labels = self._quoted_labels(new_labels)
             node_for_labels = existing_node
             if not node_for_labels:
                 node_for_labels = self.get_by_uuid(uuid, brain_id)
             if node_for_labels:
                 current_labels = node_for_labels.labels or []
                 if current_labels:
-                    cleaned_current = self._clean_labels(current_labels)
-                    remove_labels = ":".join(cleaned_current)
-                    labels_clause = f"REMOVE n:{remove_labels}\n"
-            labels_clause += f"SET n:{':'.join(cleaned_labels)}"
+                    labels_clause = "REMOVE n:" + self._quoted_labels(current_labels) + "\n"
+            labels_clause += "SET n:" + cleaned_labels
 
         if not set_clause and not remove_clause and not labels_clause:
             return existing_node if existing_node else self.get_by_uuid(uuid, brain_id)
 
-        cypher_query = f"""
-        MATCH (n)
-        WHERE n['uuid'] = $uuid
-        {set_clause}
-        {remove_clause}
-        {labels_clause}
-        RETURN n['uuid'] as uuid, n['name'] as name, labels(n) as labels,
-            n['description'] as description, properties(n) as properties
-        """
-
-        self.ensure_database(brain_id)
-        result = self.driver.execute_query(
-            cypher_query, parameters_={"uuid": uuid}, database_=brain_id
+        cypher_query = (
+            "MATCH (n)\n"
+            "WHERE n['uuid'] = $uuid\n"
+            + set_clause
+            + "\n"
+            + remove_clause
+            + "\n"
+            + labels_clause
+            + "\nRETURN n['uuid'] as uuid, n['name'] as name, labels(n) as labels,\n"
+            "    n['description'] as description, properties(n) as properties"
         )
+
+        result = self._run_query(cypher_query, brain_id, params)
 
         if result.records:
             return Node(
@@ -1434,7 +2183,7 @@ class Neo4jClient(GraphClient):
                 name=result.records[0].get("name", "") or "",
                 labels=result.records[0].get("labels", []) or [],
                 description=result.records[0].get("description", "") or "",
-                properties=result.records[0].get("properties", {}) or {},
+                properties=self._python_properties(result.records[0].get("properties", {}) or {}),
             )
 
         return None
@@ -1523,15 +2272,14 @@ class Neo4jClient(GraphClient):
         Returns:
             bool: True if a node matching the UUID, name, and labels exists, False otherwise.
         """
-        cypher_query = f"""
-        MATCH (n:{":".join(self._clean_labels(labels))})
-        WHERE n['name'] = $name
-        AND n['uuid'] = $uuid
-        RETURN n
-        """
-        self.ensure_database(brain_id)
-        result = self.driver.execute_query(
-            cypher_query, parameters_={"uuid": uuid, "name": name}, database_=brain_id
+        cypher_query = (
+            "MATCH (n:" + self._quoted_labels(labels) + ")\n"
+            "WHERE n['name'] = $name\n"
+            "AND n['uuid'] = $uuid\n"
+            "RETURN n"
+        )
+        result = self._run_query(
+            cypher_query, brain_id, {"uuid": uuid, "name": name}
         )
         return len(result.records) > 0
 
@@ -1625,23 +2373,23 @@ class Neo4jClient(GraphClient):
                 name=record.get("m_name", "") or "",
                 labels=record.get("m_labels", []) or [],
                 description=record.get("m_description", "") or "",
-                properties=always_dict(record.get("m_properties", {})),
+                properties=self._python_properties(record.get("m_properties", {})),
                 polarity=record.get("m_polarity", "neutral"),
-                metadata=always_dict(record.get("m_metadata", {})),
+                metadata=self._python_properties(record.get("m_metadata", {})),
                 happened_at=record.get("m_happened_at", "") or "",
-                last_updated=record.get("m_last_updated", "") or "",
-                observations=record.get("m_observations", []) or [],
+                last_updated=self._python_datetime(record.get("m_last_updated")),
+                observations=self._decode_observations(record.get("m_observations")),
             )
 
             predicate = Predicate(
                 name=record.get("rel_type", "") or "",
                 description=record.get("rel_description", "") or "",
                 direction=record.get("direction", "neutral"),
-                properties=always_dict(record.get("rel_properties", {})),
+                properties=self._python_properties(record.get("rel_properties", {})),
                 flow_key=record.get("rel_flowkey", "") or "",
                 uuid=record.get("rel_uuid", "") or "",
-                last_updated=record.get("rel_last_updated", "") or "",
-                observations=record.get("rel_observations", []) or [],
+                last_updated=self._python_datetime(record.get("rel_last_updated")),
+                observations=self._decode_observations(record.get("rel_observations")),
                 amount=record.get("rel_amount"),
             )
 
@@ -1663,6 +2411,7 @@ class Neo4jClient(GraphClient):
         self,
         nodes: list[Node | str],
         brain_id: str,
+        as_of: str | None = None,
     ) -> List[Tuple[Node, Predicate, Node, Predicate, Node]]:
         """
         Retrieve the event-centric neighbors of a node.
@@ -1673,28 +2422,34 @@ class Neo4jClient(GraphClient):
             node_uuids = nodes
         else:
             node_uuids = [node.uuid for node in nodes]
-        uuids_list = '", "'.join(node_uuids)
-        cypher_query = f"""
-        MATCH (n)-[r]-(m)-[r2]-(b)
-        WHERE n['uuid'] IN ["{uuids_list}"]
-        AND r2['flow_key'] = r['flow_key']
-        AND type(r) <> 'HUB_BRIDGE'
-        AND type(r2) <> 'HUB_BRIDGE'
-        RETURN
-            n['uuid'] as n_uuid, n['name'] as n_name, labels(n) as n_labels, n['description'] as n_description, properties(n) as n_properties, n['polarity'] as n_polarity, n['metadata'] as n_metadata, n['happened_at'] as n_happened_at, n['last_updated'] as n_last_updated, n['observations'] as n_observations,
-            r['uuid'] as r_uuid, type(r) as r_type, r['description'] as r_description, properties(r) as r_properties, r['flow_key'] as r_flow_key, r['last_updated'] as r_last_updated, r['observations'] as r_observations, r['amount'] as r_amount,
-            CASE WHEN startNode(r) = n THEN 'out' ELSE 'in' END AS r_direction,
-            m['uuid'] as m_uuid, m['name'] as m_name, labels(m) as m_labels, m['description'] as m_description, properties(m) as m_properties, m['polarity'] as m_polarity, m['metadata'] as m_metadata, m['happened_at'] as m_happened_at, m['last_updated'] as m_last_updated, m['observations'] as m_observations,
-            r2['uuid'] as r2_uuid, type(r2) as r2_type, r2['description'] as r2_description, properties(r2) as r2_properties, r2['flow_key'] as r2_flow_key, r2['last_updated'] as r2_last_updated, r2['observations'] as r2_observations, r2['amount'] as r2_amount,
-            CASE WHEN startNode(r2) = m THEN 'out' ELSE 'in' END AS r2_direction,
-            b['uuid'] as b_uuid, b['name'] as b_name, labels(b) as b_labels, b['description'] as b_description, properties(b) as b_properties, b['polarity'] as b_polarity, b['metadata'] as b_metadata, b['happened_at'] as b_happened_at, b['last_updated'] as b_last_updated, b['observations'] as b_observations
-        """
-        self.ensure_database(brain_id)
-        result = self.driver.execute_query(
-            cypher_query,
-            parameters_={"node_uuids": node_uuids},
-            database_=brain_id,
+        params: dict[str, Any] = {"node_uuids": list(node_uuids)}
+        as_of_filter = ""
+        if as_of:
+            params["as_of"] = as_of
+            as_of_filter = (
+                "AND "
+                + relationship_as_of_match_clause("r")
+                + "\nAND "
+                + relationship_as_of_match_clause("r2")
+                + "\n"
+            )
+        cypher_query = (
+            "MATCH (n)-[r]-(m)-[r2]-(b)\n"
+            "WHERE n['uuid'] IN $node_uuids\n"
+            "AND r2['flow_key'] = r['flow_key']\n"
+            "AND type(r) <> 'HUB_BRIDGE'\n"
+            "AND type(r2) <> 'HUB_BRIDGE'\n"
+            + as_of_filter
+            + "RETURN\n"
+            "    n['uuid'] as n_uuid, n['name'] as n_name, labels(n) as n_labels, n['description'] as n_description, properties(n) as n_properties, n['polarity'] as n_polarity, n['metadata'] as n_metadata, n['happened_at'] as n_happened_at, n['last_updated'] as n_last_updated, n['observations'] as n_observations,\n"
+            "    r['uuid'] as r_uuid, type(r) as r_type, r['description'] as r_description, properties(r) as r_properties, r['flow_key'] as r_flow_key, r['last_updated'] as r_last_updated, r['observations'] as r_observations, r['amount'] as r_amount,\n"
+            "    CASE WHEN startNode(r) = n THEN 'out' ELSE 'in' END AS r_direction,\n"
+            "    m['uuid'] as m_uuid, m['name'] as m_name, labels(m) as m_labels, m['description'] as m_description, properties(m) as m_properties, m['polarity'] as m_polarity, m['metadata'] as m_metadata, m['happened_at'] as m_happened_at, m['last_updated'] as m_last_updated, m['observations'] as m_observations,\n"
+            "    r2['uuid'] as r2_uuid, type(r2) as r2_type, r2['description'] as r2_description, properties(r2) as r2_properties, r2['flow_key'] as r2_flow_key, r2['last_updated'] as r2_last_updated, r2['observations'] as r2_observations, r2['amount'] as r2_amount,\n"
+            "    CASE WHEN startNode(r2) = m THEN 'out' ELSE 'in' END AS r2_direction,\n"
+            "    b['uuid'] as b_uuid, b['name'] as b_name, labels(b) as b_labels, b['description'] as b_description, properties(b) as b_properties, b['polarity'] as b_polarity, b['metadata'] as b_metadata, b['happened_at'] as b_happened_at, b['last_updated'] as b_last_updated, b['observations'] as b_observations"
         )
+        result = self._run_query(cypher_query, brain_id, params)
         return [
             (
                 Node(
@@ -1702,22 +2457,22 @@ class Neo4jClient(GraphClient):
                     name=record.get("n_name", "") or "",
                     labels=record.get("n_labels", []) or [],
                     description=record.get("n_description", "") or "",
-                    properties=always_dict(record.get("n_properties", {})),
+                    properties=self._python_properties(record.get("n_properties", {})),
                     polarity=record.get("n_polarity", "neutral"),
-                    metadata=always_dict(record.get("n_metadata", {})),
+                    metadata=self._python_properties(record.get("n_metadata", {})),
                     happened_at=record.get("n_happened_at", "") or "",
-                    last_updated=record.get("n_last_updated", "") or "",
-                    observations=record.get("n_observations", []) or [],
+                    last_updated=self._python_datetime(record.get("n_last_updated")),
+                    observations=self._decode_observations(record.get("n_observations")),
                 ),
                 Predicate(
                     uuid=record.get("r_uuid", "") or "",
                     name=record.get("r_type", "") or "",
                     description=record.get("r_description", "") or "",
                     direction=record.get("r_direction", "neutral"),
-                    properties=always_dict(record.get("r_properties", {})),
+                    properties=self._python_properties(record.get("r_properties", {})),
                     flow_key=record.get("r_flow_key", "") or "",
-                    last_updated=record.get("r_last_updated", "") or "",
-                    observations=record.get("r_observations", []) or [],
+                    last_updated=self._python_datetime(record.get("r_last_updated")),
+                    observations=self._decode_observations(record.get("r_observations")),
                     amount=record.get("r_amount"),
                 ),
                 Node(
@@ -1725,22 +2480,22 @@ class Neo4jClient(GraphClient):
                     name=record.get("m_name", "") or "",
                     labels=record.get("m_labels", []) or [],
                     description=record.get("m_description", "") or "",
-                    properties=always_dict(record.get("m_properties", {})),
+                    properties=self._python_properties(record.get("m_properties", {})),
                     polarity=record.get("m_polarity", "neutral"),
-                    metadata=always_dict(record.get("m_metadata", {})),
+                    metadata=self._python_properties(record.get("m_metadata", {})),
                     happened_at=record.get("m_happened_at", "") or "",
-                    last_updated=record.get("m_last_updated", "") or "",
-                    observations=record.get("m_observations", []) or [],
+                    last_updated=self._python_datetime(record.get("m_last_updated")),
+                    observations=self._decode_observations(record.get("m_observations")),
                 ),
                 Predicate(
                     uuid=record.get("r2_uuid", "") or "",
                     name=record.get("r2_type", "") or "",
                     description=record.get("r2_description", "") or "",
                     direction=record.get("r2_direction", "neutral"),
-                    properties=always_dict(record.get("r2_properties", {})),
+                    properties=self._python_properties(record.get("r2_properties", {})),
                     flow_key=record.get("r2_flow_key", "") or "",
-                    last_updated=record.get("r2_last_updated", "") or "",
-                    observations=record.get("r2_observations", []) or [],
+                    last_updated=self._python_datetime(record.get("r2_last_updated")),
+                    observations=self._decode_observations(record.get("r2_observations")),
                     amount=record.get("r2_amount"),
                 ),
                 Node(
@@ -1748,12 +2503,12 @@ class Neo4jClient(GraphClient):
                     name=record.get("b_name", "") or "",
                     labels=record.get("b_labels", []) or [],
                     description=record.get("b_description", "") or "",
-                    properties=always_dict(record.get("b_properties", {})),
+                    properties=self._python_properties(record.get("b_properties", {})),
                     polarity=record.get("b_polarity", "neutral"),
-                    metadata=always_dict(record.get("b_metadata", {})),
+                    metadata=self._python_properties(record.get("b_metadata", {})),
                     happened_at=record.get("b_happened_at", "") or "",
-                    last_updated=record.get("b_last_updated", "") or "",
-                    observations=record.get("b_observations", []) or [],
+                    last_updated=self._python_datetime(record.get("b_last_updated")),
+                    observations=self._decode_observations(record.get("b_observations")),
                 ),
             )
             for record in result.records
@@ -1774,7 +2529,7 @@ class Neo4jClient(GraphClient):
         """
         res = {}
         for predicate in predicates:
-            cypher_query = f"""
+            cypher_query = """
             MATCH ()-[r]-(m)-[r2]-(b)
             WHERE r['uuid'] = $predicate_uuid
             AND r2['flow_key'] = $flow_key
@@ -1800,22 +2555,22 @@ class Neo4jClient(GraphClient):
                         name=record.get("m_name", "") or "",
                         labels=record.get("m_labels", []) or [],
                         description=record.get("m_description", "") or "",
-                        properties=always_dict(record.get("m_properties", {})),
+                        properties=self._python_properties(record.get("m_properties", {})),
                         polarity=record.get("m_polarity", "neutral"),
-                        metadata=always_dict(record.get("m_metadata", {})),
+                        metadata=self._python_properties(record.get("m_metadata", {})),
                         happened_at=record.get("m_happened_at", "") or "",
-                        last_updated=record.get("m_last_updated", "") or "",
-                        observations=record.get("m_observations", []) or [],
+                        last_updated=self._python_datetime(record.get("m_last_updated")),
+                        observations=self._decode_observations(record.get("m_observations")),
                     ),
                     Predicate(
                         uuid=record.get("r2_uuid", "") or "",
                         name=record.get("r2_type", "") or "",
                         description=record.get("r2_description", "") or "",
                         direction=record.get("r2_direction", "neutral"),
-                        properties=always_dict(record.get("r2_properties", {})),
+                        properties=self._python_properties(record.get("r2_properties", {})),
                         flow_key=record.get("r2_flow_key", "") or "",
-                        last_updated=record.get("r2_last_updated", "") or "",
-                        observations=record.get("r2_observations", []) or [],
+                        last_updated=self._python_datetime(record.get("r2_last_updated")),
+                        observations=self._decode_observations(record.get("r2_observations")),
                         amount=record.get("r2_amount"),
                     ),
                     Node(
@@ -1823,12 +2578,12 @@ class Neo4jClient(GraphClient):
                         name=record.get("b_name", "") or "",
                         labels=record.get("b_labels", []) or [],
                         description=record.get("b_description", "") or "",
-                        properties=always_dict(record.get("b_properties", {})),
+                        properties=self._python_properties(record.get("b_properties", {})),
                         polarity=record.get("b_polarity", "neutral"),
-                        metadata=always_dict(record.get("b_metadata", {})),
+                        metadata=self._python_properties(record.get("b_metadata", {})),
                         happened_at=record.get("b_happened_at", "") or "",
-                        last_updated=record.get("b_last_updated", "") or "",
-                        observations=record.get("b_observations", []) or [],
+                        last_updated=self._python_datetime(record.get("b_last_updated")),
+                        observations=self._decode_observations(record.get("b_observations")),
                     ),
                 )
                 for record in result.records
@@ -1841,18 +2596,14 @@ class Neo4jClient(GraphClient):
         """
         Get triples by its UUID.
         """
-        cypher_query = f"""
-        MATCH (n)-[r]-(m) WHERE r['uuid'] IN [{",".join([f'"{uuid}"' for uuid in uuids])}]
-        RETURN 
-            n['uuid'] as n_uuid, n['name'] as n_name, labels(n) as n_labels, n['description'] as n_description, properties(n) as n_properties,
-            r['uuid'] as r_uuid, type(r) as r_type, r['description'] as r_description, properties(r) as r_properties,
-            m['uuid'] as m_uuid, m['name'] as m_name, labels(m) as m_labels, m['description'] as m_description, properties(m) as m_properties
-        """
-        self.ensure_database(brain_id)
-        result = self.driver.execute_query(
-            cypher_query,
-            database_=brain_id,
+        cypher_query = (
+            "MATCH (n)-[r]-(m) WHERE r['uuid'] IN $uuids\n"
+            "RETURN\n"
+            "    n['uuid'] as n_uuid, n['name'] as n_name, labels(n) as n_labels, n['description'] as n_description, properties(n) as n_properties,\n"
+            "    r['uuid'] as r_uuid, type(r) as r_type, r['description'] as r_description, properties(r) as r_properties,\n"
+            "    m['uuid'] as m_uuid, m['name'] as m_name, labels(m) as m_labels, m['description'] as m_description, properties(m) as m_properties"
         )
+        result = self._run_query(cypher_query, brain_id, {"uuids": list(uuids)})
         return [
             (
                 Node(
@@ -1860,52 +2611,137 @@ class Neo4jClient(GraphClient):
                     name=record.get("n_name", "") or "",
                     labels=record.get("n_labels", []) or [],
                     description=record.get("n_description", "") or "",
-                    properties=record.get("n_properties", {}) or {},
+                    properties=self._python_properties(record.get("n_properties", {}) or {}),
                 ),
                 Predicate(
                     name=record.get("r_type", "") or "",
                     description=record.get("r_description", "") or "",
                     direction=record.get("r_direction", "neutral"),
-                    properties=record.get("r_properties", {}) or {},
+                    properties=self._python_properties(record.get("r_properties", {}) or {}),
                 ),
                 Node(
                     uuid=record.get("m_uuid", "") or "",
                     name=record.get("m_name", "") or "",
                     labels=record.get("m_labels", []) or [],
                     description=record.get("m_description", "") or "",
-                    properties=record.get("m_properties", {}) or {},
+                    properties=self._python_properties(record.get("m_properties", {}) or {}),
                 ),
             )
             for record in result.records
         ]
 
+    def nodes_and_edges_citing(self, brain_id: str, chunk_ids: list[str], edge_uuids: list[str]):
+        self.ensure_database(brain_id)
+        wanted = [str(item) for item in chunk_ids if item]
+        known = [str(item) for item in edge_uuids if item]
+        node_rows = self.driver.execute_query(
+            """
+            MATCH (n)
+            WHERE any(cid IN coalesce(n.source_chunk_ids, []) WHERE cid IN $chunk_ids)
+               OR (
+                   n.properties IS :: MAP
+                   AND any(cid IN coalesce(n.properties.source_chunk_ids, []) WHERE cid IN $chunk_ids)
+               )
+               OR (
+                   n.properties IS :: STRING
+                   AND any(cid IN $chunk_ids WHERE n.properties CONTAINS ('"' + cid + '"'))
+               )
+            RETURN n['uuid'] AS uuid, n['name'] AS name, labels(n) AS labels,
+                   n['description'] AS description, properties(n) AS properties
+            """,
+            parameters_={"chunk_ids": wanted},
+            database_=brain_id,
+        )
+        nodes = [
+            Node(
+                uuid=str(record.get("uuid") or ""),
+                name=str(record.get("name") or ""),
+                labels=list(record.get("labels") or []),
+                description=record.get("description") or "",
+                properties=self._python_properties(record.get("properties") or {}),
+            )
+            for record in node_rows.records
+            if record.get("uuid")
+        ]
+        edge_rows = self.driver.execute_query(
+            """
+            MATCH (a)-[r]->(b)
+            WHERE r.uuid IN $edge_uuids
+               OR any(cid IN coalesce(r.source_chunk_ids, []) WHERE cid IN $chunk_ids)
+               OR (
+                   r.properties IS :: MAP
+                   AND any(cid IN coalesce(r.properties.source_chunk_ids, []) WHERE cid IN $chunk_ids)
+               )
+               OR (
+                   r.properties IS :: STRING
+                   AND any(cid IN $chunk_ids WHERE r.properties CONTAINS ('"' + cid + '"'))
+               )
+            RETURN a['uuid'] AS tail, b['uuid'] AS tip, type(r) AS rel_type,
+                   r['description'] AS description, properties(r) AS properties
+            """,
+            parameters_={"chunk_ids": wanted, "edge_uuids": known},
+            database_=brain_id,
+        )
+        triples = []
+        for record in edge_rows.records:
+            properties = self._python_properties(record.get("properties") or {})
+            rel_uuid = str(properties.get("uuid") or "")
+            triples.append(
+                (
+                    Node(uuid=str(record.get("tail") or ""), name="", labels=[], properties={}),
+                    Predicate(
+                        uuid=rel_uuid,
+                        name=str(record.get("rel_type") or ""),
+                        description=str(record.get("description") or ""),
+                        properties=properties,
+                    ),
+                    Node(uuid=str(record.get("tip") or ""), name="", labels=[], properties={}),
+                )
+            )
+        return nodes, triples
+
     def remove_nodes(self, uuids: list[str], brain_id: str) -> list[Node]:
         """
         Remove nodes from the graph.
         """
-        cypher_query = f"""
-        MATCH (n) WHERE n['uuid'] IN [{",".join([f'"{uuid}"' for uuid in uuids])}]
-        WITH n, {{
-        uuid: n['uuid'],
-        name: n['name'],
-        labels: labels(n),
-        description: n['description'],
-        properties: properties(n),
-        polarity: n['polarity'],
-        metadata: n['metadata'],
-        happened_at: n['happened_at'],
-        last_updated: n['last_updated'],
-        observations: n['observations']
-        }} AS node
-        DELETE n
-        RETURN node
-        """
-        self.ensure_database(brain_id)
-        result = self.driver.execute_query(
-            cypher_query,
-            database_=brain_id,
+        cypher_query = (
+            "MATCH (n) WHERE n['uuid'] IN $uuids\n"
+            "WITH n, {\n"
+            "uuid: n['uuid'],\n"
+            "name: n['name'],\n"
+            "labels: labels(n),\n"
+            "description: n['description'],\n"
+            "properties: properties(n),\n"
+            "polarity: n['polarity'],\n"
+            "metadata: n['metadata'],\n"
+            "happened_at: n['happened_at'],\n"
+            "last_updated: n['last_updated'],\n"
+            "observations: n['observations']\n"
+            "} AS node\n"
+            "DELETE n\n"
+            "RETURN node"
         )
-        return [Node(**record.get("node", {})) for record in result.records]
+        result = self._run_query(cypher_query, brain_id, {"uuids": list(uuids)})
+        return [
+            self._node_from_stored_fields(record.get("node", {}) or {})
+            for record in result.records
+        ]
+
+    def list_incident_relationship_uuids(self, uuids: list[str], brain_id: str) -> dict[str, list[str]]:
+        result = self._run_query(
+            "UNWIND $uuids AS uuid "
+            "OPTIONAL MATCH (n) WHERE n['uuid'] = uuid "
+            "OPTIONAL MATCH (n)-[r]-() "
+            "RETURN uuid AS uuid, collect(DISTINCT r['uuid']) AS rels",
+            brain_id,
+            {"uuids": list(uuids)},
+        )
+        found = {str(uuid): [] for uuid in uuids}
+        for record in result.records:
+            node_uuid = str(record.get("uuid") or "")
+            if node_uuid:
+                found[node_uuid] = [str(item) for item in (record.get("rels") or []) if item]
+        return found
 
     def remove_relationships(
         self,
@@ -1932,33 +2768,41 @@ class Neo4jClient(GraphClient):
             m['uuid'] AS m_uuid, m['name'] AS m_name, labels(m) AS m_labels, m['description'] AS m_description, properties(m) AS m_properties
         """
         return_list = "n_uuid, n_name, n_labels, n_description, n_properties, r_uuid, r_type, r_description, r_properties, m_uuid, m_name, m_labels, m_description, m_properties"
-        if by_rel_uuid:
-            cypher = f"""
-            MATCH (n)-[r]-(m) WHERE r['uuid'] IN [{",".join([self._format_value(u) for u in by_rel_uuid])}]
-            WITH n, r, m, {with_fields.strip()}
-            DELETE r
-            RETURN {return_list}
-            """
-            result = self.driver.execute_query(cypher, database_=brain_id)
-            for record in result.records:
-                deleted.append(self._record_to_triple(record))
-        for tail, pred, head in by_tip_tail:
-            tail_match = self._node_match_cypher("n", tail)
-            head_match = self._node_match_cypher("m", head)
+        planned: list[tuple[str, dict[str, Any]]] = []
+        for index, (tail, pred, head) in enumerate(by_tip_tail):
+            params: dict[str, Any] = {}
+            tail_match = self._node_match_cypher("n", tail, params, "tail" + str(index))
+            head_match = self._node_match_cypher("m", head, params, "head" + str(index))
             rel_type = pred.get("name")
             if rel_type:
-                rel_part = f"[r:{':'.join(self._clean_labels([rel_type]))}]"
+                rel_part = "[r:" + self._quoted_rel_type(rel_type) + "]"
             else:
                 rel_part = "[r]"
-            cypher = f"""
-            MATCH {tail_match}
-            MATCH {head_match}
-            MATCH (n){rel_part}-(m)
-            WITH n, r, m, {with_fields.strip()}
-            DELETE r
-            RETURN {return_list}
-            """
-            result = self.driver.execute_query(cypher, database_=brain_id)
+            planned.append(
+                (
+                    "MATCH " + tail_match + "\n"
+                    "MATCH " + head_match + "\n"
+                    "MATCH (n)-" + rel_part + "-(m)\n"
+                    "WITH n, r, m, " + with_fields.strip() + "\n"
+                    "DELETE r\n"
+                    "RETURN " + return_list,
+                    params,
+                )
+            )
+        if by_rel_uuid:
+            cypher = (
+                "MATCH (n)-[r]-(m) WHERE r['uuid'] IN $uuids\n"
+                "WITH n, r, m, " + with_fields.strip() + "\n"
+                "DELETE r\n"
+                "RETURN " + return_list
+            )
+            result = self._run_query(
+                cypher, brain_id, {"uuids": list(by_rel_uuid)}, ensure=False
+            )
+            for record in result.records:
+                deleted.append(self._record_to_triple(record))
+        for cypher, params in planned:
+            result = self._run_query(cypher, brain_id, params, ensure=False)
             for record in result.records:
                 deleted.append(self._record_to_triple(record))
         return deleted
@@ -1970,39 +2814,54 @@ class Neo4jClient(GraphClient):
                 name=record.get("n_name", "") or "",
                 labels=record.get("n_labels", []) or [],
                 description=record.get("n_description", "") or "",
-                properties=record.get("n_properties", {}) or {},
+                properties=self._python_properties(record.get("n_properties", {}) or {}),
             ),
             Predicate(
                 uuid=record.get("r_uuid", "") or "",
                 name=record.get("r_type", "") or "",
                 description=record.get("r_description", "") or "",
                 direction="neutral",
-                properties=record.get("r_properties", {}) or {},
+                properties=self._python_properties(record.get("r_properties", {}) or {}),
             ),
             Node(
                 uuid=record.get("m_uuid", "") or "",
                 name=record.get("m_name", "") or "",
                 labels=record.get("m_labels", []) or [],
                 description=record.get("m_description", "") or "",
-                properties=record.get("m_properties", {}) or {},
+                properties=self._python_properties(record.get("m_properties", {}) or {}),
             ),
         )
 
-    def _node_match_cypher(self, alias: str, node: NodeDict) -> str:
+    def _node_match_cypher(
+        self, alias: str, node: NodeDict, params: dict[str, Any], token: str
+    ) -> str:
         if not node:
-            return f"({alias})"
-        if node.get("uuid"):
-            return (
-                f"({alias}) WHERE {alias}['uuid'] = {self._format_value(node['uuid'])}"
+            raise InvalidCypherIdentifier(
+                "Relationship endpoint is required",
+                kind="endpoint",
+                value=node,
             )
+        if node.get("uuid"):
+            pname = token + "_uuid"
+            params[pname] = node["uuid"]
+            return "(" + alias + ") WHERE " + alias + "['uuid'] = $" + pname
         labels = node.get("labels") or []
         name = node.get("name") or ""
+        if not name:
+            raise InvalidCypherIdentifier(
+                "Relationship endpoint needs a uuid or name",
+                kind="endpoint",
+                value=node,
+            )
+        pname = token + "_name"
+        params[pname] = name
         if labels:
-            labels_part = ":".join(self._clean_labels(labels))
-            return f"({alias}:{labels_part}) WHERE {alias}['name'] = {self._format_value(name)}"
-        if name:
-            return f"({alias}) WHERE {alias}['name'] = {self._format_value(name)}"
-        return f"({alias})"
+            labels_part = self._quoted_labels(labels)
+            return (
+                "(" + alias + ":" + labels_part + ") WHERE "
+                + alias + "['name'] = $" + pname
+            )
+        return "(" + alias + ") WHERE " + alias + "['name'] = $" + pname
 
     def list_relationships(
         self, subject: str, object: str, brain_id: str
@@ -2010,14 +2869,15 @@ class Neo4jClient(GraphClient):
         """
         List the relationships between the subject and object.
         """
-        cypher_query = f"""
-        MATCH (n)-[r]-(m) WHERE n['uuid'] = {self._format_value(subject)} AND m['uuid'] = {self._format_value(object)}
-        RETURN n['uuid'] as n_uuid, n['name'] as n_name, labels(n) as n_labels, n['description'] as n_description, properties(n) as n_properties, n['polarity'] as n_polarity, n['metadata'] as n_metadata, n['happened_at'] as n_happened_at, n['last_updated'] as n_last_updated, n['observations'] as n_observations,
-        r['uuid'] as r_uuid, type(r) as r_type, r['description'] as r_description, properties(r) as r_properties, r['flow_key'] as r_flow_key, r['last_updated'] as r_last_updated, r['observations'] as r_observations, r['amount'] as r_amount,
-        m['uuid'] as m_uuid, m['name'] as m_name, labels(m) as m_labels, m['description'] as m_description, properties(m) as m_properties, m['polarity'] as m_polarity, m['metadata'] as m_metadata, m['happened_at'] as m_happened_at, m['last_updated'] as m_last_updated, m['observations'] as m_observations
-        """
-        self.ensure_database(brain_id)
-        result = self.driver.execute_query(cypher_query, database_=brain_id)
+        cypher_query = (
+            "MATCH (n)-[r]-(m) WHERE n['uuid'] = $subject AND m['uuid'] = $object\n"
+            "RETURN n['uuid'] as n_uuid, n['name'] as n_name, labels(n) as n_labels, n['description'] as n_description, properties(n) as n_properties, n['polarity'] as n_polarity, n['metadata'] as n_metadata, n['happened_at'] as n_happened_at, n['last_updated'] as n_last_updated, n['observations'] as n_observations,\n"
+            "r['uuid'] as r_uuid, type(r) as r_type, r['description'] as r_description, properties(r) as r_properties, r['flow_key'] as r_flow_key, r['last_updated'] as r_last_updated, r['observations'] as r_observations, r['amount'] as r_amount,\n"
+            "m['uuid'] as m_uuid, m['name'] as m_name, labels(m) as m_labels, m['description'] as m_description, properties(m) as m_properties, m['polarity'] as m_polarity, m['metadata'] as m_metadata, m['happened_at'] as m_happened_at, m['last_updated'] as m_last_updated, m['observations'] as m_observations"
+        )
+        result = self._run_query(
+            cypher_query, brain_id, {"subject": subject, "object": object}
+        )
         return [
             (
                 Node(
@@ -2025,22 +2885,22 @@ class Neo4jClient(GraphClient):
                     name=record.get("n_name", "") or "",
                     labels=record.get("n_labels", []) or [],
                     description=record.get("n_description", "") or "",
-                    properties=record.get("n_properties", {}) or {},
+                    properties=self._python_properties(record.get("n_properties", {}) or {}),
                     polarity=record.get("n_polarity", "neutral"),
                     metadata=record.get("n_metadata", {}) or {},
                     happened_at=record.get("n_happened_at", "") or "",
-                    last_updated=record.get("n_last_updated", "") or "",
-                    observations=record.get("n_observations", []) or [],
+                    last_updated=self._python_datetime(record.get("n_last_updated")),
+                    observations=self._decode_observations(record.get("n_observations")),
                 ),
                 Predicate(
                     uuid=record.get("r_uuid", "") or "",
                     name=record.get("r_type", "") or "",
                     description=record.get("r_description", "") or "",
                     direction="neutral",
-                    properties=record.get("r_properties", {}) or {},
+                    properties=self._python_properties(record.get("r_properties", {}) or {}),
                     flow_key=record.get("r_flow_key", "") or "",
-                    last_updated=record.get("r_last_updated", "") or "",
-                    observations=record.get("r_observations", []) or [],
+                    last_updated=self._python_datetime(record.get("r_last_updated")),
+                    observations=self._decode_observations(record.get("r_observations")),
                     amount=record.get("r_amount"),
                 ),
                 Node(
@@ -2048,12 +2908,12 @@ class Neo4jClient(GraphClient):
                     name=record.get("m_name", "") or "",
                     labels=record.get("m_labels", []) or [],
                     description=record.get("m_description", "") or "",
-                    properties=record.get("m_properties", {}) or {},
+                    properties=self._python_properties(record.get("m_properties", {}) or {}),
                     polarity=record.get("m_polarity", "neutral"),
                     metadata=record.get("m_metadata", {}) or {},
                     happened_at=record.get("m_happened_at", "") or "",
-                    last_updated=record.get("m_last_updated", "") or "",
-                    observations=record.get("m_observations", []) or [],
+                    last_updated=self._python_datetime(record.get("m_last_updated")),
+                    observations=self._decode_observations(record.get("m_observations")),
                 ),
             )
             for record in result.records
@@ -2068,29 +2928,25 @@ class Neo4jClient(GraphClient):
         unique = sorted({str(u) for u in event_uuids if u})
         if not unique:
             return []
-        self.ensure_database(brain_id)
-        uuids_list = '", "'.join(unique)
-        cypher_query = f"""
-        MATCH (n)-[r]-(m)-[r2]-(b)
-        WHERE m['uuid'] IN ["{uuids_list}"]
-        AND r2['flow_key'] = r['flow_key']
-        AND type(r) <> 'HUB_BRIDGE'
-        AND type(r2) <> 'HUB_BRIDGE'
-        AND 'EVENT' IN labels(m)
-        RETURN
-            n['uuid'] as n_uuid, n['name'] as n_name, labels(n) as n_labels, n['description'] as n_description, properties(n) as n_properties, n['polarity'] as n_polarity, n['metadata'] as n_metadata, n['happened_at'] as n_happened_at, n['last_updated'] as n_last_updated, n['observations'] as n_observations,
-            r['uuid'] as r_uuid, type(r) as r_type, r['description'] as r_description, properties(r) as r_properties, r['flow_key'] as r_flow_key, r['last_updated'] as r_last_updated, r['observations'] as r_observations, r['amount'] as r_amount,
-            CASE WHEN startNode(r) = n THEN 'out' ELSE 'in' END AS r_direction,
-            m['uuid'] as m_uuid, m['name'] as m_name, labels(m) as m_labels, m['description'] as m_description, properties(m) as m_properties, m['polarity'] as m_polarity, m['metadata'] as m_metadata, m['happened_at'] as m_happened_at, m['last_updated'] as m_last_updated, m['observations'] as m_observations,
-            r2['uuid'] as r2_uuid, type(r2) as r2_type, r2['description'] as r2_description, properties(r2) as r2_properties, r2['flow_key'] as r2_flow_key, r2['last_updated'] as r2_last_updated, r2['observations'] as r2_observations, r2['amount'] as r2_amount,
-            CASE WHEN startNode(r2) = m THEN 'out' ELSE 'in' END AS r2_direction,
-            b['uuid'] as b_uuid, b['name'] as b_name, labels(b) as b_labels, b['description'] as b_description, properties(b) as b_properties, b['polarity'] as b_polarity, b['metadata'] as b_metadata, b['happened_at'] as b_happened_at, b['last_updated'] as b_last_updated, b['observations'] as b_observations
-        ORDER BY m_uuid, r_uuid, r2_uuid
-        """
-        result = self.driver.execute_query(
-            cypher_query,
-            parameters_={"event_uuids": unique},
-            database_=brain_id,
+        cypher_query = (
+            "MATCH (n)-[r]-(m)-[r2]-(b)\n"
+            "WHERE m['uuid'] IN $event_uuids\n"
+            "AND r2['flow_key'] = r['flow_key']\n"
+            "AND type(r) <> 'HUB_BRIDGE'\n"
+            "AND type(r2) <> 'HUB_BRIDGE'\n"
+            "AND 'EVENT' IN labels(m)\n"
+            "RETURN\n"
+            "    n['uuid'] as n_uuid, n['name'] as n_name, labels(n) as n_labels, n['description'] as n_description, properties(n) as n_properties, n['polarity'] as n_polarity, n['metadata'] as n_metadata, n['happened_at'] as n_happened_at, n['last_updated'] as n_last_updated, n['observations'] as n_observations,\n"
+            "    r['uuid'] as r_uuid, type(r) as r_type, r['description'] as r_description, properties(r) as r_properties, r['flow_key'] as r_flow_key, r['last_updated'] as r_last_updated, r['observations'] as r_observations, r['amount'] as r_amount,\n"
+            "    CASE WHEN startNode(r) = n THEN 'out' ELSE 'in' END AS r_direction,\n"
+            "    m['uuid'] as m_uuid, m['name'] as m_name, labels(m) as m_labels, m['description'] as m_description, properties(m) as m_properties, m['polarity'] as m_polarity, m['metadata'] as m_metadata, m['happened_at'] as m_happened_at, m['last_updated'] as m_last_updated, m['observations'] as m_observations,\n"
+            "    r2['uuid'] as r2_uuid, type(r2) as r2_type, r2['description'] as r2_description, properties(r2) as r2_properties, r2['flow_key'] as r2_flow_key, r2['last_updated'] as r2_last_updated, r2['observations'] as r2_observations, r2['amount'] as r2_amount,\n"
+            "    CASE WHEN startNode(r2) = m THEN 'out' ELSE 'in' END AS r2_direction,\n"
+            "    b['uuid'] as b_uuid, b['name'] as b_name, labels(b) as b_labels, b['description'] as b_description, properties(b) as b_properties, b['polarity'] as b_polarity, b['metadata'] as b_metadata, b['happened_at'] as b_happened_at, b['last_updated'] as b_last_updated, b['observations'] as b_observations\n"
+            "ORDER BY m_uuid, r_uuid, r2_uuid"
+        )
+        result = self._run_query(
+            cypher_query, brain_id, {"event_uuids": unique}
         )
         return [
             (
@@ -2099,22 +2955,22 @@ class Neo4jClient(GraphClient):
                     name=record.get("n_name", "") or "",
                     labels=record.get("n_labels", []) or [],
                     description=record.get("n_description", "") or "",
-                    properties=always_dict(record.get("n_properties", {})),
+                    properties=self._python_properties(record.get("n_properties", {})),
                     polarity=record.get("n_polarity", "neutral"),
-                    metadata=always_dict(record.get("n_metadata", {})),
+                    metadata=self._python_properties(record.get("n_metadata", {})),
                     happened_at=record.get("n_happened_at", "") or "",
-                    last_updated=record.get("n_last_updated", "") or "",
-                    observations=record.get("n_observations", []) or [],
+                    last_updated=self._python_datetime(record.get("n_last_updated")),
+                    observations=self._decode_observations(record.get("n_observations")),
                 ),
                 Predicate(
                     uuid=record.get("r_uuid", "") or "",
                     name=record.get("r_type", "") or "",
                     description=record.get("r_description", "") or "",
                     direction=record.get("r_direction", "neutral"),
-                    properties=always_dict(record.get("r_properties", {})),
+                    properties=self._python_properties(record.get("r_properties", {})),
                     flow_key=record.get("r_flow_key", "") or "",
-                    last_updated=record.get("r_last_updated", "") or "",
-                    observations=record.get("r_observations", []) or [],
+                    last_updated=self._python_datetime(record.get("r_last_updated")),
+                    observations=self._decode_observations(record.get("r_observations")),
                     amount=record.get("r_amount"),
                 ),
                 Node(
@@ -2122,22 +2978,22 @@ class Neo4jClient(GraphClient):
                     name=record.get("m_name", "") or "",
                     labels=record.get("m_labels", []) or [],
                     description=record.get("m_description", "") or "",
-                    properties=always_dict(record.get("m_properties", {})),
+                    properties=self._python_properties(record.get("m_properties", {})),
                     polarity=record.get("m_polarity", "neutral"),
-                    metadata=always_dict(record.get("m_metadata", {})),
+                    metadata=self._python_properties(record.get("m_metadata", {})),
                     happened_at=record.get("m_happened_at", "") or "",
-                    last_updated=record.get("m_last_updated", "") or "",
-                    observations=record.get("m_observations", []) or [],
+                    last_updated=self._python_datetime(record.get("m_last_updated")),
+                    observations=self._decode_observations(record.get("m_observations")),
                 ),
                 Predicate(
                     uuid=record.get("r2_uuid", "") or "",
                     name=record.get("r2_type", "") or "",
                     description=record.get("r2_description", "") or "",
                     direction=record.get("r2_direction", "neutral"),
-                    properties=always_dict(record.get("r2_properties", {})),
+                    properties=self._python_properties(record.get("r2_properties", {})),
                     flow_key=record.get("r2_flow_key", "") or "",
-                    last_updated=record.get("r2_last_updated", "") or "",
-                    observations=record.get("r2_observations", []) or [],
+                    last_updated=self._python_datetime(record.get("r2_last_updated")),
+                    observations=self._decode_observations(record.get("r2_observations")),
                     amount=record.get("r2_amount"),
                 ),
                 Node(
@@ -2145,12 +3001,12 @@ class Neo4jClient(GraphClient):
                     name=record.get("b_name", "") or "",
                     labels=record.get("b_labels", []) or [],
                     description=record.get("b_description", "") or "",
-                    properties=always_dict(record.get("b_properties", {})),
+                    properties=self._python_properties(record.get("b_properties", {})),
                     polarity=record.get("b_polarity", "neutral"),
-                    metadata=always_dict(record.get("b_metadata", {})),
+                    metadata=self._python_properties(record.get("b_metadata", {})),
                     happened_at=record.get("b_happened_at", "") or "",
-                    last_updated=record.get("b_last_updated", "") or "",
-                    observations=record.get("b_observations", []) or [],
+                    last_updated=self._python_datetime(record.get("b_last_updated")),
+                    observations=self._decode_observations(record.get("b_observations")),
                 ),
             )
             for record in result.records
@@ -2213,6 +3069,9 @@ class Neo4jClient(GraphClient):
                 },
                 database_=brain_id,
             )
+        if bridges:
+            self._note_written_relationship_type(brain_id, "HUB_BRIDGE")
+            self._ensure_validity_indexes(brain_id, pending_only=True)
         return len(bridges)
 
     def refresh_hub_bridges_for_entities(
@@ -2288,6 +3147,9 @@ class Neo4jClient(GraphClient):
                 },
                 database_=brain_id,
             )
+        if bridges:
+            self._note_written_relationship_type(brain_id, "HUB_BRIDGE")
+            self._ensure_validity_indexes(brain_id, pending_only=True)
         return len(bridges)
 
     def get_hub_bridges(
@@ -2338,6 +3200,185 @@ class Neo4jClient(GraphClient):
                 )
             )
         return bridges
+
+    def get_fact_record(self, fact_id: str, brain_id: str) -> Optional[dict]:
+        if not fact_id:
+            return None
+        params = {"uuid": fact_id}
+        rel_query = (
+            "MATCH (a)-[r]->(b)\n"
+            "WHERE r['uuid'] = $uuid\n"
+            "RETURN 'relationship' AS kind,\n"
+            "       r['uuid'] AS uuid,\n"
+            "       type(r) AS name,\n"
+            "       coalesce(r['description'], '') AS description,\n"
+            "       properties(r) AS properties,\n"
+            "       a['uuid'] AS subject_uuid,\n"
+            "       a['name'] AS subject_name,\n"
+            "       labels(a) AS subject_labels,\n"
+            "       b['uuid'] AS object_uuid,\n"
+            "       b['name'] AS object_name,\n"
+            "       labels(b) AS object_labels,\n"
+            "       [] AS labels"
+        )
+        result = self._run_query(rel_query, brain_id, params)
+        if result.records:
+            return self._fact_row_from_record(result.records[0])
+        node_query = (
+            "MATCH (n)\n"
+            "WHERE n['uuid'] = $uuid\n"
+            "AND any(label IN labels(n) WHERE toUpper(label) = 'EVENT')\n"
+            "RETURN 'node' AS kind,\n"
+            "       n['uuid'] AS uuid,\n"
+            "       n['name'] AS name,\n"
+            "       coalesce(n['description'], '') AS description,\n"
+            "       properties(n) AS properties,\n"
+            "       null AS subject_uuid,\n"
+            "       null AS subject_name,\n"
+            "       [] AS subject_labels,\n"
+            "       null AS object_uuid,\n"
+            "       null AS object_name,\n"
+            "       [] AS object_labels,\n"
+            "       labels(n) AS labels"
+        )
+        result = self._run_query(node_query, brain_id, params, ensure=False)
+        if result.records:
+            return self._fact_row_from_record(result.records[0])
+        return None
+
+    def _fact_row_from_record(self, record) -> dict:
+        row = dict(record)
+        row["properties"] = self._python_properties(row.get("properties"))
+        return row
+
+    def set_fact_verification(
+        self,
+        fact_id: str,
+        brain_id: str,
+        *,
+        kind: Literal["relationship", "node"],
+        properties: dict,
+        history_entry: object | None = None,
+    ) -> Optional[dict]:
+        from src.core.verification.facts import serialize_history_entry
+
+        appended = serialize_history_entry(history_entry)
+        params = {
+            "uuid": fact_id,
+            "verification_state": properties.get("verification_state"),
+            "verified_by": properties.get("verified_by"),
+            "verified_at": properties.get("verified_at"),
+            "verification_source": properties.get("verification_source"),
+            "verification_note": properties.get("verification_note"),
+            "history_entry": appended,
+            "verification_history": self._bind_property_value(
+                properties.get("verification_history") or []
+            ),
+        }
+        if appended:
+            history_set = (
+                "    t['verification_history'] = coalesce(t['verification_history'], []) "
+                "+ [$history_entry]"
+            )
+        else:
+            history_set = "    t['verification_history'] = $verification_history"
+        set_clause = (
+            "SET t['verification_state'] = $verification_state,\n"
+            "    t['verified_by'] = $verified_by,\n"
+            "    t['verified_at'] = $verified_at,\n"
+            "    t['verification_source'] = $verification_source,\n"
+            "    t['verification_note'] = $verification_note,\n"
+            + history_set
+        )
+        if kind == "relationship":
+            cypher_query = (
+                "MATCH ()-[t]->() WHERE t['uuid'] = $uuid\n"
+                + set_clause
+                + "\nRETURN t['uuid'] AS uuid"
+            )
+        else:
+            cypher_query = (
+                "MATCH (t) WHERE t['uuid'] = $uuid\n"
+                "AND any(label IN labels(t) WHERE toUpper(label) = 'EVENT')\n"
+                + set_clause
+                + "\nRETURN t['uuid'] AS uuid"
+            )
+        result = self._run_query(cypher_query, brain_id, params)
+        if not result.records:
+            return None
+        return self.get_fact_record(fact_id, brain_id)
+
+    def list_facts_by_verification(
+        self,
+        brain_id: str,
+        *,
+        state: Optional[str] = None,
+        include_rejected: bool = False,
+        limit: int = 50,
+        skip: int = 0,
+    ) -> tuple[list[dict], int]:
+        params = {
+            "state": state,
+            "include_rejected": bool(include_rejected),
+            "skip": require_limit(skip, name="skip"),
+            "limit": require_limit(limit),
+        }
+        inner = (
+            "MATCH (a)-[r]->(b)\n"
+            "WHERE type(r) <> 'HUB_BRIDGE'\n"
+            "AND ($state IS NULL OR coalesce(r['verification_state'], 'unverified') = $state)\n"
+            "AND ($include_rejected OR coalesce(r['verification_state'], 'unverified') <> 'rejected')\n"
+            "RETURN 'relationship' AS kind,\n"
+            "       r['uuid'] AS uuid,\n"
+            "       type(r) AS name,\n"
+            "       coalesce(r['description'], '') AS description,\n"
+            "       properties(r) AS properties,\n"
+            "       a['uuid'] AS subject_uuid,\n"
+            "       a['name'] AS subject_name,\n"
+            "       labels(a) AS subject_labels,\n"
+            "       b['uuid'] AS object_uuid,\n"
+            "       b['name'] AS object_name,\n"
+            "       labels(b) AS object_labels,\n"
+            "       [] AS labels\n"
+            "UNION ALL\n"
+            "MATCH (n)\n"
+            "WHERE any(label IN labels(n) WHERE toUpper(label) = 'EVENT')\n"
+            "AND ($state IS NULL OR coalesce(n['verification_state'], 'unverified') = $state)\n"
+            "AND ($include_rejected OR coalesce(n['verification_state'], 'unverified') <> 'rejected')\n"
+            "RETURN 'node' AS kind,\n"
+            "       n['uuid'] AS uuid,\n"
+            "       n['name'] AS name,\n"
+            "       coalesce(n['description'], '') AS description,\n"
+            "       properties(n) AS properties,\n"
+            "       null AS subject_uuid,\n"
+            "       null AS subject_name,\n"
+            "       [] AS subject_labels,\n"
+            "       null AS object_uuid,\n"
+            "       null AS object_name,\n"
+            "       [] AS object_labels,\n"
+            "       labels(n) AS labels"
+        )
+        list_query = (
+            "CALL {\n"
+            + inner
+            + "\n}\n"
+            "RETURN kind, uuid, name, description, properties, "
+            "subject_uuid, subject_name, subject_labels, "
+            "object_uuid, object_name, object_labels, labels\n"
+            "ORDER BY uuid\n"
+            "SKIP $skip\n"
+            "LIMIT $limit"
+        )
+        count_query = "CALL {\n" + inner + "\n}\nRETURN count(*) AS total"
+        result = self._run_query(list_query, brain_id, params)
+        count_result = self._run_query(count_query, brain_id, params, ensure=False)
+        total = 0
+        if count_result and count_result.records:
+            total = count_result.records[0].get("total") or 0
+        rows = []
+        for record in result.records:
+            rows.append(self._fact_row_from_record(record))
+        return rows, int(total)
 
 
 _neo4j_client = Neo4jClient()

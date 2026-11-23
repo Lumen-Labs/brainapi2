@@ -6,19 +6,23 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import dotenv
-
-_project_root = Path(__file__).resolve().parent.parent.parent.parent
-dotenv.load_dotenv(_project_root / ".env")
-
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.routing import APIRoute
 from uvicorn import run
 
+_project_root = Path(__file__).resolve().parent.parent.parent.parent
+dotenv.load_dotenv(_project_root / ".env")
+
+from src.lib.disable_langchain_tracing import disable_langchain_tracing
+
+disable_langchain_tracing()
+
 from src.constants.data import BRAIN_VERSION
 from src.services.api.console_static import SPAStaticFiles
 from src.services.api.errors import install_error_handlers
+from src.services.api.logging_privacy import install_access_log_privacy
 from src.services.api.openapi import install_openapi_contract
 
 from src.services.api.middlewares.auth import BrainPATMiddleware
@@ -29,12 +33,14 @@ from src.services.api.routes.meta import meta_router
 from src.services.api.routes.model import model_router
 from src.services.api.routes.public import public_router
 from src.services.api.routes.retrieve import retrieve_router
+from src.services.api.routes.spreadsheets import router as spreadsheets_router
 from src.services.api.routes.system import system_router
 from src.services.api.routes.tasks import tasks_router
 from src.lib.tracing.middleware import TraceMiddleware
 from src.lib.tracing.runtime import start_runtime_monitoring, stop_runtime_monitoring
 
 logger = logging.getLogger("brainapi.plugins")
+install_access_log_privacy()
 
 PLUGINS_DIR = Path(os.getenv("PLUGINS_DIR", str(_project_root / "plugins")))
 CONSOLE_DIST = _project_root / "console" / "dist"
@@ -94,6 +100,9 @@ async def lifespan(app: FastAPI):
     from src.core.plugins.loader import PluginLoader
 
     start_runtime_monitoring("brainapi-api")
+    from src.utils.nlp.spacy import warmup_default_model
+
+    warmup_default_model()
     ctx = PluginContext.from_app(app)
     loader = PluginLoader(plugins_dir=PLUGINS_DIR, context=ctx)
     results = loader.load_all()
@@ -194,6 +203,7 @@ app.add_middleware(
 app.add_middleware(TraceMiddleware, service_name="brainapi-api")
 
 app.include_router(ingest_router)
+app.include_router(spreadsheets_router)
 app.include_router(retrieve_router)
 app.include_router(meta_router)
 app.include_router(model_router)

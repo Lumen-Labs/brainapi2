@@ -895,13 +895,6 @@ def _run_invoke_loop_impl(
         threshold=int(os.getenv("TRACE_AGENT_MODEL_INVOKE_ATTEMPTS", "10")),
     )
 
-    try:
-        from langchain_core.tracers.langchain import wait_for_all_tracers
-
-        wait_for_all_tracers()
-    except ImportError:
-        pass
-
     structured_response = finalize_structured_response(
         structured_response,
         agent.output_schema,

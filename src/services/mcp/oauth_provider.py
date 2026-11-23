@@ -1,6 +1,7 @@
 import base64
 import hmac
 import json
+import logging
 import re
 import secrets
 import time
@@ -22,6 +23,10 @@ from mcp.server.auth.provider import (
 )
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 
+logger = logging.getLogger(__name__)
+_FERNET_PREFIX = "gAAAAA"
+
+
 class BrainapiMcpOAuthProvider(
     OAuthAuthorizationServerProvider[AuthorizationCode, RefreshToken, AccessToken]
 ):
@@ -36,12 +41,18 @@ class BrainapiMcpOAuthProvider(
         auth_code_ttl_seconds: int,
         redis_client=None,
         pat_verifier=None,
+        default_scopes: list[str] | None = None,
+        pat_scope_resolver=None,
         chatgpt_only: bool = False,
         credential_secret: str | None = None,
     ):
         self._issuer_url = issuer_url.rstrip("/")
         self._resource_server_url = resource_server_url.rstrip("/")
         self._valid_scopes = valid_scopes
+        self._default_scopes = list(
+            default_scopes if default_scopes is not None else valid_scopes
+        )
+        self._pat_scope_resolver = pat_scope_resolver
         self._access_token_ttl = access_token_ttl_seconds
         self._refresh_token_ttl = refresh_token_ttl_seconds
         self._auth_code_ttl = auth_code_ttl_seconds
@@ -63,20 +74,85 @@ class BrainapiMcpOAuthProvider(
             self._credential_cipher = Fernet(base64.urlsafe_b64encode(key))
         if chatgpt_only and self._credential_cipher is None:
             raise ValueError("Hosted MCP OAuth needs a credential encryption secret")
+        if self._credential_cipher:
+            self.purge_plaintext_pats()
 
     def _store_pat(self, key: str, pat: str, ttl: int | None) -> None:
         value = self._credential_cipher.encrypt(pat.encode()).decode() if self._credential_cipher else pat
         self._set_text(key, value, ttl)
 
-    def _decode_pat(self, value: bytes | str | None) -> str | None:
-        if not value:
+    def _as_text(self, value: bytes | str | None) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, bytes):
+            return value.decode("utf-8")
+        return value
+
+    def _decode_pat(self, value: bytes | str | None, *, key: str | None = None) -> str | None:
+        text = self._as_text(value)
+        if not text:
             return None
         if self._credential_cipher:
             try:
-                return self._credential_cipher.decrypt(value).decode()
+                return self._credential_cipher.decrypt(text).decode()
             except InvalidToken:
+                if key:
+                    self._drop_undecryptable_pat(key)
                 return None
-        return value.decode() if isinstance(value, bytes) else value
+        return text
+
+    def _load_pat(self, key: str) -> str | None:
+        return self._decode_pat(self._get_text(key), key=key)
+
+    def _drop_undecryptable_pat(self, key: str) -> None:
+        token = key.rsplit(":", 1)[-1]
+        if key.startswith(self._key("access_pat", "")):
+            at = self._get_model(self._access_key(token), AccessToken)
+            self._delete_access_token(token, at.client_id if at else None)
+        elif key.startswith(self._key("refresh_pat", "")):
+            self._redis.delete(key, self._refresh_key(token))
+        elif key.startswith(self._key("code_pat", "")):
+            self._redis.delete(key, self._auth_code_key(token))
+        else:
+            self._redis.delete(key)
+
+    def _scan_keys(self, pattern: str):
+        scan = getattr(self._redis, "scan", None)
+        if not callable(scan):
+            return
+        cursor = 0
+        while True:
+            cursor, keys = scan(cursor, match=pattern, count=200)
+            for key in keys:
+                text = self._as_text(key)
+                if text:
+                    yield text
+            if cursor in (0, "0", b"0"):
+                break
+
+    def purge_plaintext_pats(self) -> int:
+        if self._credential_cipher is None:
+            return 0
+        removed = 0
+        for kind, companion in (
+            ("access_pat", "access"),
+            ("refresh_pat", "refresh"),
+            ("code_pat", "auth_code"),
+        ):
+            for key in self._scan_keys(self._key(kind, "*")):
+                raw = self._get_text(key)
+                if raw is None or raw.startswith(_FERNET_PREFIX):
+                    continue
+                token = key.rsplit(":", 1)[-1]
+                if kind == "access_pat":
+                    at = self._get_model(self._access_key(token), AccessToken)
+                    self._delete_access_token(token, at.client_id if at else None)
+                else:
+                    self._redis.delete(key, self._key(companion, token))
+                removed += 1
+        if removed:
+            logger.info("Removed %s leftover plaintext MCP PAT records", removed)
+        return removed
 
     def _key(self, *parts: str) -> str:
         return "mcp:oauth:" + ":".join(parts)
@@ -194,7 +270,7 @@ class BrainapiMcpOAuthProvider(
             )
         scopes = params.scopes
         if scopes is None:
-            scopes = list(self._valid_scopes)
+            scopes = list(self._default_scopes)
         for s in scopes:
             if s not in self._valid_scopes:
                 raise AuthorizeError(error="invalid_scope", error_description=f"unknown scope: {s}")
@@ -226,7 +302,8 @@ class BrainapiMcpOAuthProvider(
         self, client: OAuthClientInformationFull, authorization_code: AuthorizationCode
     ) -> OAuthToken:
         self._redis.delete(self._auth_code_key(authorization_code.code))
-        brainpat = self._decode_pat(self._redis.getdel(self._code_pat_key(authorization_code.code)))
+        code_pat_key = self._code_pat_key(authorization_code.code)
+        brainpat = self._decode_pat(self._redis.getdel(code_pat_key), key=code_pat_key)
         if not brainpat:
             raise TokenError(error="invalid_grant", error_description="missing credentials")
 
@@ -276,7 +353,8 @@ class BrainapiMcpOAuthProvider(
         refresh_token: RefreshToken,
         scopes: list[str],
     ) -> OAuthToken:
-        brainpat = self._decode_pat(self._redis.getdel(self._refresh_pat_key(refresh_token.token)))
+        refresh_pat_key = self._refresh_pat_key(refresh_token.token)
+        brainpat = self._decode_pat(self._redis.getdel(refresh_pat_key), key=refresh_pat_key)
         self._redis.delete(self._refresh_key(refresh_token.token))
         if not brainpat:
             raise TokenError(error="invalid_grant", error_description="refresh token not found")
@@ -324,10 +402,15 @@ class BrainapiMcpOAuthProvider(
         at = self._get_model(self._access_key(token), AccessToken)
         if at is None:
             if self._pat_verifier(token):
+                scopes = list(self._default_scopes)
+                if self._pat_scope_resolver is not None:
+                    resolved = self._pat_scope_resolver(token)
+                    if resolved is not None:
+                        scopes = list(resolved)
                 return AccessToken(
                     token=token,
                     client_id="brainpat",
-                    scopes=list(self._valid_scopes),
+                    scopes=scopes,
                     expires_at=None,
                     resource=self._resource_server_url,
                 )
@@ -336,6 +419,9 @@ class BrainapiMcpOAuthProvider(
             self._delete_access_token(token, at.client_id)
             return None
         if at.resource != self._resource_server_url:
+            return None
+        if self._credential_cipher and not self._load_pat(self._access_pat_key(token)):
+            self._delete_access_token(token, at.client_id)
             return None
         return at
 
@@ -349,7 +435,8 @@ class BrainapiMcpOAuthProvider(
             )
 
     def get_pat_for_access_token(self, token: str) -> str | None:
-        return self._decode_pat(self._get_text(self._access_pat_key(token)))
+        key = self._access_pat_key(token)
+        return self._decode_pat(self._get_text(key), key=key)
 
     def issue_auth_code(
         self,

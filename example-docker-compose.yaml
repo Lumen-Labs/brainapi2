@@ -71,6 +71,9 @@ services:
       - NEO4J_AUTH=neo4j/your_password
       - NEO4J_ACCEPT_LICENSE_AGREEMENT=yes
       - NEO4J_PLUGINS=["apoc"]
+      - NEO4J_apoc_import_file_enabled=false
+      - NEO4J_apoc_export_file_enabled=false
+      - NEO4J_dbms_security_allow__csv__import__from__file__urls=false
       - NEO4J_server_memory_heap_max__size=2g
       - NEO4J_server_memory_pagecache_size=1g
       - NEO4J_server_jvm_additional=-XX:+UseG1GC -XX:MaxGCPauseMillis=200
@@ -322,6 +325,8 @@ services:
     environment:
       MCP_OAUTH_ISSUER_URL: ${MCP_OAUTH_ISSUER_URL:-}
       MCP_RESOURCE_SERVER_URL: ${MCP_RESOURCE_SERVER_URL:-}
+      MCP_HOSTED_OAUTH_ISSUER_URL: ${MCP_HOSTED_OAUTH_ISSUER_URL:-}
+      MCP_OAUTH_CHATGPT_ONLY: ${MCP_OAUTH_CHATGPT_ONLY:-}
       BRAINAPI_PLUGINS: ${BRAINAPI_PLUGINS:-}
       PLUGIN_REGISTRY_URL: ${PLUGIN_REGISTRY_URL:-}
       PLUGIN_PUBLISHER_ID: ${PLUGIN_PUBLISHER_ID:-}

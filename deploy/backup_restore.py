@@ -7,7 +7,6 @@ import argparse
 import hashlib
 import json
 import os
-import re
 import shlex
 import stat
 import subprocess
@@ -21,6 +20,16 @@ from typing import BinaryIO
 
 ROOT = Path(__file__).resolve().parents[1]
 DEPLOY = ROOT / "deploy"
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from src.lib.cypher_safety import (
+    InvalidCypherIdentifier,
+    create_database_if_not_exists_query,
+    require_database_name,
+    show_database_status_query,
+)
+
 ARCHIVER_IMAGE = "alpine:3.21.3"
 APP_SERVICES = ("nginx", "brainapi", "brainapi-mcp", "brainapi-worker")
 PROFILE_VOLUMES = {
@@ -48,7 +57,14 @@ PROFILE_ALL_VOLUMES = {
         "brainapi-plugins",
     ),
 }
-_NEO4J_DB_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{0,62}$")
+
+
+def _safe_neo4j_database_name(name: str) -> str | None:
+    try:
+        return require_database_name(name)
+    except InvalidCypherIdentifier:
+        return None
+
 
 RESTORE_ORDER = {
     "light": ("redis-data", "postgres", "brainapi-plugins", "stack"),
@@ -274,9 +290,10 @@ def _neo4j_user_databases(stack: Stack) -> list[str]:
     names = []
     for raw in (result.stdout or "").split():
         name = raw.strip()
-        if name == "system" or not _NEO4J_DB_NAME.match(name):
+        safe = _safe_neo4j_database_name(name)
+        if safe is None:
             continue
-        names.append(name)
+        names.append(safe)
     if "neo4j" not in names:
         names.append("neo4j")
     return sorted(set(names))
@@ -299,7 +316,7 @@ def _ensure_neo4j_database(stack: Stack, database: str) -> None:
             password,
             "-d",
             "system",
-            f"CREATE DATABASE `{database}` IF NOT EXISTS",
+            create_database_if_not_exists_query(database),
         ]
     )
     for _ in range(30):
@@ -315,7 +332,7 @@ def _ensure_neo4j_database(stack: Stack, database: str) -> None:
                 password,
                 "-d",
                 "system",
-                f"SHOW DATABASE `{database}` YIELD currentStatus",
+                show_database_status_query(database),
             ],
             capture=True,
             check=False,
@@ -583,9 +600,9 @@ def restore(stack: Stack, backup_dir: Path) -> None:
             if not stack.dry_run:
                 subprocess.run(["tar", "-C", str(tmp_path), "-xzf", str(backup_dir / "neo4j.dumps.tar.gz")], check=True)
             databases = [
-                path.stem
+                name
                 for path in sorted(tmp_path.glob("*.dump"))
-                if path.stem != "system" and _NEO4J_DB_NAME.match(path.stem)
+                if (name := _safe_neo4j_database_name(path.stem)) is not None
             ]
             if stack.dry_run:
                 databases = ["neo4j"]

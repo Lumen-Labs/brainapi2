@@ -2,15 +2,50 @@
 
 from __future__ import annotations
 
+import json
+import logging
 from collections.abc import Mapping
 from typing import Any
 from uuid import uuid4
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, JsonValue
+from redis.exceptions import RedisError
 from starlette.exceptions import HTTPException as StarletteHTTPException
+
+from src.lib.cypher_safety import InvalidCypherIdentifier, RawCypherRejected
+from src.lib.embeddings.client import EmbeddingClientError, EmbeddingError
+
+logger = logging.getLogger(__name__)
+CACHE_RETRY_AFTER = "5"
+
+
+def cache_unavailable() -> HTTPException:
+    return HTTPException(
+        status_code=503,
+        detail="Cache unavailable",
+        headers={"Retry-After": CACHE_RETRY_AFTER},
+    )
+
+
+class CodedHTTPException(HTTPException):
+    def __init__(
+        self,
+        status_code: int,
+        detail: Any,
+        *,
+        code: str,
+        message: str | None = None,
+        resolution: str | None = None,
+        headers: Mapping[str, str] | None = None,
+    ):
+        super().__init__(status_code=status_code, detail=detail, headers=headers)
+        self.code = code
+        self.message = message
+        self.resolution = resolution
 
 
 class ErrorInfo(BaseModel):
@@ -96,6 +131,15 @@ def _request_id(request: Request) -> str:
     )
 
 
+def _jsonable_detail(detail: Any) -> Any:
+    try:
+        encoded = jsonable_encoder(detail, custom_encoder={BaseException: str})
+        json.dumps(encoded, allow_nan=False)
+        return encoded
+    except (TypeError, ValueError, OverflowError):
+        return str(detail)
+
+
 def error_response(
     request: Request,
     *,
@@ -115,7 +159,7 @@ def error_response(
     )
     request_id = _request_id(request)
     content: dict[str, Any] = {
-        "detail": detail,
+        "detail": _jsonable_detail(detail),
         "error": {
             "code": code or default_code,
             "message": message or default_message,
@@ -124,13 +168,39 @@ def error_response(
         },
     }
     if extra:
-        content.update(extra)
+        encoded_extra = _jsonable_detail(extra)
+        if isinstance(encoded_extra, dict):
+            content.update(encoded_extra)
     response_headers = dict(headers or {})
     response_headers["X-Request-ID"] = request_id
     return JSONResponse(
         status_code=status_code,
         content=content,
         headers=response_headers,
+    )
+
+
+def _cypher_identifier_detail(exc: InvalidCypherIdentifier) -> str:
+    if exc.kind in {"limit", "path_depth", "integer"}:
+        return str(exc)
+    if exc.kind == "endpoint":
+        return "Relationship endpoint is invalid"
+    return f"Invalid {exc.kind}"
+
+
+def _cypher_identifier_resolution(exc: InvalidCypherIdentifier) -> str:
+    if exc.kind in {"limit", "path_depth", "integer"}:
+        return "Use an integer within the documented range."
+    if exc.kind == "database":
+        return (
+            "Use a Neo4j database name of 3-63 characters starting with a letter, "
+            "containing only letters, digits, dots, and dashes."
+        )
+    if exc.kind == "endpoint":
+        return "Identify each relationship endpoint by uuid or by name."
+    return (
+        "Use labels, relationship types, and property keys made of letters, "
+        "digits, and underscore. Pass values as data, not as query syntax."
     )
 
 
@@ -143,6 +213,9 @@ def install_error_handlers(app: FastAPI) -> None:
             request,
             status_code=exc.status_code,
             detail=exc.detail,
+            code=getattr(exc, "code", None),
+            message=getattr(exc, "message", None),
+            resolution=getattr(exc, "resolution", None),
             headers=exc.headers,
         )
 
@@ -155,6 +228,64 @@ def install_error_handlers(app: FastAPI) -> None:
             request,
             status_code=422,
             detail=exc.errors(),
+        )
+
+    @app.exception_handler(RawCypherRejected)
+    async def raw_cypher_rejected_handler(
+        request: Request,
+        exc: RawCypherRejected,
+    ):
+        return error_response(
+            request,
+            status_code=400,
+            detail=str(exc),
+            code="CYPHER_QUERY_REJECTED",
+            message="The graph query is not allowed.",
+            resolution=(
+                "Send a single read-only query against this brain. USE, CALL dbms.*, "
+                "and database administration are always blocked. Writes and DELETE "
+                "need GRAPH_RAW_WRITE_ENABLED."
+            ),
+        )
+
+    @app.exception_handler(InvalidCypherIdentifier)
+    async def cypher_identifier_handler(
+        request: Request,
+        exc: InvalidCypherIdentifier,
+    ):
+        value = exc.value if isinstance(exc.value, str) and len(exc.value) <= 200 else None
+        extra = {"kind": exc.kind}
+        if value is not None:
+            extra["value"] = value
+        return error_response(
+            request,
+            status_code=400,
+            detail=_cypher_identifier_detail(exc),
+            code="CYPHER_IDENTIFIER_INVALID",
+            message="A graph identifier in the request is invalid.",
+            resolution=_cypher_identifier_resolution(exc),
+            extra=extra,
+        )
+
+    async def embedding_exception_handler(request: Request, exc: Exception):
+        logger.exception("Embedding request failed", exc_info=exc)
+        return error_response(
+            request,
+            status_code=503,
+            detail="Embedding service unavailable",
+        )
+
+    app.add_exception_handler(EmbeddingError, embedding_exception_handler)
+    app.add_exception_handler(EmbeddingClientError, embedding_exception_handler)
+
+    @app.exception_handler(RedisError)
+    async def redis_exception_handler(request: Request, exc: RedisError):
+        logger.exception("Cache unavailable", exc_info=exc)
+        return error_response(
+            request,
+            status_code=503,
+            detail="Cache unavailable",
+            headers={"Retry-After": CACHE_RETRY_AFTER},
         )
 
     @app.exception_handler(Exception)

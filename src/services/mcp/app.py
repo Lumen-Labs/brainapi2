@@ -12,9 +12,19 @@ from starlette.routing import Mount, Route
 _project_root = Path(__file__).resolve().parent.parent.parent.parent
 dotenv.load_dotenv(_project_root / ".env")
 
+from src.lib.disable_langchain_tracing import disable_langchain_tracing
+
+disable_langchain_tracing()
+
 from src.lib.tracing.middleware import TraceMiddleware
 from src.lib.tracing.runtime import start_runtime_monitoring, stop_runtime_monitoring
-from src.services.mcp.main import auth_token_var, mcp, oauth_provider
+from src.services.mcp.main import (
+    auth_principal_var,
+    auth_scopes_var,
+    auth_token_var,
+    mcp,
+    oauth_provider,
+)
 
 PLUGINS_DIR = Path(os.getenv("PLUGINS_DIR", str(_project_root / "plugins")))
 
@@ -133,11 +143,35 @@ class AuthContextMiddleware:
                     bearer = raw.removeprefix("Bearer ").strip() or None
                 if bearer:
                     if oauth_provider:
+                        access = await oauth_provider.load_access_token(bearer)
                         pat = oauth_provider.get_pat_for_access_token(bearer)
                         token = pat if pat else bearer
+                        if access is not None:
+                            from src.core.auth.scopes import (
+                                principal_for_oauth,
+                                resolve_token_identity,
+                            )
+
+                            auth_scopes_var.set(tuple(access.scopes or ()))
+                            if access.client_id == "brainpat":
+                                principal, scopes = resolve_token_identity(token)
+                                auth_principal_var.set(principal)
+                                if scopes:
+                                    auth_scopes_var.set(tuple(scopes))
+                            else:
+                                auth_principal_var.set(
+                                    principal_for_oauth(access.client_id or "mcp")
+                                )
                     else:
                         token = bearer
             auth_token_var.set(token)
+            if token and auth_principal_var.get() is None:
+                from src.core.auth.scopes import resolve_token_identity
+
+                principal, scopes = resolve_token_identity(token)
+                auth_principal_var.set(principal)
+                if auth_scopes_var.get() is None:
+                    auth_scopes_var.set(tuple(scopes))
         await self.app(scope, receive, send)
 
 

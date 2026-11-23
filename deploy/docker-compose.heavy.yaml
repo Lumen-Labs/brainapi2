@@ -79,6 +79,9 @@ services:
       NEO4J_AUTH: ${NEO4J_USERNAME:-neo4j}/${NEO4J_PASSWORD:?NEO4J_PASSWORD is required}
       NEO4J_ACCEPT_LICENSE_AGREEMENT: "yes"
       NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_apoc_import_file_enabled: "false"
+      NEO4J_apoc_export_file_enabled: "false"
+      NEO4J_dbms_security_allow__csv__import__from__file__urls: "false"
       NEO4J_server_memory_heap_max__size: 2g
       NEO4J_server_memory_pagecache_size: 1g
     volumes:
@@ -230,6 +233,8 @@ services:
       <<: *brainapi-environment
       MCP_OAUTH_ISSUER_URL: ${MCP_OAUTH_ISSUER_URL:-}
       MCP_RESOURCE_SERVER_URL: ${MCP_RESOURCE_SERVER_URL:-}
+      MCP_HOSTED_OAUTH_ISSUER_URL: ${MCP_HOSTED_OAUTH_ISSUER_URL:-}
+      MCP_OAUTH_CHATGPT_ONLY: ${MCP_OAUTH_CHATGPT_ONLY:-}
     command: [-m, uvicorn, src.services.mcp.app:app, --host, 0.0.0.0, --port, "8001", --timeout-keep-alive, "30"]
     depends_on:
       redis: {condition: service_healthy}

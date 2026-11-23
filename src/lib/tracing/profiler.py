@@ -1,3 +1,4 @@
+import logging
 import os
 import threading
 import time
@@ -125,6 +126,31 @@ def stage_profiling_enabled(requested: Optional[bool] = None) -> bool:
     if os.getenv(STAGE_PROFILER_ENV_FLAG, "false") == "true":
         return True
     return bool(requested)
+
+
+def log_stage_report(
+    report: Optional[dict[str, Any]],
+    log: logging.Logger,
+    *,
+    level: int = logging.DEBUG,
+) -> None:
+    """Emit a compact per-stage timing line. No query text, ids, or secrets."""
+    if not report:
+        return
+    parts = []
+    for item in report.get("stages") or []:
+        name = item.get("stage")
+        if not name:
+            continue
+        parts.append(f"{name}={item.get('wall_ms')}ms/{item.get('calls')}")
+    log.log(
+        level,
+        "stage timings profile=%s total_ms=%s loop_blocked_ms=%s %s",
+        report.get("profile"),
+        report.get("total_ms"),
+        report.get("loop_blocked_ms"),
+        " ".join(parts),
+    )
 
 
 @contextmanager

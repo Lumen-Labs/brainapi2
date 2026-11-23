@@ -49,8 +49,13 @@ class _FakeGraphAdapter:
         self.nodes[uuid] = Node(uuid=uuid, name=name, labels=[node_type])
         return self.nodes[uuid]
 
-    def add_edge(self, rel_uuid, tail_uuid, name, tip_uuid):
-        predicate = Predicate(uuid=rel_uuid, name=name, description=f"desc-{name}")
+    def add_edge(self, rel_uuid, tail_uuid, name, tip_uuid, properties=None):
+        predicate = Predicate(
+            uuid=rel_uuid,
+            name=name,
+            description=f"desc-{name}",
+            properties=dict(properties or {}),
+        )
         self.edges.append((tail_uuid, predicate, tip_uuid))
         return predicate
 
@@ -173,7 +178,12 @@ class EventHubInvalidationTests(unittest.TestCase):
                 (
                     "rel-1",
                     "relationship",
-                    {"invalid_at": "02/02/2024", "deprecated": True},
+                    {
+                        "invalid_at": "2024-02-02T00:00:00Z",
+                        "deprecated": True,
+                        "valid_to": "2024-02-02T00:00:00Z",
+                        "superseded_by": "rel-2",
+                    },
                 )
             ],
         )
@@ -204,6 +214,360 @@ class EventHubInvalidationTests(unittest.TestCase):
             )
 
         self.assertEqual(graph.updates, [])
+
+    def test_works_with_many_people_is_not_superseded(self):
+        from src.workers.tasks import ingestion as ingestion_mod
+
+        graph = _FakeGraphAdapter()
+        graph.add_node("alice", "Alice", "PERSON")
+        graph.add_node("bob", "Bob", "PERSON")
+        graph.add_node("carol", "Carol", "PERSON")
+        graph.add_edge("rel-1", "alice", "WORKS_WITH", "bob")
+        graph.add_edge("rel-2", "alice", "WORKS_WITH", "carol")
+
+        relationship = _relationship(
+            "rel-2",
+            _entity("alice", "Alice", "PERSON"),
+            "WORKS_WITH",
+            _entity("carol", "Carol", "PERSON"),
+            valid_at="02/02/2024",
+        )
+        with patch.object(ingestion_mod, "graph_adapter", graph):
+            ingestion_mod._invalidate_superseded_relationships(
+                relationship, brain_id="brain-a"
+            )
+        self.assertEqual(graph.updates, [])
+
+    def test_requires_many_clauses_is_not_superseded(self):
+        from src.workers.tasks import ingestion as ingestion_mod
+
+        graph = _FakeGraphAdapter()
+        graph.add_node("rule", "Rule 12", "RULE")
+        graph.add_node("id-check", "Identity check", "CLAUSE")
+        graph.add_node("retention", "Retention period", "CLAUSE")
+        graph.add_edge("rel-1", "rule", "REQUIRES", "id-check")
+        graph.add_edge("rel-2", "rule", "REQUIRES", "retention")
+
+        relationship = _relationship(
+            "rel-2",
+            _entity("rule", "Rule 12", "RULE"),
+            "REQUIRES",
+            _entity("retention", "Retention period", "CLAUSE"),
+            valid_at="2025-01-01T00:00:00Z",
+        )
+        with patch.object(ingestion_mod, "graph_adapter", graph):
+            ingestion_mod._invalidate_superseded_relationships(
+                relationship, brain_id="brain-a"
+            )
+        self.assertEqual(graph.updates, [])
+
+    def test_applies_to_many_plans_is_not_superseded(self):
+        from src.workers.tasks import ingestion as ingestion_mod
+
+        graph = _FakeGraphAdapter()
+        graph.add_node("policy", "Policy 12", "POLICY")
+        graph.add_node("plan-a", "Plan A", "PLAN")
+        graph.add_node("plan-b", "Plan B", "PLAN")
+        graph.add_edge("rel-1", "policy", "APPLIES_TO", "plan-a")
+        graph.add_edge("rel-2", "policy", "APPLIES_TO", "plan-b")
+
+        relationship = _relationship(
+            "rel-2",
+            _entity("policy", "Policy 12", "POLICY"),
+            "APPLIES_TO",
+            _entity("plan-b", "Plan B", "PLAN"),
+            valid_at="2025-01-01T00:00:00Z",
+        )
+        with patch.object(ingestion_mod, "graph_adapter", graph):
+            ingestion_mod._invalidate_superseded_relationships(
+                relationship, brain_id="brain-a"
+            )
+        self.assertEqual(graph.updates, [])
+
+    def test_source_revision_closes_multi_valued_edge_from_superseded_chunk(self):
+        from src.services.api.controllers import retrieve as retrieve_mod
+        from src.workers.tasks import ingestion as ingestion_mod
+
+        graph = _FakeGraphAdapter()
+        graph.add_node("alice", "Alice", "PERSON")
+        graph.add_node("bob", "Bob", "PERSON")
+        graph.add_node("dana", "Dana", "PERSON")
+        graph.add_edge(
+            "rel-1",
+            "alice",
+            "WORKS_WITH",
+            "bob",
+            properties={"source_chunk_ids": ["chunk-v1"]},
+        )
+        graph.add_edge(
+            "rel-2",
+            "alice",
+            "WORKS_WITH",
+            "dana",
+            properties={"source_chunk_ids": ["chunk-v2"]},
+        )
+        relationship = _relationship(
+            "rel-2",
+            _entity("alice", "Alice", "PERSON"),
+            "WORKS_WITH",
+            _entity("dana", "Dana", "PERSON"),
+            valid_at="2025-01-01T00:00:00Z",
+        )
+        with patch.object(ingestion_mod, "graph_adapter", graph):
+            ingestion_mod._invalidate_superseded_relationships(
+                relationship,
+                brain_id="brain-a",
+                superseded_chunk_ids=["chunk-v1"],
+            )
+        self.assertEqual(len(graph.updates), 1)
+        self.assertEqual(graph.updates[0][0], "rel-1")
+        self.assertFalse(retrieve_mod._is_currently_valid(graph.predicate("rel-1")))
+        self.assertTrue(retrieve_mod._is_currently_valid(graph.predicate("rel-2")))
+
+    def test_reobserving_closed_single_valued_edge_gets_a_new_interval_id(self):
+        from src.core.saving.identity import stable_relationship_id
+        from src.workers.tasks import ingestion as ingestion_mod
+
+        graph = _FakeGraphAdapter()
+        graph.add_node("alice", "Alice", "PERSON")
+        graph.add_node("paris", "Paris", "CITY")
+        closed_id = stable_relationship_id("alice", "LIVES_IN", "paris")
+        graph.add_edge(
+            closed_id,
+            "alice",
+            "LIVES_IN",
+            "paris",
+            properties={
+                "valid_from": "2020-01-01T00:00:00Z",
+                "valid_to": "2023-01-01T00:00:00Z",
+            },
+        )
+        relationship = _relationship(
+            closed_id,
+            _entity("alice", "Alice", "PERSON"),
+            "LIVES_IN",
+            _entity("paris", "Paris", "CITY"),
+            valid_at="2024-01-01T00:00:00Z",
+        )
+        relationship.properties["valid_from"] = "2024-01-01T00:00:00Z"
+        with patch.object(ingestion_mod, "graph_adapter", graph):
+            ingestion_mod._assign_relationship_interval(
+                relationship, brain_id="brain-a"
+            )
+        self.assertNotEqual(relationship.uuid, closed_id)
+        self.assertEqual(graph.predicate(closed_id).properties["valid_from"], "2020-01-01T00:00:00Z")
+        self.assertEqual(graph.predicate(closed_id).properties["valid_to"], "2023-01-01T00:00:00Z")
+
+    def test_undated_reopening_does_not_reuse_closed_interval_id(self):
+        from src.core.saving.identity import stable_relationship_id
+        from src.workers.tasks import ingestion as ingestion_mod
+
+        graph = _FakeGraphAdapter()
+        graph.add_node("alice", "Alice", "PERSON")
+        graph.add_node("paris", "Paris", "CITY")
+        closed_id = stable_relationship_id("alice", "LIVES_IN", "paris")
+        graph.add_edge(
+            closed_id,
+            "alice",
+            "LIVES_IN",
+            "paris",
+            properties={"valid_to": "2023-01-01T00:00:00Z"},
+        )
+        relationship = _relationship(
+            closed_id,
+            _entity("alice", "Alice", "PERSON"),
+            "LIVES_IN",
+            _entity("paris", "Paris", "CITY"),
+        )
+        with patch.object(ingestion_mod, "graph_adapter", graph):
+            ingestion_mod._assign_relationship_interval(
+                relationship, brain_id="brain-a"
+            )
+            retry = _relationship(
+                closed_id,
+                _entity("alice", "Alice", "PERSON"),
+                "LIVES_IN",
+                _entity("paris", "Paris", "CITY"),
+            )
+            ingestion_mod._assign_relationship_interval(retry, brain_id="brain-a")
+        self.assertNotEqual(relationship.uuid, closed_id)
+        self.assertEqual(retry.uuid, relationship.uuid)
+
+        graph.add_edge(
+            relationship.uuid,
+            "alice",
+            "LIVES_IN",
+            "paris",
+            properties={"valid_to": "2024-01-01T00:00:00Z"},
+        )
+        later = _relationship(
+            closed_id,
+            _entity("alice", "Alice", "PERSON"),
+            "LIVES_IN",
+            _entity("paris", "Paris", "CITY"),
+        )
+        with patch.object(ingestion_mod, "graph_adapter", graph):
+            ingestion_mod._assign_relationship_interval(later, brain_id="brain-a")
+        self.assertNotEqual(later.uuid, closed_id)
+        self.assertNotEqual(later.uuid, relationship.uuid)
+
+    def test_open_same_endpoint_edge_keeps_original_valid_from(self):
+        from src.core.saving.identity import stable_relationship_id
+        from src.workers.tasks import ingestion as ingestion_mod
+
+        graph = _FakeGraphAdapter()
+        graph.add_node("alice", "Alice", "PERSON")
+        graph.add_node("paris", "Paris", "CITY")
+        open_id = stable_relationship_id("alice", "LIVES_IN", "paris")
+        graph.add_edge(
+            open_id,
+            "alice",
+            "LIVES_IN",
+            "paris",
+            properties={"valid_from": "2020-01-01T00:00:00Z"},
+        )
+        relationship = _relationship(
+            open_id,
+            _entity("alice", "Alice", "PERSON"),
+            "LIVES_IN",
+            _entity("paris", "Paris", "CITY"),
+            valid_at="2024-06-01T00:00:00Z",
+        )
+        relationship.properties["valid_from"] = "2024-06-01T00:00:00Z"
+        with patch.object(ingestion_mod, "graph_adapter", graph):
+            ingestion_mod._assign_relationship_interval(
+                relationship, brain_id="brain-a"
+            )
+        self.assertEqual(relationship.uuid, open_id)
+        self.assertEqual(relationship.properties["valid_from"], "2020-01-01T00:00:00Z")
+
+    def test_inbound_reverse_edge_is_not_reused_as_open_match(self):
+        from src.core.saving.identity import stable_relationship_id
+        from src.workers.tasks import ingestion as ingestion_mod
+
+        graph = _FakeGraphAdapter()
+        graph.add_node("alice", "Alice", "PERSON")
+        graph.add_node("bob", "Bob", "PERSON")
+        reverse_id = "rev-works-with"
+        graph.add_edge(
+            reverse_id,
+            "bob",
+            "WORKS_WITH",
+            "alice",
+            properties={"valid_from": "2020-01-01T00:00:00Z"},
+        )
+        incoming = stable_relationship_id("alice", "WORKS_WITH", "bob", "flow-1")
+        relationship = _relationship(
+            incoming,
+            _entity("alice", "Alice", "PERSON"),
+            "WORKS_WITH",
+            _entity("bob", "Bob", "PERSON"),
+            valid_at="2024-06-01T00:00:00Z",
+        )
+        relationship.properties["valid_from"] = "2024-06-01T00:00:00Z"
+        with patch.object(ingestion_mod, "graph_adapter", graph):
+            ingestion_mod._assign_relationship_interval(
+                relationship, brain_id="brain-a"
+            )
+        self.assertEqual(relationship.uuid, incoming)
+        self.assertNotEqual(relationship.uuid, reverse_id)
+
+    def test_distinct_flow_keys_keep_separate_open_edges(self):
+        from src.core.saving.identity import stable_relationship_id
+        from src.workers.tasks import ingestion as ingestion_mod
+
+        graph = _FakeGraphAdapter()
+        graph.add_node("alice", "Alice", "PERSON")
+        graph.add_node("bob", "Bob", "PERSON")
+        existing_id = "works-with-flow-a"
+        graph.add_edge(
+            existing_id,
+            "alice",
+            "WORKS_WITH",
+            "bob",
+            properties={
+                "valid_from": "2020-01-01T00:00:00Z",
+                "flow_key": "flow-a",
+            },
+        )
+        incoming = stable_relationship_id("alice", "WORKS_WITH", "bob", "flow-b")
+        relationship = _relationship(
+            incoming,
+            _entity("alice", "Alice", "PERSON"),
+            "WORKS_WITH",
+            _entity("bob", "Bob", "PERSON"),
+            valid_at="2024-06-01T00:00:00Z",
+        )
+        relationship.flow_key = "flow-b"
+        relationship.properties["valid_from"] = "2024-06-01T00:00:00Z"
+        with patch.object(ingestion_mod, "graph_adapter", graph):
+            ingestion_mod._assign_relationship_interval(
+                relationship, brain_id="brain-a"
+            )
+        self.assertEqual(relationship.uuid, incoming)
+        self.assertNotEqual(relationship.uuid, existing_id)
+
+    def test_neighbor_lookup_failure_propagates(self):
+        from src.workers.tasks import ingestion as ingestion_mod
+
+        graph = _FakeGraphAdapter()
+        graph.add_node("alice", "Alice", "PERSON")
+        graph.add_node("paris", "Paris", "CITY")
+        graph.get_neighbors = lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("graph down")
+        )
+        relationship = _relationship(
+            "rel-closed",
+            _entity("alice", "Alice", "PERSON"),
+            "LIVES_IN",
+            _entity("paris", "Paris", "CITY"),
+            valid_at="2024-06-01T00:00:00Z",
+        )
+        with patch.object(ingestion_mod, "graph_adapter", graph):
+            with self.assertRaises(RuntimeError):
+                ingestion_mod._assign_relationship_interval(
+                    relationship, brain_id="brain-a"
+                )
+            with self.assertRaises(RuntimeError):
+                ingestion_mod._invalidate_superseded_relationships(
+                    relationship, brain_id="brain-a"
+                )
+
+    def test_assign_and_invalidate_reuse_one_neighbor_fetch(self):
+        from src.workers.tasks import ingestion as ingestion_mod
+
+        graph = _FakeGraphAdapter()
+        graph.add_node("alice", "Alice", "PERSON")
+        graph.add_node("paris", "Paris", "CITY")
+        graph.add_node("lyon", "Lyon", "CITY")
+        graph.add_edge("rel-old", "alice", "LIVES_IN", "lyon")
+        calls = {"n": 0}
+        real_get = graph.get_neighbors
+
+        def counting_get(*args, **kwargs):
+            calls["n"] += 1
+            return real_get(*args, **kwargs)
+
+        graph.get_neighbors = counting_get
+        relationship = _relationship(
+            "rel-new",
+            _entity("alice", "Alice", "PERSON"),
+            "LIVES_IN",
+            _entity("paris", "Paris", "CITY"),
+            valid_at="2024-06-01T00:00:00Z",
+        )
+        with patch.object(ingestion_mod, "graph_adapter", graph):
+            neighbors = ingestion_mod._relationship_neighbor_map(
+                relationship, brain_id="brain-a"
+            )
+            ingestion_mod._assign_relationship_interval(
+                relationship, brain_id="brain-a", neighbors=neighbors
+            )
+            ingestion_mod._invalidate_superseded_relationships(
+                relationship, brain_id="brain-a", neighbors=neighbors
+            )
+        self.assertEqual(calls["n"], 1)
+        self.assertEqual(graph.updates[0][0], "rel-old")
 
 
 if __name__ == "__main__":

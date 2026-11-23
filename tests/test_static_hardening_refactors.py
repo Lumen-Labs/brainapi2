@@ -159,13 +159,12 @@ class VectorSearchFacadeArchitectureTests(unittest.TestCase):
                 "VectorSearchFacade",
                 "vector_search.search_nodes(",
             ],
-            "src/core/search/entity_context.py": [
+            "src/core/search/entity_resolve.py": [
                 "VectorSearchFacade",
                 "vector_search.search_nodes(",
             ],
             "src/core/search/entity_info.py": [
-                "VectorSearchFacade",
-                "vector_search.search_nodes(",
+                "resolve_entity_node",
             ],
             "src/core/search/entity_sibilings.py": [
                 "VectorSearchFacade",

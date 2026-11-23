@@ -61,3 +61,36 @@ class CacheAdapter:
         Get a specific task by ID.
         """
         return self.cache.get_task(task_id, brain_id)
+
+    def hset(self, key: str, field: str, value: str, brain_id: str = "default") -> int:
+        return self.cache.hset(key, field, value, brain_id)
+
+    def hsetnx(self, key: str, field: str, value: str, brain_id: str = "default") -> bool:
+        return self.cache.hsetnx(key, field, value, brain_id)
+
+    def hgetall(self, key: str, brain_id: str = "default") -> dict:
+        return self.cache.hgetall(key, brain_id)
+
+    def hdel(self, key: str, field: str, brain_id: str = "default") -> int:
+        return self.cache.hdel(key, field, brain_id)
+
+    def hincrby(
+        self, key: str, field: str, amount: int = 1, brain_id: str = "default"
+    ) -> int:
+        return self.cache.hincrby(key, field, amount, brain_id)
+
+    def hmax(self, key: str, field: str, value: int, brain_id: str = "default") -> int:
+        return self.cache.hmax(key, field, value, brain_id)
+
+    def hset_unless_locked(
+        self,
+        key: str,
+        lock_field: str,
+        field: str,
+        value: str,
+        brain_id: str = "default",
+    ) -> bool:
+        return self.cache.hset_unless_locked(key, lock_field, field, value, brain_id)
+
+    def expire(self, key: str, seconds: int, brain_id: str = "default") -> bool:
+        return self.cache.expire(key, seconds, brain_id)

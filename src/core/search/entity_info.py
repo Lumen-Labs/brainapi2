@@ -16,16 +16,13 @@ import numpy as np
 from pydantic import BaseModel, Field
 
 from src.constants.kg import Node, Predicate
+from src.core.search.entity_resolve import resolve_entity_node
 from src.lib.tracing.profiler import profile_stage
 from src.services.kg_agent.main import graph_adapter
 from src.services.kg_agent.main import embeddings_adapter
 from src.services.kg_agent.main import vector_store_adapter
-from src.utils.vector_search import VectorSearchFacade
 from src.utils.similarity.vectors import cosine_similarity
 from src.utils.dates import parse_date_string, to_naive_utc
-
-
-vector_search = VectorSearchFacade(vector_store_adapter)
 
 _BRANCH_FACTOR = 3
 _MAX_EXPLORATION_WORK = 50
@@ -40,7 +37,7 @@ _MAX_EXPLORATION_WORK = 50
 
 class MatchPath(BaseModel):
     target_node: Optional[Node] = None
-    path: Tuple[Predicate, Optional[Node]]
+    path: Optional[Tuple[Predicate, Optional[Node]]] = None
     similarity: float
     children: List["MatchPath"] = Field(default_factory=list)
 
@@ -188,46 +185,21 @@ class EventSynergyRetriever:
             MatchPath: A hierarchical MatchPath rooted at the resolved target node containing the best-match path(s) and an aggregated similarity score. If the target node or any required embeddings are missing, returns a MatchPath with an empty path and similarity 0.0.
         """
 
-        with profile_stage("dossiers.embed", embeds=2):
-            query_embedding = embeddings_adapter.embed_text(query)
-            target_embedding = embeddings_adapter.embed_text(target)
-
         with profile_stage("dossiers.resolve_target"):
-            target_node_vs = vector_search.search_nodes(
-                target_embedding.embeddings, brain_id=self.brain_id
-            )
-
-        if not target_node_vs:
-            return MatchPath(
-                target_node=None,
-                path=(Predicate(name="", description=""), None),
-                similarity=0.0,
-                children=[],
-            )
-
-        target_node_v = target_node_vs[0]
-        target_node_id = target_node_v.metadata.get("uuid")
-
-        if not target_node_id:
-            return MatchPath(
-                target_node=None,
-                path=(Predicate(name="", description=""), None),
-                similarity=0.0,
-                children=[],
-            )
-
-        with profile_stage("dossiers.load_target"):
-            target_node = graph_adapter.get_by_uuid(
-                target_node_id, brain_id=self.brain_id
-            )
+            target_node = resolve_entity_node(target, self.brain_id)
 
         if not target_node:
             return MatchPath(
                 target_node=None,
-                path=(Predicate(name="", description=""), None),
+                path=None,
                 similarity=0.0,
                 children=[],
             )
+
+        target_node_id = target_node.uuid
+
+        with profile_stage("dossiers.embed", embeds=1):
+            query_embedding = embeddings_adapter.embed_text(query)
 
         work_counter = [0]
         with profile_stage("dossiers.explore", max_depth=max_depth) as detail:
@@ -243,7 +215,7 @@ class EventSynergyRetriever:
         if not synergy_paths:
             return MatchPath(
                 target_node=target_node,
-                path=(Predicate(name="", description=""), target_node),
+                path=None,
                 similarity=0.0,
                 children=[],
             )
@@ -267,7 +239,7 @@ class EventSynergyRetriever:
         if not match_paths:
             return MatchPath(
                 target_node=target_node,
-                path=(Predicate(name="", description=""), target_node),
+                path=None,
                 similarity=0.0,
                 children=[],
             )

@@ -1,4 +1,3 @@
-from typing import Any, Optional
 """
 File: /client.py
 Created Date: Saturday October 25th 2025
@@ -9,13 +8,15 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
-from typing import List, Tuple
+from datetime import datetime
+from typing import Any, List, Optional, Tuple
 from pymongo import MongoClient as PyMongoClient
 from pymongo.database import Database
 from pymongo.collection import Collection
 from pymongo.errors import DuplicateKeyError
 from src.adapters.interfaces.data import DataClient, SearchResult
 from src.config import config
+from src.constants.conflicts import FactConflict, conflict_from_document, conflict_to_document
 from src.constants.data import Brain, KGChanges, Observation, StructuredData, TextChunk
 
 
@@ -26,6 +27,7 @@ class MongoClient(DataClient):
 
     def __init__(self):
         self._ingest_group_ready: set[str] = set()
+        self._conflicts_ready: set[str] = set()
         if (
             hasattr(config.mongo, "connection_string")
             and config.mongo.connection_string
@@ -50,6 +52,74 @@ class MongoClient(DataClient):
         collection = self.get_collection("text_chunks", database=brain_id)
         collection.insert_one(text_chunk.model_dump(mode="json"))
         return text_chunk
+
+    def mark_text_chunks_superseded(
+        self,
+        ids: List[str],
+        superseded_at: str,
+        brain_id: str,
+        superseded_by: str | None = None,
+        valid_to: str | None = None,
+    ) -> None:
+        if not ids:
+            return
+        patch: dict[str, Any] = {"metadata.superseded_at": superseded_at}
+        if valid_to:
+            patch["metadata.valid_to"] = valid_to
+        if superseded_by:
+            patch["metadata.superseded_by"] = superseded_by
+        collection = self.get_collection("text_chunks", database=brain_id)
+        collection.update_many(
+            {"id": {"$in": list(ids)}},
+            {"$set": patch},
+        )
+
+    def fill_text_chunk_validity(
+        self, chunk_id: str, brain_id: str, patch: dict[str, Any]
+    ) -> None:
+        if not chunk_id or not patch:
+            return
+        set_expr: dict[str, Any] = {}
+        for key, value in patch.items():
+            set_expr[f"metadata.{key}"] = {"$ifNull": [f"$metadata.{key}", value]}
+        collection = self.get_collection("text_chunks", database=brain_id)
+        collection.update_one({"id": chunk_id}, [{"$set": set_expr}])
+
+    def delete_text_chunks(self, ids: List[str], brain_id: str) -> None:
+        if not ids:
+            return
+        self.get_collection("text_chunks", database=brain_id).delete_many(
+            {"id": {"$in": list(ids)}}
+        )
+
+    def set_text_chunk_task_ids(
+        self, chunk_id: str, task_ids: List[str], brain_id: str
+    ) -> None:
+        self.get_collection("text_chunks", database=brain_id).update_one(
+            {"id": chunk_id},
+            {"$set": {"metadata.ingest_task_ids": list(task_ids)}},
+        )
+
+    def delete_observations(
+        self, ids: List[str], brain_id: str, resource_ids: Optional[List[str]] = None
+    ) -> None:
+        clauses: list[dict] = []
+        if ids:
+            clauses.append({"id": {"$in": list(ids)}})
+        if resource_ids:
+            clauses.append({"resource_id": {"$in": list(resource_ids)}})
+        if not clauses:
+            return
+        self.get_collection("observations", database=brain_id).delete_many(
+            {"$or": clauses}
+        )
+
+    def delete_structured_data(self, structured_id: str, brain_id: str) -> None:
+        if not structured_id:
+            return
+        self.get_collection("structured_data", database=brain_id).delete_one(
+            {"id": structured_id}
+        )
 
     def save_observations(
         self, observations: List[Observation], brain_id: str
@@ -152,6 +222,7 @@ class MongoClient(DataClient):
             id=str(result["_id"]),
             name_key=result["name_key"],
             pat=result.get("pat"),
+            pat_scopes=list(result.get("pat_scopes") or []),
         )
 
     def get_brain_by_pat(self, pat: str) -> Brain | None:
@@ -163,6 +234,7 @@ class MongoClient(DataClient):
             id=str(result["_id"]),
             name_key=result["name_key"],
             pat=result.get("pat"),
+            pat_scopes=list(result.get("pat_scopes") or []),
         )
 
     def get_brains_list(self) -> List[Brain]:
@@ -173,6 +245,7 @@ class MongoClient(DataClient):
                 id=str(result["_id"]),
                 name_key=result["name_key"],
                 pat=result.get("pat"),
+                pat_scopes=list(result.get("pat_scopes") or []),
             )
             for result in result
         ]
@@ -397,6 +470,8 @@ class MongoClient(DataClient):
         skip: int = 0,
         types: list[str] = None,
         query_text: str = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
     ) -> list[KGChanges]:
         """
         Retrieve changelog entries for a brain with optional type filtering and text search.
@@ -426,6 +501,27 @@ class MongoClient(DataClient):
                 {"change.node.name": {"$regex": query_text, "$options": "i"}},
                 {"type": {"$regex": query_text, "$options": "i"}},
             ]
+        if since is not None or until is not None:
+            from src.core.saving.validity import format_instant
+
+            string_bounds: dict[str, Any] = {}
+            dt_bounds: dict[str, Any] = {}
+            if since is not None:
+                string_bounds["$gte"] = format_instant(since).rstrip("Z")
+                dt_bounds["$gte"] = since
+            if until is not None:
+                string_bounds["$lt"] = format_instant(until).rstrip("Z")
+                dt_bounds["$lt"] = until
+            window = {
+                "$or": [
+                    {"timestamp": string_bounds},
+                    {"timestamp": dt_bounds},
+                ]
+            }
+            if query:
+                query = {"$and": [query, window]}
+            else:
+                query = window
 
         results = collection.find(query).skip(skip).limit(limit).sort("timestamp", -1)
         changelogs = []
@@ -589,6 +685,172 @@ class MongoClient(DataClient):
         meters.replace_one({"_id": group_tracking}, updated, upsert=True)
         return True
 
+
+    def _ensure_conflict_indexes(self, brain_id: str) -> None:
+        if brain_id in self._conflicts_ready:
+            return
+        collection = self.get_collection("conflicts", database=brain_id)
+        collection.create_index("id", unique=True, name="uniq_conflict_id")
+        collection.create_index("pair_key", unique=True, name="uniq_conflict_pair")
+        collection.create_index("status", name="conflict_status")
+        collection.create_index("claim_key", name="conflict_claim")
+        collection.create_index("subject.name", name="conflict_subject")
+        collection.create_index("detected_at", name="conflict_detected")
+        collection.create_index("sides.fact_id", name="conflict_fact_ids")
+        collection.create_index("sides.source.source_key", name="conflict_source_keys")
+        self._conflicts_ready.add(brain_id)
+
+    def _ensure_conflict_scan_state_indexes(self, brain_id: str) -> None:
+        collection = self.get_collection("conflict_scan_state", database=brain_id)
+        collection.create_index("id", unique=True, name="uniq_conflict_scan_state_id")
+
+    def _conflict_document(self, conflict: FactConflict) -> dict[str, Any]:
+        document = conflict_to_document(conflict)
+        document["id"] = conflict.id
+        document["pair_key"] = conflict.pair_key
+        document["claim_key"] = conflict.claim_key
+        document["status"] = conflict.status
+        document["detected_at"] = conflict.detected_at
+        return document
+
+    def save_conflict(self, conflict: FactConflict, brain_id: str) -> FactConflict:
+        self._ensure_conflict_indexes(brain_id)
+        collection = self.get_collection("conflicts", database=brain_id)
+        document = self._conflict_document(conflict)
+        collection.update_one({"id": conflict.id}, {"$set": document}, upsert=True)
+        return conflict
+
+    def update_conflict(
+        self,
+        conflict: FactConflict,
+        brain_id: str,
+        *,
+        if_status: str | None = None,
+        if_resolution_method: str | None = None,
+    ) -> FactConflict | None:
+        if if_status is None and if_resolution_method is None:
+            return self.save_conflict(conflict, brain_id)
+        self._ensure_conflict_indexes(brain_id)
+        collection = self.get_collection("conflicts", database=brain_id)
+        document = self._conflict_document(conflict)
+        query: dict[str, Any] = {"id": conflict.id}
+        if if_status is not None:
+            query["status"] = if_status
+        if if_resolution_method is not None:
+            query["resolution.method"] = if_resolution_method
+        result = collection.update_one(query, {"$set": document})
+        if result.matched_count == 0:
+            return None
+        return conflict
+
+    def get_conflict_by_id(self, id: str, brain_id: str) -> Optional[FactConflict]:
+        collection = self.get_collection("conflicts", database=brain_id)
+        row = collection.find_one({"id": id})
+        return conflict_from_document(row)
+
+    def get_conflict_by_pair_key(
+        self, pair_key: str, brain_id: str
+    ) -> Optional[FactConflict]:
+        collection = self.get_collection("conflicts", database=brain_id)
+        row = collection.find_one({"pair_key": pair_key})
+        return conflict_from_document(row)
+
+    def get_conflicts_list(
+        self,
+        brain_id: str,
+        limit: int = 10,
+        skip: int = 0,
+        status: str | None = None,
+        source: str | None = None,
+        subject: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> Tuple[list[FactConflict], int]:
+        collection = self.get_collection("conflicts", database=brain_id)
+        query: dict[str, Any] = {}
+        if status:
+            query["status"] = status
+        if source:
+            query["sides.source.source_key"] = source
+        if subject:
+            query["subject.name"] = {"$regex": subject, "$options": "i"}
+        if since is not None or until is not None:
+            from src.core.saving.validity import format_instant
+
+            window: dict[str, Any] = {}
+            if since is not None:
+                window["$gte"] = format_instant(since)
+            if until is not None:
+                window["$lt"] = format_instant(until)
+            query["detected_at"] = window
+        total = collection.count_documents(query)
+        rows = (
+            collection.find(query)
+            .sort("detected_at", -1)
+            .skip(int(skip))
+            .limit(int(limit))
+        )
+        conflicts: list[FactConflict] = []
+        for row in rows:
+            parsed = conflict_from_document(row)
+            if parsed is not None:
+                conflicts.append(parsed)
+        return conflicts, int(total)
+
+    def get_open_conflicts_for_facts(
+        self, fact_ids: list[str], brain_id: str
+    ) -> list[FactConflict]:
+        if not fact_ids:
+            return []
+        collection = self.get_collection("conflicts", database=brain_id)
+        rows = collection.find(
+            {"status": "open", "sides.fact_id": {"$in": list(fact_ids)}}
+        )
+        conflicts: list[FactConflict] = []
+        for row in rows:
+            parsed = conflict_from_document(row)
+            if parsed is not None:
+                conflicts.append(parsed)
+        return conflicts
+
+    def get_conflict_scan_cursor(self, brain_id: str) -> dict[str, str] | None:
+        self._ensure_conflict_scan_state_indexes(brain_id)
+        collection = self.get_collection("conflict_scan_state", database=brain_id)
+        row = collection.find_one({"id": "full_scan"})
+        if not row:
+            return None
+        subject = str(row.get("after_subject") or "").strip()
+        predicate = str(row.get("after_predicate") or "").strip()
+        if not subject and not predicate:
+            return None
+        return {"after_subject": subject, "after_predicate": predicate}
+
+    def set_conflict_scan_cursor(
+        self, brain_id: str, cursor: dict[str, str] | None
+    ) -> None:
+        self._ensure_conflict_scan_state_indexes(brain_id)
+        collection = self.get_collection("conflict_scan_state", database=brain_id)
+        if not cursor:
+            collection.delete_one({"id": "full_scan"})
+            return
+        subject = str(cursor.get("after_subject") or "").strip()
+        predicate = str(cursor.get("after_predicate") or "").strip()
+        if not subject and not predicate:
+            collection.delete_one({"id": "full_scan"})
+            return
+        payload = {
+            "id": "full_scan",
+            "after_subject": subject,
+            "after_predicate": predicate,
+        }
+        try:
+            collection.update_one(
+                {"id": "full_scan"},
+                {"$set": payload},
+                upsert=True,
+            )
+        except DuplicateKeyError:
+            collection.update_one({"id": "full_scan"}, {"$set": payload})
 
     def get_ingest_group(
         self, brain_id: str, group_tracking: str

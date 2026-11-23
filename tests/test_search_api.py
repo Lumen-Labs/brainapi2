@@ -388,6 +388,54 @@ class SearchApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("title-hit", ids[10:])
         self.assertEqual(response.channel_lists["literal"], ["title-hit"])
 
+    async def test_as_of_reports_undated_hits_behind_opt_in(self):
+        from src.services.api.controllers import search as search_mod
+
+        dated = TextChunk(
+            id="dated",
+            text="dated passage",
+            metadata={"valid_from": "2024-01-01T00:00:00Z"},
+        )
+        undated = TextChunk(id="plain", text="no dates", metadata={})
+        mock_embeddings = MagicMock()
+        mock_data = MagicMock()
+        mock_data.search_bm25.return_value = [(dated, 3.1), (undated, 2.0)]
+        mock_data.get_text_chunks_by_ids.return_value = ([dated, undated], [])
+        mock_vs = MagicMock()
+
+        with (
+            patch.object(search_mod.config, "search_enabled", True),
+            patch.object(search_mod.config, "search_use_dense", False),
+            patch.object(search_mod.config, "search_use_bm25", True),
+            patch.object(search_mod, "embeddings_adapter", mock_embeddings),
+            patch.object(search_mod, "vector_search", mock_vs),
+            patch.object(search_mod, "data_adapter", mock_data),
+        ):
+            hidden = await search_mod.search(
+                SearchRequestBody(
+                    query="license", k=5, as_of="2024-06-01T00:00:00Z"
+                )
+            )
+            shown = await search_mod.search(
+                SearchRequestBody(
+                    query="license",
+                    k=5,
+                    as_of="2024-06-01T00:00:00Z",
+                    include_validity_unknown=True,
+                )
+            )
+            live = await search_mod.search(SearchRequestBody(query="license", k=5))
+
+        self.assertEqual([hit.id for hit in hidden.hits], ["dated"])
+        self.assertEqual(hidden.validity_unknown_count, 1)
+        self.assertIsNone(hidden.validity_unknown)
+        self.assertEqual([hit.id for hit in shown.hits], ["dated"])
+        self.assertEqual(shown.validity_unknown_count, 1)
+        self.assertEqual(shown.validity_unknown[0]["validity"], "unknown")
+        self.assertEqual(shown.validity_unknown[0]["id"], "plain")
+        self.assertEqual({hit.id for hit in live.hits}, {"dated", "plain"})
+        self.assertIsNone(live.validity_unknown_count)
+
 
 if __name__ == "__main__":
     unittest.main()

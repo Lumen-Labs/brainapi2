@@ -84,6 +84,17 @@ from src.services.kg_agent.main import (
 from src.services.observations.main import observations_agent
 from src.utils.dates import normalize_date_string
 from src.utils.similarity.vectors import cosine_similarity
+from src.lib.tracing.ingest_telemetry import (
+    INGEST_DATA_OPERATION,
+    INGEST_FILE_OPERATION,
+    INGEST_STRUCTURED_OPERATION,
+    INGEST_URL_OPERATION,
+    kind_for_ingest_data,
+    maybe_emit_ingestion_telemetry,
+    now_ms,
+    stamp_started_at,
+    telemetry_extra,
+)
 from src.workers.app import ingestion_app
 
 PYPROJECT_PATH = Path(__file__).parent.parent.parent.parent / "pyproject.toml"
@@ -117,6 +128,7 @@ def set_ingestion_task_status(
     counts: Optional[dict] = None,
     cost: Optional[dict] = None,
     group_tracking: Optional[str] = None,
+    extra: Optional[dict] = None,
 ) -> dict:
     from src.core.saving.ingest_cost import IngestCostLedger, merge_cost_into_status_payload
 
@@ -135,7 +147,13 @@ def set_ingestion_task_status(
         except Exception:
             existing = {}
     previous = existing.get("status")
+    if (previous == "partial_failed" or existing.get("ocr_partial")) and status == "completed":
+        status = "partial_failed"
     if previous in TERMINAL_TASK_STATUSES and status not in TERMINAL_TASK_STATUSES:
+        return existing
+    if previous in {"completed", "partial_failed"} and status == "failed":
+        return existing
+    if existing.get("ocr_pages_accepted") and status == "failed":
         return existing
     if previous and TASK_STATUS_RANK.get(status, -1) < TASK_STATUS_RANK.get(previous, -1):
         return existing
@@ -148,7 +166,9 @@ def set_ingestion_task_status(
         payload["stage"] = stage
     if counts is not None:
         payload["counts"] = counts
-    if error is not None:
+    if status == "completed":
+        payload.pop("error", None)
+    elif error is not None:
         payload["error"] = str(error)[:2000]
     if errors is not None:
         payload["errors"] = [
@@ -162,6 +182,13 @@ def set_ingestion_task_status(
             }
             for item in errors[:50]
         ]
+    if extra:
+        for extra_key, value in extra.items():
+            if value is None:
+                payload.pop(extra_key, None)
+            else:
+                payload[extra_key] = value
+    stamp_started_at(payload, status)
     if cost is not None:
         payload = merge_cost_into_status_payload(
             payload, IngestCostLedger.from_dict(cost)
@@ -177,6 +204,7 @@ def set_ingestion_task_status(
     else:
         payload.pop("group_tracking", None)
     if status in TERMINAL_TASK_STATUSES:
+        payload.pop("remote_ocr_deadline", None)
         record_terminal(brain_id, task_id, status)
     cache_adapter.set(
         key=key,
@@ -204,6 +232,8 @@ def set_ingestion_task_status(
     if os.getenv("PROGRESSIVE_INGESTION_ENABLED") == "1":
         from src.core.saving.ingest_manifest import update_section
         update_section(brain_id, task_id, status, stage, payload.get("cost"), error)
+    if previous not in TERMINAL_TASK_STATUSES and status in TERMINAL_TASK_STATUSES:
+        maybe_emit_ingestion_telemetry(previous, payload)
     return payload
 
 
@@ -489,17 +519,27 @@ def _resolve_relationship_entities(
 
     _apply_resolutions()
 
+    from src.core.saving.validity import format_instant, parse_instant, stamp_valid_from, utc_now
+
     for relationship in relationships:
         relationship.properties = stamp_provenance(
             relationship.properties,
             source_chunk_id=source_chunk_id,
             source_timestamp=source_timestamp,
         )
-        if source_timestamp and not (relationship.properties or {}).get("valid_at"):
+        if (
+            parse_instant(source_timestamp) is not None
+            and not (relationship.properties or {}).get("valid_at")
+        ):
             relationship.properties = {
                 **(relationship.properties or {}),
                 "valid_at": source_timestamp,
             }
+        relationship.properties = stamp_valid_from(
+            relationship.properties,
+            source_timestamp,
+            recorded_at=format_instant(utc_now()),
+        )
         for entity in (relationship.tail, relationship.tip):
             entity.properties = stamp_provenance(
                 entity.properties,
@@ -551,15 +591,111 @@ def _is_event_entity(entity) -> bool:
     )
 
 
+def _relationship_flow_key(obj) -> str:
+    props = getattr(obj, "properties", None) or {}
+    return str(getattr(obj, "flow_key", None) or props.get("flow_key") or "").strip()
+
+
+def _relationship_neighbor_map(
+    relationship: ArchitectAgentRelationship,
+    *,
+    brain_id: str,
+    neighbors=None,
+):
+    if neighbors is not None:
+        return neighbors
+    return graph_adapter.get_neighbors(
+        [relationship.tail.uuid], brain_id=brain_id
+    )
+
+
+def _assign_relationship_interval(
+    relationship: ArchitectAgentRelationship,
+    *,
+    brain_id: str,
+    neighbors=None,
+) -> None:
+    """Keep a closed interval intact when the same fact is observed again.
+
+    Only outgoing same-endpoint edges are considered. Open edges reuse their
+    identifier and original ``valid_from``. Distinct ``flow_key`` values keep
+    separate open edges when both sides have a key; otherwise reuse is by
+    endpoints and name. Closed edges get a new identifier keyed by the new
+    start so MERGE cannot overwrite the historical interval. Neighbor lookup
+    failures propagate so the caller can retry instead of merging onto a
+    closed interval.
+    """
+    from src.core.saving.identity import stable_relationship_id, stable_uuid
+    from src.core.saving.validity import VALID_FROM, is_valid_at
+
+    base = relationship.uuid or stable_relationship_id(
+        relationship.tail.uuid,
+        relationship.name,
+        relationship.tip.uuid,
+        relationship.flow_key,
+    )
+    neighbors = _relationship_neighbor_map(
+        relationship, brain_id=brain_id, neighbors=neighbors
+    )
+    open_match = None
+    closed_ids: list[str] = []
+    rel_flow = _relationship_flow_key(relationship)
+    for predicate, neighbor in (neighbors or {}).get(relationship.tail.uuid) or []:
+        if not predicate or not neighbor:
+            continue
+        if (getattr(predicate, "direction", None) or "").strip().lower() != "out":
+            continue
+        if neighbor.uuid != relationship.tip.uuid:
+            continue
+        if (predicate.name or "").strip().upper() != (relationship.name or "").strip().upper():
+            continue
+        pred_flow = _relationship_flow_key(predicate)
+        if rel_flow and pred_flow and rel_flow != pred_flow:
+            continue
+        props = getattr(predicate, "properties", None) or {}
+        if is_valid_at(props, None, deprecated=bool(getattr(predicate, "deprecated", False))):
+            open_match = predicate
+            break
+        uuid = getattr(predicate, "uuid", None)
+        if uuid:
+            closed_ids.append(str(uuid))
+    if open_match is not None:
+        relationship.uuid = open_match.uuid or base
+        existing = getattr(open_match, "properties", None) or {}
+        if existing.get(VALID_FROM):
+            relationship.properties = {
+                **(relationship.properties or {}),
+                VALID_FROM: existing[VALID_FROM],
+            }
+        return
+    if closed_ids:
+        start = (relationship.properties or {}).get(VALID_FROM) or (
+            relationship.properties or {}
+        ).get("source_timestamp")
+        token = str(start or "") or "|".join(sorted(closed_ids))
+        candidate = stable_uuid("rel-interval", base, token)
+        existing = set(closed_ids)
+        n = 0
+        while candidate in existing:
+            n += 1
+            candidate = stable_uuid("rel-interval", base, token, str(n))
+        relationship.uuid = candidate
+        return
+    relationship.uuid = base
+
+
 def _invalidate_superseded_relationships(
     relationship: ArchitectAgentRelationship,
     *,
     brain_id: str,
+    superseded_chunk_ids: list[str] | tuple[str, ...] | None = None,
+    neighbors=None,
 ) -> None:
-    """Mark older same-type outgoing edges from the same subject as invalid when tip changes.
+    """Close an older outgoing edge only when it is single-valued or source-revision-driven.
 
-    Event hub legs are never invalidated: an actor accumulates one leg per event and
-    none of them supersede the others.
+    Event hub legs are never invalidated. Multi-valued types such as WORKS_WITH
+    and APPLIES_TO accumulate unless the existing edge came from a chunk this
+    ingest just superseded.
     """
     if _is_event_entity(relationship.tail) or _is_event_entity(relationship.tip):
         return
@@ -567,12 +703,11 @@ def _invalidate_superseded_relationships(
         relationship.tip.type or ""
     ).strip():
         return
-    try:
-        neighbors = graph_adapter.get_neighbors(
-            [relationship.tail.uuid], brain_id=brain_id
-        )
-    except Exception:
-        return
+    neighbors = _relationship_neighbor_map(
+        relationship, brain_id=brain_id, neighbors=neighbors
+    )
+    from src.core.saving.validity_cardinality import should_close_outgoing_edge
+
     pairs = (neighbors or {}).get(relationship.tail.uuid) or []
     valid_at = (relationship.properties or {}).get("valid_at") or (
         relationship.properties or {}
@@ -591,17 +726,34 @@ def _invalidate_superseded_relationships(
         if getattr(predicate, "uuid", None) == relationship.uuid:
             continue
         props = getattr(predicate, "properties", None) or {}
-        if props.get("invalid_at"):
+        if props.get("invalid_at") or props.get("valid_to"):
+            continue
+        if not should_close_outgoing_edge(
+            relationship_name=relationship.name,
+            existing_properties=props,
+            superseded_chunk_ids=superseded_chunk_ids,
+        ):
             continue
         try:
+            from src.core.saving.validity import close_validity, format_instant, parse_instant, utc_now
+
+            closed_at = valid_at or format_instant(utc_now())
+            closed = close_validity(
+                props,
+                closed_at=closed_at,
+                superseded_by=getattr(relationship, "uuid", None),
+            )
             graph_adapter.update_properties(
                 predicate.uuid,
                 "relationship",
                 brain_id=brain_id,
                 new_properties={
-                    "invalid_at": valid_at
-                    or datetime.datetime.utcnow().strftime("%d/%m/%Y"),
+                    "invalid_at": closed.get("invalid_at") or closed_at,
                     "deprecated": True,
+                    "valid_to": closed.get("valid_to")
+                    or format_instant(parse_instant(closed_at) or utc_now()),
+                    "superseded_by": closed.get("superseded_by")
+                    or getattr(relationship, "uuid", None),
                 },
             )
         except Exception as exc:
@@ -626,11 +778,117 @@ def source_text_from_payload(payload: IngestionTaskArgs) -> str:
     return json.dumps(payload.data.json_data)
 
 
-def _save_source(payload, source_text):
+def labels_for_graph_node(labels: List[str]) -> List[str]:
+    from src.lib.cypher_safety import InvalidCypherIdentifier, clean_label
+
+    if not labels:
+        raise InvalidCypherIdentifier(
+            "At least one label is required",
+            kind="label",
+            value=labels,
+        )
+    clean_label(labels[0])
+    kept: List[str] = [labels[0]]
+    for extra in labels[1:]:
+        try:
+            clean_label(extra)
+        except InvalidCypherIdentifier:
+            continue
+        if extra not in kept:
+            kept.append(extra)
+    return kept
+
+
+def add_graph_nodes(graph_adapter, nodes: List[Node], brain_id: str):
+    from src.lib.cypher_safety import InvalidCypherIdentifier, original_type_properties
+
+    if not nodes:
+        return []
+    safe: List[Node] = []
+    for node in nodes:
+        try:
+            kept_labels = labels_for_graph_node(list(node.labels or []))
+        except InvalidCypherIdentifier as exc:
+            print(f"[!] Skipping node {node.uuid} with invalid labels {node.labels}: {exc}")
+            continue
+        properties = {**(node.properties or {}), **original_type_properties(kept_labels)}
+        safe.append(node.model_copy(update={"labels": kept_labels, "properties": properties}))
+    if not safe:
+        return []
+    return graph_adapter.add_nodes(safe, brain_id=brain_id)
+
+
+def graph_ingest_account(
+    relationship,
+    *,
+    requested_new_nodes: List[Node],
+    added_nodes: List[Node],
+    subject_exists: bool,
+    object_exists: bool,
+) -> Tuple[List[dict], Optional[dict], bool]:
+    added_ids = {
+        node.uuid for node in (added_nodes or []) if getattr(node, "uuid", None)
+    }
+    skipped = [
+        node
+        for node in requested_new_nodes
+        if getattr(node, "uuid", None) and node.uuid not in added_ids
+    ]
+    item_errors = [
+        {
+            "node": node.name or node.uuid,
+            "uuid": node.uuid,
+            "message": f"invalid graph label on {node.name or node.uuid}",
+        }
+        for node in skipped
+    ]
+    skipped_ids = {node.uuid for node in skipped}
+    write_edge = (
+        relationship.tail.uuid not in skipped_ids
+        and relationship.tip.uuid not in skipped_ids
+    )
+    node_touches = []
+    seen_nodes = set()
+    for entity, existed in (
+        (relationship.tail, subject_exists),
+        (relationship.tip, object_exists),
+    ):
+        if entity.uuid in seen_nodes:
+            continue
+        seen_nodes.add(entity.uuid)
+        if entity.uuid in skipped_ids:
+            continue
+        if not write_edge and existed:
+            continue
+        if not write_edge and entity.uuid not in added_ids:
+            continue
+        node_touches.append(
+            {
+                "uuid": entity.uuid,
+                "created": not existed,
+                "v_id": (entity.properties or {}).get("v_id"),
+                "name": entity.name,
+            }
+        )
+    ledger = None
+    if node_touches or write_edge:
+        ledger = {
+            "nodes": node_touches,
+            "edges": [],
+        }
+    return item_errors, ledger, write_edge
+
+
+def _save_source(payload, source_text, task_id=None):
+    from src.core.saving.ingest_effects import remember, stamp_task_ids
+
+    metadata = dict(payload.meta_keys or {})
+    if task_id:
+        metadata["ingest_task_ids"] = stamp_task_ids(metadata.get("ingest_task_ids"), task_id)
     text_chunk = data_adapter.save_text_chunk(
         TextChunk(
             text=source_text,
-            metadata=payload.meta_keys,
+            metadata=metadata or None,
             brain_version=BRAIN_VERSION,
         ),
         brain_id=payload.brain_id,
@@ -638,14 +896,23 @@ def _save_source(payload, source_text):
     text_chunk_vector = embeddings_adapter.embed_text(text_chunk.text)
 
     text_chunk_vector.metadata = {
-        **(payload.meta_keys if payload.meta_keys else {}),
+        **metadata,
         "resource_id": text_chunk.id,
     }
-    vector_store_adapter.add_vectors(
+    stored = vector_store_adapter.add_vectors(
         [text_chunk_vector],
         "data",
         brain_id=payload.brain_id,
     )
+    if task_id:
+        vector_ids = {}
+        if stored:
+            vector_ids[text_chunk.id] = str(stored[0])
+        remember(
+            payload.brain_id,
+            task_id,
+            {"created_chunk_ids": [text_chunk.id], "chunk_vector_ids": vector_ids},
+        )
 
     return text_chunk
 
@@ -685,11 +952,14 @@ def _ingest_data(self, args, *, staged=False):
         if not claim_section_execution(args.get("brain_id", "default"), self.request.id, bool((getattr(self.request, "delivery_info", None) or {}).get("redelivered"))):
             return self.request.id
     payload = None
+    started_at_ms = now_ms()
+    cost_ledger = None
     try:
         payload = IngestionTaskArgs(**args)
         from src.config import validate_pipeline_mode
 
         validate_pipeline_mode(config.pipeline_mode)
+        source_text = source_text_from_payload(payload)
 
         set_ingestion_task_status(
             self.request.id,
@@ -697,6 +967,13 @@ def _ingest_data(self, args, *, staged=False):
             "started",
             stage="source",
             group_tracking=payload.group_tracking,
+            extra=telemetry_extra(
+                operation=INGEST_DATA_OPERATION,
+                kind=kind_for_ingest_data(payload),
+                pipeline_mode=config.pipeline_mode,
+                started_at_ms=started_at_ms,
+                size_chars=len(source_text or ""),
+            ),
         )
 
         payload.meta_keys = (
@@ -719,10 +996,53 @@ def _ingest_data(self, args, *, staged=False):
             else None
         )
 
-        source_text = source_text_from_payload(payload)
+        from src.core.saving.source_passages import prepare_source_revision
+        from src.core.saving.validity import format_instant, parse_instant, stamp_valid_from, utc_now
+
+        superseded_ids: list[str] = []
+        recorded_at = format_instant(utc_now())
+        source_instant = parse_instant(payload.source_timestamp)
+        if source_instant is not None:
+            payload.source_timestamp = format_instant(source_instant)
+        revision = prepare_source_revision(
+            data_adapter,
+            brain_id=payload.brain_id,
+            source_text=source_text,
+            meta_keys=payload.meta_keys,
+            source_timestamp=payload.source_timestamp,
+            recorded_at=recorded_at,
+            out_superseded=superseded_ids,
+        )
+        if revision == "unchanged":
+            from src.core.saving.ingest_effects import remember
+
+            remember(payload.brain_id, self.request.id, {})
+            set_ingestion_task_status(
+                self.request.id,
+                payload.brain_id,
+                "completed",
+                stage="completed",
+                group_tracking=payload.group_tracking,
+            )
+            return self.request.id
+
+        if payload.meta_keys is None:
+            payload.meta_keys = {}
+        payload.meta_keys = stamp_valid_from(
+            payload.meta_keys, payload.source_timestamp, recorded_at=recorded_at
+        )
 
         checkpoint()
-        text_chunk = _save_source(payload, source_text)
+        text_chunk = _save_source(payload, source_text, self.request.id)
+        if superseded_ids:
+            close_at = payload.source_timestamp or recorded_at
+            data_adapter.mark_text_chunks_superseded(
+                superseded_ids,
+                close_at,
+                payload.brain_id,
+                superseded_by=str(text_chunk.id),
+                valid_to=format_instant(parse_instant(close_at) or utc_now()),
+            )
 
         if config.pipeline_mode == "lightweight":
             print("[DEBUG (ingest_data)]: Lightweight pipeline mode selected")
@@ -757,7 +1077,7 @@ def _ingest_data(self, args, *, staged=False):
                 )
 
             checkpoint()
-            data_adapter.save_observations(
+            saved_observations = data_adapter.save_observations(
                 [
                     Observation(
                         text=observation,
@@ -767,6 +1087,19 @@ def _ingest_data(self, args, *, staged=False):
                     for observation in observations
                 ],
                 brain_id=payload.brain_id,
+            )
+            from src.core.saving.ingest_effects import remember
+
+            remember(
+                payload.brain_id,
+                self.request.id,
+                {
+                    "observations": [
+                        {"id": item.id, "resource_id": text_chunk.id}
+                        for item in saved_observations or []
+                        if getattr(item, "id", None)
+                    ]
+                },
             )
 
         checkpoint()
@@ -807,6 +1140,7 @@ def _ingest_data(self, args, *, staged=False):
                         "brain_id": enrich_result.brain_id,
                         "session_id": enrich_result.session_id,
                         "parent_task_id": parent_task_id,
+                        "superseded_chunk_ids": superseded_ids,
                     }
                 )
             )
@@ -867,6 +1201,13 @@ def _ingest_data(self, args, *, staged=False):
             "failed",
             stage="failed",
             error=str(e),
+            cost=cost_ledger.to_dict() if cost_ledger is not None else None,
+            extra=telemetry_extra(
+                operation=INGEST_DATA_OPERATION,
+                kind=kind_for_ingest_data(payload) if payload else "text",
+                pipeline_mode=config.pipeline_mode,
+                started_at_ms=started_at_ms,
+            ),
         )
         raise
 
@@ -971,6 +1312,24 @@ def process_architect_relationships(self, args: dict):
             source_chunk_id=source_chunk_id,
             source_timestamp=reference_time,
         )
+        from src.core.saving.ingest_effects import stamp_task_ids
+
+        for relationship in relationships:
+            relationship.properties = {
+                **(relationship.properties or {}),
+                "ingest_task_ids": stamp_task_ids(
+                    (relationship.properties or {}).get("ingest_task_ids"),
+                    status_task_id,
+                ),
+            }
+            for entity in (relationship.tail, relationship.tip):
+                entity.properties = {
+                    **(entity.properties or {}),
+                    "ingest_task_ids": stamp_task_ids(
+                        (entity.properties or {}).get("ingest_task_ids"),
+                        status_task_id,
+                    ),
+                }
 
         item_errors: List[dict] = []
         with ThreadPoolExecutor(max_workers=10) as io_executor:
@@ -1119,71 +1478,111 @@ def process_architect_relationships(self, args: dict):
                             )
                             continue
 
-                    graph_adapter.add_nodes(graph_nodes, brain_id=brain_id)
-                    print(f"> Added {len(graph_nodes)} nodes")
-                    graph_adapter.add_relationship(
-                        Node(
-                            uuid=relationship.tail.uuid,
-                            labels=[relationship.tail.type],
-                            name=relationship.tail.name,
-                            polarity=(
-                                relationship.tail.polarity
-                                if relationship.tail.polarity
-                                else "neutral"
-                            ),
-                            **(
-                                {"happened_at": relationship.tail.happened_at}
-                                if relationship.tail.happened_at
-                                else {}
-                            ),
-                            properties={
-                                **(relationship.tail.properties or {}),
-                            },
-                        ),
-                        Predicate(
-                            uuid=relationship.uuid,
-                            flow_key=relationship.flow_key,
-                            name=relationship.name,
-                            description=relationship.description or "",
-                            properties={
-                                **{
-                                    k: v
-                                    for k, v in (relationship.properties or {}).items()
-                                    if v is not None
-                                },
+                    added = add_graph_nodes(graph_adapter, graph_nodes, brain_id)
+                    print(f"> Added {len(added or [])} nodes")
+                    node_errors, ledger, write_edge = graph_ingest_account(
+                        relationship,
+                        requested_new_nodes=graph_nodes,
+                        added_nodes=added if isinstance(added, list) else [],
+                        subject_exists=subject_exists,
+                        object_exists=object_exists,
+                    )
+                    item_errors.extend(node_errors)
+                    if write_edge:
+                        neighbors = _relationship_neighbor_map(
+                            relationship, brain_id=brain_id
+                        )
+                        _assign_relationship_interval(
+                            relationship, brain_id=brain_id, neighbors=neighbors
+                        )
+                        try:
+                            edge_created = not graph_adapter.get_triples_by_uuid(
+                                [relationship.uuid], brain_id=brain_id
+                            )
+                        except Exception:
+                            edge_created = (not subject_exists) and (not object_exists)
+                        graph_adapter.add_relationship(
+                            Node(
+                                uuid=relationship.tail.uuid,
+                                labels=[relationship.tail.type],
+                                name=relationship.tail.name,
+                                polarity=(
+                                    relationship.tail.polarity
+                                    if relationship.tail.polarity
+                                    else "neutral"
+                                ),
                                 **(
-                                    {"v_id": v_rel_id}
-                                    if v_rel_id is not None
+                                    {"happened_at": relationship.tail.happened_at}
+                                    if relationship.tail.happened_at
                                     else {}
                                 ),
-                            },
-                            last_updated=datetime.datetime.now(),
-                            amount=relationship.amount,
-                        ),
-                        Node(
-                            uuid=relationship.tip.uuid,
-                            labels=[relationship.tip.type],
-                            name=relationship.tip.name,
-                            polarity=(
-                                relationship.tip.polarity
-                                if relationship.tip.polarity
-                                else "neutral"
+                                properties={
+                                    **(relationship.tail.properties or {}),
+                                },
                             ),
-                            **(
-                                {"happened_at": relationship.tip.happened_at}
-                                if relationship.tip.happened_at
-                                else {}
+                            Predicate(
+                                uuid=relationship.uuid,
+                                flow_key=relationship.flow_key,
+                                name=relationship.name,
+                                description=relationship.description or "",
+                                properties={
+                                    **{
+                                        k: v
+                                        for k, v in (relationship.properties or {}).items()
+                                        if v is not None
+                                    },
+                                    **(
+                                        {"v_id": v_rel_id}
+                                        if v_rel_id is not None
+                                        else {}
+                                    ),
+                                },
+                                last_updated=datetime.datetime.now(),
+                                amount=relationship.amount,
                             ),
-                            properties={
-                                **(relationship.tip.properties or {}),
-                            },
-                        ),
-                        brain_id=brain_id,
-                    )
-                    _invalidate_superseded_relationships(
-                        relationship,
-                        brain_id=brain_id,
-                    )
+                            Node(
+                                uuid=relationship.tip.uuid,
+                                labels=[relationship.tip.type],
+                                name=relationship.tip.name,
+                                polarity=(
+                                    relationship.tip.polarity
+                                    if relationship.tip.polarity
+                                    else "neutral"
+                                ),
+                                **(
+                                    {"happened_at": relationship.tip.happened_at}
+                                    if relationship.tip.happened_at
+                                    else {}
+                                ),
+                                properties={
+                                    **(relationship.tip.properties or {}),
+                                },
+                            ),
+                            brain_id=brain_id,
+                        )
+                        if ledger is not None:
+                            ledger["edges"] = [
+                                {
+                                    "uuid": relationship.uuid,
+                                    "created": edge_created,
+                                    "v_id": (relationship.properties or {}).get("v_id"),
+                                    "name": relationship.name,
+                                }
+                            ]
+                        _invalidate_superseded_relationships(
+                            relationship,
+                            brain_id=brain_id,
+                            superseded_chunk_ids=args.get("superseded_chunk_ids") or [],
+                            neighbors=neighbors,
+                        )
+                    from src.core.saving.ingest_effects import remember
+
+                    if ledger:
+                        remember(
+                            brain_id,
+                            status_task_id,
+                            ledger,
+                        )
                 except FutureTimeoutError:
                     rel_name = getattr(relationship, "name", "unknown")
                     item_errors.append(
@@ -1265,6 +1664,25 @@ def process_architect_relationships(self, args: dict):
                 f"[DEBUG (process_architect_relationships)]: Session {session_id} has {remaining} remaining tasks"
             )
 
+        try:
+            from src.core.saving.conflicts import maybe_detect_after_ingest
+
+            maybe_detect_after_ingest(
+                brain_id,
+                [
+                    str(getattr(rel, "uuid", "") or "")
+                    for rel in relationships
+                    if getattr(rel, "uuid", None)
+                ],
+                subject_uuids=[
+                    str(getattr(getattr(rel, "tail", None), "uuid", "") or "")
+                    for rel in relationships
+                    if getattr(getattr(rel, "tail", None), "uuid", None)
+                ],
+            )
+        except Exception as exc:
+            print(f"[!] Incremental conflict detection skipped: {exc}")
+
         return self.request.id
 
     except Ignore:
@@ -1328,9 +1746,11 @@ def ingest_structured_data(self, args: dict):
 
 def _ingest_structured_data(self, args, *, staged=False):
     payload = None
+    started_at_ms = now_ms()
     try:
         payload = IngestionStructuredRequestBody(**args)
         mode = payload.resolved_mode()
+        source_chars = len(payload.text or "")
 
         set_ingestion_task_status(
             self.request.id,
@@ -1338,6 +1758,14 @@ def _ingest_structured_data(self, args, *, staged=False):
             "started",
             stage="source",
             counts={"triples": len(payload.data), "mode": mode},
+            extra=telemetry_extra(
+                operation=INGEST_STRUCTURED_OPERATION,
+                kind="structured",
+                pipeline_mode=config.pipeline_mode,
+                started_at_ms=started_at_ms,
+                size_chars=source_chars,
+                unit_count=len(payload.data),
+            ),
         )
 
         if mode == "deterministic" and payload.anchor is not None:
@@ -1362,6 +1790,8 @@ def _ingest_structured_data(self, args, *, staged=False):
             embeddings_adapter, vector_store_adapter, graph_adapter
         )
 
+        anchor = None
+        anchor_created = False
         if payload.anchor is None:
             pass
         elif payload.anchor.uuid:
@@ -1433,15 +1863,19 @@ def _ingest_structured_data(self, args, *, staged=False):
                 if kg_agent_anchor_result.exists:
                     anchor = kg_agent_anchor_result.node
                 else:
+                    from src.core.saving.ingest_effects import stamp_task_ids
+
                     anchor_entity = ScoutEntity(
                         name=payload.anchor.name,
                         type=payload.anchor.type,
                         description=payload.anchor.meta_description,
+                        properties={"ingest_task_ids": stamp_task_ids(None, self.request.id)},
                     )
                     ingestion_manager.process_node_vectors(
                         anchor_entity, payload.brain_id
                     )
-                    added_nodes = graph_adapter.add_nodes(
+                    added_nodes = add_graph_nodes(
+                        graph_adapter,
                         [
                             Node(
                                 uuid=anchor_entity.uuid,
@@ -1451,9 +1885,37 @@ def _ingest_structured_data(self, args, *, staged=False):
                                 properties=anchor_entity.properties,
                             )
                         ],
-                        brain_id=payload.brain_id,
+                        payload.brain_id,
                     )
+                    if not added_nodes:
+                        from src.lib.cypher_safety import InvalidCypherIdentifier
+
+                        raise InvalidCypherIdentifier(
+                            "Anchor entity type is not a valid graph label",
+                            kind="label",
+                            value=payload.anchor.type,
+                        )
                     anchor = added_nodes[0]
+                    anchor_created = True
+
+        if anchor is not None and getattr(anchor, "uuid", None):
+            from src.core.saving.ingest_effects import remember
+
+            properties = getattr(anchor, "properties", None) or {}
+            remember(
+                payload.brain_id,
+                self.request.id,
+                {
+                    "nodes": [
+                        {
+                            "uuid": anchor.uuid,
+                            "created": anchor_created,
+                            "name": getattr(anchor, "name", "") or "",
+                            "v_id": properties.get("v_id") if isinstance(properties, dict) else None,
+                        }
+                    ]
+                },
+            )
 
         checkpoint()
         data_adapter.save_structured_data(
@@ -1475,6 +1937,9 @@ def _ingest_structured_data(self, args, *, staged=False):
             ),
             brain_id=payload.brain_id,
         )
+        from src.core.saving.ingest_effects import remember
+
+        remember(payload.brain_id, self.request.id, {"structured_data_id": self.request.id})
 
         current_triples: List[IngestionTripleSet] = []
         partial_triples: List[IngestionTripleSet] = []
@@ -1602,6 +2067,12 @@ def _ingest_structured_data(self, args, *, staged=False):
             "failed",
             stage="failed",
             error=str(e),
+            extra=telemetry_extra(
+                operation=INGEST_STRUCTURED_OPERATION,
+                kind="structured",
+                pipeline_mode=config.pipeline_mode,
+                started_at_ms=started_at_ms,
+            ),
         )
         raise
 
@@ -1619,10 +2090,6 @@ def consolidate_graph_async(
     """
     Consolidate graph after all processing tasks complete.
     """
-    import os
-
-    import langsmith
-
     from src.config import config
     from src.core.layers.graph_consolidation.graph_consolidation import (
         consolidate_graph,
@@ -1660,30 +2127,13 @@ def consolidate_graph_async(
         f"[DEBUG (consolidate_graph_async)]: Consolidating graph with {len(relationship_models)} relationships"
     )
 
-    project_name = os.getenv("LANGSMITH_PROJECT", "brainapi")
-    tracing_metadata = {"brain_id": brain_id, "flow": "consolidate_graph"}
-    if ingestion_session_id:
-        tracing_metadata["ingestion_session_id"] = ingestion_session_id
-
     try:
-        with langsmith.tracing_context(
-            project_name=project_name,
-            enabled=True,
-            tags=["consolidate_graph", "janitor", "kg_agent"],
-            metadata=tracing_metadata,
-        ):
-            from src.core.saving.pipeline_runtime import _stage
-            token = _stage.set("consolidation")
-            try:
-                consolidate_graph(relationship_models, brain_id=brain_id)
-            finally:
-                _stage.reset(token)
+        from src.core.saving.pipeline_runtime import _stage
+        token = _stage.set("consolidation")
         try:
-            from langchain_core.tracers.langchain import wait_for_all_tracers
-
-            wait_for_all_tracers()
-        except ImportError:
-            pass
+            consolidate_graph(relationship_models, brain_id=brain_id)
+        finally:
+            _stage.reset(token)
         print(
             f"[DEBUG (consolidate_graph_async)]: Consolidation completed for session {session_id}"
         )
@@ -1777,14 +2227,38 @@ def ingest_file(
         execute_staged_unit(brain_id, staged_root, self.request.id, discover, discovery=True)
         return self.request.id
 
-    set_ingestion_task_status(
-        self.request.id,
-        brain_id,
-        "started",
-        stage="source",
-        group_tracking=group_tracking,
-    )
-    page_markdowns = _extract_file_pages(content_b64, filename)
+    started_at_ms = now_ms()
+    try:
+        set_ingestion_task_status(
+            self.request.id,
+            brain_id,
+            "started",
+            stage="source",
+            group_tracking=group_tracking,
+            extra=telemetry_extra(
+                operation=INGEST_FILE_OPERATION,
+                kind="file",
+                pipeline_mode=config.pipeline_mode,
+                started_at_ms=started_at_ms,
+            ),
+        )
+        page_markdowns = _extract_file_pages(content_b64, filename)
+    except Exception as exc:
+        set_ingestion_task_status(
+            self.request.id,
+            brain_id,
+            "failed",
+            stage="failed",
+            error=str(exc),
+            group_tracking=group_tracking,
+            extra=telemetry_extra(
+                operation=INGEST_FILE_OPERATION,
+                kind="file",
+                pipeline_mode=config.pipeline_mode,
+                started_at_ms=started_at_ms,
+            ),
+        )
+        raise
     task_ids = [str(uuid4()) for _ in page_markdowns]
     for page_task_id in task_ids:
         set_ingestion_task_status(
@@ -1816,6 +2290,15 @@ def ingest_file(
         "completed",
         counts={"pages": len(task_ids), "task_ids": task_ids},
         group_tracking=group_tracking,
+        extra=telemetry_extra(
+            operation=INGEST_FILE_OPERATION,
+            kind="file",
+            pipeline_mode=config.pipeline_mode,
+            started_at_ms=started_at_ms,
+            size_chars=sum(len(page or "") for page in page_markdowns),
+            size_pages=len(task_ids),
+            unit_count=len(task_ids),
+        ),
     )
     return {"task_id": self.request.id, "task_ids": task_ids}
 
@@ -1844,6 +2327,7 @@ def build_url_page_ingest_payload(
         ).model_dump(),
         "brain_id": brain_id,
         "skip_enrichment": skip_enrichment,
+        "kind": "url",
     }
     if meta_keys:
         payload["meta_keys"] = meta_keys
@@ -1901,6 +2385,7 @@ def ingest_url(self, args: dict):
         )
         return self.request.id
 
+    started_at_ms = now_ms()
     try:
         set_ingestion_task_status(
             self.request.id,
@@ -1908,6 +2393,12 @@ def ingest_url(self, args: dict):
             "started",
             stage="crawling",
             group_tracking=group_tracking,
+            extra=telemetry_extra(
+                operation=INGEST_URL_OPERATION,
+                kind="url",
+                pipeline_mode=config.pipeline_mode,
+                started_at_ms=started_at_ms,
+            ),
         )
         pages = crawler_adapter.crawl_pages(
             CrawlRequest(
@@ -1959,6 +2450,15 @@ def ingest_url(self, args: dict):
             "completed",
             counts={"pages": len(task_ids), "task_ids": task_ids},
             group_tracking=group_tracking,
+            extra=telemetry_extra(
+                operation=INGEST_URL_OPERATION,
+                kind="url",
+                pipeline_mode=config.pipeline_mode,
+                started_at_ms=started_at_ms,
+                size_chars=sum(len(page.text or "") for page in ingestible),
+                size_pages=len(task_ids),
+                unit_count=len(task_ids),
+            ),
         )
         return {"task_id": self.request.id, "task_ids": task_ids}
     except (
@@ -1974,6 +2474,12 @@ def ingest_url(self, args: dict):
             stage="failed",
             error=str(exc),
             group_tracking=group_tracking,
+            extra=telemetry_extra(
+                operation=INGEST_URL_OPERATION,
+                kind="url",
+                pipeline_mode=config.pipeline_mode,
+                started_at_ms=started_at_ms,
+            ),
         )
         raise
     except Exception as exc:
@@ -1984,6 +2490,12 @@ def ingest_url(self, args: dict):
             stage="failed",
             error=str(exc),
             group_tracking=group_tracking,
+            extra=telemetry_extra(
+                operation=INGEST_URL_OPERATION,
+                kind="url",
+                pipeline_mode=config.pipeline_mode,
+                started_at_ms=started_at_ms,
+            ),
         )
         raise
 
@@ -2001,6 +2513,7 @@ def build_file_page_ingest_payload(
             data_type="text", text_data=markdown
         ).model_dump(),
         "brain_id": brain_id,
+        "kind": "file",
     }
     key = normalize_group_tracking(group_tracking, strict=False)
     if key:
