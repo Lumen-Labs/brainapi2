@@ -193,11 +193,21 @@ class FakeGraph:
                 return self._row(subject_uuid, predicate, object_uuid)
         return None
 
-    def set_fact_verification(self, fact_id, brain_id="default", *, kind, properties):
+    def set_fact_verification(
+        self, fact_id, brain_id="default", *, kind, properties, history_entry=None
+    ):
+        from src.core.verification.facts import serialize_history_entry
+
         for subject_uuid, predicate, object_uuid in self.edges:
             if predicate.uuid != fact_id:
                 continue
-            predicate.properties = {**(predicate.properties or {}), **properties}
+            props = {**(predicate.properties or {}), **properties}
+            entry = serialize_history_entry(history_entry)
+            if entry:
+                history = list(props.get("verification_history") or [])
+                history.append(entry)
+                props["verification_history"] = history
+            predicate.properties = props
             if properties.get("verification_state"):
                 predicate.verification_state = properties["verification_state"]
             return self._row(subject_uuid, predicate, object_uuid)
