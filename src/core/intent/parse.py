@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import json
 import re
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import urlparse
 
 from src.core.saving.conflicts import normalize_predicate
@@ -17,6 +18,19 @@ _PREDICATE_PATTERNS: tuple[tuple[str, str, str, str], ...] = (
     (r"^(?P<s>.+?)\s+requires?\s+(?P<o>.+)$", "REQUIRES", "ENTITY", "VALUE"),
     (r"^(?P<s>.+?)\s+(?:is|are|was|were)\s+(?P<o>.+)$", "IS", "ENTITY", "VALUE"),
 )
+
+_ENTITY_TYPES = {
+    "PERSON",
+    "ORG",
+    "PLACE",
+    "ENTITY",
+    "VALUE",
+    "FACT",
+    "EVENT",
+    "CLAUSE",
+}
+
+_LLM_UNSET = object()
 
 
 class ParsedFact:
@@ -44,7 +58,20 @@ def _clean_phrase(value: str) -> str:
     return text.rstrip(" .;,:")
 
 
-def parse_fact_text(text: str) -> ParsedFact:
+def _normalize_entity_type(value: Any, fallback: str) -> str:
+    text = str(value or "").strip().upper().replace(" ", "_")
+    if text in _ENTITY_TYPES:
+        return text
+    if "PERSON" in text or text in {"PEOPLE", "HUMAN"}:
+        return "PERSON"
+    if text in {"ORGANIZATION", "COMPANY", "ORG"}:
+        return "ORG"
+    if text in {"LOCATION", "CITY", "COUNTRY", "PLACE"}:
+        return "PLACE"
+    return fallback
+
+
+def parse_fact_text_regex(text: str) -> ParsedFact:
     raw = _clean_phrase(text)
     if not raw:
         raise ValueError("fact text is required")
@@ -64,6 +91,85 @@ def parse_fact_text(text: str) -> ParsedFact:
                 object_type,
             )
     return ParsedFact(raw, raw, "STATES", "recorded", "FACT", "VALUE")
+
+
+def _configured_llm() -> Any | None:
+    try:
+        from src.core.instances import llm_small_adapter
+
+        return llm_small_adapter
+    except Exception:
+        return None
+
+
+def _parse_llm_payload(payload: Any) -> dict[str, Any] | None:
+    if isinstance(payload, list) and payload:
+        payload = payload[0]
+    if isinstance(payload, str):
+        text = payload.strip().strip("`")
+        if text.lower().startswith("json"):
+            text = text[4:].strip()
+        try:
+            payload = json.loads(text)
+        except Exception:
+            return None
+    if not isinstance(payload, dict):
+        return None
+    nested = payload.get("fact")
+    if isinstance(nested, dict):
+        payload = nested
+    return payload
+
+
+def extract_fact_with_llm(text: str, llm: Any) -> ParsedFact | None:
+    raw = _clean_phrase(text)
+    if not raw or llm is None:
+        return None
+    prompt = (
+        "Extract one knowledge-graph triple from the statement. "
+        "The statement may be in any language. Reply with JSON only: "
+        '{"subject":"...","predicate":"SCREAMING_SNAKE","object":"...",'
+        '"subject_type":"PERSON|ORG|PLACE|ENTITY|VALUE",'
+        '"object_type":"PERSON|ORG|PLACE|ENTITY|VALUE"} '
+        "Predicate is a relationship name, not a sentence. "
+        f"Statement: {raw}"
+    )
+    try:
+        generate = getattr(llm, "generate_json", None)
+        if callable(generate):
+            parsed = generate(prompt, max_new_tokens=200)
+        else:
+            generate_text = getattr(llm, "generate_text", None)
+            if not callable(generate_text):
+                return None
+            parsed = generate_text(prompt, max_new_tokens=200)
+    except Exception:
+        return None
+    payload = _parse_llm_payload(parsed)
+    if not payload:
+        return None
+    subject = _clean_phrase(str(payload.get("subject") or ""))
+    obj = _clean_phrase(str(payload.get("object") or payload.get("obj") or ""))
+    predicate = normalize_predicate(str(payload.get("predicate") or ""))
+    if not subject or not obj or not predicate:
+        return None
+    return ParsedFact(
+        raw,
+        subject,
+        predicate,
+        obj,
+        _normalize_entity_type(payload.get("subject_type"), "ENTITY"),
+        _normalize_entity_type(payload.get("object_type"), "ENTITY"),
+    )
+
+
+def parse_fact_text(text: str, llm: Any = _LLM_UNSET) -> ParsedFact:
+    regex = parse_fact_text_regex(text)
+    extractor = _configured_llm() if llm is _LLM_UNSET else llm
+    if extractor is None:
+        return regex
+    extracted = extract_fact_with_llm(regex.text, extractor)
+    return extracted or regex
 
 
 def parse_source(source: str | None, source_key: str | None = None) -> dict[str, Optional[str]]:
