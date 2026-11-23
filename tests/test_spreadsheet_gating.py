@@ -8,6 +8,10 @@ from fastapi.testclient import TestClient
 
 from src.lib.postgresql._provisioning import PoolTimeout
 from src.services.api.dependencies import get_brain_id
+from src.core.spreadsheets.gating import (
+    spreadsheet_experiment_brains,
+    spreadsheet_experiment_enabled,
+)
 from src.services.api.routes.spreadsheets import (
     enabled,
     lookup_workbook,
@@ -46,6 +50,34 @@ def test_enabled_star_enables_all(monkeypatch):
     monkeypatch.setenv("SPREADSHEET_EXPERIMENT_BRAINS", "*")
     assert enabled("demo") is True
     assert enabled("other") is True
+
+
+def test_shared_gate_parser_matches_enabled(monkeypatch):
+    monkeypatch.delenv("SPREADSHEET_EXPERIMENT_BRAINS", raising=False)
+    assert spreadsheet_experiment_brains() == set()
+    assert spreadsheet_experiment_enabled("demo") is False
+    assert enabled("demo") is spreadsheet_experiment_enabled("demo")
+
+    monkeypatch.setenv("SPREADSHEET_EXPERIMENT_BRAINS", "")
+    assert spreadsheet_experiment_brains() == set()
+    assert enabled("demo") is False
+
+    monkeypatch.setenv("SPREADSHEET_EXPERIMENT_BRAINS", " , ")
+    assert spreadsheet_experiment_brains() == set()
+    assert enabled("demo") is False
+
+    monkeypatch.setenv("SPREADSHEET_EXPERIMENT_BRAINS", "alpha, beta")
+    assert spreadsheet_experiment_brains() == {"alpha", "beta"}
+    assert enabled("alpha") is spreadsheet_experiment_enabled("alpha") is True
+    assert enabled("gamma") is spreadsheet_experiment_enabled("gamma") is False
+    assert enabled("*") is False
+
+    monkeypatch.setenv("SPREADSHEET_EXPERIMENT_BRAINS", "*")
+    assert spreadsheet_experiment_brains() == {"*"}
+    assert enabled("demo") is spreadsheet_experiment_enabled("demo") is True
+    assert enabled("other") is spreadsheet_experiment_enabled("other") is True
+    assert spreadsheet_experiment_enabled("") is False
+    assert spreadsheet_experiment_enabled(None) is False
 
 
 def test_supports_file_suffixes():

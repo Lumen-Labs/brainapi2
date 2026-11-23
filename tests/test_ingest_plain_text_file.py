@@ -10,6 +10,7 @@ from src.core.saving.ingest_plain_text import (
     decode_plain_text,
     is_blank_plain_text,
     is_spreadsheet_upload,
+    spreadsheet_experiment_owns_upload,
     uses_plain_text_ingest,
 )
 from src.core.saving.ingest_staging import (
@@ -67,10 +68,33 @@ def test_spreadsheet_uploads_keep_text_fallback_after_importer(monkeypatch):
     assert is_spreadsheet_upload("book.xlsx", "application/octet-stream")
     assert not is_spreadsheet_upload("rows.tsv", "text/tab-separated-values")
     assert not is_spreadsheet_upload("notes.txt", "text/csv")
+    assert spreadsheet_experiment_owns_upload("sheet-brain", "rows.csv", "text/csv")
+    assert not spreadsheet_experiment_owns_upload("other-brain", "rows.csv", "text/csv")
     assert uses_plain_text_ingest("sheet-brain", "rows.csv", "text/csv")
     assert uses_plain_text_ingest("sheet-brain", "rows.tsv", "text/tab-separated-values")
     assert uses_plain_text_ingest("sheet-brain", "notes.txt", "text/csv")
     assert uses_plain_text_ingest("other-brain", "rows.csv", "text/csv")
+
+
+def test_spreadsheet_experiment_owns_upload_matches_route_gate(monkeypatch):
+    monkeypatch.delenv("SPREADSHEET_EXPERIMENT_BRAINS", raising=False)
+    assert spreadsheet_experiment_owns_upload("demo", "rows.csv", "text/csv") is False
+    monkeypatch.setenv("SPREADSHEET_EXPERIMENT_BRAINS", "")
+    assert spreadsheet_experiment_owns_upload("demo", "rows.csv", "text/csv") is False
+    monkeypatch.setenv("SPREADSHEET_EXPERIMENT_BRAINS", " , ")
+    assert spreadsheet_experiment_owns_upload("demo", "grid.xlsx", "application/octet-stream") is False
+
+    monkeypatch.setenv("SPREADSHEET_EXPERIMENT_BRAINS", "alpha, beta")
+    assert spreadsheet_experiment_owns_upload("alpha", "rows.csv", "text/csv") is True
+    assert spreadsheet_experiment_owns_upload("beta", "grid.xlsx", None) is True
+    assert spreadsheet_experiment_owns_upload("gamma", "rows.csv", "text/csv") is False
+    assert spreadsheet_experiment_owns_upload("alpha", "notes.txt", "text/plain") is False
+
+    monkeypatch.setenv("SPREADSHEET_EXPERIMENT_BRAINS", "*")
+    assert spreadsheet_experiment_owns_upload("demo", "rows.csv", "text/csv") is True
+    assert spreadsheet_experiment_owns_upload("other", "grid.xlsx", "application/octet-stream") is True
+    assert spreadsheet_experiment_owns_upload("demo", "notes.txt", "text/csv") is False
+    assert spreadsheet_experiment_owns_upload("", "rows.csv", "text/csv") is False
 
 
 def test_small_files_keep_long_ocr_backstop_until_first_page(monkeypatch):
