@@ -7,6 +7,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 
 from src.core.saving.ingest_access_gate import BrainPublicationBusy, brain_access
+from src.lib.postgresql._provisioning import PoolTimeout
 
 
 class IngestPublicationMiddleware:
@@ -37,6 +38,14 @@ class IngestPublicationMiddleware:
                 {"detail": "Brain data is being published. Try again shortly."},
                 status_code=503,
                 headers={"Retry-After": "2"},
+            )
+            await response(scope, receive, send)
+            return
+        except PoolTimeout:
+            response = JSONResponse(
+                {"detail": "Database is busy. Retry shortly."},
+                status_code=503,
+                headers={"Retry-After": "1"},
             )
             await response(scope, receive, send)
             return
