@@ -715,6 +715,7 @@ class GetContextResponse(BaseModel):
     paths: Optional[List[dict[str, Any]]] = None
     topics: Optional[List[dict[str, Any]]] = None
     stage_timings: Optional[dict[str, Any]] = None
+    degraded: Optional[List[str]] = None
     validity_unknown_count: Optional[int] = None
     validity_unknown: Optional[List[dict[str, Any]]] = None
 

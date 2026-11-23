@@ -260,7 +260,15 @@ def _required_query_text(text: str = Query(...)) -> str:
     return cleaned
 
 
-@retrieve_router.get("/context", response_model=GetContextResponse)
+@retrieve_router.get(
+    "/context",
+    response_model=GetContextResponse,
+    description=(
+        "Retrieve contextual information for a question. Prefer POST /retrieve/context "
+        "when the question is sensitive: GET places `text` in the query string, which "
+        "can appear in access logs. Access logs redact the `text` query parameter."
+    ),
+)
 async def get_context_by_query(
     text: str = Depends(_required_query_text),
     as_of: Optional[str] = Query(None),
@@ -278,6 +286,12 @@ async def get_context_by_query(
     include_rejected: bool = Query(False),
     brain_id: str = Depends(get_brain_id),
 ) -> GetContextResponse:
+    """
+    Retrieve contextual information for a question.
+
+    Prefer POST /retrieve/context when the question is sensitive. GET puts `text`
+    in the query string, which can appear in access logs. Access logs redact `text`.
+    """
     request = GetContextRequestBody(
         text=text,
         as_of=as_of,

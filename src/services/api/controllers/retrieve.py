@@ -16,7 +16,7 @@ import re
 import threading
 import time
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import datetime
 from typing import Any, Optional
 
@@ -83,6 +83,10 @@ _IO_MAX_INFLIGHT = 8
 _IO_THREAD_PREFIX = "ctx-io"
 _io_state: dict[str, Any] = {"pool": None, "pid": 0, "inflight": 0}
 _io_state_lock = threading.Lock()
+_health_var: contextvars.ContextVar[Any] = contextvars.ContextVar(
+    "retrieve_health", default=None
+)
+_backend_error_types_cache: tuple[type[BaseException], ...] | None = None
 _PPR_DAMPING = 0.85
 _PPR_ITERS = 20
 _SESSION_RE = re.compile(r"session_(\d+)", re.IGNORECASE)
@@ -125,9 +129,31 @@ def _submit_io(fn, *args, **kwargs):
     return _io_executor().submit(ctx.run, fn, *args, **kwargs)
 
 
+_IO_FAILED = object()
+
+
+def _io_result(value, default):
+    return default if value is _IO_FAILED else value
+
+
 def _wait_all(futures, timeout: float = _IO_TIMEOUT_SECONDS):
+    results = []
+    last_exc = None
+    deadline = time.monotonic() + timeout
     try:
-        return [fut.result(timeout=timeout) for fut in futures]
+        for fut in futures:
+            remaining = max(0.0, deadline - time.monotonic())
+            try:
+                results.append(fut.result(timeout=remaining))
+            except _backend_error_types() as exc:
+                last_exc = exc
+                results.append(_IO_FAILED)
+        if last_exc is not None:
+            for fut in futures:
+                fut.cancel()
+            if all(value is _IO_FAILED for value in results):
+                raise last_exc
+        return results
     except Exception:
         for fut in futures:
             fut.cancel()
@@ -178,7 +204,11 @@ def _parallel_io(fns: list):
     futures = []
     try:
         futures = [_submit_io(wrap(index, fn)) for index, fn in enumerate(fns)]
-        return _wait_all(futures, timeout=_IO_TIMEOUT_SECONDS)
+        results = _wait_all(futures, timeout=_IO_TIMEOUT_SECONDS)
+        for index, fut in enumerate(futures):
+            if fut.cancelled():
+                release_slot(index)
+        return results
     except Exception:
         for index, fut in enumerate(futures):
             if fut.cancelled() or fut.cancel():
@@ -207,6 +237,110 @@ def _embed_query_vector(text: str) -> Vector:
             detail="Embedding service unavailable",
         )
     return vector
+
+
+def _backend_error_types() -> tuple[type[BaseException], ...]:
+    global _backend_error_types_cache
+    if _backend_error_types_cache is not None:
+        return _backend_error_types_cache
+    types: list[type[BaseException]] = [
+        TimeoutError,
+        FuturesTimeoutError,
+        ConnectionError,
+        BrokenPipeError,
+    ]
+    optional = (
+        ("pymilvus.exceptions", "MilvusException"),
+        ("psycopg2", "Error"),
+        ("grpc", "RpcError"),
+        ("neo4j.exceptions", "DriverError"),
+    )
+    for module_name, attr in optional:
+        try:
+            module = __import__(module_name, fromlist=[attr])
+        except ImportError:
+            continue
+        cls = getattr(module, attr, None)
+        if isinstance(cls, type) and issubclass(cls, BaseException):
+            types.append(cls)
+    _backend_error_types_cache = tuple(types)
+    return _backend_error_types_cache
+
+
+class _RetrievalHealth:
+    def __init__(self) -> None:
+        self._gen: dict[str, int] = {}
+        self._pending: dict[str, int] = {}
+        self._ok: dict[str, int] = {}
+        self._error: set[str] = set()
+
+    def start(self, stage: str) -> None:
+        generation = self._gen.get(stage, 0) + 1
+        self._gen[stage] = generation
+        self._pending[stage] = generation
+
+    def ok(self, stage: str) -> None:
+        generation = self._pending.get(stage)
+        if generation is None or self._gen.get(stage) != generation:
+            return
+        del self._pending[stage]
+        self._ok[stage] = generation
+
+    def error(self, stage: str) -> None:
+        generation = self._pending.pop(stage, self._gen.get(stage))
+        self._error.add(stage)
+        if generation is not None and self._ok.get(stage) == generation:
+            del self._ok[stage]
+
+    @property
+    def failed_stages(self) -> list[str]:
+        return sorted(self._error | set(self._pending))
+
+    def all_failed(self) -> bool:
+        tracked = set(self._pending) | set(self._ok) | self._error
+        return bool(tracked) and not self._ok
+
+
+def _health() -> _RetrievalHealth | None:
+    value = _health_var.get()
+    return value if isinstance(value, _RetrievalHealth) else None
+
+
+def _note_degraded(stage: str, brain_id: str, exc: BaseException) -> None:
+    logger.warning(
+        "Retrieval stage %s failed for brain_id=%s (%s)",
+        stage,
+        brain_id,
+        type(exc).__name__,
+    )
+    health = _health()
+    if health is not None:
+        health.error(stage)
+
+
+def _start_stage(stage: str) -> None:
+    health = _health()
+    if health is not None:
+        health.start(stage)
+
+
+def _ok_stage(stage: str) -> None:
+    health = _health()
+    if health is not None:
+        health.ok(stage)
+
+
+def _backend_or_default(stage: str, brain_id: str, fn, default):
+    _start_stage(stage)
+    try:
+        result = fn()
+    except HTTPException:
+        raise
+    except _backend_error_types() as exc:
+        _note_degraded(stage, brain_id, exc)
+        return default
+    _ok_stage(stage)
+    return result
 
 
 _DISTANCE_QUANT_DECIMALS = 3
@@ -1978,21 +2112,44 @@ def _seed_nodes_for_text(
 
     def _search_nodes():
         with profile_stage("vector.search_nodes", k=_SEED_K):
-            return vs.search_nodes(
-                embeddings,
-                brain_id=brain_id,
-                k=_SEED_K,
+            return _backend_or_default(
+                "vector.search_nodes",
+                brain_id,
+                lambda: vs.search_nodes(
+                    embeddings,
+                    brain_id=brain_id,
+                    k=_SEED_K,
+                ),
+                [],
             )
 
     def _search_relationships():
         with profile_stage("vector.search_relationships", k=_SEED_K):
-            return vs.search_relationships(
-                embeddings,
-                brain_id=brain_id,
-                k=_SEED_K,
+            return _backend_or_default(
+                "vector.search_relationships",
+                brain_id,
+                lambda: vs.search_relationships(
+                    embeddings,
+                    brain_id=brain_id,
+                    k=_SEED_K,
+                ),
+                [],
             )
 
-    node_vectors, rel_vectors = _parallel_io([_search_nodes, _search_relationships])
+    try:
+        node_vectors, rel_vectors = _parallel_io(
+            [_search_nodes, _search_relationships]
+        )
+    except _backend_error_types() as exc:
+        _note_degraded("facts.seed_search", brain_id, exc)
+        node_vectors, rel_vectors = [], []
+    else:
+        if node_vectors is _IO_FAILED:
+            _note_degraded("vector.search_nodes", brain_id, TimeoutError())
+        if rel_vectors is _IO_FAILED:
+            _note_degraded("vector.search_relationships", brain_id, TimeoutError())
+        node_vectors = _io_result(node_vectors, [])
+        rel_vectors = _io_result(rel_vectors, [])
     for vector in node_vectors:
         meta = vector.metadata or {}
         uuid = meta.get("uuid") or getattr(vector, "id", None)
@@ -2170,16 +2327,23 @@ def _retrieve_passages(
 
         def _dense() -> tuple[list[str], dict[str, float]]:
             with profile_stage("vector.search_data", k=max(limit, _PASSAGE_K)):
-                return collect_dense_passages(
-                    vs,
-                    query_embeddings or [],
+                return _backend_or_default(
+                    "vector.search_data",
                     brain_id,
-                    max(limit, _PASSAGE_K),
+                    lambda: collect_dense_passages(
+                        vs,
+                        query_embeddings or [],
+                        brain_id,
+                        max(limit, _PASSAGE_K),
+                    ),
+                    ([], {}),
                 )
 
         def _keyword() -> tuple[list[str], dict[str, str]]:
+            stage = "data.bm25_search" if use_bm25 else "data.keyword_search"
             if use_bm25:
                 with profile_stage("data.bm25_search"):
+                    _start_stage(stage)
                     try:
                         ids, _, texts = collect_bm25_passages(
                             data,
@@ -2187,21 +2351,40 @@ def _retrieve_passages(
                             brain_id,
                             max(limit, _PASSAGE_K),
                         )
+                        _ok_stage(stage)
                         return ids, texts
-                    except Exception:
+                    except Exception as exc:
+                        _note_degraded(stage, brain_id, exc)
                         return [], {}
             if use_ilike:
                 with profile_stage("data.keyword_search"):
+                    _start_stage(stage)
                     try:
-                        return collect_ilike_passages(data, text, brain_id)
-                    except Exception:
+                        ids, texts = collect_ilike_passages(data, text, brain_id)
+                        _ok_stage(stage)
+                        return ids, texts
+                    except Exception as exc:
+                        _note_degraded(stage, brain_id, exc)
                         return [], {}
             return [], {}
 
         keyword_ids: list[str] = []
         id_to_text: dict[str, str] = {}
         if use_dense and (use_bm25 or use_ilike):
-            dense_result, keyword_result = _parallel_io([_dense, _keyword])
+            try:
+                dense_result, keyword_result = _parallel_io([_dense, _keyword])
+            except _backend_error_types() as exc:
+                _note_degraded("passages.retrieve", brain_id, exc)
+                _note_degraded("vector.search_data", brain_id, exc)
+                dense_result, keyword_result = ([], {}), ([], {})
+            else:
+                if dense_result is _IO_FAILED:
+                    _note_degraded("vector.search_data", brain_id, TimeoutError())
+                    dense_result = ([], {})
+                if keyword_result is _IO_FAILED:
+                    stage = "data.bm25_search" if use_bm25 else "data.keyword_search"
+                    _note_degraded(stage, brain_id, TimeoutError())
+                    keyword_result = ([], {})
             vector_ids, id_to_distance = dense_result
             keyword_ids, id_to_text = keyword_result
         elif use_dense:
@@ -2253,18 +2436,30 @@ async def get_context(
     for it or `TRACE_STAGE_PROFILER_ENABLED` is set.
     """
     attach_timings = bool(request.profile_stages) or stage_profiling_enabled(False)
-    with verification_scope(include_rejected=bool(request.include_rejected)):
-        with profile_request(
-            "retrieve.context",
-            enabled=True,
-            publish=attach_timings,
-        ) as profiler:
-            response = await _build_context(request, fact_filter_adapter)
-    if profiler is not None:
-        log_stage_report(profiler.last_report, logger)
-        if attach_timings:
-            response.stage_timings = profiler.last_report
-    return response
+    health = _RetrievalHealth()
+    token = _health_var.set(health)
+    try:
+        with verification_scope(include_rejected=bool(request.include_rejected)):
+            with profile_request(
+                "retrieve.context",
+                enabled=True,
+                publish=attach_timings,
+            ) as profiler:
+                response = await _build_context(request, fact_filter_adapter)
+        if profiler is not None:
+            log_stage_report(profiler.last_report, logger)
+            if attach_timings:
+                response.stage_timings = profiler.last_report
+        if health.all_failed():
+            raise HTTPException(
+                status_code=503,
+                detail="Retrieval backends unavailable",
+            )
+        if health.failed_stages:
+            response.degraded = health.failed_stages
+        return response
+    finally:
+        _health_var.reset(token)
 
 
 async def _build_context(
@@ -2427,8 +2622,15 @@ async def _build_context(
                     from src.core.saving.validity import format_instant
 
                     as_of_stamp = format_instant(as_of)
-                neighbors = graph_adapter.get_event_centric_neighbors(
-                    seed_uuids, brain_id=request.brain_id, as_of=as_of_stamp
+                neighbors = _backend_or_default(
+                    "graph.event_neighbors",
+                    request.brain_id,
+                    lambda: graph_adapter.get_event_centric_neighbors(
+                        seed_uuids,
+                        brain_id=request.brain_id,
+                        as_of=as_of_stamp,
+                    ),
+                    [],
                 )
                 neighbors_detail["rows"] = len(neighbors)
             local: list[dict[str, Any]] = []
@@ -2618,14 +2820,24 @@ async def _build_context(
             with profile_stage("historical.fallback", blocking=False):
                 text_chunks, structured_data = await asyncio.gather(
                     asyncio.to_thread(
-                        data_adapter.get_last_text_chunks,
-                        brain_id=request.brain_id,
-                        limit=request.historical_limit,
+                        _backend_or_default,
+                        "data.last_text_chunks",
+                        request.brain_id,
+                        lambda: data_adapter.get_last_text_chunks(
+                            brain_id=request.brain_id,
+                            limit=request.historical_limit,
+                        ),
+                        [],
                     ),
                     asyncio.to_thread(
-                        data_adapter.get_last_structured_data,
-                        brain_id=request.brain_id,
-                        limit=request.historical_limit,
+                        _backend_or_default,
+                        "data.last_structured_data",
+                        request.brain_id,
+                        lambda: data_adapter.get_last_structured_data(
+                            brain_id=request.brain_id,
+                            limit=request.historical_limit,
+                        ),
+                        [],
                     ),
                 )
             chunk_hits = [

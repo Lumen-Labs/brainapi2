@@ -58,6 +58,7 @@ RESPONSE_FIELDS = {
     "paths",
     "topics",
     "stage_timings",
+    "degraded",
     "validity_unknown_count",
     "validity_unknown",
 }
