@@ -4,18 +4,28 @@ import base64
 import hashlib
 import json
 import logging
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from functools import lru_cache
 
+import psycopg2
+import psycopg2.pool
 from psycopg2.extras import Json, execute_values
 
+from src.lib.postgresql._provisioning import PoolTimeout
 from src.lib.postgresql.graph_store import PostgreSQLGraphStore
 
 from .communities import build_communities
 
 logger = logging.getLogger(__name__)
+_ATLAS_POOL_ERRORS = (
+    psycopg2.InterfaceError,
+    psycopg2.OperationalError,
+    PoolTimeout,
+    psycopg2.pool.PoolError,
+)
 DDL = """
 CREATE TABLE IF NOT EXISTS explore_snapshots (
  id TEXT PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), payload JSONB NOT NULL
@@ -175,7 +185,10 @@ class AtlasStore:
                     yield cur
                 conn.commit()
             except Exception:
-                conn.rollback()
+                try:
+                    conn.rollback()
+                except Exception:
+                    logger.debug("explore_transaction_rollback_failed", exc_info=True)
                 raise
 
     def overview(self, brain_id):
@@ -217,64 +230,77 @@ class AtlasStore:
                 (token,),
             )
 
-    def build(self, brain_id, token):
-        import time
+    def _mark_build_failed(self, brain_id, token):
+        try:
+            self.fail(brain_id, token)
+        except Exception:
+            logger.exception("explore_overview_fail_mark_failed")
+        logger.exception("explore_overview_build_failed")
 
+    def _build_once(self, brain_id, token, started):
+        with self.transaction(brain_id) as cur:
+            cur.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            cur.execute("SELECT build_token FROM explore_state WHERE singleton")
+            if cur.fetchone()[0] != token:
+                return
+            cur.execute(
+                "SELECT uuid, data->>'name', data->'labels' FROM kg_nodes ORDER BY uuid"
+            )
+            nodes = [
+                {"id": n, "name": name or "Unnamed", "types": types or []}
+                for n, name, types in cur.fetchall()
+            ]
+            cur.execute(
+                "SELECT source_uuid, target_uuid FROM kg_relationships ORDER BY uuid"
+            )
+            edges = [{"fromId": s, "toId": t} for s, t in cur.fetchall()]
+        payload, memberships = build_communities(nodes, edges)
+        snapshot_id = uuid.uuid4().hex
+        with self.transaction(brain_id) as cur:
+            cur.execute(
+                "SELECT build_token FROM explore_state WHERE singleton FOR UPDATE"
+            )
+            if cur.fetchone()[0] != token:
+                return
+            cur.execute(
+                "INSERT INTO explore_snapshots(id,payload) VALUES(%s,%s)",
+                (snapshot_id, Json(payload)),
+            )
+            if memberships:
+                execute_values(
+                    cur,
+                    "INSERT INTO explore_memberships(snapshot_id,community_id,entity_id) VALUES %s",
+                    [(snapshot_id, group, entity) for group, entity in memberships],
+                    page_size=2000,
+                )
+            cur.execute(
+                "UPDATE explore_state SET active_snapshot=%s,build_token=NULL,build_until=NULL,failed=FALSE WHERE singleton",
+                (snapshot_id,),
+            )
+            cur.execute(
+                "DELETE FROM explore_snapshots WHERE id<>%s AND created_at < now()-interval '1 hour'",
+                (snapshot_id,),
+            )
+        logger.info(
+            "explore_overview_built duration_ms=%d nodes=%d edges=%d",
+            int((time.monotonic() - started) * 1000),
+            len(nodes),
+            len(edges),
+        )
+
+    def build(self, brain_id, token):
         started = time.monotonic()
         try:
-            with self.transaction(brain_id) as cur:
-                # Snapshot all input in one consistent database transaction.
-                cur.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
-                cur.execute("SELECT build_token FROM explore_state WHERE singleton")
-                if cur.fetchone()[0] != token:
-                    return
-                cur.execute(
-                    "SELECT uuid, data->>'name', data->'labels' FROM kg_nodes ORDER BY uuid"
-                )
-                nodes = [
-                    {"id": n, "name": name or "Unnamed", "types": types or []}
-                    for n, name, types in cur.fetchall()
-                ]
-                cur.execute(
-                    "SELECT source_uuid, target_uuid FROM kg_relationships ORDER BY uuid"
-                )
-                edges = [{"fromId": s, "toId": t} for s, t in cur.fetchall()]
-            payload, memberships = build_communities(nodes, edges)
-            snapshot_id = uuid.uuid4().hex
-            with self.transaction(brain_id) as cur:
-                cur.execute(
-                    "SELECT build_token FROM explore_state WHERE singleton FOR UPDATE"
-                )
-                if cur.fetchone()[0] != token:
-                    return
-                cur.execute(
-                    "INSERT INTO explore_snapshots(id,payload) VALUES(%s,%s)",
-                    (snapshot_id, Json(payload)),
-                )
-                if memberships:
-                    execute_values(
-                        cur,
-                        "INSERT INTO explore_memberships(snapshot_id,community_id,entity_id) VALUES %s",
-                        [(snapshot_id, group, entity) for group, entity in memberships],
-                        page_size=2000,
-                    )
-                cur.execute(
-                    "UPDATE explore_state SET active_snapshot=%s,build_token=NULL,build_until=NULL,failed=FALSE WHERE singleton",
-                    (snapshot_id,),
-                )
-                cur.execute(
-                    "DELETE FROM explore_snapshots WHERE id<>%s AND created_at < now()-interval '1 hour'",
-                    (snapshot_id,),
-                )
-            logger.info(
-                "explore_overview_built duration_ms=%d nodes=%d edges=%d",
-                int((time.monotonic() - started) * 1000),
-                len(nodes),
-                len(edges),
-            )
+            self._build_once(brain_id, token, started)
+        except _ATLAS_POOL_ERRORS:
+            logger.warning("explore_overview_build_retry", exc_info=True)
+            try:
+                self._build_once(brain_id, token, started)
+            except Exception:
+                self._mark_build_failed(brain_id, token)
+                raise
         except Exception:
-            self.fail(brain_id, token)
-            logger.exception("explore_overview_build_failed")
+            self._mark_build_failed(brain_id, token)
             raise
 
     def read(

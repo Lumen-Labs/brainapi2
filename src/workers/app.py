@@ -33,6 +33,7 @@ from src.workers.redis_url import redis_connection_url
 apply_kombu_redis_unblocked_patch()
 
 from celery import Celery
+from celery.signals import worker_process_init
 from kombu import Queue
 
 from src.config import config
@@ -134,6 +135,13 @@ ingestion_app.conf.update(
 )
 install_celery_tracing(service_name="brainapi-worker")
 start_runtime_monitoring(service_name="brainapi-worker")
+
+
+@worker_process_init.connect
+def _reset_postgres_pools_after_fork(**_kwargs):
+    from src.lib.postgresql._provisioning import reset_pools_after_fork
+
+    reset_pools_after_fork()
 
 
 if os.getenv("STAGED_INGESTION_ENABLED") == "1" and os.getenv("INGEST_PUBLICATION_LOCK_DIR"):
