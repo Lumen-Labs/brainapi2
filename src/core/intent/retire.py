@@ -1,9 +1,17 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Iterable, Mapping
 
 from src.core.saving.conflicts import normalize_predicate
-from src.core.saving.validity import close_validity
+from src.core.saving.validity import (
+    VALID_FROM,
+    VALID_TO,
+    close_validity,
+    format_instant,
+    parse_instant,
+)
 from src.core.saving.validity_cardinality import (
     existing_edge_from_superseded_source,
     relationship_type_is_single_valued,
@@ -13,6 +21,13 @@ from src.core.saving.validity_cardinality import (
 
 class RetireLookupError(RuntimeError):
     """Raised when neighbors cannot be loaded after a replacement was written."""
+
+
+@dataclass
+class RetirementResult:
+    closed: list[str] = field(default_factory=list)
+    successor_start: str | None = None
+    successor_uuid: str | None = None
 
 
 def same_scope(subject_uuid: str, predicate: str, other_subject: str, other_predicate: str) -> bool:
@@ -41,6 +56,64 @@ def _closure_reason(
     return fallback
 
 
+def _props_map(value: Any) -> dict[str, Any]:
+    if isinstance(value, Mapping):
+        nested = value.get("properties")
+        if isinstance(nested, Mapping):
+            merged = dict(nested)
+            merged.update({k: v for k, v in value.items() if k != "properties"})
+            return merged
+        return dict(value)
+    props = getattr(value, "properties", None)
+    return dict(props) if isinstance(props, Mapping) else {}
+
+
+def _start_of(props: Mapping[str, Any]) -> datetime | None:
+    return parse_instant(props.get(VALID_FROM)) or parse_instant(props.get("valid_at"))
+
+
+def _is_open(props: Mapping[str, Any]) -> bool:
+    return not (props.get("invalid_at") or props.get(VALID_TO) or props.get("valid_to"))
+
+
+def apply_open_update(
+    graph: Any,
+    fact_id: str,
+    brain_id: str,
+    new_properties: dict[str, Any],
+) -> bool:
+    """Update a relationship only when it is still open (no valid_to / invalid_at)."""
+    getter = getattr(graph, "get_fact_record", None)
+    if callable(getter):
+        try:
+            row = getter(fact_id, brain_id)
+        except TypeError:
+            row = getter(fact_id)
+        except Exception:
+            row = None
+        if row is not None and not _is_open(_props_map(row)):
+            return False
+    updater = getattr(graph, "update_properties", None)
+    if not callable(updater):
+        return False
+    try:
+        updated = updater(
+            fact_id,
+            "relationship",
+            brain_id=brain_id,
+            new_properties=new_properties,
+            expected_open=True,
+        )
+    except TypeError:
+        updated = updater(
+            fact_id,
+            "relationship",
+            brain_id=brain_id,
+            new_properties=new_properties,
+        )
+    return updated is not None
+
+
 def retire_outgoing_matches(
     graph: Any,
     *,
@@ -54,18 +127,21 @@ def retire_outgoing_matches(
     superseded_chunk_ids: Iterable[str] | None = None,
     require_functional_or_source: bool = True,
     always_uuids: Iterable[str] | None = None,
-) -> list[str]:
+) -> RetirementResult:
     reason_text = (reason or "").strip()
     if not reason_text:
         raise ValueError("retirements need a reason")
     if not subject_uuid or not predicate_name:
-        return []
+        return RetirementResult()
     forced = {str(item) for item in (always_uuids or []) if item}
+    incoming_start = parse_instant(closed_at)
     try:
         neighbors = graph.get_neighbors([subject_uuid], brain_id=brain_id)
     except Exception as exc:
         raise RetireLookupError("Could not load neighbors to retire prior facts") from exc
     closed: list[str] = []
+    successor_start: datetime | None = None
+    successor_uuid: str | None = None
     for predicate, neighbor in (neighbors or {}).get(subject_uuid) or []:
         if not predicate or not neighbor:
             continue
@@ -79,10 +155,8 @@ def retire_outgoing_matches(
         fact_id = str(getattr(predicate, "uuid", "") or "")
         if keep_uuid and fact_id == keep_uuid:
             continue
-        props = getattr(predicate, "properties", None) or {}
-        if not isinstance(props, Mapping):
-            props = {}
-        if props.get("invalid_at") or props.get("valid_to"):
+        props = _props_map(predicate)
+        if not _is_open(props):
             continue
         force_this = fact_id in forced
         if (
@@ -95,6 +169,24 @@ def retire_outgoing_matches(
             )
         ):
             continue
+        existing_start = _start_of(props)
+        if (
+            not force_this
+            and incoming_start is not None
+            and existing_start is not None
+            and existing_start > incoming_start
+        ):
+            if successor_start is None or existing_start < successor_start:
+                successor_start = existing_start
+                successor_uuid = fact_id
+            continue
+        close_stamp = closed_at
+        if existing_start is not None:
+            close_dt = parse_instant(closed_at) or incoming_start
+            if close_dt is not None and close_dt < existing_start:
+                continue
+            if close_dt is not None:
+                close_stamp = format_instant(close_dt)
         edge_reason = reason_text if force_this else _closure_reason(
             {**dict(props), "name": predicate_name},
             superseded_chunk_ids,
@@ -102,21 +194,31 @@ def retire_outgoing_matches(
         )
         closed_props = close_validity(
             props,
-            closed_at=closed_at,
+            closed_at=close_stamp,
             superseded_by=superseded_by or keep_uuid,
             reason=edge_reason,
         )
-        graph.update_properties(
+        valid_to = closed_props.get("valid_to") or close_stamp
+        if existing_start is not None:
+            end_dt = parse_instant(valid_to)
+            if end_dt is not None and end_dt < existing_start:
+                continue
+        applied = apply_open_update(
+            graph,
             fact_id,
-            "relationship",
-            brain_id=brain_id,
-            new_properties={
-                "invalid_at": closed_props.get("invalid_at") or closed_at,
+            brain_id,
+            {
+                "invalid_at": closed_props.get("invalid_at") or close_stamp,
                 "deprecated": True,
-                "valid_to": closed_props.get("valid_to") or closed_at,
+                "valid_to": valid_to,
                 "superseded_by": closed_props.get("superseded_by") or superseded_by or keep_uuid,
                 "retired_reason": closed_props.get("retired_reason") or edge_reason,
             },
         )
-        closed.append(fact_id)
-    return closed
+        if applied:
+            closed.append(fact_id)
+    return RetirementResult(
+        closed=closed,
+        successor_start=format_instant(successor_start) if successor_start else None,
+        successor_uuid=successor_uuid,
+    )

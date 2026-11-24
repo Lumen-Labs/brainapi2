@@ -1949,6 +1949,7 @@ class Neo4jClient(GraphClient):
         brain_id: str,
         new_properties: dict,
         properties_to_remove: list[str],
+        expected_open: bool = False,
     ) -> Node | Predicate | None:
         """
         Update properties on a node or relationship identified by UUID.
@@ -1984,6 +1985,11 @@ class Neo4jClient(GraphClient):
         properties_set_op = ("SET " + ", ".join(set_parts)) if set_parts else ""
         properties_remove_op = ("SET " + ", ".join(remove_parts)) if remove_parts else ""
 
+        open_guard = ""
+        if expected_open and updating == "relationship":
+            open_guard = (
+                " AND t['valid_to'] IS NULL AND t['invalid_at'] IS NULL"
+            )
         if updating == "node":
             cypher_query = (
                 "MATCH (t) WHERE t['uuid'] = $uuid\n"
@@ -1995,7 +2001,9 @@ class Neo4jClient(GraphClient):
             )
         elif updating == "relationship":
             cypher_query = (
-                "MATCH ()-[t]->() WHERE t['uuid'] = $uuid\n"
+                "MATCH ()-[t]->() WHERE t['uuid'] = $uuid"
+                + open_guard
+                + "\n"
                 + properties_set_op
                 + "\n"
                 + properties_remove_op

@@ -599,6 +599,7 @@ class GraphAdapter:
         brain_id: str = "default",
         new_properties: Optional[dict] = None,
         properties_to_remove: Optional[list[str]] = None,
+        expected_open: bool = False,
     ) -> Node | Predicate | None:
         """
         Update properties on a graph node or relationship.
@@ -609,6 +610,8 @@ class GraphAdapter:
                 brain_id (str): Identifier of the graph (defaults to "default").
                 new_properties (dict): Properties to add or replace on the entity.
                 properties_to_remove (list[str]): Names of properties to remove from the entity.
+                expected_open (bool): When true, skip the update if the relationship
+                    already has valid_to / invalid_at set.
 
         Returns:
                 Node | Predicate | None: The updated entity, or `None` if the entity was not found.
@@ -625,12 +628,39 @@ class GraphAdapter:
                 "updating": updating,
                 "new_properties": new_properties,
                 "properties_to_remove": properties_to_remove,
+                "expected_open": expected_open,
             },
         }):
             return None
-        return self.graph.update_properties(
-            uuid, updating, brain_id, new_properties, properties_to_remove
-        )
+        updater = self.graph.update_properties
+        try:
+            return updater(
+                uuid,
+                updating,
+                brain_id,
+                new_properties,
+                properties_to_remove,
+                expected_open=expected_open,
+            )
+        except TypeError:
+            if expected_open and updating == "relationship":
+                getter = getattr(self.graph, "get_fact_record", None)
+                if callable(getter):
+                    try:
+                        row = getter(uuid, brain_id)
+                    except TypeError:
+                        row = getter(uuid)
+                    except Exception:
+                        row = None
+                    props = {}
+                    if isinstance(row, dict):
+                        nested = row.get("properties")
+                        props = dict(nested) if isinstance(nested, dict) else dict(row)
+                    if props.get("invalid_at") or props.get("valid_to"):
+                        return None
+            return updater(
+                uuid, updating, brain_id, new_properties, properties_to_remove
+            )
 
     def get_graph_relationship_types(self, brain_id: str = "default") -> list[str]:
         """

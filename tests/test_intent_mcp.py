@@ -1,8 +1,11 @@
 import os
 import sys
+import threading
+import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 ENV_DEFAULTS = {
     "BRAINPAT_TOKEN": "test-token",
@@ -35,10 +38,15 @@ for key, value in ENV_DEFAULTS.items():
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.constants.data import TextChunk
+from src.constants.kg import SearchEntitiesResult, SearchRelationshipsResult, Triple
+from src.core.intent.parse import tokenize
 from src.core.intent.brain import BrainResolutionError, resolve_brain
-from src.core.intent.parse import parse_fact_text
-from src.core.intent.retire import RetireLookupError
+from src.core.intent.parse import parse_fact_text, parse_fact_text_regex
+from src.core.intent.retire import RetireLookupError, apply_open_update
 from src.core.intent.service import check_claim, correct_fact, recall_facts, remember_fact
+
+_LLM_DISABLED = patch("src.core.intent.parse._configured_llm", return_value=None)
+_LLM_DISABLED.start()
 from src.core.verification.facts import UNVERIFIED
 from src.core.verification.service import FactNotFound, apply_verification_action
 from src.services.mcp.intent_tools import intent_tool_descriptions, intent_tool_token_count
@@ -107,19 +115,29 @@ class FakeGraph:
     def __init__(self):
         self.nodes = {}
         self.edges = []
+        self._mu = threading.RLock()
+        self.before_mutate = None
+
+    def _run_hook(self):
+        hook = self.before_mutate
+        if callable(hook):
+            hook()
 
     def add_nodes(self, nodes, brain_id="default", identification_params=None, metadata=None):
-        for node in nodes:
-            self.nodes[node.uuid] = node
-        return list(nodes)
+        with self._mu:
+            for node in nodes:
+                self.nodes[node.uuid] = node
+            return list(nodes)
 
     def add_relationship(self, subject, predicate, to_object, brain_id="default"):
-        self.nodes[subject.uuid] = subject
-        self.nodes[to_object.uuid] = to_object
-        predicate.properties = dict(predicate.properties or {})
-        predicate.properties.setdefault("uuid", predicate.uuid)
-        self.edges.append((subject.uuid, predicate, to_object.uuid))
-        return predicate.uuid
+        self._run_hook()
+        with self._mu:
+            self.nodes[subject.uuid] = subject
+            self.nodes[to_object.uuid] = to_object
+            predicate.properties = dict(predicate.properties or {})
+            predicate.properties.setdefault("uuid", predicate.uuid)
+            self.edges.append((subject.uuid, predicate, to_object.uuid))
+            return predicate.uuid
 
     def get_neighbors(
         self,
@@ -129,24 +147,26 @@ class FakeGraph:
         limit=None,
         of_types=None,
     ):
-        uuids = [node if isinstance(node, str) else node.uuid for node in nodes]
-        neighbors = {uuid: [] for uuid in uuids}
-        for subject_uuid, predicate, object_uuid in self.edges:
-            if subject_uuid in neighbors:
-                neighbors[subject_uuid].append(
-                    (
-                        predicate.model_copy(update={"direction": "out"}),
-                        self.nodes[object_uuid],
+        self._run_hook()
+        with self._mu:
+            uuids = [node if isinstance(node, str) else node.uuid for node in nodes]
+            neighbors = {uuid: [] for uuid in uuids}
+            for subject_uuid, predicate, object_uuid in self.edges:
+                if subject_uuid in neighbors:
+                    neighbors[subject_uuid].append(
+                        (
+                            predicate.model_copy(update={"direction": "out"}),
+                            self.nodes[object_uuid],
+                        )
                     )
-                )
-            if object_uuid in neighbors:
-                neighbors[object_uuid].append(
-                    (
-                        predicate.model_copy(update={"direction": "in"}),
-                        self.nodes[subject_uuid],
+                if object_uuid in neighbors:
+                    neighbors[object_uuid].append(
+                        (
+                            predicate.model_copy(update={"direction": "in"}),
+                            self.nodes[subject_uuid],
+                        )
                     )
-                )
-        return neighbors
+            return neighbors
 
     def update_properties(
         self,
@@ -155,17 +175,22 @@ class FakeGraph:
         brain_id="default",
         new_properties=None,
         properties_to_remove=None,
+        expected_open=False,
     ):
-        for _subject, predicate, _obj in self.edges:
-            if predicate.uuid == uuid:
-                predicate.properties = {
-                    **(predicate.properties or {}),
-                    **(new_properties or {}),
-                }
-                if (new_properties or {}).get("deprecated"):
-                    predicate.deprecated = True
-                return predicate
-        return None
+        with self._mu:
+            for _subject, predicate, _obj in self.edges:
+                if predicate.uuid == uuid:
+                    current = predicate.properties or {}
+                    if expected_open and (current.get("invalid_at") or current.get("valid_to")):
+                        return None
+                    predicate.properties = {
+                        **current,
+                        **(new_properties or {}),
+                    }
+                    if (new_properties or {}).get("deprecated"):
+                        predicate.deprecated = True
+                    return predicate
+            return None
 
     def _row(self, subject_uuid, predicate, object_uuid):
         subject = self.nodes[subject_uuid]
@@ -188,30 +213,32 @@ class FakeGraph:
         }
 
     def get_fact_record(self, fact_id, brain_id="default"):
-        for subject_uuid, predicate, object_uuid in self.edges:
-            if predicate.uuid == fact_id:
-                return self._row(subject_uuid, predicate, object_uuid)
-        return None
+        with self._mu:
+            for subject_uuid, predicate, object_uuid in self.edges:
+                if predicate.uuid == fact_id:
+                    return self._row(subject_uuid, predicate, object_uuid)
+            return None
 
     def set_fact_verification(
         self, fact_id, brain_id="default", *, kind, properties, history_entry=None
     ):
         from src.core.verification.facts import serialize_history_entry
 
-        for subject_uuid, predicate, object_uuid in self.edges:
-            if predicate.uuid != fact_id:
-                continue
-            props = {**(predicate.properties or {}), **properties}
-            entry = serialize_history_entry(history_entry)
-            if entry:
-                history = list(props.get("verification_history") or [])
-                history.append(entry)
-                props["verification_history"] = history
-            predicate.properties = props
-            if properties.get("verification_state"):
-                predicate.verification_state = properties["verification_state"]
-            return self._row(subject_uuid, predicate, object_uuid)
-        return None
+        with self._mu:
+            for subject_uuid, predicate, object_uuid in self.edges:
+                if predicate.uuid != fact_id:
+                    continue
+                props = {**(predicate.properties or {}), **properties}
+                entry = serialize_history_entry(history_entry)
+                if entry:
+                    history = list(props.get("verification_history") or [])
+                    history.append(entry)
+                    props["verification_history"] = history
+                predicate.properties = props
+                if properties.get("verification_state"):
+                    predicate.verification_state = properties["verification_state"]
+                return self._row(subject_uuid, predicate, object_uuid)
+            return None
 
     def list_facts_by_verification(
         self,
@@ -232,6 +259,68 @@ class FakeGraph:
             rows.append(row)
         return rows[skip : skip + limit], len(rows)
 
+    def search_entities(
+        self,
+        brain_id="default",
+        limit=10,
+        skip=0,
+        node_labels=None,
+        query_text=None,
+    ):
+        nodes = list(self.nodes.values())
+        if node_labels:
+            wanted = {str(label).upper() for label in node_labels}
+            nodes = [
+                node
+                for node in nodes
+                if wanted.intersection({str(label).upper() for label in (node.labels or [])})
+            ]
+        if query_text:
+            terms = tokenize(query_text)
+            nodes = [
+                node
+                for node in nodes
+                if tokenize(node.name) & terms or query_text.lower() in (node.name or "").lower()
+            ]
+        return SearchEntitiesResult(results=nodes[skip : skip + limit], total=len(nodes))
+
+    def search_relationships(
+        self,
+        brain_id="default",
+        limit=10,
+        skip=0,
+        relationship_types=None,
+        from_node_labels=None,
+        to_node_labels=None,
+        query_text=None,
+        query_search_target="all",
+    ):
+        triples = []
+        for subject_uuid, predicate, object_uuid in self.edges:
+            if relationship_types and predicate.name not in relationship_types:
+                continue
+            subject = self.nodes[subject_uuid]
+            obj = self.nodes[object_uuid]
+            blob = " ".join(
+                part
+                for part in (
+                    subject.name,
+                    predicate.name,
+                    obj.name,
+                    predicate.description,
+                    (predicate.properties or {}).get("fact_text"),
+                )
+                if part
+            )
+            if query_text:
+                terms = tokenize(query_text)
+                if not (terms & tokenize(blob)) and query_text.lower() not in blob.lower():
+                    continue
+            triples.append(Triple(subject=subject, predicate=predicate, object=obj))
+        return SearchRelationshipsResult(
+            results=triples[skip : skip + limit], total=len(triples)
+        )
+
 
 def _guard(token, target=None):
     if token == "pat-alpha":
@@ -245,13 +334,73 @@ def _guard(token, target=None):
 
 class IntentParseTests(unittest.TestCase):
     def test_lives_in_and_is(self):
-        lives = parse_fact_text("Alice lives in Paris")
+        lives = parse_fact_text("Alice lives in Paris", llm=None)
         self.assertEqual(lives.subject, "Alice")
         self.assertEqual(lives.predicate, "LIVES_IN")
         self.assertEqual(lives.object, "Paris")
-        status = parse_fact_text("Refund window is 30 days")
+        status = parse_fact_text("Refund window is 30 days", llm=None)
         self.assertEqual(status.predicate, "IS")
         self.assertEqual(status.object, "30 days")
+        regex = parse_fact_text_regex("Alice lives in Paris")
+        self.assertEqual(regex.predicate, "LIVES_IN")
+
+
+class IntentLlmParseTests(unittest.TestCase):
+    def test_non_english_uses_llm(self):
+        llm = MagicMock()
+        llm.generate_json.return_value = {
+            "subject": "Alice",
+            "predicate": "LIVES_IN",
+            "object": "Roma",
+            "subject_type": "PERSON",
+            "object_type": "PLACE",
+        }
+        parsed = parse_fact_text("Alice vive a Roma", llm=llm)
+        self.assertEqual(parsed.subject, "Alice")
+        self.assertEqual(parsed.predicate, "LIVES_IN")
+        self.assertEqual(parsed.object, "Roma")
+        self.assertEqual(parsed.subject_type, "PERSON")
+        self.assertEqual(parsed.object_type, "PLACE")
+        llm.generate_json.assert_called_once()
+
+    def test_fallback_when_llm_fails(self):
+        llm = MagicMock()
+        llm.generate_json.side_effect = RuntimeError("extractor unavailable")
+        parsed = parse_fact_text("Alice lives in Paris", llm=llm)
+        self.assertEqual(parsed.subject, "Alice")
+        self.assertEqual(parsed.predicate, "LIVES_IN")
+        self.assertEqual(parsed.object, "Paris")
+
+    def test_fallback_when_llm_returns_incomplete(self):
+        llm = MagicMock()
+        llm.generate_json.return_value = {"subject": "Alice"}
+        parsed = parse_fact_text("Alice works at Acme", llm=llm)
+        self.assertEqual(parsed.predicate, "WORKS_AT")
+        self.assertEqual(parsed.object, "Acme")
+
+    def test_remember_uses_llm_extraction(self):
+        graph = FakeGraph()
+        data = FakeData([FakeBrain("alpha", "pat-alpha")])
+        llm = MagicMock()
+        llm.generate_json.return_value = {
+            "subject": "Alice",
+            "predicate": "LIVES_IN",
+            "object": "Roma",
+            "subject_type": "PERSON",
+            "object_type": "PLACE",
+        }
+        with patch("src.core.intent.parse._configured_llm", return_value=llm):
+            result = remember_fact(
+                fact="Alice vive a Roma",
+                source="handbook.md",
+                brain_id="alpha",
+                token="pat-alpha",
+                graph=graph,
+                data=data,
+            )
+        self.assertEqual(result.fact.subject, "Alice")
+        self.assertEqual(result.fact.predicate, "LIVES_IN")
+        self.assertEqual(result.fact.object, "Roma")
 
 
 class BrainResolutionTests(unittest.TestCase):
@@ -409,6 +558,82 @@ class IntentMemoryTests(unittest.TestCase):
         history = self.graph.get_fact_record(remembered.fact.fact_id, self.brain_id)["properties"]["verification_history"]
         self.assertTrue(history)
 
+    def _validity(self, fact_id):
+        row = self.graph.get_fact_record(fact_id, self.brain_id)
+        props = row["properties"] or {}
+        return props.get("valid_from") or props.get("valid_at"), props.get("valid_to") or props.get("invalid_at")
+
+    def test_remember_newer_then_older_keeps_newer_current(self):
+        newer = self._remember(
+            "Alice lives in Milan",
+            valid_from="2024-01-01T00:00:00Z",
+        )
+        older = self._remember(
+            "Alice lives in Rome",
+            valid_from="2020-01-01T00:00:00Z",
+        )
+        older_from, older_to = self._validity(older.fact.fact_id)
+        newer_from, newer_to = self._validity(newer.fact.fact_id)
+        self.assertEqual(older_from, "2020-01-01T00:00:00Z")
+        self.assertEqual(older_to, "2024-01-01T00:00:00Z")
+        self.assertGreaterEqual(older_to, older_from)
+        self.assertFalse(newer_to)
+        self.assertEqual(newer_from, "2024-01-01T00:00:00Z")
+        recalled = recall_facts(
+            question="where does Alice live",
+            brain_id=self.brain_id,
+            graph=self.graph,
+            data=self.data,
+        )
+        self.assertEqual(recalled.facts[0].object, "Milan")
+        historical = recall_facts(
+            question="where does Alice live",
+            brain_id=self.brain_id,
+            as_of="2021-06-01T00:00:00Z",
+            graph=self.graph,
+            data=self.data,
+        )
+        self.assertEqual(historical.facts[0].object, "Rome")
+
+    def test_remember_older_then_newer_retires_older(self):
+        older = self._remember(
+            "Alice lives in Rome",
+            valid_from="2020-01-01T00:00:00Z",
+        )
+        newer = self._remember(
+            "Alice lives in Milan",
+            valid_from="2024-01-01T00:00:00Z",
+        )
+        older_from, older_to = self._validity(older.fact.fact_id)
+        newer_from, newer_to = self._validity(newer.fact.fact_id)
+        self.assertEqual(older_to, "2024-01-01T00:00:00Z")
+        self.assertGreaterEqual(older_to, older_from)
+        self.assertFalse(newer_to)
+        self.assertEqual(newer_from, "2024-01-01T00:00:00Z")
+
+    def test_remember_equal_dates_replaces_without_inverted_window(self):
+        first = self._remember(
+            "Alice lives in Rome",
+            valid_from="2024-01-01T00:00:00Z",
+        )
+        second = self._remember(
+            "Alice lives in Milan",
+            valid_from="2024-01-01T00:00:00Z",
+        )
+        first_from, first_to = self._validity(first.fact.fact_id)
+        second_from, second_to = self._validity(second.fact.fact_id)
+        self.assertEqual(first_from, "2024-01-01T00:00:00Z")
+        self.assertGreaterEqual(first_to, first_from)
+        self.assertFalse(second_to)
+        self.assertEqual(second_from, "2024-01-01T00:00:00Z")
+        live = recall_facts(
+            question="where does Alice live",
+            brain_id=self.brain_id,
+            graph=self.graph,
+            data=self.data,
+        )
+        self.assertEqual(live.facts[0].object, "Milan")
+
     def test_source_key_rewrite_supersedes_same_scope_only(self):
         first = self._remember(
             "Alice lives in Paris",
@@ -541,6 +766,72 @@ class IntentMemoryTests(unittest.TestCase):
         )
         self.assertFalse(recalled.facts)
 
+    def test_recall_unrelated_query_is_empty(self):
+        self._remember("Alice lives in Paris")
+        recalled = recall_facts(
+            question="quantum chromodynamics lattice spacing",
+            brain_id=self.brain_id,
+            graph=self.graph,
+            data=self.data,
+        )
+        self.assertEqual(recalled.facts, [])
+        self.assertFalse(recalled.matched)
+        self.assertIn("No matching facts", recalled.text)
+
+    def test_recall_does_not_depend_on_verification_scan_cap(self):
+        remembered = self._remember("Alice lives in Paris")
+
+        def empty_scan(*_args, **_kwargs):
+            return [], 0
+
+        self.graph.list_facts_by_verification = empty_scan
+        recalled = recall_facts(
+            question="where does Alice live",
+            brain_id=self.brain_id,
+            graph=self.graph,
+            data=self.data,
+        )
+        self.assertTrue(recalled.matched)
+        self.assertEqual(recalled.facts[0].fact_id, remembered.fact.fact_id)
+        self.assertEqual(recalled.facts[0].object, "Paris")
+
+    def test_check_unrelated_claim_is_unknown_without_evidence(self):
+        self._remember("Alice lives in Paris")
+        checked = check_claim(
+            claim="Refund window is 30 days",
+            brain_id=self.brain_id,
+            graph=self.graph,
+            data=self.data,
+        )
+        self.assertEqual(checked.verdict, "unknown")
+        self.assertFalse(checked.matched)
+        self.assertEqual(checked.evidence, [])
+
+    def test_recall_uses_vector_seed_path_when_available(self):
+        remembered = self._remember("Alice lives in Paris")
+        seed_uuid = None
+        for row in self.graph.list_facts_by_verification(self.brain_id, include_rejected=True, limit=10, skip=0)[0]:
+            if row["uuid"] == remembered.fact.fact_id:
+                seed_uuid = row["subject_uuid"]
+                break
+        self.assertIsNotNone(seed_uuid)
+
+        def fake_seeds(text, brain_id, embeddings=None):
+            return [(seed_uuid, 0.01, "Alice")]
+
+        with patch(
+            "src.services.api.controllers.retrieve._seed_nodes_for_text",
+            side_effect=fake_seeds,
+        ):
+            recalled = recall_facts(
+                question="完全无关的问题",
+                brain_id=self.brain_id,
+                graph=self.graph,
+                data=self.data,
+            )
+        self.assertTrue(recalled.matched)
+        self.assertEqual(recalled.facts[0].object, "Paris")
+
     def test_retire_lookup_failure_is_not_empty_success(self):
         self._remember("Alice lives in Paris")
 
@@ -557,6 +848,61 @@ class IntentMemoryTests(unittest.TestCase):
                 graph=self.graph,
                 data=self.data,
             )
+
+    def test_apply_open_update_skips_already_closed(self):
+        first = self._remember(
+            "Alice lives in Paris",
+            valid_from="2024-01-01T00:00:00Z",
+        )
+        apply_open_update(
+            self.graph,
+            first.fact.fact_id,
+            self.brain_id,
+            {"invalid_at": "2025-01-01T00:00:00Z", "valid_to": "2025-01-01T00:00:00Z"},
+        )
+        skipped = apply_open_update(
+            self.graph,
+            first.fact.fact_id,
+            self.brain_id,
+            {"invalid_at": "2020-01-01T00:00:00Z", "valid_to": "2020-01-01T00:00:00Z"},
+        )
+        self.assertFalse(skipped)
+        _from, until = self._validity(first.fact.fact_id)
+        self.assertEqual(until, "2025-01-01T00:00:00Z")
+        self.assertGreaterEqual(until, _from)
+
+    def test_concurrent_remember_leaves_one_current(self):
+        self.graph.before_mutate = lambda: time.sleep(0.02)
+        cities = ["Rome", "Milan", "Paris", "London"]
+
+        def write(city):
+            return remember_fact(
+                fact=f"Alice lives in {city}",
+                source="handbook.md",
+                brain_id=self.brain_id,
+                token=self.token,
+                graph=self.graph,
+                data=self.data,
+                valid_from="2024-06-01T00:00:00Z",
+            )
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = [pool.submit(write, city) for city in cities]
+            wait(futures)
+            for future in futures:
+                future.result()
+        current = []
+        for _subject, predicate, object_uuid in self.graph.edges:
+            if predicate.name != "LIVES_IN":
+                continue
+            props = predicate.properties or {}
+            start = props.get("valid_from") or props.get("valid_at")
+            end = props.get("valid_to") or props.get("invalid_at")
+            if start and end:
+                self.assertGreaterEqual(end, start)
+            if not end:
+                current.append(self.graph.nodes[object_uuid].name)
+        self.assertEqual(len(current), 1)
 
 
 class IntentToolSurfaceTests(unittest.TestCase):

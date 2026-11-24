@@ -48,6 +48,7 @@ class RecallResult(BaseModel):
     as_of: Optional[str] = None
     brain_id: str = ""
     facts: list[IntentFact] = Field(default_factory=list)
+    matched: bool = False
     total: int = 0
     skip: int = 0
     limit: int = 8
@@ -65,6 +66,7 @@ class CheckResult(BaseModel):
     as_of: Optional[str] = None
     brain_id: str = ""
     evidence: list[IntentFact] = Field(default_factory=list)
+    matched: bool = False
     error: Optional[str] = None
     code: Optional[str] = None
     hint: Optional[str] = None

@@ -787,6 +787,7 @@ class PostgreSQLGraphStore:
         new_properties: dict[str, Any],
         properties_to_remove: list[str],
         history_entry: object | None = None,
+        expected_open: bool = False,
     ) -> Optional[dict]:
         from src.core.verification.facts import serialize_history_entry
 
@@ -797,6 +798,8 @@ class PostgreSQLGraphStore:
                 for source, target, key, data in brain.graph.edges(keys=True, data=True):
                     if data.get("uuid") != entity_uuid and key != entity_uuid:
                         continue
+                    if expected_open and (data.get("invalid_at") or data.get("valid_to")):
+                        return None
                     self._apply_property_update(data, new_properties, properties_to_remove, appended)
                     self._persist_relationship(
                         brain_id, key, data.get("rel_type"), source, target, data

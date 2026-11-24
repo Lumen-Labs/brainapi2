@@ -934,6 +934,7 @@ class NetworkXGraphClient(GraphClient):
         brain_id: str,
         new_properties: dict,
         properties_to_remove: list[str],
+        expected_open: bool = False,
     ) -> Node | Predicate | None:
         self._store.ensure_database(brain_id)
         record = self._store.update_entity_properties(
@@ -942,6 +943,7 @@ class NetworkXGraphClient(GraphClient):
             updating == "relationship",
             new_properties,
             properties_to_remove,
+            expected_open=expected_open,
         )
         if not record:
             return None
