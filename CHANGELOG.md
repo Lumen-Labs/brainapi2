@@ -1,9 +1,34 @@
 # Changelog
 
-## Unreleased
+## 2.22.0 — 2026-11-25
 
-Spreadsheet experiment QA fixes. Gate is still `SPREADSHEET_EXPERIMENT_BRAINS` (empty = off). No version bump.
+Current `main` since 2.21.2. Adds the agent-first intent MCP tools, hosted ChatGPT MCP OAuth consent, and Postgres pool hardening, plus spreadsheet experiment fixes. Spreadsheets stay off unless `SPREADSHEET_EXPERIMENT_BRAINS` is set.
 
+### MCP
+
+- Agent-first tools `brainapi_recall` / `brainapi_check` / `brainapi_remember` / `brainapi_correct`, listed first with `brain_id` optional. ([#121](https://github.com/Lumen-Labs/brainapi2/pull/121))
+- Hybrid recall, `as_of` valid-time ordering, LLM fact parsing with rule fallback, and a retirement lock. ([#160](https://github.com/Lumen-Labs/brainapi2/pull/160))
+- Hardened BrainPAT consent for hosted ChatGPT MCP OAuth. ([#105](https://github.com/Lumen-Labs/brainapi2/pull/105))
+- Removed the obsolete hosted MCP OAuth overlay Dockerfile. ([#158](https://github.com/Lumen-Labs/brainapi2/pull/158))
+
+### Retrieve
+
+- spaCy models are baked into the image, so there is no ~20s first call. ([#151](https://github.com/Lumen-Labs/brainapi2/pull/151))
+- All spaCy small pipelines are bundled, with blank fallback, TTL retry, and warmup. ([#154](https://github.com/Lumen-Labs/brainapi2/pull/154))
+- Vector timeouts degrade, and GET query text is redacted from logs. ([#153](https://github.com/Lumen-Labs/brainapi2/pull/153))
+- Keyword retrieve degrades only on real outages. ([#156](https://github.com/Lumen-Labs/brainapi2/pull/156), [#159](https://github.com/Lumen-Labs/brainapi2/pull/159))
+
+### Postgres
+
+- Fixes closed and exhausted per-brain pool errors. ([#155](https://github.com/Lumen-Labs/brainapi2/pull/155))
+
+### Ingest
+
+- Worker duration and size metrics. ([#149](https://github.com/Lumen-Labs/brainapi2/pull/149))
+
+### Spreadsheets
+
+- Schema-once import and a shared experiment-brain gate. ([#147](https://github.com/Lumen-Labs/brainapi2/pull/147), [#157](https://github.com/Lumen-Labs/brainapi2/pull/157))
 - `SPREADSHEET_EXPERIMENT_BRAINS` parsing is shared: `*`, explicit brain ids, and empty (off) mean the same thing on spreadsheet routes and `spreadsheet_experiment_owns_upload`.
 - Spreadsheet schema migration (including the `cell_count` backfill) runs once per brain, then a persistent schema-version marker plus an in-process cache skip the full `spreadsheet_rows` scan on later imports.
 - Date filters compare timestamps, not text. A date-only equals matches the whole day; an inclusive end date includes that day.
@@ -12,6 +37,10 @@ Spreadsheet experiment QA fixes. Gate is still `SPREADSHEET_EXPERIMENT_BRAINS` (
 - Imports credit existing ingest-group metering as `source_chars` / `source_tokens` (cell text) plus `counts.cells` / `counts.sheets`.
 - Gated `.xlsx`/`.csv`/`.xls` that are empty, encrypted, corrupt, or malformed return 4xx instead of 202 queued.
 - CSV infers dates, currency, and percentages like xlsx. Percentages stay fractions with `display=percent`. Merged cells forward-fill. Listed `rows` is data rows (header excluded). Range queries skip the header row. Workbook list is paginated. `group_by` aggregation is supported.
+
+### Evals
+
+- Strict accuracy counting treats degraded answers as wrong, plus a degraded count and `--max-degraded-rate` (default 5%). ([#159](https://github.com/Lumen-Labs/brainapi2/pull/159))
 
 ## 2.21.2 — 2026-11-22
 
