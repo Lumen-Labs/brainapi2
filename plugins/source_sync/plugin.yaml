@@ -1,0 +1,10 @@
+name: source_sync
+version: 1.0.0
+entry_point: main.py
+description: Webhook and scheduled source sync with replace-via-valid_to.
+author: Lumen Labs
+priority: 20
+tags:
+  - official
+  - ingest
+  - sources
