@@ -160,6 +160,31 @@ def prepare_source_revision(
     return "insert"
 
 
+def close_source_document(
+    adapter: Any,
+    *,
+    brain_id: str,
+    source_key: str,
+    closed_at: str | None = None,
+) -> list[str]:
+    """Close current passages for a deleted source document.
+
+    Sets ``valid_to`` / ``superseded_at`` to ``closed_at`` (or now). Chunks
+    without ``source_key`` are not touched.
+    """
+    key = (source_key or "").strip()
+    if not key:
+        return []
+    try:
+        current = _current_chunks(adapter, brain_id, key)
+    except Exception as exc:
+        print(f"[!] source delete lookup failed for {key}: {exc}")
+        raise
+    if not current:
+        return []
+    return _mark(adapter, brain_id, current, _stamp(closed_at))
+
+
 def _record_superseded(out_superseded: list[str] | None, ids: list[str]) -> None:
     if out_superseded is None:
         return
