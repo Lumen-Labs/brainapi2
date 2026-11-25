@@ -863,6 +863,77 @@ class MongoClient(DataClient):
             return None
         return normalize_meter_document(doc)
 
+    def _crawl_specs(self):
+        return self.get_collection("crawl_specs", config.mongo.system_database)
+
+    def save_crawl_spec(self, spec, brain_id: str):
+        from src.core.saving.help_center_crawl import CrawlSpec, spec_from_document
+
+        payload = spec if isinstance(spec, CrawlSpec) else spec_from_document(spec, brain_id)
+        if payload is None:
+            raise ValueError("Invalid crawl spec")
+        payload.brain_id = brain_id
+        document = payload.model_dump(mode="json")
+        document["_id"] = brain_id
+        collection = self._crawl_specs()
+        collection.replace_one({"_id": brain_id}, document, upsert=True)
+        return payload
+
+    def get_crawl_spec(self, brain_id: str):
+        from src.core.saving.help_center_crawl import spec_from_document
+
+        row = self._crawl_specs().find_one({"_id": brain_id})
+        if not row:
+            return None
+        return spec_from_document(row, brain_id)
+
+    def delete_crawl_spec(self, brain_id: str) -> bool:
+        result = self._crawl_specs().delete_one({"_id": brain_id})
+        return result.deleted_count > 0
+
+    def list_due_crawl_specs(self, now=None, force: bool = False):
+        from src.core.saving.help_center_crawl import spec_from_document, spec_is_due
+        from src.core.saving.validity import utc_now
+
+        instant = now or utc_now()
+        due = []
+        for row in self._crawl_specs().find({"enabled": True}):
+            spec = spec_from_document(row, row.get("brain_id") or row.get("_id"))
+            if spec_is_due(spec, now=instant, force=force):
+                due.append(spec)
+        return due
+
+    def claim_due_crawl_spec(
+        self,
+        brain_id: str,
+        now=None,
+        force: bool = False,
+        task_id: str | None = None,
+    ):
+        from src.core.saving.help_center_crawl import (
+            mark_started,
+            spec_from_document,
+            spec_is_due,
+        )
+        from src.core.saving.validity import utc_now
+
+        instant = now or utc_now()
+        collection = self._crawl_specs()
+        row = collection.find_one({"_id": brain_id})
+        spec = spec_from_document(row, brain_id) if row else None
+        if not spec_is_due(spec, now=instant, force=force):
+            return None
+        claimed = mark_started(spec, now=instant, task_id=task_id)
+        document = claimed.model_dump(mode="json")
+        document["_id"] = brain_id
+        result = collection.replace_one(
+            {"_id": brain_id, "last_started_at": row.get("last_started_at") if row else None},
+            document,
+        )
+        if result.matched_count == 0:
+            return None
+        return claimed
+
 
 
 _mongo_client = MongoClient()

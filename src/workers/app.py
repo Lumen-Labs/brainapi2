@@ -70,6 +70,7 @@ ingestion_app = Celery(
         "src.workers.tasks.ingestion",
         "src.workers.tasks.explore",
         "src.workers.tasks.conflicts",
+        "src.workers.tasks.help_center",
     ],
 )
 
@@ -110,6 +111,8 @@ TASK_ROUTES = {
     "src.workers.tasks.conflicts.detect_conflicts_incremental": {
         "queue": "conflict_scan"
     },
+    "src.workers.tasks.help_center.recrawl_help_center": {"queue": "ingest_data"},
+    "src.workers.tasks.help_center.run_due_help_center_crawls": {"queue": "ingest_data"},
     **_PLUGIN_ROUTES,
 }
 
@@ -145,6 +148,40 @@ def _reset_postgres_pools_after_fork(**_kwargs):
     from src.lib.postgresql._provisioning import reset_pools_after_fork
 
     reset_pools_after_fork()
+
+
+def _start_help_center_ticker():
+    import logging
+    from threading import Event, Thread
+
+    from celery.signals import worker_ready, worker_shutdown
+
+    stop = Event()
+    tick = max(30, int(getattr(config, "help_center_crawl_tick_seconds", 900) or 900))
+
+    def _tick():
+        from src.workers.tasks.help_center import run_due_help_center_crawls
+
+        while not stop.is_set():
+            try:
+                run_due_help_center_crawls.apply_async(args=[{}])
+            except Exception:
+                logging.getLogger(__name__).exception("Could not enqueue help-center recrawls")
+            stop.wait(tick)
+
+    @worker_ready.connect
+    def _start_help_center_recrawl(**kwargs):
+        if not config.crawler_is_configured:
+            return
+        stop.clear()
+        Thread(target=_tick, name="help-center-recrawl", daemon=True).start()
+
+    @worker_shutdown.connect
+    def _stop_help_center_recrawl(**kwargs):
+        stop.set()
+
+
+_start_help_center_ticker()
 
 
 if os.getenv("STAGED_INGESTION_ENABLED") == "1" and os.getenv("INGEST_PUBLICATION_LOCK_DIR"):

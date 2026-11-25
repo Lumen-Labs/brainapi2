@@ -27,12 +27,17 @@ from typing_extensions import Annotated
 from src.config import config
 from src.services.api.dependencies import get_brain_id
 from src.services.api.constants.requests import (
+    CrawlSpecRequestBody,
     IngestionRequestBody,
     IngestionStructuredRequestBody,
     IngestionUrlRequestBody,
 )
+from src.services.api.constants.responses import (
+    CrawlSpecDeletedResponse,
+    CrawlSpecResponse,
+    IngestionAcceptedResponse,
+)
 from src.core.saving.ingest_groups import InvalidGroupTracking, normalize_group_tracking
-from src.services.api.constants.responses import IngestionAcceptedResponse
 from src.services.input.agents import cache_adapter
 from src.core.saving.ingest_cancellation import register
 from src.workers.tasks.ingestion import ingest_data as ingest_data_task
@@ -738,6 +743,47 @@ async def ingest_url(
         status_code=202,
         content={"message": "URL ingestion accepted", "task_id": task_id},
     )
+
+
+@ingest_router.put(path="/crawl-spec", response_model=CrawlSpecResponse)
+async def put_crawl_spec(
+    data: CrawlSpecRequestBody,
+    brain_id: str = Depends(get_brain_id),
+):
+    """Store the agreed help-center re-crawl spec for this brain."""
+    from src.services.api.controllers.crawl_spec import put_crawl_spec as put_controller
+
+    return await put_controller(brain_id, data)
+
+
+@ingest_router.get(path="/crawl-spec", response_model=CrawlSpecResponse)
+async def get_crawl_spec(brain_id: str = Depends(get_brain_id)):
+    """Return the stored help-center re-crawl spec for this brain."""
+    from src.services.api.controllers.crawl_spec import get_crawl_spec as get_controller
+
+    return await get_controller(brain_id)
+
+
+@ingest_router.delete(path="/crawl-spec", response_model=CrawlSpecDeletedResponse)
+async def delete_crawl_spec(brain_id: str = Depends(get_brain_id)):
+    """Remove the stored help-center re-crawl spec for this brain."""
+    from src.services.api.controllers.crawl_spec import (
+        delete_crawl_spec as delete_controller,
+    )
+
+    return await delete_controller(brain_id)
+
+
+@ingest_router.post(
+    path="/crawl-spec/run",
+    status_code=202,
+    response_model=IngestionAcceptedResponse,
+)
+async def run_crawl_spec(brain_id: str = Depends(get_brain_id)):
+    """Queue one scheduled help-center re-crawl for this brain now."""
+    from src.services.api.controllers.crawl_spec import run_crawl_spec as run_controller
+
+    return await run_controller(brain_id)
 
 
 @ingest_router.post(
