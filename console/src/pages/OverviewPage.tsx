@@ -41,6 +41,11 @@ const shortcuts = [
     description: "Submit new content and track the resulting task pipeline.",
     to: "/ingest",
   },
+  {
+    title: "Source sync",
+    description: "Webhook and scheduled help-center sync, including last synced.",
+    to: "/sources",
+  },
 ];
 
 export default function OverviewPage() {

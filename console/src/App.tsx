@@ -9,6 +9,7 @@ import ObservationsPage from "./pages/ObservationsPage";
 import VectorsPage from "./pages/VectorsPage";
 import TasksPage from "./pages/TasksPage";
 import IngestPage from "./pages/IngestPage";
+import SourcesPage from "./pages/SourcesPage";
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   if (!getSession()) {
@@ -36,6 +37,7 @@ export default function App() {
         <Route path="vectors" element={<VectorsPage />} />
         <Route path="tasks" element={<TasksPage />} />
         <Route path="ingest" element={<IngestPage />} />
+        <Route path="sources" element={<SourcesPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/login" replace />} />
     </Routes>

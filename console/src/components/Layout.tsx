@@ -76,6 +76,7 @@ const navGroups: {
     items: [
       { to: "/tasks", label: "Tasks" },
       { to: "/ingest", label: "Ingest" },
+      { to: "/sources", label: "Sources" },
     ],
   },
 ];

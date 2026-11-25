@@ -73,7 +73,9 @@ ingestion_app = Celery(
     ],
 )
 
-_PLUGIN_QUEUES, _PLUGIN_ROUTES = discover_plugin_celery(default_plugins_dir(_project_root))
+_PLUGIN_QUEUES, _PLUGIN_ROUTES, _PLUGIN_BEAT = discover_plugin_celery(
+    default_plugins_dir(_project_root)
+)
 
 TASK_QUEUES = (
     Queue("ingest_data", routing_key="ingest_data"),
@@ -114,6 +116,7 @@ TASK_ROUTES = {
 ingestion_app.conf.update(
     task_queues=TASK_QUEUES,
     task_routes=TASK_ROUTES,
+    beat_schedule=_PLUGIN_BEAT,
     worker_max_tasks_per_child=50,
     worker_prefetch_multiplier=1,
     task_acks_late=True,

@@ -3,6 +3,7 @@ import unittest
 
 from src.constants.data import TextChunk
 from src.core.saving.source_passages import (
+    close_source_document,
     current_fact_candidates,
     current_record_texts,
     embed_candidate_cap,
@@ -186,6 +187,35 @@ class SourceRevisionTests(unittest.TestCase):
         history = screen_passage_hits(store, "brain", hits, include_history=True)
         self.assertEqual(history[1], ("old", 0.2, "[superseded] then"))
         self.assertEqual(history[2][2], "untagged")
+
+    def test_delete_closes_current_passages_with_valid_to(self):
+        live = TextChunk(
+            id="live",
+            text="now",
+            metadata={"source_key": "src-1"},
+        )
+        old = TextChunk(
+            id="old",
+            text="then",
+            metadata={"source_key": "src-1", "superseded_at": "16/11/2026"},
+        )
+        other = TextChunk(
+            id="other",
+            text="unrelated",
+            metadata={"source_key": "src-2"},
+        )
+        store = _Store([live, old, other])
+        closed = close_source_document(
+            store,
+            brain_id="brain",
+            source_key="src-1",
+            closed_at="2026-11-25T12:00:00Z",
+        )
+        self.assertEqual(closed, ["live"])
+        self.assertEqual(store.marked[0][0], ["live"])
+        self.assertEqual(store.marked[0][3], "2026-11-25T12:00:00Z")
+        self.assertEqual(live.metadata["valid_to"], "2026-11-25T12:00:00Z")
+        self.assertNotIn("valid_to", other.metadata)
 
 
 class CurrentFactTests(unittest.TestCase):
