@@ -716,6 +716,9 @@ class Config:
         self.crawler_poll_timeout_seconds = int(
             os.getenv("CRAWLER_POLL_TIMEOUT_SECONDS", "900")
         )
+        self.help_center_crawl_tick_seconds = int(
+            os.getenv("HELP_CENTER_CRAWL_TICK_SECONDS", "900")
+        )
         self.pipeline_mode: Literal["lightweight", "accurate"] = validate_pipeline_mode(
             os.getenv("PIPELINE_MODE", "accurate")
         )

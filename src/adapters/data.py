@@ -428,6 +428,42 @@ class DataAdapter:
             fact_ids=fact_ids, brain_id=brain_id
         )
 
+    def save_crawl_spec(self, spec, brain_id: str = "default"):
+        saver = getattr(self.data, "save_crawl_spec", None)
+        if not callable(saver):
+            raise NotImplementedError("save_crawl_spec method not implemented")
+        return saver(spec, brain_id)
+
+    def get_crawl_spec(self, brain_id: str = "default"):
+        getter = getattr(self.data, "get_crawl_spec", None)
+        if not callable(getter):
+            return None
+        return getter(brain_id)
+
+    def delete_crawl_spec(self, brain_id: str = "default") -> bool:
+        deleter = getattr(self.data, "delete_crawl_spec", None)
+        if not callable(deleter):
+            return False
+        return bool(deleter(brain_id))
+
+    def list_due_crawl_specs(self, now=None, force: bool = False):
+        lister = getattr(self.data, "list_due_crawl_specs", None)
+        if not callable(lister):
+            return []
+        return lister(now=now, force=force)
+
+    def claim_due_crawl_spec(
+        self,
+        brain_id: str = "default",
+        now=None,
+        force: bool = False,
+        task_id: str | None = None,
+    ):
+        claimer = getattr(self.data, "claim_due_crawl_spec", None)
+        if not callable(claimer):
+            return None
+        return claimer(brain_id, now=now, force=force, task_id=task_id)
+
     def get_conflict_scan_cursor(self, brain_id: str = "default"):
         getter = getattr(self.data, "get_conflict_scan_cursor", None)
         if not callable(getter):

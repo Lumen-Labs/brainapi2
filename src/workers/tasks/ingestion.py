@@ -2319,12 +2319,20 @@ def build_url_page_ingest_payload(
     page,
     group_tracking: Optional[str] = None,
     skip_enrichment: bool = False,
+    crawl_root: Optional[str] = None,
 ) -> dict:
+    from src.core.saving.help_center_crawl import crawl_root_key, page_source_key
     from src.core.saving.ingest_groups import normalize_group_tracking
 
     meta_keys = {}
     if getattr(page, "url", None):
         meta_keys["source_url"] = page.url
+    source_key = page_source_key(page)
+    if source_key:
+        meta_keys["source_key"] = source_key
+    root = crawl_root_key(crawl_root) if crawl_root else None
+    if root:
+        meta_keys["crawl_root"] = root
     if getattr(page, "title", None):
         meta_keys["source_title"] = page.title
     if getattr(page, "content_hash", None):
@@ -2384,7 +2392,11 @@ def ingest_url(self, args: dict):
                 return []
             return [
                 {"payload": build_url_page_ingest_payload(
-                    brain_id, page, group_tracking=group_tracking, skip_enrichment=skip_enrichment,
+                    brain_id,
+                    page,
+                    group_tracking=group_tracking,
+                    skip_enrichment=skip_enrichment,
+                    crawl_root=args.get("url"),
                 )}
                 for page in pages if (page.text or "").strip()
             ]
@@ -2441,6 +2453,7 @@ def ingest_url(self, args: dict):
                 page,
                 group_tracking=group_tracking,
                 skip_enrichment=skip_enrichment,
+                crawl_root=args.get("url"),
             )
             for attempt in range(FILE_INGEST_MAX_RETRIES):
                 try:

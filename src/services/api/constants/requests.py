@@ -199,6 +199,60 @@ class IngestionUrlRequestBody(BaseModel):
             raise ValueError(str(exc)) from exc
 
 
+class CrawlSpecRequestBody(BaseModel):
+    url: str = Field(description="Public https help-center root URL to re-crawl.")
+    max_pages: int = Field(
+        default=10,
+        ge=1,
+        le=999,
+        description="Maximum pages to crawl. Each cleaned page becomes one ingest job.",
+    )
+    allowed_domains: List[str] = Field(
+        default_factory=list,
+        description="Extra eTLD+1 hosts to include, max 20.",
+    )
+    allowed_path_prefixes: list[
+        Annotated[str, StringConstraints(strip_whitespace=True, max_length=2048)]
+    ] = Field(
+        default_factory=list,
+        max_length=20,
+        description="Case-sensitive pathname prefixes. The seed must match a prefix when provided.",
+    )
+    interval_days: int = Field(
+        default=7,
+        ge=1,
+        le=365,
+        description="Agreed re-crawl cadence in days. Default weekly.",
+    )
+    enabled: bool = True
+    skip_enrichment: bool = False
+    group_tracking: Optional[str] = Field(
+        default=None,
+        description="Optional ingest-cost rollup key for scheduled runs (1-128 chars, [A-Za-z0-9._:-]).",
+    )
+
+    @field_validator("url")
+    @classmethod
+    def require_https_url(cls, value: str) -> str:
+        return IngestionUrlRequestBody.require_https_url(value)
+
+    @field_validator("allowed_domains")
+    @classmethod
+    def validate_allowed_domains(cls, value: List[str]) -> List[str]:
+        return IngestionUrlRequestBody.validate_allowed_domains(value)
+
+    @field_validator("allowed_path_prefixes")
+    @classmethod
+    def validate_allowed_path_prefixes(
+        cls, value: list[str], info: ValidationInfo
+    ) -> list[str]:
+        return IngestionUrlRequestBody.validate_allowed_path_prefixes(value, info)
+
+    @field_validator("group_tracking", mode="before")
+    @classmethod
+    def _normalize_group_tracking(cls, value: Any) -> Optional[str]:
+        return IngestionUrlRequestBody._normalize_group_tracking(value)
+
 
 class IngestionStructuredDataElement(BaseModel):
     """

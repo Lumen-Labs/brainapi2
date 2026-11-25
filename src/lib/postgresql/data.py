@@ -53,6 +53,16 @@ CREATE TABLE IF NOT EXISTS data_brains (
     document JSONB NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+CREATE TABLE IF NOT EXISTS data_crawl_specs (
+    brain_id TEXT PRIMARY KEY,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    last_crawled_at TIMESTAMPTZ,
+    last_started_at TIMESTAMPTZ,
+    document JSONB NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_data_crawl_specs_due
+    ON data_crawl_specs (enabled, last_crawled_at, last_started_at);
 """
 
 
@@ -1474,6 +1484,139 @@ class PostgreSQLDataClient(DataClient):
         if not row:
             return None
         return normalize_meter_document(dict(row["document"]))
+
+    def save_crawl_spec(self, spec, brain_id: str):
+        from src.core.saving.help_center_crawl import CrawlSpec, spec_from_document
+        from src.core.saving.validity import parse_instant
+
+        payload = spec if isinstance(spec, CrawlSpec) else spec_from_document(spec, brain_id)
+        if payload is None:
+            raise ValueError("Invalid crawl spec")
+        payload.brain_id = brain_id
+        document = payload.model_dump(mode="json")
+        crawled = parse_instant(payload.last_crawled_at)
+        started = parse_instant(payload.last_started_at)
+        with self._system_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO data_crawl_specs (
+                        brain_id, enabled, last_crawled_at, last_started_at, document, updated_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s::jsonb, NOW())
+                    ON CONFLICT (brain_id) DO UPDATE SET
+                        enabled = EXCLUDED.enabled,
+                        last_crawled_at = EXCLUDED.last_crawled_at,
+                        last_started_at = EXCLUDED.last_started_at,
+                        document = EXCLUDED.document,
+                        updated_at = NOW()
+                    """,
+                    (
+                        brain_id,
+                        bool(payload.enabled),
+                        crawled,
+                        started,
+                        json.dumps(document, default=str),
+                    ),
+                )
+            conn.commit()
+        return payload
+
+    def get_crawl_spec(self, brain_id: str):
+        from src.core.saving.help_center_crawl import spec_from_document
+
+        with self._system_connection() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT document FROM data_crawl_specs WHERE brain_id = %s",
+                    (brain_id,),
+                )
+                row = cur.fetchone()
+        if not row:
+            return None
+        return spec_from_document(row["document"], brain_id)
+
+    def delete_crawl_spec(self, brain_id: str) -> bool:
+        with self._system_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM data_crawl_specs WHERE brain_id = %s",
+                    (brain_id,),
+                )
+                deleted = cur.rowcount > 0
+            conn.commit()
+        return deleted
+
+    def list_due_crawl_specs(self, now=None, force: bool = False):
+        from src.core.saving.help_center_crawl import spec_from_document, spec_is_due
+        from src.core.saving.validity import utc_now
+
+        instant = now or utc_now()
+        with self._system_connection() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT brain_id, document FROM data_crawl_specs WHERE enabled = TRUE"
+                )
+                rows = cur.fetchall()
+        due = []
+        for row in rows:
+            spec = spec_from_document(row["document"], row["brain_id"])
+            if spec_is_due(spec, now=instant, force=force):
+                due.append(spec)
+        return due
+
+    def claim_due_crawl_spec(
+        self,
+        brain_id: str,
+        now=None,
+        force: bool = False,
+        task_id: str | None = None,
+    ):
+        from src.core.saving.help_center_crawl import (
+            mark_started,
+            spec_from_document,
+            spec_is_due,
+        )
+        from src.core.saving.validity import parse_instant, utc_now
+
+        instant = now or utc_now()
+        with self._system_connection() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT document FROM data_crawl_specs
+                    WHERE brain_id = %s
+                    FOR UPDATE
+                    """,
+                    (brain_id,),
+                )
+                row = cur.fetchone()
+                spec = spec_from_document(row["document"], brain_id) if row else None
+                if not spec_is_due(spec, now=instant, force=force):
+                    conn.commit()
+                    return None
+                claimed = mark_started(spec, now=instant, task_id=task_id)
+                document = claimed.model_dump(mode="json")
+                cur.execute(
+                    """
+                    UPDATE data_crawl_specs
+                    SET enabled = %s,
+                        last_crawled_at = %s,
+                        last_started_at = %s,
+                        document = %s::jsonb,
+                        updated_at = NOW()
+                    WHERE brain_id = %s
+                    """,
+                    (
+                        bool(claimed.enabled),
+                        parse_instant(claimed.last_crawled_at),
+                        parse_instant(claimed.last_started_at),
+                        json.dumps(document, default=str),
+                        brain_id,
+                    ),
+                )
+            conn.commit()
+        return claimed
 
 
 

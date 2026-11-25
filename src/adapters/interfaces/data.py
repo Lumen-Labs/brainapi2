@@ -379,3 +379,24 @@ class DataClient(ABC):
         self, fact_ids: list[str], brain_id: str
     ) -> list[FactConflict]:
         raise NotImplementedError("get_open_conflicts_for_facts method not implemented")
+
+    def save_crawl_spec(self, spec, brain_id: str):
+        raise NotImplementedError("save_crawl_spec method not implemented")
+
+    def get_crawl_spec(self, brain_id: str):
+        return None
+
+    def delete_crawl_spec(self, brain_id: str) -> bool:
+        return False
+
+    def list_due_crawl_specs(self, now=None, force: bool = False):
+        return []
+
+    def claim_due_crawl_spec(
+        self,
+        brain_id: str,
+        now=None,
+        force: bool = False,
+        task_id: str | None = None,
+    ):
+        return None

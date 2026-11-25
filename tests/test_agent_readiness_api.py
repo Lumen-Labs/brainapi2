@@ -368,6 +368,11 @@ class OpenApiContractTests(unittest.TestCase):
             "503",
             schema["paths"]["/ingest/url"]["post"]["responses"],
         )
+        self.assertIn("put", schema["paths"]["/ingest/crawl-spec"])
+        self.assertIn("get", schema["paths"]["/ingest/crawl-spec"])
+        self.assertIn("delete", schema["paths"]["/ingest/crawl-spec"])
+        self.assertIn("202", schema["paths"]["/ingest/crawl-spec/run"]["post"]["responses"])
+        self.assertIn("503", schema["paths"]["/ingest/crawl-spec/run"]["post"]["responses"])
         self.assertTrue(schema["servers"])
         self.assertTrue(all(item.get("url") for item in schema["servers"]))
         retrieve_params = schema["paths"]["/retrieve/context"]["post"].get(

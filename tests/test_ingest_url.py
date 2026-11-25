@@ -211,6 +211,8 @@ class IngestUrlTaskTests(unittest.TestCase):
         self.assertEqual(len(result["task_ids"]), 1)
         payload = enqueued[0]["args"][0]
         self.assertEqual(payload["meta_keys"]["source_url"], "https://example.com/")
+        self.assertEqual(payload["meta_keys"]["source_key"], "https://example.com/")
+        self.assertEqual(payload["meta_keys"]["crawl_root"], "https://example.com/")
         self.assertEqual(payload["meta_keys"]["source_title"], "Home")
         self.assertEqual(payload["skip_enrichment"], True)
         self.assertEqual(payload["group_tracking"], "chapter-3")
@@ -304,7 +306,14 @@ if __name__ == "__main__":
 class IngestionQueueRoutingTests(unittest.TestCase):
     def test_url_and_failure_tasks_route_to_a_consumed_queue(self):
         from src.workers.app import ingestion_app
-        for name in ('ingest_url', 'mark_ingestion_chain_failed'):
-            route = ingestion_app.amqp.router.route({}, 'src.workers.tasks.ingestion.' + name)
-            self.assertEqual(route['queue'].name, 'ingest_data')
-            self.assertIn(route['queue'].name, {queue.name for queue in ingestion_app.conf.task_queues})
+        for name in (
+            "src.workers.tasks.ingestion.ingest_url",
+            "src.workers.tasks.ingestion.mark_ingestion_chain_failed",
+            "src.workers.tasks.help_center.recrawl_help_center",
+        ):
+            route = ingestion_app.amqp.router.route({}, name)
+            self.assertEqual(route["queue"].name, "ingest_data")
+            self.assertIn(
+                route["queue"].name,
+                {queue.name for queue in ingestion_app.conf.task_queues},
+            )

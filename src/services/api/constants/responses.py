@@ -17,6 +17,33 @@ class IngestionAcceptedResponse(BaseModel):
     task_id: str
 
 
+class CrawlSpecDeletedResponse(BaseModel):
+    message: str
+    brain_id: str
+
+
+class CrawlSpecResponse(BaseModel):
+    message: str
+    brain_id: str
+    url: str
+    max_pages: int
+    allowed_domains: list[str] = []
+    allowed_path_prefixes: list[str] = []
+    interval_days: int
+    enabled: bool
+    skip_enrichment: bool = False
+    group_tracking: Optional[str] = None
+    last_crawled_at: Optional[str] = None
+    last_started_at: Optional[str] = None
+    last_seen_source_keys: list[str] = []
+    last_task_id: Optional[str] = None
+    last_error: Optional[str] = None
+    last_conflict_scan_task_id: Optional[str] = None
+    pages_ingested: int = 0
+    pages_removed: int = 0
+    cadence: str = "scheduled re-crawl"
+
+
 class LoginInfoResponse(BaseModel):
     is_system_pat: bool
     brain_id: str
