@@ -9,6 +9,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 """
 
 import asyncio
+import inspect
 import io
 import logging
 import os
@@ -49,9 +50,11 @@ from src.workers.tasks.ingestion import (
 from src.workers.tasks.ingestion import set_ingestion_task_status
 from src.core.saving.ingest_plain_text import (
     decode_plain_text,
+    filename_extension,
     is_blank_plain_text,
     uses_plain_text_ingest,
 )
+from src.core.saving.source_passages import default_text_source_key
 from src.constants.tasks.ingestion import IngestionTaskArgs
 from src.core.saving.ingest_staging import (
     REMOTE_OCR_EMPTY_ERROR,
@@ -91,18 +94,45 @@ def staged_upload_max_bytes():
     return value
 
 
-def _read_upload_capped(upload, limit):
+async def _read_upload_capped(upload, limit):
+    stream = getattr(upload, "file", None)
+    if stream is not None:
+        try:
+            stream.seek(0)
+        except Exception:
+            pass
     chunks = []
     total = 0
-    while True:
-        chunk = upload.file.read(1024 * 1024)
-        if not chunk:
-            break
-        total += len(chunk)
-        if total > limit:
-            raise HTTPException(413, "File upload is too large")
-        chunks.append(chunk)
+    try:
+        while True:
+            chunk = await _read_upload_chunk(upload, 1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > limit:
+                raise HTTPException(413, "File upload is too large")
+            chunks.append(chunk)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="Could not finish reading the uploaded file",
+        ) from exc
     return b"".join(chunks)
+
+
+async def _read_upload_chunk(upload, size):
+    read = getattr(upload, "read", None)
+    if read is not None:
+        chunk = read(size)
+        if inspect.isawaitable(chunk):
+            return await chunk
+        return chunk or b""
+    stream = getattr(upload, "file", None)
+    if stream is None:
+        return b""
+    return stream.read(size) or b""
 
 
 def _upload_size(upload, content):
@@ -114,10 +144,16 @@ def _upload_size(upload, content):
     return None
 
 
-def _plain_text_payload(brain_id, text, group_key):
+def _plain_text_payload(brain_id, text, group_key, filename=None):
+    meta_keys = {
+        "source_key": default_text_source_key(text, filename),
+    }
+    if filename:
+        meta_keys["filename"] = filename
     payload = {
         "data": {"data_type": "text", "text_data": text},
         "brain_id": brain_id,
+        "meta_keys": meta_keys,
     }
     if group_key:
         payload["group_tracking"] = group_key
@@ -825,15 +861,14 @@ async def ingest_file(
 
 async def _dispatch_file_ingest(request, file, brain_id, task, context, group_key):
     filename = file.filename or "file"
-    file.file.seek(0)
     staged_file = (
         os.getenv("STAGED_INGESTION_ENABLED") == "1"
         and os.getenv("STAGED_ENRICHMENT_ENABLED") == "1"
     )
     plain_text = uses_plain_text_ingest(brain_id, filename, file.content_type)
     content = None
-    if staged_file or plain_text:
-        content = _read_upload_capped(file, staged_upload_max_bytes())
+    if staged_file or plain_text or not filename_extension(filename):
+        content = await _read_upload_capped(file, staged_upload_max_bytes())
     if content is not None:
         plain_text = uses_plain_text_ingest(
             brain_id, filename, file.content_type, content,
@@ -845,7 +880,7 @@ async def _dispatch_file_ingest(request, file, brain_id, task, context, group_ke
         await _queue_text_ingest(
             brain_id,
             task,
-            _plain_text_payload(brain_id, text, group_key),
+            _plain_text_payload(brain_id, text, group_key, filename=filename),
             context,
             group_key,
         )

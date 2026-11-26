@@ -7,6 +7,11 @@ Same-type outgoing non-event edges are **not** closed by default. Only:
 - edges whose ``source_chunk_ids`` belong to chunks this ingest just
   superseded (source-revision-driven replacement).
 
+Ingest-time invalidation passes ``require_same_source=True`` so a
+single-valued type is closed only when the incoming edge shares
+``source_key`` with the existing one. Intent remember/correct still
+close functional types across sources.
+
 Multi-valued types such as ``WORKS_WITH`` and ``APPLIES_TO`` accumulate.
 ``REQUIRES`` and ``LOCATED_IN`` are multi-valued by default (a rule can
 require several things; a subject can be located in several places).
@@ -78,14 +83,33 @@ def existing_edge_from_superseded_source(
     return bool(source_chunk_ids_from_mapping(mapping) & superseded)
 
 
+def source_key_from_mapping(mapping: Mapping[str, Any] | None) -> str:
+    source = dict(mapping or {})
+    value = source.get("source_key")
+    if value is None:
+        nested = source.get("properties")
+        if isinstance(nested, Mapping):
+            value = nested.get("source_key")
+    text = str(value or "").strip()
+    return text
+
+
 def should_close_outgoing_edge(
     *,
     relationship_name: str | None,
     existing_properties: Mapping[str, Any] | None,
     superseded_chunk_ids: Iterable[str] | None = None,
+    incoming_source_key: str | None = None,
+    require_same_source: bool = False,
 ) -> bool:
     if existing_edge_from_superseded_source(
         existing_properties, superseded_chunk_ids
     ):
         return True
-    return relationship_type_is_single_valued(relationship_name)
+    if not relationship_type_is_single_valued(relationship_name):
+        return False
+    if not require_same_source:
+        return True
+    incoming = str(incoming_source_key or "").strip()
+    existing = source_key_from_mapping(existing_properties)
+    return bool(incoming) and incoming == existing

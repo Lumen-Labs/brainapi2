@@ -87,6 +87,31 @@ def looks_like_binary(content):
     return b"\x00" in sample
 
 
+_BINARY_MAGIC = (
+    b"%PDF",
+    b"PK\x03\x04",
+    b"\x89PNG",
+    b"\xff\xd8\xff",
+    b"GIF87a",
+    b"GIF89a",
+)
+
+
+def looks_like_text_bytes(content):
+    sample = content[:8192] if content else b""
+    if not sample or looks_like_binary(sample):
+        return False
+    if any(sample.startswith(magic) for magic in _BINARY_MAGIC):
+        return False
+    try:
+        sample.decode("utf-8")
+        return True
+    except UnicodeDecodeError:
+        decoded = sample.decode("latin-1")
+        printable = sum(1 for char in decoded if char.isprintable() or char in "\n\r\t")
+        return printable / len(decoded) >= 0.85
+
+
 BLANK_PLAIN_TEXT_EXTENSIONS = {".txt", ".md", ".csv"}
 
 
@@ -107,8 +132,15 @@ def is_blank_plain_text(filename, text):
 
 
 def uses_plain_text_ingest(brain_id, filename, content_type, content=None):
-    if not is_plain_text_upload(filename, content_type):
+    if is_plain_text_upload(filename, content_type):
+        if content is not None and looks_like_binary(content):
+            return False
+        return True
+    if content is None or looks_like_binary(content):
         return False
-    if content is not None and looks_like_binary(content):
+    if filename_extension(filename):
         return False
-    return True
+    ctype = normalized_content_type(content_type)
+    if ctype not in ("", "application/octet-stream"):
+        return False
+    return looks_like_text_bytes(content)

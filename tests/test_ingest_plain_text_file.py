@@ -10,9 +10,11 @@ from src.core.saving.ingest_plain_text import (
     decode_plain_text,
     is_blank_plain_text,
     is_spreadsheet_upload,
+    looks_like_text_bytes,
     spreadsheet_experiment_owns_upload,
     uses_plain_text_ingest,
 )
+from src.core.saving.source_passages import default_text_source_key
 from src.core.saving.ingest_staging import (
     REMOTE_OCR_DEADLINE_SECONDS,
     REMOTE_OCR_TIMEOUT_ERROR,
@@ -52,6 +54,14 @@ def test_plain_text_classification_and_utf8_decode():
     assert not uses_plain_text_ingest("b", "report.pdf", "application/pdf")
     assert not uses_plain_text_ingest("b", "page.html", "text/html")
     assert not uses_plain_text_ingest("b", "notes.txt", "text/plain", b"\x00binary")
+    assert uses_plain_text_ingest(
+        "b", "upload", "application/octet-stream", b"Halvorsen Dynamics"
+    )
+    assert not uses_plain_text_ingest(
+        "b", "upload", "application/octet-stream", b"%PDF-1.4 mock"
+    )
+    assert looks_like_text_bytes(b"Halvorsen Dynamics is headquartered in Bergen.")
+    assert not looks_like_text_bytes(b"%PDF-1.4 mock")
     assert decode_plain_text(b"\xef\xbb\xbfhello") == "hello"
     assert decode_plain_text(b"hi \xff there") == "hi ÿ there"
     assert decode_plain_text(b"cost \x80 5") == "cost € 5"
@@ -132,8 +142,68 @@ def test_txt_upload_uses_text_ingest_and_skips_docparser(monkeypatch):
     body = queued.call_args.kwargs["args"][0]
     assert body["data"]["data_type"] == "text"
     assert body["data"]["text_data"] == "plain text body"
+    assert body["meta_keys"]["filename"] == "notes.txt"
+    assert body["meta_keys"]["source_key"] == default_text_source_key(
+        "plain text body", "notes.txt"
+    )
     parser.assert_not_called()
     ingest.ingest_file_task.apply_async.assert_not_called()
+
+
+def test_tiny_txt_upload_is_accepted(monkeypatch):
+    app, ingest = _ingest_app()
+    queued = Mock()
+    monkeypatch.setattr(ingest.config, "ocr_mode", "docparser")
+    monkeypatch.setattr(ingest, "set_ingestion_task_status", Mock())
+    monkeypatch.setattr(ingest.ingest_data_task, "apply_async", queued)
+    monkeypatch.setattr(ingest.ingest_file_task, "apply_async", Mock())
+    body = (
+        "QARC-20261126 Halvorsen Dynamics company profile (published 2024-03-01). "
+        "Halvorsen Dynamics is a marine robotics company headquartered in Bergen, Norway."
+    ).encode("utf-8")
+    response = TestClient(app).post(
+        "/ingest/file",
+        files={"file": ("profile.txt", body, "text/plain")},
+    )
+    assert response.status_code == 202
+    queued.assert_called_once()
+    payload = queued.call_args.kwargs["args"][0]
+    assert payload["data"]["text_data"].startswith("QARC-20261126")
+    assert payload["meta_keys"]["source_key"]
+
+
+def test_upload_read_failure_returns_422(monkeypatch):
+    app, ingest = _ingest_app()
+    monkeypatch.setattr(ingest.config, "ocr_mode", "docparser")
+    monkeypatch.setattr(ingest, "set_ingestion_task_status", Mock())
+
+    async def boom(_upload, _size):
+        raise OSError("couldn't finish reading")
+
+    monkeypatch.setattr(ingest, "_read_upload_chunk", boom)
+    response = TestClient(app).post(
+        "/ingest/file",
+        files={"file": ("notes.txt", b"plain text body", "text/plain")},
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Could not finish reading the uploaded file"
+
+
+def test_octet_stream_without_extension_uses_text_ingest(monkeypatch):
+    app, ingest = _ingest_app()
+    queued = Mock()
+    parser = Mock(side_effect=AssertionError("docparser must not be called"))
+    monkeypatch.setattr(ingest.config, "ocr_mode", "docparser")
+    monkeypatch.setattr(ingest, "set_ingestion_task_status", Mock())
+    monkeypatch.setattr(ingest.ingest_data_task, "apply_async", queued)
+    monkeypatch.setattr(ingest.requests, "post", parser)
+    response = TestClient(app).post(
+        "/ingest/file",
+        files={"file": ("upload", b"Halvorsen Dynamics is in Bergen.", "application/octet-stream")},
+    )
+    assert response.status_code == 202
+    queued.assert_called_once()
+    parser.assert_not_called()
 
 
 @pytest.mark.parametrize(

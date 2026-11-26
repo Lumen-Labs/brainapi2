@@ -87,6 +87,7 @@ def stamp_provenance(
     *,
     source_chunk_id: Optional[str] = None,
     source_timestamp: Optional[str] = None,
+    source_key: Optional[str] = None,
     existing_properties: Optional[dict] = None,
 ) -> dict:
     props = dict(properties or {})
@@ -106,4 +107,10 @@ def stamp_provenance(
     )
     if timestamp:
         props["source_timestamp"] = timestamp
+    if source_key and str(source_key).strip():
+        key = str(source_key).strip()
+    else:
+        key = str(props.get("source_key") or existing.get("source_key") or "").strip()
+    if key:
+        props["source_key"] = key
     return props

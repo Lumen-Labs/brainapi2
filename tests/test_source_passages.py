@@ -6,6 +6,7 @@ from src.core.saving.source_passages import (
     close_source_document,
     current_fact_candidates,
     current_record_texts,
+    default_text_source_key,
     embed_candidate_cap,
     prepare_source_revision,
     prior_revision_texts,
@@ -14,6 +15,18 @@ from src.core.saving.source_passages import (
     source_content_hash,
     visible_passage_body,
 )
+
+
+class DefaultTextSourceKeyTests(unittest.TestCase):
+    def test_hashes_content_and_includes_filename(self):
+        first = default_text_source_key("Halvorsen Dynamics")
+        second = default_text_source_key("Halvorsen Dynamics", "profile.txt")
+        other = default_text_source_key("Corvella Teahouse")
+        self.assertTrue(first.startswith("text:"))
+        self.assertEqual(first, default_text_source_key("Halvorsen Dynamics"))
+        self.assertNotEqual(first, other)
+        self.assertIn("profile.txt", second)
+        self.assertNotEqual(first, second)
 
 
 class _Store:

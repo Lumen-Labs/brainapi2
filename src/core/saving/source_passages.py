@@ -38,6 +38,14 @@ def source_content_hash(text: str) -> str:
     return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
 
 
+def default_text_source_key(text: str, filename: str | None = None) -> str:
+    digest = source_content_hash(text)[:16]
+    name = str(filename or "").strip()
+    if name:
+        return f"text:{name}:{digest}"
+    return f"text:{digest}"
+
+
 def source_key_from_meta(meta: dict | None) -> str | None:
     if not isinstance(meta, dict):
         return None

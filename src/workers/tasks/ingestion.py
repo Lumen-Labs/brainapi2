@@ -294,6 +294,7 @@ def _resolve_relationship_entities(
     brain_id: str,
     source_chunk_id: Optional[str] = None,
     source_timestamp: Optional[str] = None,
+    source_key: Optional[str] = None,
 ) -> None:
     unique_entities = {}
     for relationship in relationships:
@@ -430,6 +431,7 @@ def _resolve_relationship_entities(
                         entity.properties,
                         source_chunk_id=source_chunk_id,
                         source_timestamp=source_timestamp,
+                        source_key=source_key,
                         existing_properties=existing_props,
                     )
                     if getattr(node, "description", None):
@@ -526,6 +528,7 @@ def _resolve_relationship_entities(
             relationship.properties,
             source_chunk_id=source_chunk_id,
             source_timestamp=source_timestamp,
+            source_key=source_key,
         )
         if (
             parse_instant(source_timestamp) is not None
@@ -545,6 +548,7 @@ def _resolve_relationship_entities(
                 entity.properties,
                 source_chunk_id=source_chunk_id,
                 source_timestamp=source_timestamp,
+                source_key=source_key,
             )
             if resolutions.get(_entity_key(entity)):
                 continue
@@ -731,10 +735,13 @@ def _invalidate_superseded_relationships(
         props = getattr(predicate, "properties", None) or {}
         if props.get("invalid_at") or props.get("valid_to"):
             continue
+        incoming_key = str((relationship.properties or {}).get("source_key") or "").strip()
         if not should_close_outgoing_edge(
             relationship_name=relationship.name,
             existing_properties=props,
             superseded_chunk_ids=superseded_chunk_ids,
+            incoming_source_key=incoming_key or None,
+            require_same_source=True,
         ):
             continue
         try:
@@ -1006,7 +1013,11 @@ def _ingest_data(self, args, *, staged=False):
             else None
         )
 
-        from src.core.saving.source_passages import prepare_source_revision
+        from src.core.saving.source_passages import (
+            default_text_source_key,
+            prepare_source_revision,
+            source_key_from_meta,
+        )
         from src.core.saving.validity import format_instant, parse_instant, stamp_valid_from, utc_now
 
         superseded_ids: list[str] = []
@@ -1014,6 +1025,17 @@ def _ingest_data(self, args, *, staged=False):
         source_instant = parse_instant(payload.source_timestamp)
         if source_instant is not None:
             payload.source_timestamp = format_instant(source_instant)
+        if not payload.meta_keys:
+            payload.meta_keys = {}
+        if not source_key_from_meta(payload.meta_keys):
+            filename = (
+                payload.meta_keys.get("filename")
+                or payload.meta_keys.get("source_filename")
+                or payload.meta_keys.get("source_file")
+            )
+            payload.meta_keys["source_key"] = default_text_source_key(
+                source_text, filename
+            )
         revision = prepare_source_revision(
             data_adapter,
             brain_id=payload.brain_id,
@@ -1118,6 +1140,7 @@ def _ingest_data(self, args, *, staged=False):
             brain_id=payload.brain_id,
             source_chunk_id=text_chunk.id,
             source_timestamp=payload.source_timestamp,
+            source_key=source_key_from_meta(payload.meta_keys),
             preferred_extraction_entities=payload.preferred_extraction_entities,
         )
         cost_ledger.merge(
@@ -1305,6 +1328,7 @@ def process_architect_relationships(self, args: dict):
         ]
         reference_time = None
         source_chunk_id = None
+        source_key = None
         for rel in relationships:
             props = rel.properties or {}
             if not reference_time:
@@ -1315,12 +1339,15 @@ def process_architect_relationships(self, args: dict):
                     source_chunk_id = ids[-1]
                 elif props.get("source_chunk_id"):
                     source_chunk_id = props.get("source_chunk_id")
+            if not source_key:
+                source_key = props.get("source_key")
         _normalize_relationship_dates(relationships, reference_time=reference_time)
         _resolve_relationship_entities(
             relationships,
             brain_id,
             source_chunk_id=source_chunk_id,
             source_timestamp=reference_time,
+            source_key=source_key,
         )
         from src.core.saving.ingest_effects import stamp_task_ids
 
