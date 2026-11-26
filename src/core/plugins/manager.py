@@ -22,8 +22,12 @@ class PluginManager:
     ):
         self.plugins_dir = plugins_dir
         self.registry_url = registry_url
+        from src.core.plugins.paths import plugin_search_dirs
+
+        extra = [path for path in plugin_search_dirs() if path.resolve() != plugins_dir.resolve()]
         self._manifest_catalog = PluginManifestCatalog(
             plugins_dir=plugins_dir,
+            extra_dirs=extra,
             logger_override=logger,
         )
         self._registry: Optional[PluginRegistryClient] = None

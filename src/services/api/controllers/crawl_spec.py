@@ -7,7 +7,7 @@ from fastapi import HTTPException
 from starlette.responses import JSONResponse
 
 from src.config import config
-from src.core.saving.help_center_crawl import CrawlSpec
+from src.core.saving.help_center_crawl import CrawlSpec, spec_in_flight, spec_is_due
 from src.services.api.constants.requests import CrawlSpecRequestBody
 from src.services.data.main import data_adapter
 
@@ -87,6 +87,8 @@ async def run_crawl_spec(brain_id: str):
         raise HTTPException(status_code=404, detail="No crawl spec is stored for this brain")
     if not spec.enabled:
         raise HTTPException(status_code=409, detail="Crawl spec is disabled")
+    if spec_in_flight(spec) or not spec_is_due(spec, force=True):
+        raise HTTPException(status_code=409, detail="A crawl is already running for this spec")
 
     task_id = str(uuid4())
 

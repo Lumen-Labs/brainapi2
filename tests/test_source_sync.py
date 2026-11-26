@@ -20,7 +20,14 @@ PLUGIN_DIR = Path(__file__).resolve().parent.parent / "plugins" / "source_sync"
 if str(PLUGIN_DIR) not in sys.path:
     sys.path.insert(0, str(PLUGIN_DIR))
 
-from source_sync_apply import apply_event, close_citing_facts, dead_letter, event_from_payload
+from source_sync_apply import (
+    DocumentBusy,
+    apply_event,
+    apply_poll,
+    close_citing_facts,
+    dead_letter,
+    event_from_payload,
+)
 from source_sync_connector import (
     SourceFetchError,
     WebhookRejected,
@@ -28,7 +35,8 @@ from source_sync_connector import (
     generic_hmac_hex,
     zendesk_signature,
 )
-from source_sync_store import SourceSyncStore, public_source
+from source_sync_store import AdapterDurable, SourceSyncStore, public_source
+from src.core.saving.validity import format_instant, utc_now
 from source_sync_api import create_admin_router, create_webhook_router
 from main import register
 
@@ -56,6 +64,10 @@ class FakeData:
                 chunk.metadata["superseded_at"] = superseded_at
                 if valid_to:
                     chunk.metadata["valid_to"] = valid_to
+
+    def get_text_chunks_by_ids(self, ids, with_observations, brain_id):
+        wanted = {str(item) for item in ids}
+        return [chunk for chunk in self.chunks if str(chunk.id) in wanted], []
 
 
 class FakeGraph:
@@ -93,6 +105,14 @@ class FakeContext:
     def include_router(self, router, skip_pat=False, skip_brain=False, **kwargs):
         self._app.include_router(router, **kwargs)
         self.skipped.append((skip_pat, skip_brain, kwargs.get("prefix") or getattr(router, "prefix", "")))
+
+
+def _fresh_generic_headers(secret: str, body: bytes) -> dict[str, str]:
+    timestamp = format_instant(utc_now())
+    return {
+        "X-Source-Sync-Signature": generic_hmac_hex(secret, body, timestamp),
+        "X-Source-Sync-Timestamp": timestamp,
+    }
 
 
 def _source(store, **overrides):
@@ -158,18 +178,12 @@ class ZendeskConnectorTests(unittest.TestCase):
     def test_verifies_generic_and_zendesk_signatures(self):
         secret = "hook-secret"
         body = b'{"detail":{"id":1}}'
-        generic = generic_hmac_hex(secret, body)
-        self.assertTrue(
-            self.connector.verify_webhook(
-                {"X-Source-Sync-Signature": generic}, body, secret
-            )
-        )
-        self.assertFalse(
-            self.connector.verify_webhook(
-                {"X-Source-Sync-Signature": "deadbeef"}, body, secret
-            )
-        )
-        timestamp = "2026-11-25T12:00:00Z"
+        headers = _fresh_generic_headers(secret, body)
+        self.assertTrue(self.connector.verify_webhook(headers, body, secret))
+        bad = dict(headers)
+        bad["X-Source-Sync-Signature"] = "deadbeef"
+        self.assertFalse(self.connector.verify_webhook(bad, body, secret))
+        timestamp = format_instant(utc_now())
         signature = zendesk_signature(secret, timestamp, body)
         self.assertTrue(
             self.connector.verify_webhook(
@@ -177,6 +191,23 @@ class ZendeskConnectorTests(unittest.TestCase):
                     "X-Zendesk-Webhook-Signature": signature,
                     "X-Zendesk-Webhook-Signature-Timestamp": timestamp,
                 },
+                body,
+                secret,
+            )
+        )
+
+    def test_rejects_stale_webhook_timestamp(self):
+        secret = "hook-secret"
+        body = b'{"detail":{"id":1}}'
+        timestamp = "2020-01-01T00:00:00Z"
+        headers = {
+            "X-Source-Sync-Signature": generic_hmac_hex(secret, body, timestamp),
+            "X-Source-Sync-Timestamp": timestamp,
+        }
+        self.assertFalse(self.connector.verify_webhook(headers, body, secret))
+        self.assertFalse(
+            self.connector.verify_webhook(
+                {"X-Source-Sync-Signature": generic_hmac_hex(secret, body)},
                 body,
                 secret,
             )
@@ -226,12 +257,55 @@ class SourceSyncStoreTests(unittest.TestCase):
         listed = store.list("brain")
         self.assertEqual(listed[0]["last_synced"], "2026-11-25T12:00:00Z")
 
-    def test_revision_claim_is_idempotent(self):
+    def test_document_lock_serializes_the_same_document(self):
         store = SourceSyncStore()
-        self.assertTrue(store.claim_revision("src:doc:1:upsert", "brain"))
-        self.assertFalse(store.claim_revision("src:doc:1:upsert", "brain"))
-        store.release_revision("src:doc:1:upsert", "brain")
-        self.assertTrue(store.claim_revision("src:doc:1:upsert", "brain"))
+        self.assertTrue(store.acquire_document_lock("brain", "src", "doc-1"))
+        self.assertFalse(store.acquire_document_lock("brain", "src", "doc-1"))
+        store.release_document_lock("brain", "src", "doc-1")
+        self.assertTrue(store.acquire_document_lock("brain", "src", "doc-1"))
+
+    def test_webhook_without_credentials_is_not_due_for_poll(self):
+        store = SourceSyncStore()
+        webhook = _source(store, sync_mode="webhook")
+        self.assertFalse(store.due_for_poll(webhook, now=1_000_000))
+        catchup = _source(
+            store,
+            name="Catchup",
+            sync_mode="webhook",
+            api_token_env="ZENDESK_GUIDE_API_TOKEN",
+            base_url="https://example.zendesk.com",
+        )
+        self.assertTrue(store.due_for_poll(catchup, now=1_000_000))
+
+    def test_durable_adapter_keeps_sources_without_cache(self):
+        class FakeAdapter:
+            def __init__(self):
+                self._data = {}
+
+            def source_sync_put(self, brain_id, bucket, item_id, document):
+                self._data[(brain_id, bucket, item_id)] = dict(document)
+
+            def source_sync_get(self, brain_id, bucket, item_id):
+                value = self._data.get((brain_id, bucket, item_id))
+                return dict(value) if value else None
+
+            def source_sync_list(self, brain_id, bucket):
+                found = {}
+                for (stored_brain, stored_bucket, item_id), document in self._data.items():
+                    if stored_brain == brain_id and stored_bucket == bucket:
+                        found[item_id] = dict(document)
+                return found
+
+            def source_sync_delete(self, brain_id, bucket, item_id):
+                return self._data.pop((brain_id, bucket, item_id), None) is not None
+
+        durable = AdapterDurable(FakeAdapter())
+        store = SourceSyncStore(cache=None, durable=durable)
+        record = _source(store, name="Durable")
+        revived = SourceSyncStore(cache=None, durable=durable)
+        fetched = revived.get("brain", record["id"])
+        self.assertEqual(fetched["name"], "Durable")
+        self.assertIsNone(revived.cache)
 
     def test_poll_due_uses_interval(self):
         store = SourceSyncStore()
@@ -330,6 +404,134 @@ class SourceSyncApplyTests(unittest.TestCase):
         self.assertTrue(graph.updated[0]["expected_open"])
         self.assertEqual(graph.updated[0]["uuid"], "fact-1")
 
+    def test_older_update_after_newer_head_is_stale(self):
+        store = SourceSyncStore()
+        source = _source(store)
+        apply_event(
+            event_from_payload(
+                {
+                    "action": "upsert",
+                    "document_id": "4410",
+                    "revision": "rev-2",
+                    "body": "new",
+                    "occurred_at": "2026-11-25T14:00:00Z",
+                }
+            ),
+            source,
+            store=store,
+            queue_ingest=lambda payload: "task-new",
+        )
+        stale = apply_event(
+            event_from_payload(
+                {
+                    "action": "upsert",
+                    "document_id": "4410",
+                    "revision": "rev-1",
+                    "body": "old",
+                    "occurred_at": "2026-11-25T12:00:00Z",
+                }
+            ),
+            source,
+            store=store,
+            queue_ingest=lambda payload: "task-old",
+        )
+        self.assertEqual(stale["status"], "stale")
+
+    def test_update_after_delete_is_stale_when_older(self):
+        store = SourceSyncStore()
+        source = _source(store)
+        apply_event(
+            event_from_payload(
+                {
+                    "action": "delete",
+                    "document_id": "4410",
+                    "revision": "rev-gone",
+                    "occurred_at": "2026-11-25T15:00:00Z",
+                }
+            ),
+            source,
+            store=store,
+            data=FakeData(),
+        )
+        late = apply_event(
+            event_from_payload(
+                {
+                    "action": "upsert",
+                    "document_id": "4410",
+                    "revision": "rev-1",
+                    "body": "resurrect",
+                    "occurred_at": "2026-11-25T12:00:00Z",
+                }
+            ),
+            source,
+            store=store,
+            queue_ingest=lambda payload: "task-late",
+        )
+        self.assertEqual(late["status"], "stale")
+
+    def test_busy_document_raises_without_applying(self):
+        store = SourceSyncStore()
+        source = _source(store)
+        self.assertTrue(store.acquire_document_lock("brain", source["id"], "4410"))
+        with self.assertRaises(DocumentBusy):
+            apply_event(
+                event_from_payload(
+                    {
+                        "action": "upsert",
+                        "document_id": "4410",
+                        "revision": "rev-1",
+                        "body": "hello",
+                    }
+                ),
+                source,
+                store=store,
+                queue_ingest=lambda payload: "task-busy",
+            )
+
+    def test_poll_emits_deletes_for_missing_documents(self):
+        store = SourceSyncStore()
+        source = _source(
+            store,
+            sync_mode="poll",
+            base_url="https://example.zendesk.com",
+            api_token_env="ZENDESK_GUIDE_API_TOKEN",
+        )
+        store.set_seen_ids("brain", source["id"], {"1", "2"})
+        queued = []
+
+        def getter(url, headers):
+            return {
+                "articles": [
+                    {
+                        "id": 1,
+                        "title": "Keep",
+                        "body": "still here",
+                        "updated_at": "2026-11-25T12:00:00Z",
+                    }
+                ],
+                "next_page": None,
+            }
+
+        with patch.dict(os.environ, {"ZENDESK_GUIDE_API_TOKEN": "token"}):
+            from source_sync_connector import ZendeskGuideConnector, CONNECTORS
+
+            original = CONNECTORS["zendesk_guide"]
+            CONNECTORS["zendesk_guide"] = ZendeskGuideConnector(http_get=getter)
+            try:
+                result = apply_poll(
+                    source,
+                    store=store,
+                    enqueue_event=lambda payload: queued.append(payload),
+                )
+            finally:
+                CONNECTORS["zendesk_guide"] = original
+        self.assertEqual(result["deleted"], 1)
+        self.assertEqual(result["deleted_ids"], ["2"])
+        actions = {item["document_id"]: item["action"] for item in queued}
+        self.assertEqual(actions["2"], "delete")
+        self.assertEqual(actions["1"], "upsert")
+        self.assertEqual(store.get_seen_ids("brain", source["id"]), {"1"})
+
     def test_failed_apply_releases_revision_for_retry(self):
         store = SourceSyncStore()
         source = _source(store)
@@ -392,6 +594,25 @@ class CloseCitingFactsTests(unittest.TestCase):
         )
         graph = FakeGraph([(SimpleNamespace(), other, SimpleNamespace())])
         closed = close_citing_facts(graph, "brain", ["chunk-a"], "2026-11-25T15:00:00Z")
+        self.assertEqual(closed, [])
+        self.assertEqual(graph.updated, [])
+
+    def test_keeps_facts_that_still_cite_a_live_source(self):
+        live = TextChunk(id="chunk-b", text="other", metadata={"source_key": "zendesk_guide:other"})
+        closed_chunk = TextChunk(
+            id="chunk-a",
+            text="gone",
+            metadata={"source_key": "zendesk_guide:4410", "valid_to": "2026-11-25T15:00:00Z"},
+        )
+        data = FakeData([live, closed_chunk])
+        both = SimpleNamespace(
+            uuid="fact-both",
+            properties={"source_chunk_ids": ["chunk-a", "chunk-b"], "uuid": "fact-both"},
+        )
+        graph = FakeGraph([(SimpleNamespace(), both, SimpleNamespace())])
+        closed = close_citing_facts(
+            graph, "brain", ["chunk-a"], "2026-11-25T15:00:00Z", data=data
+        )
         self.assertEqual(closed, [])
         self.assertEqual(graph.updated, [])
 
@@ -464,11 +685,11 @@ class SourceSyncRouteTests(unittest.TestCase):
         raw = json.dumps(payload).encode("utf-8")
         denied = self.client.post(f"/source-sync/webhooks/{source_id}", content=raw)
         self.assertEqual(denied.status_code, 401)
-        signature = generic_hmac_hex("hook-secret", raw)
+        headers = _fresh_generic_headers("hook-secret", raw)
         accepted = self.client.post(
             f"/source-sync/webhooks/{source_id}",
             content=raw,
-            headers={"X-Source-Sync-Signature": signature},
+            headers=headers,
         )
         self.assertEqual(accepted.status_code, 200)
         self.assertEqual(accepted.json()["count"], 1)

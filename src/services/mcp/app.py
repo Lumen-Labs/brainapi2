@@ -36,7 +36,14 @@ def _load_mcp_plugins():
     from src.core.plugins.loader import PluginLoader
 
     ctx = PluginContext.from_mcp(mcp)
-    loader = PluginLoader(plugins_dir=PLUGINS_DIR, context=ctx)
+    from src.core.plugins.paths import plugin_search_dirs
+
+    search_dirs = plugin_search_dirs(_project_root)
+    loader = PluginLoader(
+        plugins_dir=search_dirs[0],
+        context=ctx,
+        extra_dirs=search_dirs[1:],
+    )
     results = loader.load_all()
     _log_plugin_banner(loader, results)
     failed = sorted(name for name, loaded in results.items() if not loaded)

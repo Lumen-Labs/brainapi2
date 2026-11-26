@@ -75,6 +75,19 @@ class RedisClient(CacheClient):
             prefixed_key, value, **({"ex": expires_in} if expires_in else {})
         )
 
+    def set_nx(
+        self,
+        key: str,
+        value: str,
+        brain_id: str,
+        expires_in: Optional[int] = None,
+    ) -> bool:
+        prefixed_key = self._get_key(key, brain_id)
+        options = {"nx": True}
+        if expires_in:
+            options["ex"] = int(expires_in)
+        return bool(self.client.set(prefixed_key, value, **options))
+
     def delete(self, key: str, brain_id: str) -> bool:
         """
         Delete a value from the cache.

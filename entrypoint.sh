@@ -18,8 +18,9 @@ if [ -d /app/.cache ]; then
     chown -R appuser:appuser /app/.cache 2>/dev/null || true
 fi
 
-mkdir -p /app/plugins
-chown -R appuser:appuser /app/plugins 2>/dev/null || true
+custom_plugins_dir="${PLUGINS_EXTRA_DIR:-/app/custom-plugins}"
+mkdir -p /app/plugins "$custom_plugins_dir"
+chown -R appuser:appuser /app/plugins "$custom_plugins_dir" 2>/dev/null || true
 
 if [ "${STAGED_INGESTION_ENABLED:-0}" = "1" ]; then
     if [ -z "${INGEST_PUBLICATION_LOCK_DIR:-}" ] || [ ! -d "$INGEST_PUBLICATION_LOCK_DIR" ]; then

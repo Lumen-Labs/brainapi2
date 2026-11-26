@@ -3,20 +3,21 @@ from __future__ import annotations
 from typing import Any, Callable
 from uuid import uuid4
 
+from src.core.saving.source_citations import close_orphaned_citing_facts
 from src.core.saving.source_passages import close_source_document
-from src.core.saving.validity import close_validity, format_instant, parse_instant, utc_now
+from src.core.saving.validity import format_instant, parse_instant, utc_now
 from source_sync_connector import SourceEvent, SourceFetchError, get_connector
 from source_sync_store import SourceSyncStore, default_store
 
 QueueIngest = Callable[[dict[str, Any]], str | None]
 
 
+class DocumentBusy(RuntimeError):
+    pass
+
+
 def source_key_for(source_type: str, document_id: str) -> str:
     return f"{source_type}:{document_id}"
-
-
-def revision_key(source_id: str, document_id: str, revision: str, action: str) -> str:
-    return f"{source_id}:{document_id}:{revision}:{action}"
 
 
 def apply_event(
@@ -33,23 +34,37 @@ def apply_event(
     source_id = str(source.get("id") or "")
     source_type = str(source.get("source_type") or "")
     action = event.action if event.action in {"upsert", "delete"} else "upsert"
-    key = revision_key(source_id, event.document_id, event.revision, action)
-    if not store.claim_revision(key, brain_id):
-        return {
-            "status": "duplicate",
-            "source_id": source_id,
-            "document_id": event.document_id,
-            "revision": event.revision,
-            "action": action,
-        }
+    occurred_at = format_instant(parse_instant(event.occurred_at) or utc_now())
+    if not store.acquire_document_lock(brain_id, source_id, event.document_id):
+        raise DocumentBusy(f"document {event.document_id} is busy")
     try:
-        closed_at = format_instant(parse_instant(event.occurred_at) or utc_now())
+        head = store.document_head(brain_id, source_id, event.document_id)
+        decision = _head_decision(head, event.revision, occurred_at, action)
+        if decision in {"duplicate", "stale"}:
+            return {
+                "status": decision,
+                "source_id": source_id,
+                "document_id": event.document_id,
+                "revision": event.revision,
+                "action": action,
+            }
         key_name = source_key_for(source_type, event.document_id)
         if action == "delete":
             closed_chunks = _close_document(
-                data, graph, brain_id=brain_id, source_key=key_name, closed_at=closed_at
+                data, graph, brain_id=brain_id, source_key=key_name, closed_at=occurred_at
             )
-            store.mark_synced(brain_id, source_id, closed_at)
+            store.save_document_head(
+                brain_id,
+                source_id,
+                event.document_id,
+                {
+                    "revision": event.revision,
+                    "action": action,
+                    "occurred_at": occurred_at,
+                    "source_key": key_name,
+                },
+            )
+            store.mark_synced(brain_id, source_id, occurred_at)
             return {
                 "status": "deleted",
                 "source_id": source_id,
@@ -57,7 +72,7 @@ def apply_event(
                 "revision": event.revision,
                 "source_key": key_name,
                 "closed_chunk_ids": closed_chunks,
-                "valid_to": closed_at,
+                "valid_to": occurred_at,
             }
         body = event.body
         if not body:
@@ -66,8 +81,21 @@ def apply_event(
             raise SourceFetchError("upsert requires document body")
         ingest_id = None
         if queue_ingest is not None:
-            ingest_id = queue_ingest(_ingest_payload(source, event, key_name, body, closed_at))
-        store.mark_synced(brain_id, source_id, closed_at)
+            ingest_id = queue_ingest(
+                _ingest_payload(source, event, key_name, body, occurred_at)
+            )
+        store.save_document_head(
+            brain_id,
+            source_id,
+            event.document_id,
+            {
+                "revision": event.revision,
+                "action": action,
+                "occurred_at": occurred_at,
+                "source_key": key_name,
+            },
+        )
+        store.mark_synced(brain_id, source_id, occurred_at)
         return {
             "status": "queued" if ingest_id else "applied",
             "source_id": source_id,
@@ -76,9 +104,8 @@ def apply_event(
             "source_key": key_name,
             "task_id": ingest_id,
         }
-    except Exception:
-        store.release_revision(key, brain_id)
-        raise
+    finally:
+        store.release_document_lock(brain_id, source_id, event.document_id)
 
 
 def apply_poll(
@@ -90,14 +117,48 @@ def apply_poll(
     queue_ingest: QueueIngest | None = None,
     enqueue_event: Callable[[dict[str, Any]], Any] | None = None,
 ) -> dict[str, Any]:
+    store = store or default_store()
     connector = get_connector(str(source.get("source_type") or ""))
     events = connector.list_documents(source)
+    brain_id = str(source.get("brain_id") or "default")
+    source_id = str(source.get("id") or "")
+    live_ids = {event.document_id for event in events if event.document_id}
+    previous_ids = store.list_open_document_ids(brain_id, source_id)
+    missing = sorted(previous_ids - live_ids)
+    queued = []
+    deletes = []
+    for document_id in missing:
+        delete_event = SourceEvent(
+            action="delete",
+            document_id=document_id,
+            revision=format_instant(utc_now()),
+            occurred_at=format_instant(utc_now()),
+        )
+        payload = event_task_payload(source, delete_event)
+        deletes.append(document_id)
+        if enqueue_event is not None:
+            enqueue_event(payload)
+        else:
+            apply_event(
+                delete_event,
+                source,
+                store=store,
+                data=data,
+                graph=graph,
+                queue_ingest=queue_ingest,
+            )
     results = []
     if enqueue_event is not None:
         for event in events:
             enqueue_event(event_task_payload(source, event))
-            results.append(event.document_id)
-        return {"status": "enqueued", "count": len(results)}
+            queued.append(event.document_id)
+        store.set_seen_ids(brain_id, source_id, live_ids)
+        return {
+            "status": "enqueued",
+            "count": len(queued),
+            "deleted": len(deletes),
+            "deleted_ids": deletes,
+        }
     for event in events:
         results.append(
             apply_event(
@@ -109,7 +170,14 @@ def apply_poll(
                 queue_ingest=queue_ingest,
             )
         )
-    return {"status": "applied", "count": len(results), "results": results}
+    store.set_seen_ids(brain_id, source_id, live_ids)
+    return {
+        "status": "applied",
+        "count": len(results),
+        "results": results,
+        "deleted": len(deletes),
+        "deleted_ids": deletes,
+    }
 
 
 def dead_letter(
@@ -159,6 +227,56 @@ def event_from_payload(payload: dict[str, Any]) -> SourceEvent:
         occurred_at=payload.get("occurred_at"),
         metadata=dict(payload.get("metadata") or {}),
     )
+
+
+def close_citing_facts(
+    graph: Any,
+    brain_id: str,
+    chunk_ids: list[str],
+    closed_at: str,
+    *,
+    data: Any | None = None,
+) -> list[str]:
+    return close_orphaned_citing_facts(
+        graph,
+        brain_id,
+        chunk_ids,
+        closed_at,
+        data=data,
+        reason="source document deleted",
+    )
+
+
+def _head_decision(
+    head: dict[str, Any] | None,
+    revision: str,
+    occurred_at: str,
+    action: str,
+) -> str:
+    if not head:
+        return "apply"
+    current_revision = str(head.get("revision") or "")
+    current_action = str(head.get("action") or "upsert")
+    if current_revision and current_revision == str(revision or "") and current_action == action:
+        return "duplicate"
+    incoming = _event_rank(occurred_at, revision, action)
+    current = _event_rank(
+        str(head.get("occurred_at") or ""),
+        current_revision,
+        current_action,
+    )
+    if incoming == current:
+        return "duplicate"
+    if incoming < current:
+        return "stale"
+    return "apply"
+
+
+def _event_rank(occurred_at: str, revision: str, action: str) -> tuple:
+    parsed = parse_instant(occurred_at)
+    timestamp = parsed.timestamp() if parsed is not None else 0.0
+    action_boost = 1 if action == "delete" else 0
+    return (timestamp, str(revision or ""), action_boost)
 
 
 def _fill_body(source: dict[str, Any], event: SourceEvent) -> str:
@@ -218,60 +336,8 @@ def _close_document(
     )
     graph_adapter = graph if graph is not None else _graph_adapter()
     if graph_adapter is not None and closed:
-        close_citing_facts(graph_adapter, brain_id, closed, closed_at)
+        close_citing_facts(graph_adapter, brain_id, closed, closed_at, data=adapter)
     return closed
-
-
-def close_citing_facts(
-    graph: Any, brain_id: str, chunk_ids: list[str], closed_at: str
-) -> list[str]:
-    lookup = getattr(graph, "nodes_and_edges_citing", None)
-    if not callable(lookup):
-        return []
-    _nodes, triples = lookup(brain_id, list(chunk_ids), [])
-    closed: list[str] = []
-    wanted = {str(item) for item in chunk_ids}
-    for _tail, predicate, _tip in triples or []:
-        props = _relationship_props(predicate)
-        cited = {str(item) for item in (props.get("source_chunk_ids") or []) if item}
-        if cited and cited.isdisjoint(wanted):
-            continue
-        uuid = str(getattr(predicate, "uuid", None) or props.get("uuid") or "")
-        if not uuid:
-            continue
-        closed_props = close_validity(
-            props, closed_at=closed_at, reason="source document deleted"
-        )
-        updater = getattr(graph, "update_properties", None)
-        if not callable(updater):
-            continue
-        updater(
-            uuid,
-            "relationship",
-            brain_id=brain_id,
-            new_properties={
-                "invalid_at": closed_props.get("invalid_at") or closed_at,
-                "deprecated": True,
-                "valid_to": closed_props.get("valid_to") or closed_at,
-                "retired_reason": closed_props.get("retired_reason")
-                or "source document deleted",
-            },
-            expected_open=True,
-        )
-        closed.append(uuid)
-    return closed
-
-
-def _relationship_props(predicate: Any) -> dict[str, Any]:
-    props = dict(getattr(predicate, "properties", None) or {})
-    nested = props.get("properties")
-    if isinstance(nested, dict):
-        merged = dict(nested)
-        for key, value in props.items():
-            if key != "properties" and key not in merged:
-                merged[key] = value
-        return merged
-    return props
 
 
 def _data_adapter() -> Any:

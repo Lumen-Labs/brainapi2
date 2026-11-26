@@ -38,7 +38,7 @@ from kombu import Queue
 
 from src.config import config
 from src.core.plugins.celery_discovery import (
-    default_plugins_dir,
+    default_plugin_dirs,
     discover_plugin_celery,
 )
 from src.lib.tracing import start_runtime_monitoring
@@ -75,7 +75,21 @@ ingestion_app = Celery(
 )
 
 _PLUGIN_QUEUES, _PLUGIN_ROUTES, _PLUGIN_BEAT = discover_plugin_celery(
-    default_plugins_dir(_project_root)
+    default_plugin_dirs(_project_root)
+)
+
+CELERY_WORKER_QUEUE_NAMES = (
+    "ingest_data",
+    "process_architect_relationships",
+    "ingest_structured_data",
+    "consolidate_graph",
+    "finalize_ingestion",
+    "ingest_file",
+    "conflict_scan",
+) + tuple(
+    getattr(queue, "name")
+    for queue in _PLUGIN_QUEUES
+    if getattr(queue, "name", None)
 )
 
 TASK_QUEUES = (

@@ -300,3 +300,54 @@ def test_ci_profiles_enable_dense_search_without_online_llm():
     assert environment["SEARCH_USE_DENSE"] == "true"
     assert environment["SEARCH_USE_BM25"] == "false"
     assert environment["CONTEXT_PASSAGE_MODE"] == "dense"
+
+
+@pytest.mark.parametrize("profile", ["light", "heavy"])
+def test_compose_loads_image_plugins_and_runs_beat(profile):
+    data = yaml.safe_load(
+        (DEPLOY / f"docker-compose.{profile}.yaml").read_text(encoding="utf-8")
+    )
+    common = data["x-brainapi-common"]
+    volume_targets = [item.split(":", 1)[1] for item in common["volumes"]]
+    assert "/app/plugins" not in volume_targets
+    assert "/app/custom-plugins" in volume_targets
+    assert common["environment"]["PLUGINS_DIR"] == "/app/plugins"
+    assert common["environment"]["PLUGINS_EXTRA_DIR"] == "/app/custom-plugins"
+    worker_cmd = data["services"]["brainapi-worker"]["command"]
+    assert "-Q" in worker_cmd
+    queues = worker_cmd[worker_cmd.index("-Q") + 1]
+    for name in (
+        "ingest_data",
+        "conflict_scan",
+        "source_sync",
+        "source_sync_dead",
+    ):
+        assert name in queues.split(",")
+    beat = data["services"]["brainapi-beat"]
+    assert "beat" in beat["command"]
+    assert beat["command"].count("beat") == 1
+    assert "tmpfs" in beat
+    names = [name for name in data["services"] if name.endswith("-beat")]
+    assert names == ["brainapi-beat"]
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert "COPY plugins/ ./plugins/" in dockerfile
+    assert "COPY --from=builder /app/plugins /app/plugins" in dockerfile
+    assert 'VOLUME ["/app/custom-plugins"]' in dockerfile
+    assert 'VOLUME ["/app/plugins"]' not in dockerfile
+    entrypoint = (ROOT / "entrypoint.sh").read_text(encoding="utf-8")
+    assert "PLUGINS_EXTRA_DIR" in entrypoint
+    assert "brainapi-beat" in (DEPLOY / "backup_restore.py").read_text(encoding="utf-8")
+    guide = (ROOT / "docs" / "self-host.md").read_text(encoding="utf-8")
+    for name in (
+        "BRAINAPI_IMAGE",
+        "BRAINAPI_ENV_FILE",
+        "REDIS_PASSWORD",
+        "PLUGINS_DIR",
+        "PLUGINS_EXTRA_DIR",
+        "SOURCE_SYNC_WEBHOOK_MAX_AGE_SECONDS",
+        "HELP_CENTER_RETIRE_MAX_RATIO",
+        "SPREADSHEET_EXPERIMENT_BRAINS",
+    ):
+        assert name in guide
+    assert "sk-" not in guide
+    assert "password=" not in guide.lower()

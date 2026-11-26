@@ -26,19 +26,27 @@ class PluginLoader:
         context: "PluginContext",
         manifest_catalog: Optional[PluginManifestCatalog] = None,
         entry_point_resolver: Optional[PluginEntryPointResolver] = None,
+        extra_dirs: Optional[list[Path]] = None,
     ):
         self.plugins_dir = plugins_dir
+        extra_dirs = extra_dirs if extra_dirs is not None else []
+        self.extra_dirs = list(extra_dirs)
         self.context = context
         self._loaded: dict[str, PluginManifest] = {}
         self._manifest_catalog = manifest_catalog or PluginManifestCatalog(
             plugins_dir=plugins_dir,
+            extra_dirs=self.extra_dirs,
             logger_override=logger,
         )
         self._entry_point_resolver = entry_point_resolver or PluginEntryPointResolver()
 
     def discover(self) -> list[PluginManifest]:
-        if not self.plugins_dir.exists():
-            logger.info("Plugins directory '%s' does not exist, skipping discovery", self.plugins_dir)
+        search_dirs = [self.plugins_dir, *self.extra_dirs]
+        if not any(path.exists() for path in search_dirs):
+            logger.info(
+                "Plugins directories %s do not exist, skipping discovery",
+                [str(path) for path in search_dirs],
+            )
             return []
         manifests = self._manifest_catalog.discover(validate=True)
         manifests.sort(key=lambda m: m.priority)

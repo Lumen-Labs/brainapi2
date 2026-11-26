@@ -719,6 +719,12 @@ class Config:
         self.help_center_crawl_tick_seconds = int(
             os.getenv("HELP_CENTER_CRAWL_TICK_SECONDS", "900")
         )
+        self.help_center_retire_max_ratio = float(
+            os.getenv("HELP_CENTER_RETIRE_MAX_RATIO", "0.2")
+        )
+        self.help_center_retire_max_pages = int(
+            os.getenv("HELP_CENTER_RETIRE_MAX_PAGES", "50")
+        )
         self.pipeline_mode: Literal["lightweight", "accurate"] = validate_pipeline_mode(
             os.getenv("PIPELINE_MODE", "accurate")
         )

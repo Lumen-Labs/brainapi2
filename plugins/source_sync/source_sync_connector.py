@@ -9,7 +9,12 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 from urllib.parse import urljoin
 
+from datetime import datetime, timezone
+
 from src.core.saving.validity import format_instant, parse_instant, utc_now
+
+DEFAULT_WEBHOOK_MAX_AGE_SECONDS = 300
+WEBHOOK_FUTURE_SKEW_SECONDS = 60
 
 HttpGet = Callable[[str, dict[str, str]], dict[str, Any]]
 
@@ -83,8 +88,38 @@ def _occurred_at(detail: dict[str, Any]) -> str:
     return format_instant(parsed or utc_now())
 
 
-def generic_hmac_hex(secret: str, body: bytes) -> str:
-    return hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+def webhook_max_age_seconds() -> int:
+    raw = os.getenv("SOURCE_SYNC_WEBHOOK_MAX_AGE_SECONDS", str(DEFAULT_WEBHOOK_MAX_AGE_SECONDS))
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_WEBHOOK_MAX_AGE_SECONDS
+    return parsed if parsed > 0 else DEFAULT_WEBHOOK_MAX_AGE_SECONDS
+
+
+def generic_hmac_hex(secret: str, body: bytes, timestamp: str = "") -> str:
+    signed = f"{timestamp}.".encode("utf-8") + body if timestamp else body
+    return hmac.new(secret.encode("utf-8"), signed, hashlib.sha256).hexdigest()
+
+
+def webhook_timestamp_fresh(
+    timestamp: str,
+    *,
+    now: datetime | None = None,
+    max_age_seconds: int | None = None,
+) -> bool:
+    parsed = parse_instant(timestamp)
+    if parsed is None:
+        try:
+            parsed = datetime.fromtimestamp(float(timestamp), tz=timezone.utc)
+        except (TypeError, ValueError, OverflowError, OSError):
+            return False
+    current = now or utc_now()
+    delta = (current - parsed).total_seconds()
+    if delta < -WEBHOOK_FUTURE_SKEW_SECONDS:
+        return False
+    age = webhook_max_age_seconds() if max_age_seconds is None else int(max_age_seconds)
+    return delta <= age
 
 
 def zendesk_signature(secret: str, timestamp: str, body: bytes) -> str:
@@ -105,10 +140,14 @@ class ZendeskGuideConnector:
             return False
         mapped = _headers_map(headers)
         generic = mapped.get("x-source-sync-signature")
+        timestamp = mapped.get("x-source-sync-timestamp") or mapped.get(
+            "x-zendesk-webhook-signature-timestamp", ""
+        )
+        if not timestamp or not webhook_timestamp_fresh(timestamp):
+            return False
         if generic:
-            expected = generic_hmac_hex(secret, body)
+            expected = generic_hmac_hex(secret, body, timestamp)
             return hmac.compare_digest(generic, expected)
-        timestamp = mapped.get("x-zendesk-webhook-signature-timestamp", "")
         signature = mapped.get("x-zendesk-webhook-signature", "")
         if not signature:
             return False

@@ -4,10 +4,11 @@ from uuid import uuid4
 
 from src.core.saving.help_center_crawl import (
     claim_crawl_spec,
+    classify_crawl_pages,
     close_removed_pages,
     enqueue_conflict_scan,
-    mark_finished,
-    page_source_key,
+    finish_crawl_spec,
+    retirement_abort_reason,
 )
 from src.core.saving.ingest_access_gate import guard_worker
 from src.core.saving.validity import format_instant, utc_now
@@ -88,13 +89,11 @@ def recrawl_help_center(self, args: dict | None = None):
                 idempotency_key=self.request.id,
             )
         )
-        ingestible = [page for page in pages if (page.text or "").strip()]
-        live_keys = []
+        classified = classify_crawl_pages(pages, spec)
+        ingestible = classified["ingestible"]
+        live_keys = list(classified["live_keys"])
         task_ids = []
         for page in ingestible:
-            key = page_source_key(page)
-            if key:
-                live_keys.append(key)
             page_task_id = str(uuid4())
             task_ids.append(page_task_id)
             set_ingestion_task_status(
@@ -120,24 +119,36 @@ def recrawl_help_center(self, args: dict | None = None):
                 FILE_INGEST_MAX_RETRIES,
                 FILE_INGEST_RETRY_DELAY,
             )
-        closed_at = format_instant(utc_now())
-        removed = close_removed_pages(
-            data_adapter,
-            graph_adapter,
-            brain_id,
-            live_source_keys=live_keys,
-            crawl_root=spec.url,
-            previous_source_keys=spec.last_seen_source_keys,
-            closed_at=closed_at,
-        )
-        scan_id = enqueue_conflict_scan(brain_id)
-        finished = mark_finished(
+        abort_reason = retirement_abort_reason(
+            classified,
             spec,
-            live_source_keys=live_keys,
+            ratio=getattr(config, "help_center_retire_max_ratio", None),
+            max_pages=getattr(config, "help_center_retire_max_pages", None),
+        )
+        closed_at = format_instant(utc_now())
+        removed = []
+        finish_live = live_keys
+        if abort_reason is None:
+            removed = close_removed_pages(
+                data_adapter,
+                graph_adapter,
+                brain_id,
+                gone_source_keys=classified["gone_keys"],
+                crawl_root=spec.url,
+                closed_at=closed_at,
+            )
+        else:
+            finish_live = list(spec.last_seen_source_keys or [])
+        scan_id = enqueue_conflict_scan(brain_id)
+        finished = finish_crawl_spec(
+            data_adapter,
+            brain_id,
+            live_source_keys=finish_live,
             removed_source_keys=removed,
             conflict_scan_task_id=scan_id,
+            task_id=self.request.id,
+            warning=abort_reason,
         )
-        data_adapter.save_crawl_spec(finished, brain_id)
         set_ingestion_task_status(
             self.request.id,
             brain_id,
@@ -147,6 +158,8 @@ def recrawl_help_center(self, args: dict | None = None):
                 "pages": len(task_ids),
                 "task_ids": task_ids,
                 "removed": len(removed),
+                "failed": len(classified["failed_keys"]),
+                "gone": len(classified["gone_keys"]),
             },
             group_tracking=group_tracking,
             extra=telemetry_extra(
@@ -165,7 +178,8 @@ def recrawl_help_center(self, args: dict | None = None):
             "pages": len(task_ids),
             "removed": removed,
             "conflict_scan_task_id": scan_id,
-            "last_crawled_at": finished.last_crawled_at,
+            "last_crawled_at": None if finished is None else finished.last_crawled_at,
+            "retirement_aborted": abort_reason,
         }
     except (
         CrawlerConfigError,
@@ -174,14 +188,15 @@ def recrawl_help_center(self, args: dict | None = None):
         CrawlerTimeoutError,
         Exception,
     ) as exc:
-        failed = mark_finished(
-            spec,
+        finish_crawl_spec(
+            data_adapter,
+            brain_id,
             live_source_keys=spec.last_seen_source_keys,
             removed_source_keys=[],
             conflict_scan_task_id=spec.last_conflict_scan_task_id,
+            task_id=self.request.id,
             error=str(exc),
         )
-        data_adapter.save_crawl_spec(failed, brain_id)
         set_ingestion_task_status(
             self.request.id,
             brain_id,

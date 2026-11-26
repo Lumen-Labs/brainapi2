@@ -21,8 +21,10 @@ x-brainapi-common: &brainapi-common
     PLUGIN_REGISTRY_URL: ${PLUGIN_REGISTRY_URL:-}
     PLUGIN_PUBLISHER_ID: ${PLUGIN_PUBLISHER_ID:-}
     PLUGIN_PUBLISHER_API_KEY: ${PLUGIN_PUBLISHER_API_KEY:-}
+    PLUGINS_DIR: /app/plugins
+    PLUGINS_EXTRA_DIR: /app/custom-plugins
   volumes:
-    - brainapi-plugins:/app/plugins
+    - brainapi-plugins:/app/custom-plugins
     - ingest-publication-locks:/app/ingest-publication-locks
   networks: [appnet]
   restart: unless-stopped
@@ -107,7 +109,7 @@ services:
 
   brainapi-worker:
     <<: *brainapi-common
-    command: [-m, celery, -A, src.workers.app, worker, --loglevel=info, --pool=threads, --without-gossip, --without-mingle, --concurrency=1, --max-tasks-per-child=50]
+    command: [-m, celery, -A, src.workers.app, worker, --loglevel=info, --pool=threads, --without-gossip, --without-mingle, --concurrency=1, --max-tasks-per-child=50, -Q, "ingest_data,process_architect_relationships,ingest_structured_data,consolidate_graph,finalize_ingestion,ingest_file,conflict_scan,source_sync,source_sync_dead"]
     depends_on:
       redis: {condition: service_healthy}
       postgres: {condition: service_healthy}
@@ -124,6 +126,23 @@ services:
       timeout: 10s
       retries: 5
       start_period: 90s
+
+  brainapi-beat:
+    <<: *brainapi-common
+    command: [-m, celery, -A, src.workers.app, beat, --loglevel=info, --schedule, /tmp/celerybeat-schedule, --pidfile, /tmp/celerybeat.pid]
+    depends_on:
+      redis: {condition: service_healthy}
+      postgres: {condition: service_healthy}
+    mem_limit: 256m
+    cpus: 0.10
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/celerybeat.pid"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   brainapi-mcp:
     <<: *brainapi-common

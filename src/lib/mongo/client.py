@@ -934,6 +934,85 @@ class MongoClient(DataClient):
             return None
         return claimed
 
+    def finish_crawl_spec(
+        self,
+        brain_id: str,
+        *,
+        live_source_keys,
+        removed_source_keys,
+        conflict_scan_task_id,
+        task_id: str | None = None,
+        now=None,
+        error: str | None = None,
+        warning: str | None = None,
+    ):
+        from src.core.saving.help_center_crawl import mark_finished, spec_from_document
+        from src.core.saving.validity import utc_now
+
+        collection = self._crawl_specs()
+        row = collection.find_one({"_id": brain_id})
+        if not row:
+            return None
+        spec = spec_from_document(row, brain_id)
+        if spec is None:
+            return None
+        if task_id and spec.last_task_id and spec.last_task_id != task_id:
+            return spec
+        finished = mark_finished(
+            spec,
+            live_source_keys=live_source_keys,
+            removed_source_keys=removed_source_keys,
+            conflict_scan_task_id=conflict_scan_task_id,
+            now=now or utc_now(),
+            error=error,
+            warning=warning,
+        )
+        document = finished.model_dump(mode="json")
+        document["_id"] = brain_id
+        result = collection.replace_one({"_id": brain_id}, document)
+        if result.matched_count == 0:
+            return None
+        return finished
+
+    def _source_sync(self):
+        return self.get_collection("source_sync", config.mongo.system_database)
+
+    def source_sync_put(self, brain_id: str, bucket: str, item_id: str, document: dict):
+        payload = dict(document)
+        payload["_id"] = f"{brain_id}:{bucket}:{item_id}"
+        payload["_brain_id"] = brain_id
+        payload["_bucket"] = bucket
+        payload["_item_id"] = item_id
+        self._source_sync().replace_one({"_id": payload["_id"]}, payload, upsert=True)
+
+    def source_sync_get(self, brain_id: str, bucket: str, item_id: str):
+        row = self._source_sync().find_one({"_id": f"{brain_id}:{bucket}:{item_id}"})
+        if not row:
+            return None
+        return _public_source_sync_document(row)
+
+    def source_sync_list(self, brain_id: str, bucket: str) -> dict[str, dict]:
+        found: dict[str, dict] = {}
+        for row in self._source_sync().find({"_brain_id": brain_id, "_bucket": bucket}):
+            item_id = str(row.get("_item_id") or "")
+            if item_id:
+                found[item_id] = _public_source_sync_document(row)
+        return found
+
+    def source_sync_delete(self, brain_id: str, bucket: str, item_id: str) -> bool:
+        result = self._source_sync().delete_one(
+            {"_id": f"{brain_id}:{bucket}:{item_id}"}
+        )
+        return result.deleted_count > 0
+
+
+def _public_source_sync_document(row: dict) -> dict:
+    payload = dict(row)
+    payload.pop("_id", None)
+    payload.pop("_brain_id", None)
+    payload.pop("_bucket", None)
+    payload.pop("_item_id", None)
+    return payload
 
 
 _mongo_client = MongoClient()

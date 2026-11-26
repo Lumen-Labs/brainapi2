@@ -1,6 +1,6 @@
 # BrainAPI deploy profiles
 
-Choose **heavy** or **light** when bringing up a new deployment.
+Choose **heavy** or **light** when bringing up a new deployment. Customer self-host steps (source sync, help-center re-crawl, upgrade) are in [`docs/self-host.md`](../docs/self-host.md).
 
 | | Heavy | Light |
 | --- | --- | --- |

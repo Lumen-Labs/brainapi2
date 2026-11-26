@@ -1,11 +1,15 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from src.core.plugins.catalog import PluginManifestCatalog
+from src.core.plugins.celery_discovery import discover_plugin_celery
 from src.core.plugins.entrypoints import PluginEntryPointResolver
 from src.core.plugins.loader import PluginLoader
 from src.core.plugins.manifest import MANIFEST_FILENAME
+from src.core.plugins.paths import install_plugins_dir, plugin_search_dirs
 
 
 def write_manifest(
@@ -139,6 +143,62 @@ class PluginLoaderRefactorTests(unittest.TestCase):
 
             self.assertEqual(results, {"alpha": True, "beta": True})
             self.assertEqual(loader.context.loaded, ["alpha", "beta"])
+
+    def test_extra_dir_overrides_plugin_with_the_same_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            baked = Path(tmp) / "baked"
+            extra = Path(tmp) / "extra"
+            write_manifest(baked / "demo", name="demo", version="1.0.0")
+            write_manifest(extra / "demo", name="demo", version="2.0.0")
+            catalog = PluginManifestCatalog(baked, extra_dirs=[extra])
+            found = catalog.discover(validate=False)
+            self.assertEqual(len(found), 1)
+            self.assertEqual(found[0].version, "2.0.0")
+
+
+class PluginPathTests(unittest.TestCase):
+    def test_extra_dir_is_appended_and_used_for_install(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            baked = Path(tmp) / "plugins"
+            extra = Path(tmp) / "custom"
+            baked.mkdir()
+            extra.mkdir()
+            env = {
+                "PLUGINS_DIR": str(baked),
+                "PLUGINS_EXTRA_DIR": str(extra),
+            }
+            with patch.dict(os.environ, env, clear=False):
+                dirs = plugin_search_dirs()
+                self.assertEqual(dirs[0], baked)
+                self.assertEqual(dirs[1], extra)
+                self.assertEqual(install_plugins_dir(), extra)
+
+    def test_celery_discovery_later_dir_wins_queue_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            first = Path(tmp) / "first" / "demo"
+            second = Path(tmp) / "second" / "demo"
+            for plugin in (first, second):
+                workers = plugin / "workers"
+                workers.mkdir(parents=True)
+                (workers / "tasks.py").write_text("PING = True\n", encoding="utf-8")
+            (first / "workers" / "celery.py").write_text(
+                "from kombu import Queue\n"
+                "QUEUES = (Queue('demo', routing_key='demo'),)\n"
+                "ROUTES = {'demo.ping': {'queue': 'demo'}}\n"
+                "BEAT_SCHEDULE = {'demo-tick': {'task': 'demo.old', 'schedule': 30.0}}\n",
+                encoding="utf-8",
+            )
+            (second / "workers" / "celery.py").write_text(
+                "from kombu import Queue\n"
+                "QUEUES = (Queue('demo', routing_key='demo'),)\n"
+                "ROUTES = {'demo.ping': {'queue': 'demo'}}\n"
+                "BEAT_SCHEDULE = {'demo-tick': {'task': 'demo.new', 'schedule': 15.0}}\n",
+                encoding="utf-8",
+            )
+            _queues, _routes, beat = discover_plugin_celery(
+                [first.parent, second.parent]
+            )
+            self.assertEqual(beat["demo-tick"]["task"], "demo.new")
 
 
 if __name__ == "__main__":
