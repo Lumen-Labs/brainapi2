@@ -345,6 +345,7 @@ def test_compose_loads_image_plugins_and_runs_beat(profile):
         "PLUGINS_DIR",
         "PLUGINS_EXTRA_DIR",
         "SOURCE_SYNC_WEBHOOK_MAX_AGE_SECONDS",
+        "SOURCE_SYNC_DELETE_MAX_RATIO",
         "HELP_CENTER_RETIRE_MAX_RATIO",
         "SPREADSHEET_EXPERIMENT_BRAINS",
     ):

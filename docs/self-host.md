@@ -48,7 +48,7 @@ The `source_sync` plugin is baked into the image. Create a source with `POST /so
 
 Webhook mode: set `webhook_secret_env` to the name of the env var that holds the HMAC secret. Send `X-Source-Sync-Signature` and `X-Source-Sync-Timestamp` (or the Zendesk signature headers). Signatures are rejected when the timestamp is stale (`SOURCE_SYNC_WEBHOOK_MAX_AGE_SECONDS`).
 
-Poll and webhook catch-up: set `base_url` and `api_token_env` (and `api_email` when the connector needs it). Beat runs `source_sync.recheck_due_sources` on `SOURCE_SYNC_RECHECK_SECONDS`. Catch-up poll runs for webhook sources that have API credentials so missed webhooks are filled in. Poll also emits deletes for documents that disappeared from the live list.
+Poll and webhook catch-up: set `base_url` and `api_token_env` (and `api_email` when the connector needs it). Beat runs `source_sync.recheck_due_sources` on `SOURCE_SYNC_RECHECK_SECONDS`. Catch-up poll runs for webhook sources that have API credentials so missed webhooks are filled in. A document listing is complete or it fails; a truncated or malformed page does not emit deletes. Poll and catch-up emit deletes for documents that disappeared from a complete live list, unless that would retire more than `SOURCE_SYNC_DELETE_MAX_RATIO` of the previous set or more than `SOURCE_SYNC_DELETE_MAX_PAGES`. That skip is logged and returned as `retirement_aborted`. A source-sync update that loses the per-document lock is retried, then recorded in the dead-letter store instead of being dropped.
 
 Source records, document heads, seen ids, and dead letters are stored in the system database (Postgres or Mongo), not only Redis. Redis is used for short document locks.
 
@@ -60,7 +60,7 @@ Configure a crawl spec with `PUT /ingest/crawl-spec` and optionally `POST /inges
 
 The worker timer (`HELP_CENTER_CRAWL_TICK_SECONDS`) enqueues due specs. A spec already in flight is not started again, including forced manual runs.
 
-Only HTTP 404/410 pages are retired. Timeouts, blocks, 5xx, and crawl-limit truncation do not retire. A run that would retire more pages than `HELP_CENTER_RETIRE_MAX_RATIO` of the previous set, or more than `HELP_CENTER_RETIRE_MAX_PAGES`, skips retirement and keeps the previous last-seen set. Facts that still cite other live sources are not closed.
+Only HTTP 404/410 pages are retired. Previously seen pages that are not linked in this run are fetched again; they retire only on a real 404/410. Timeouts, blocks, 5xx, and crawl-limit truncation do not retire. A run that would retire more pages than `HELP_CENTER_RETIRE_MAX_RATIO` of the previous set, or more than `HELP_CENTER_RETIRE_MAX_PAGES`, skips retirement and keeps the previous last-seen set. Facts that still cite other live sources are not closed.
 
 Disabling or deleting a spec during a run is kept when the run finishes.
 

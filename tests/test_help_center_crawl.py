@@ -21,6 +21,9 @@ from src.core.saving.help_center_crawl import (
     mark_finished,
     normalize_source_key,
     page_source_key,
+    previous_keys_not_discovered,
+    recheck_unseen_previous_pages,
+    retained_source_keys,
     retirement_abort_reason,
     spec_in_flight,
     spec_is_due,
@@ -358,6 +361,64 @@ class CloseRemovedPagesTests(unittest.TestCase):
             retirement_abort_reason(classified, spec, ratio=0.2, max_pages=50)
         )
 
+    def test_previous_keys_not_discovered_are_the_unlinked_ones(self):
+        classified = classify_crawl_pages(
+            [CrawledPage(url=LIVE, text="Refunds stay 30 days.")],
+            _spec(last_seen_source_keys=[LIVE, GONE]),
+        )
+        self.assertEqual(
+            previous_keys_not_discovered(classified, [LIVE, GONE]),
+            [GONE],
+        )
+
+    def test_recheck_retires_unlinked_page_on_404_only(self):
+        spec = _spec(last_seen_source_keys=[LIVE, GONE])
+        classified = classify_crawl_pages(
+            [CrawledPage(url=LIVE, text="Refunds stay 30 days.")],
+            spec,
+        )
+
+        def fetch_pages(url):
+            self.assertEqual(url, GONE)
+            return [CrawledPage(url=GONE, text="", status_code=404)]
+
+        merged = recheck_unseen_previous_pages(classified, spec, fetch_pages)
+        self.assertEqual(merged["gone_keys"], [GONE])
+        self.assertEqual(merged["live_keys"], [LIVE])
+        store = _Store(chunks=[_chunk("gone-1", GONE)])
+        graph = _Graph()
+        removed = close_removed_pages(
+            store,
+            graph,
+            "brain-a",
+            gone_source_keys=merged["gone_keys"],
+            crawl_root=ROOT,
+            closed_at="2026-11-25T12:00:00Z",
+        )
+        self.assertEqual(removed, [GONE])
+        self.assertEqual(
+            retained_source_keys(spec, merged, removed, aborted=False),
+            [LIVE],
+        )
+
+    def test_recheck_does_not_retire_unlinked_page_on_failure(self):
+        spec = _spec(last_seen_source_keys=[LIVE, GONE])
+        classified = classify_crawl_pages(
+            [CrawledPage(url=LIVE, text="Refunds stay 30 days.")],
+            spec,
+        )
+
+        def fetch_pages(url):
+            return [CrawledPage(url=GONE, text="", status_code=503)]
+
+        merged = recheck_unseen_previous_pages(classified, spec, fetch_pages)
+        self.assertEqual(merged["gone_keys"], [])
+        self.assertEqual(merged["failed_keys"], [GONE])
+        self.assertEqual(
+            retained_source_keys(spec, merged, [], aborted=False),
+            [GONE, LIVE],
+        )
+
     def test_empty_failed_crawl_does_not_retire(self):
         spec = _spec(last_seen_source_keys=[LIVE, GONE])
         classified = classify_crawl_pages(
@@ -683,6 +744,51 @@ class RecrawlTaskTests(unittest.TestCase):
         self.assertTrue(result["retirement_aborted"])
         self.assertEqual(store.saved[-1].last_seen_source_keys, [GONE, LIVE])
         self.assertEqual(store.marked, [])
+
+    def test_unlinked_previous_page_is_rechecked_and_retired_on_404(self):
+        from src.workers.tasks import help_center as help_mod
+
+        request = MagicMock()
+        request.id = "recrawl-recheck"
+        spec = _spec(last_seen_source_keys=[LIVE, GONE])
+        store = _Store(spec=spec, chunks=[_chunk("gone-1", GONE)])
+        crawler = MagicMock()
+
+        def crawl_pages(req):
+            if req.url == ROOT:
+                return [CrawledPage(url=LIVE, canonical_url=LIVE, text="Refunds stay 30 days.")]
+            if req.url == GONE:
+                self.assertEqual(req.max_pages, 1)
+                return [CrawledPage(url=GONE, text="", status_code=404)]
+            self.fail(f"unexpected crawl url {req.url}")
+            return []
+
+        crawler.crawl_pages.side_effect = crawl_pages
+        with patch.object(help_mod, "claim_crawl_spec", return_value=spec), patch(
+            "src.core.instances.crawler_adapter", crawler
+        ), patch(
+            "src.services.data.main.data_adapter", store
+        ), patch(
+            "src.services.kg_agent.main.graph_adapter", _Graph()
+        ), patch(
+            "src.workers.tasks.ingestion.ingest_data"
+        ) as ingest_data, patch(
+            "src.workers.tasks.conflicts.scan_conflicts.apply_async",
+            return_value=MagicMock(),
+        ), patch(
+            "src.workers.tasks.ingestion.set_ingestion_task_status",
+            return_value={},
+        ):
+            ingest_data.apply_async.return_value = MagicMock()
+            result = help_mod.recrawl_help_center.run.__func__(
+                type("Bound", (), {"request": request})(),
+                {"brain_id": "brain-a", "force": True},
+            )
+        self.assertEqual(result["removed"], [GONE])
+        self.assertIsNone(result["retirement_aborted"])
+        self.assertEqual(store.saved[-1].last_seen_source_keys, [LIVE])
+        urls = [call.args[0].url for call in crawler.crawl_pages.call_args_list]
+        self.assertEqual(urls, [ROOT, GONE])
 
 
 class HelpCenterQueueRoutingTests(unittest.TestCase):

@@ -11,7 +11,7 @@ if PLUGIN_DIR_STR not in sys.path:
 from celery.exceptions import Reject
 from src.workers.app import ingestion_app
 from source_sync_api import apply_payload_now, poll_source_now
-from source_sync_apply import DocumentBusy, dead_letter
+from source_sync_apply import record_failed_event
 from source_sync_store import default_store
 
 
@@ -30,13 +30,12 @@ def apply_event_task(self, args: dict | None = None):
     payload = args or {}
     try:
         return apply_payload_now(payload)
-    except DocumentBusy:
-        raise
     except Exception as exc:
         retries = int(getattr(self.request, "retries", 0) or 0)
         maximum = int(getattr(self, "max_retries", 5) or 5)
-        if retries >= maximum:
-            _dead_letter(payload, exc)
+        if record_failed_event(
+            payload, exc, retries=retries, max_retries=maximum
+        ) is not None:
             raise Reject(str(exc), requeue=False) from exc
         raise
 
@@ -80,13 +79,3 @@ def recheck_due_sources_task(self, args: dict | None = None):
             }
         )
     return {"queued": queued, "count": len(queued)}
-
-
-def _dead_letter(payload: dict, exc: Exception) -> None:
-    store = default_store()
-    source_id = str(payload.get("source_id") or "")
-    source = store.get_any(source_id) or {
-        "id": source_id,
-        "brain_id": payload.get("brain_id") or "default",
-    }
-    dead_letter(source, payload, str(exc), store=store)

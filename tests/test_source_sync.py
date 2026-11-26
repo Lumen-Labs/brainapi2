@@ -27,12 +27,15 @@ from source_sync_apply import (
     close_citing_facts,
     dead_letter,
     event_from_payload,
+    poll_delete_abort_reason,
+    record_failed_event,
 )
 from source_sync_connector import (
     SourceFetchError,
     WebhookRejected,
     ZendeskGuideConnector,
     generic_hmac_hex,
+    list_max_pages,
     zendesk_signature,
 )
 from source_sync_store import AdapterDurable, SourceSyncStore, public_source
@@ -215,7 +218,7 @@ class ZendeskConnectorTests(unittest.TestCase):
 
     def test_poll_lists_articles_through_injected_http(self):
         pages = {
-            "https://example.zendesk.com/api/v2/help_center/articles.json": {
+            "https://example.zendesk.com/api/v2/help_center/articles.json?per_page=100": {
                 "articles": [
                     {
                         "id": 1,
@@ -230,6 +233,7 @@ class ZendeskConnectorTests(unittest.TestCase):
 
         def getter(url, headers):
             self.assertIn("Authorization", headers)
+            self.assertIn("per_page=100", url)
             return pages[url]
 
         connector = ZendeskGuideConnector(http_get=getter)
@@ -243,6 +247,46 @@ class ZendeskConnectorTests(unittest.TestCase):
         with patch.dict(os.environ, {"ZENDESK_GUIDE_API_TOKEN": "token"}):
             events = connector.list_documents(missing)
         self.assertEqual([item.document_id for item in events], ["1"])
+
+    def test_list_documents_raises_when_articles_list_is_missing(self):
+        def getter(url, headers):
+            return {"next_page": None}
+
+        connector = ZendeskGuideConnector(http_get=getter)
+        with patch.dict(os.environ, {"ZENDESK_GUIDE_API_TOKEN": "token"}):
+            with self.assertRaises(SourceFetchError) as raised:
+                connector.list_documents(
+                    {
+                        "base_url": "https://example.zendesk.com",
+                        "api_token_env": "ZENDESK_GUIDE_API_TOKEN",
+                    }
+                )
+        self.assertIn("articles list", str(raised.exception))
+
+    def test_list_documents_raises_when_page_limit_is_hit(self):
+        def getter(url, headers):
+            return {
+                "articles": [{"id": 1, "title": "A", "body": "keep"}],
+                "next_page": url,
+            }
+
+        connector = ZendeskGuideConnector(http_get=getter)
+        with patch.dict(
+            os.environ,
+            {
+                "ZENDESK_GUIDE_API_TOKEN": "token",
+                "SOURCE_SYNC_LIST_MAX_PAGES": "2",
+            },
+        ):
+            self.assertEqual(list_max_pages(), 2)
+            with self.assertRaises(SourceFetchError) as raised:
+                connector.list_documents(
+                    {
+                        "base_url": "https://example.zendesk.com",
+                        "api_token_env": "ZENDESK_GUIDE_API_TOKEN",
+                    }
+                )
+        self.assertIn("exceeded 2 pages", str(raised.exception))
 
 
 class SourceSyncStoreTests(unittest.TestCase):
@@ -531,6 +575,116 @@ class SourceSyncApplyTests(unittest.TestCase):
         self.assertEqual(actions["2"], "delete")
         self.assertEqual(actions["1"], "upsert")
         self.assertEqual(store.get_seen_ids("brain", source["id"]), {"1"})
+        self.assertIsNone(result["retirement_aborted"])
+
+    def test_poll_does_not_emit_deletes_when_listing_is_incomplete(self):
+        store = SourceSyncStore()
+        source = _source(
+            store,
+            sync_mode="poll",
+            base_url="https://example.zendesk.com",
+            api_token_env="ZENDESK_GUIDE_API_TOKEN",
+        )
+        store.set_seen_ids("brain", source["id"], {"1", "2"})
+        queued = []
+
+        def getter(url, headers):
+            return {"next_page": None}
+
+        with patch.dict(os.environ, {"ZENDESK_GUIDE_API_TOKEN": "token"}):
+            from source_sync_connector import ZendeskGuideConnector, CONNECTORS
+
+            original = CONNECTORS["zendesk_guide"]
+            CONNECTORS["zendesk_guide"] = ZendeskGuideConnector(http_get=getter)
+            try:
+                with self.assertRaises(SourceFetchError):
+                    apply_poll(
+                        source,
+                        store=store,
+                        enqueue_event=lambda payload: queued.append(payload),
+                    )
+            finally:
+                CONNECTORS["zendesk_guide"] = original
+        self.assertEqual(queued, [])
+        self.assertEqual(store.get_seen_ids("brain", source["id"]), {"1", "2"})
+
+    def test_poll_skips_deletes_when_cap_is_exceeded(self):
+        store = SourceSyncStore()
+        source = _source(
+            store,
+            sync_mode="poll",
+            base_url="https://example.zendesk.com",
+            api_token_env="ZENDESK_GUIDE_API_TOKEN",
+        )
+        store.set_seen_ids("brain", source["id"], {str(index) for index in range(1, 11)})
+        queued = []
+
+        def getter(url, headers):
+            return {
+                "articles": [
+                    {
+                        "id": 1,
+                        "title": "Keep",
+                        "body": "still here",
+                        "updated_at": "2026-11-25T12:00:00Z",
+                    }
+                ],
+                "next_page": None,
+            }
+
+        with patch.dict(
+            os.environ,
+            {
+                "ZENDESK_GUIDE_API_TOKEN": "token",
+                "SOURCE_SYNC_DELETE_MAX_RATIO": "0.2",
+                "SOURCE_SYNC_DELETE_MAX_PAGES": "50",
+            },
+        ):
+            from source_sync_connector import ZendeskGuideConnector, CONNECTORS
+
+            original = CONNECTORS["zendesk_guide"]
+            CONNECTORS["zendesk_guide"] = ZendeskGuideConnector(http_get=getter)
+            try:
+                result = apply_poll(
+                    source,
+                    store=store,
+                    enqueue_event=lambda payload: queued.append(payload),
+                )
+            finally:
+                CONNECTORS["zendesk_guide"] = original
+        self.assertEqual(result["deleted"], 0)
+        self.assertTrue(result["retirement_aborted"])
+        self.assertIn("exceeds retirement cap", result["retirement_aborted"])
+        self.assertEqual([item["action"] for item in queued], ["upsert"])
+        self.assertEqual(
+            store.get_seen_ids("brain", source["id"]),
+            {str(index) for index in range(1, 11)},
+        )
+        self.assertEqual(poll_delete_abort_reason(10, 9) is not None, True)
+
+    def test_lock_race_is_dead_lettered_after_retries(self):
+        store = SourceSyncStore()
+        source = _source(store)
+        payload = {
+            "source_id": source["id"],
+            "brain_id": "brain",
+            "document_id": "4410",
+            "revision": "rev-1",
+            "action": "upsert",
+        }
+        busy = DocumentBusy("document 4410 is busy")
+        skipped = record_failed_event(
+            payload, busy, retries=4, max_retries=5, store=store
+        )
+        self.assertIsNone(skipped)
+        recorded = record_failed_event(
+            payload, busy, retries=5, max_retries=5, store=store
+        )
+        self.assertIsNotNone(recorded)
+        self.assertIn("busy", recorded["error"])
+        listed = store.list_dead_letters("brain")
+        self.assertEqual(listed[0]["document_id"], "4410")
+        self.assertEqual(listed[0]["source_id"], source["id"])
 
     def test_failed_apply_releases_revision_for_retry(self):
         store = SourceSyncStore()
