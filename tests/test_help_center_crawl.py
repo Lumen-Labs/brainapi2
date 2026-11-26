@@ -1,3 +1,4 @@
+import gc
 import os
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -801,6 +802,25 @@ class HelpCenterQueueRoutingTests(unittest.TestCase):
         ):
             route = ingestion_app.amqp.router.route({}, name)
             self.assertEqual(route["queue"].name, "ingest_data")
+
+    def test_ticker_handlers_survive_gc_and_fire(self):
+        from celery.utils.dispatch import Signal
+        from src.workers.app import _register_help_center_ticker
+
+        ready = Signal(name="test-help-center-ready")
+        shutdown = Signal(name="test-help-center-shutdown")
+        thread = MagicMock()
+        with patch("src.workers.app.config") as cfg, patch(
+            "threading.Thread", return_value=thread
+        ):
+            cfg.crawler_is_configured = True
+            _register_help_center_ticker(ready, shutdown)
+            gc.collect()
+            ready.send(sender=None)
+            shutdown.send(sender=None)
+        thread.start.assert_called_once()
+        self.assertTrue(ready.has_listeners())
+        self.assertTrue(shutdown.has_listeners())
 
 
 class MarkFinishedTests(unittest.TestCase):
