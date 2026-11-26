@@ -10,14 +10,19 @@ from pydantic import ValidationError
 from src.adapters.interfaces.crawler import CrawledPage
 from src.constants.data import TextChunk
 from src.constants.kg import Node, Predicate
+from src.core.saving.validity import format_instant, utc_now
 from src.core.saving.help_center_crawl import (
     CrawlSpec,
+    classify_crawl_pages,
     claim_crawl_spec,
     close_removed_pages,
     crawl_root_key,
+    finish_crawl_spec,
     mark_finished,
     normalize_source_key,
     page_source_key,
+    retirement_abort_reason,
+    spec_in_flight,
     spec_is_due,
 )
 from src.services.api.constants.requests import CrawlSpecRequestBody
@@ -128,6 +133,10 @@ class _Store:
                 if valid_to:
                     chunk.metadata["valid_to"] = valid_to
 
+    def get_text_chunks_by_ids(self, ids, with_observations, brain_id):
+        wanted = {str(item) for item in ids}
+        return [chunk for chunk in self.chunks if str(chunk.id) in wanted], []
+
 
 class _Graph:
     def __init__(self, nodes=None, triples=None):
@@ -225,6 +234,10 @@ class DueClaimTests(unittest.TestCase):
         self.assertFalse(
             spec_is_due(_spec(last_started_at=recent), now=NOW)
         )
+        self.assertFalse(
+            spec_is_due(_spec(last_started_at=recent), now=NOW, force=True)
+        )
+        self.assertTrue(spec_in_flight(_spec(last_started_at=recent), now=NOW))
 
     def test_claim_fallback_marks_started(self):
         store = _Store(spec=_spec())
@@ -280,7 +293,7 @@ class CloseRemovedPagesTests(unittest.TestCase):
             store,
             graph,
             "brain-a",
-            live_source_keys=[LIVE],
+            gone_source_keys=[GONE],
             crawl_root=ROOT,
             closed_at="2026-11-25T12:00:00Z",
         )
@@ -302,13 +315,119 @@ class CloseRemovedPagesTests(unittest.TestCase):
             store,
             graph,
             "brain-a",
-            live_source_keys=[LIVE],
+            gone_source_keys=[GONE],
             crawl_root=ROOT,
-            previous_source_keys=[GONE],
             closed_at="2026-11-25T12:00:00Z",
         )
         self.assertEqual(removed, [GONE])
         self.assertEqual(store.marked[0][0], ["legacy-1"])
+
+    def test_failed_pages_are_not_retired(self):
+        store = _Store(chunks=[_chunk("gone-1", GONE)])
+        graph = _Graph()
+        classified = classify_crawl_pages(
+            [
+                CrawledPage(url=GONE, text="", status_code=503, skip_reason="timeout"),
+            ],
+            _spec(last_seen_source_keys=[GONE]),
+        )
+        self.assertEqual(classified["failed_keys"], [GONE])
+        self.assertEqual(classified["gone_keys"], [])
+        removed = close_removed_pages(
+            store,
+            graph,
+            "brain-a",
+            gone_source_keys=classified["gone_keys"],
+            crawl_root=ROOT,
+            closed_at="2026-11-25T12:00:00Z",
+        )
+        self.assertEqual(removed, [])
+        self.assertEqual(store.marked, [])
+
+    def test_retirement_cap_aborts_mass_gone(self):
+        spec = _spec(last_seen_source_keys=[f"{ROOT}/p{i}" for i in range(10)])
+        classified = {
+            "live_keys": [],
+            "gone_keys": list(spec.last_seen_source_keys),
+            "failed_keys": [],
+            "ingestible": [],
+            "page_count": 10,
+            "truncated": False,
+        }
+        self.assertIsNotNone(
+            retirement_abort_reason(classified, spec, ratio=0.2, max_pages=50)
+        )
+
+    def test_empty_failed_crawl_does_not_retire(self):
+        spec = _spec(last_seen_source_keys=[LIVE, GONE])
+        classified = classify_crawl_pages(
+            [
+                CrawledPage(url=LIVE, text="", skip_reason="blocked"),
+                CrawledPage(url=GONE, text="", status_code=500),
+            ],
+            spec,
+        )
+        self.assertEqual(
+            retirement_abort_reason(classified, spec, ratio=0.2, max_pages=50),
+            "crawl produced no usable pages; retirement skipped",
+        )
+
+    def test_keeps_facts_with_another_live_source(self):
+        store = _Store(
+            chunks=[
+                _chunk("gone-1", GONE),
+                _chunk("live-1", LIVE),
+            ]
+        )
+        graph = _Graph(
+            triples=[
+                (
+                    Node(uuid="org", name="Support", labels=["ORG"], properties={}),
+                    Predicate(
+                        uuid="rel-keep",
+                        name="STATES",
+                        description="",
+                        properties={"source_chunk_ids": ["gone-1", "live-1"]},
+                    ),
+                    Node(uuid="clause", name="Refunds", labels=["CLAUSE"], properties={}),
+                )
+            ]
+        )
+        close_removed_pages(
+            store,
+            graph,
+            "brain-a",
+            gone_source_keys=[GONE],
+            crawl_root=ROOT,
+            closed_at="2026-11-25T12:00:00Z",
+        )
+        self.assertEqual(store.marked[0][0], ["gone-1"])
+        self.assertEqual(graph.updates, [])
+
+    def test_finish_keeps_disable_and_skips_deleted_spec(self):
+        disabled = _spec(enabled=False, last_task_id="task-1")
+        store = _Store(spec=disabled)
+        finished = finish_crawl_spec(
+            store,
+            "brain-a",
+            live_source_keys=[LIVE],
+            removed_source_keys=[],
+            conflict_scan_task_id=None,
+            task_id="task-1",
+            now=NOW,
+        )
+        self.assertFalse(finished.enabled)
+        store.spec = None
+        missing = finish_crawl_spec(
+            store,
+            "brain-a",
+            live_source_keys=[LIVE],
+            removed_source_keys=[],
+            conflict_scan_task_id=None,
+            task_id="task-1",
+            now=NOW,
+        )
+        self.assertIsNone(missing)
 
 
 class CrawlSpecRouteTests(unittest.TestCase):
@@ -406,6 +525,27 @@ class CrawlSpecRouteTests(unittest.TestCase):
             response = client.post("/ingest/crawl-spec/run")
         self.assertEqual(response.status_code, 409)
 
+    def test_run_in_flight_spec_is_409(self):
+        from src.services.api.controllers import crawl_spec as crawl_mod
+
+        recent = format_instant(utc_now() - timedelta(minutes=5))
+        apply_async = MagicMock()
+        client = self._client()
+        with patch.object(
+            crawl_mod,
+            "data_adapter",
+            _Store(spec=_spec(last_started_at=recent)),
+        ), patch(
+            "src.services.api.controllers.crawl_spec.config"
+        ) as config, patch(
+            "src.workers.tasks.help_center.recrawl_help_center.apply_async",
+            apply_async,
+        ):
+            config.crawler_is_configured = True
+            response = client.post("/ingest/crawl-spec/run")
+        self.assertEqual(response.status_code, 409)
+        apply_async.assert_not_called()
+
 
 class RecrawlTaskTests(unittest.TestCase):
     def test_ingests_live_pages_closes_removed_and_scans_conflicts(self):
@@ -420,7 +560,7 @@ class RecrawlTaskTests(unittest.TestCase):
         crawler = MagicMock()
         crawler.crawl_pages.return_value = [
             CrawledPage(url=LIVE, canonical_url=LIVE, text="Refunds stay 30 days."),
-            CrawledPage(url=GONE, text="   "),
+            CrawledPage(url=GONE, text="", status_code=404),
         ]
         enqueued = []
         scans = []
@@ -509,6 +649,40 @@ class RecrawlTaskTests(unittest.TestCase):
             )
         self.assertEqual(result["queued"], ["brain-a", "brain-b"])
         self.assertEqual(queued, ["brain-a", "brain-b"])
+
+    def test_failed_crawl_does_not_retire_and_keeps_last_seen(self):
+        from src.workers.tasks import help_center as help_mod
+
+        request = MagicMock()
+        request.id = "recrawl-fail"
+        spec = _spec(last_seen_source_keys=[LIVE, GONE])
+        store = _Store(spec=spec, chunks=[_chunk("gone-1", GONE), _chunk("live-1", LIVE)])
+        crawler = MagicMock()
+        crawler.crawl_pages.return_value = [
+            CrawledPage(url=LIVE, text="", status_code=503),
+            CrawledPage(url=GONE, text="", skip_reason="blocked"),
+        ]
+        with patch.object(help_mod, "claim_crawl_spec", return_value=spec), patch(
+            "src.core.instances.crawler_adapter", crawler
+        ), patch(
+            "src.services.data.main.data_adapter", store
+        ), patch(
+            "src.services.kg_agent.main.graph_adapter", _Graph()
+        ), patch(
+            "src.workers.tasks.conflicts.scan_conflicts.apply_async",
+            return_value=MagicMock(),
+        ), patch(
+            "src.workers.tasks.ingestion.set_ingestion_task_status",
+            return_value={},
+        ):
+            result = help_mod.recrawl_help_center.run.__func__(
+                type("Bound", (), {"request": request})(),
+                {"brain_id": "brain-a", "force": True},
+            )
+        self.assertEqual(result["removed"], [])
+        self.assertTrue(result["retirement_aborted"])
+        self.assertEqual(store.saved[-1].last_seen_source_keys, [GONE, LIVE])
+        self.assertEqual(store.marked, [])
 
 
 class HelpCenterQueueRoutingTests(unittest.TestCase):

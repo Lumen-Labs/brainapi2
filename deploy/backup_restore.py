@@ -31,7 +31,7 @@ from src.lib.cypher_safety import (
 )
 
 ARCHIVER_IMAGE = "alpine:3.21.3"
-APP_SERVICES = ("nginx", "brainapi", "brainapi-mcp", "brainapi-worker")
+APP_SERVICES = ("nginx", "brainapi", "brainapi-mcp", "brainapi-worker", "brainapi-beat")
 PROFILE_VOLUMES = {
     "light": ("redis-data", "brainapi-plugins"),
     "heavy": (

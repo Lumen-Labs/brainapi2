@@ -151,6 +151,31 @@ class SourceRevisionTests(unittest.TestCase):
         self.assertEqual(previous.text, "hello")
         self.assertEqual(meta["source_content_hash"], source_content_hash("hello again"))
 
+    def test_older_timestamp_does_not_replace_current_revision(self):
+        current = TextChunk(
+            id="c1",
+            text="new body",
+            metadata={
+                "source_key": "src-1",
+                "source_content_hash": "new-hash",
+                "valid_from": "2026-11-25T14:00:00Z",
+            },
+        )
+        store = _Store([current])
+        meta = {"source_key": "src-1"}
+        self.assertEqual(
+            prepare_source_revision(
+                store,
+                brain_id="brain",
+                source_text="old body",
+                meta_keys=meta,
+                source_timestamp="2026-11-25T12:00:00Z",
+            ),
+            "unchanged",
+        )
+        self.assertEqual(store.marked, [])
+        self.assertNotIn("superseded_at", current.metadata)
+
     def test_unhashed_copies_of_the_same_source_are_all_marked(self):
         copies = [
             TextChunk(id="c1", text="first", metadata={"source_key": "src-1"}),

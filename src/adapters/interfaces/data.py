@@ -400,3 +400,18 @@ class DataClient(ABC):
         task_id: str | None = None,
     ):
         return None
+
+    def finish_crawl_spec(self, brain_id: str, **kwargs):
+        return None
+
+    def source_sync_put(self, brain_id: str, bucket: str, item_id: str, document: dict):
+        raise NotImplementedError("source_sync_put method not implemented")
+
+    def source_sync_get(self, brain_id: str, bucket: str, item_id: str):
+        return None
+
+    def source_sync_list(self, brain_id: str, bucket: str):
+        return {}
+
+    def source_sync_delete(self, brain_id: str, bucket: str, item_id: str) -> bool:
+        return False

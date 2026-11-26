@@ -47,6 +47,7 @@ RUN if [ "$INSTALL_LOCAL_ML" = "true" ]; then \
     && rm -rf /root/.cache /tmp/*
 
 COPY src/ ./src/
+COPY plugins/ ./plugins/
 COPY scripts/preload_docker_models.py ./scripts/
 
 RUN /app/.venv/bin/python scripts/preload_docker_models.py --spacy-only \
@@ -88,15 +89,16 @@ WORKDIR /app
 COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app/.cache /app/.cache
 COPY --from=builder /app/src /app/src
+COPY --from=builder /app/plugins /app/plugins
 COPY --from=builder /app/pyproject.toml /app/
 COPY --from=console-builder /console/dist /app/console/dist
 COPY entrypoint.sh ./
 
 RUN chmod +x /app/entrypoint.sh
 
-RUN mkdir -p /app/plugins /app/ingest-publication-locks \
-    && chown appuser:appuser /app/plugins /app/ingest-publication-locks
-VOLUME ["/app/plugins"]
+RUN mkdir -p /app/custom-plugins /app/ingest-publication-locks \
+    && chown -R appuser:appuser /app/plugins /app/custom-plugins /app/ingest-publication-locks
+VOLUME ["/app/custom-plugins"]
 
 EXPOSE 8000
 

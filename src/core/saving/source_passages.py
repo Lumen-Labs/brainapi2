@@ -139,6 +139,9 @@ def prepare_source_revision(
     same = [chunk for chunk in current if str(chunk.id) in same_ids]
     ingest_at = format_instant(parse_instant(recorded_at) or utc_now())
     closed_at = _stamp(source_timestamp) if source_timestamp else ingest_at
+    incoming_at = parse_instant(source_timestamp)
+    if incoming_at is not None and _current_is_newer(current, incoming_at):
+        return "unchanged"
     if same:
         _record_superseded(
             out_superseded,
@@ -218,6 +221,18 @@ def _mark(
         if superseded_by:
             meta["superseded_by"] = superseded_by
     return ids
+
+
+def _current_is_newer(chunks: list[TextChunk], incoming_at) -> bool:
+    newest = None
+    for chunk in chunks:
+        meta = getattr(chunk, "metadata", None) or {}
+        existing = parse_instant(meta.get("valid_from") or meta.get("source_timestamp"))
+        if existing is None:
+            continue
+        if newest is None or existing > newest:
+            newest = existing
+    return newest is not None and incoming_at < newest
 
 
 def _inserted_time(chunk: TextChunk) -> float:

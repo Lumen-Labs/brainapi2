@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Any, Iterable, Mapping, Optional
+from typing import Any, Iterable, Optional
 from urllib.parse import urlsplit
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from src.core.saving.source_citations import close_orphaned_citing_facts
 from src.core.saving.source_passages import source_key_from_meta
 from src.core.saving.validity import (
-    close_validity,
     format_instant,
     parse_instant,
     utc_now,
@@ -21,6 +21,9 @@ STALE_CLAIM = timedelta(hours=1)
 CHUNK_PAGE = 100
 CHUNK_SCAN_CAP = 5000
 REMOVED_REASON = "source page removed"
+GONE_STATUS_CODES = frozenset({404, 410})
+DEFAULT_RETIRE_MAX_RATIO = 0.2
+DEFAULT_RETIRE_MAX_PAGES = 50
 
 
 class CrawlSpec(BaseModel):
@@ -86,6 +89,23 @@ def crawl_root_key(url: str | None) -> str:
     return str(url or "").strip()
 
 
+def spec_in_flight(
+    spec: CrawlSpec | None,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    if spec is None:
+        return False
+    instant = now or utc_now()
+    started = parse_instant(spec.last_started_at)
+    if started is None:
+        return False
+    crawled = parse_instant(spec.last_crawled_at)
+    if crawled is not None and started < crawled:
+        return False
+    return started + STALE_CLAIM > instant
+
+
 def spec_is_due(
     spec: CrawlSpec | None,
     *,
@@ -94,18 +114,15 @@ def spec_is_due(
 ) -> bool:
     if spec is None or not spec.enabled:
         return False
+    if spec_in_flight(spec, now=now):
+        return False
     if force:
         return True
     instant = now or utc_now()
     crawled = parse_instant(spec.last_crawled_at)
     if crawled is not None and crawled + timedelta(days=spec.interval_days) > instant:
         return False
-    started = parse_instant(spec.last_started_at)
-    if started is None:
-        return True
-    if crawled is not None and started < crawled:
-        return True
-    return started + STALE_CLAIM <= instant
+    return True
 
 
 def mark_started(spec: CrawlSpec, *, now: datetime | None = None, task_id: str | None = None) -> CrawlSpec:
@@ -126,6 +143,7 @@ def mark_finished(
     conflict_scan_task_id: str | None,
     now: datetime | None = None,
     error: str | None = None,
+    warning: str | None = None,
 ) -> CrawlSpec:
     stamp = format_instant(now or utc_now())
     payload = spec.model_copy(deep=True)
@@ -138,7 +156,7 @@ def mark_finished(
         payload.last_error = str(error).strip() or error
     else:
         payload.last_crawled_at = stamp
-        payload.last_error = None
+        payload.last_error = str(warning).strip() if warning else None
     return payload
 
 
@@ -213,32 +231,130 @@ def list_chunks_for_source_keys(
     return found
 
 
+def page_is_gone(page: Any) -> bool:
+    try:
+        status = int(getattr(page, "status_code", None) or 0)
+    except (TypeError, ValueError):
+        status = 0
+    return status in GONE_STATUS_CODES
+
+
+def page_is_failed(page: Any) -> bool:
+    if page_is_gone(page):
+        return False
+    try:
+        status = int(getattr(page, "status_code", None) or 0)
+    except (TypeError, ValueError):
+        status = 0
+    if status >= 500 or status in {401, 403, 429}:
+        return True
+    text = str(getattr(page, "text", None) or "").strip()
+    skip_reason = str(getattr(page, "skip_reason", None) or "").strip()
+    if skip_reason and not text:
+        return True
+    return False
+
+
+def classify_crawl_pages(
+    pages: Iterable[Any],
+    spec: CrawlSpec,
+) -> dict[str, Any]:
+    live_keys: list[str] = []
+    gone_keys: list[str] = []
+    failed_keys: list[str] = []
+    ingestible: list[Any] = []
+    seen = 0
+    for page in pages:
+        seen += 1
+        key = page_source_key(page)
+        if page_is_gone(page):
+            if key:
+                gone_keys.append(key)
+            continue
+        if page_is_failed(page):
+            if key:
+                failed_keys.append(key)
+            continue
+        text = str(getattr(page, "text", None) or "").strip()
+        if text:
+            if key:
+                live_keys.append(key)
+            ingestible.append(page)
+        elif key:
+            failed_keys.append(key)
+    max_pages = int(spec.max_pages or 0)
+    return {
+        "live_keys": live_keys,
+        "gone_keys": gone_keys,
+        "failed_keys": failed_keys,
+        "ingestible": ingestible,
+        "page_count": seen,
+        "truncated": bool(max_pages and seen >= max_pages),
+    }
+
+
+def retirement_cap(
+    previous_count: int,
+    *,
+    ratio: float | None = None,
+    max_pages: int | None = None,
+) -> int:
+    cap_ratio = DEFAULT_RETIRE_MAX_RATIO if ratio is None else float(ratio)
+    cap_pages = DEFAULT_RETIRE_MAX_PAGES if max_pages is None else int(max_pages)
+    if cap_pages < 1:
+        cap_pages = DEFAULT_RETIRE_MAX_PAGES
+    if previous_count < 1:
+        return cap_pages
+    scaled = int(previous_count * cap_ratio)
+    return max(1, min(cap_pages, scaled if scaled > 0 else 1))
+
+
+def retirement_abort_reason(
+    classified: dict[str, Any],
+    spec: CrawlSpec,
+    *,
+    ratio: float | None = None,
+    max_pages: int | None = None,
+) -> str | None:
+    gone = {str(key) for key in classified.get("gone_keys") or [] if key}
+    failed = {str(key) for key in classified.get("failed_keys") or [] if key}
+    live = {str(key) for key in classified.get("live_keys") or [] if key}
+    previous = {str(key) for key in (spec.last_seen_source_keys or []) if key}
+    if failed and not live and not gone and previous:
+        return "crawl produced no usable pages; retirement skipped"
+    cap = retirement_cap(len(previous), ratio=ratio, max_pages=max_pages)
+    if len(gone) > cap:
+        return f"gone page count {len(gone)} exceeds retirement cap {cap}"
+    return None
+
+
 def close_removed_pages(
     data: Any,
     graph: Any,
     brain_id: str,
     *,
-    live_source_keys: Iterable[str],
+    live_source_keys: Iterable[str] | None = None,
+    gone_source_keys: Iterable[str] | None = None,
     crawl_root: str,
     previous_source_keys: Iterable[str] | None = None,
     closed_at: str | None = None,
 ) -> list[str]:
-    live = {str(key) for key in live_source_keys if key}
+    gone = {str(key) for key in (gone_source_keys or []) if key}
+    if not gone:
+        return []
     stamp = format_instant(parse_instant(closed_at) or utc_now())
-    chunks = list_current_crawl_chunks(data, brain_id, crawl_root_key(crawl_root))
-    missing = [
-        str(key)
-        for key in (previous_source_keys or [])
-        if key and str(key) not in live
-    ]
-    if missing:
-        chunks.extend(list_chunks_for_source_keys(data, brain_id, missing))
+    chunks = list_chunks_for_source_keys(data, brain_id, gone)
+    if crawl_root:
+        for chunk in list_current_crawl_chunks(data, brain_id, crawl_root_key(crawl_root)):
+            key = source_key_from_meta(getattr(chunk, "metadata", None))
+            if key in gone:
+                chunks.append(chunk)
     removed_keys: list[str] = []
     ids: list[str] = []
     seen_ids: set[str] = set()
     for chunk in chunks:
         key = source_key_from_meta(getattr(chunk, "metadata", None))
-        if not key or key in live:
+        if not key or key not in gone:
             continue
         removed_keys.append(key)
         chunk_id = str(getattr(chunk, "id", "") or "")
@@ -252,7 +368,7 @@ def close_removed_pages(
             brain_id,
             valid_to=stamp,
         )
-        close_facts_for_chunks(graph, brain_id, ids, stamp)
+        close_facts_for_chunks(graph, brain_id, ids, stamp, data=data)
     return sorted(set(removed_keys))
 
 
@@ -261,28 +377,66 @@ def close_facts_for_chunks(
     brain_id: str,
     chunk_ids: list[str],
     closed_at: str,
+    *,
+    data: Any | None = None,
 ) -> list[str]:
-    if not graph or not chunk_ids:
-        return []
-    citing = getattr(graph, "nodes_and_edges_citing", None)
-    if not callable(citing):
-        return []
-    nodes, triples = citing(brain_id, chunk_ids, [])
-    closed: list[str] = []
-    for triple in triples or []:
-        predicate = triple[1] if len(triple) > 1 else None
-        fact_id = _entity_id(predicate)
-        if _close_open_fact(graph, brain_id, fact_id, predicate, "relationship", closed_at):
-            closed.append(fact_id)
-    from src.core.verification.facts import node_is_verifiable_event
+    return close_orphaned_citing_facts(
+        graph,
+        brain_id,
+        chunk_ids,
+        closed_at,
+        data=data,
+        reason=REMOVED_REASON,
+    )
 
-    for node in nodes or []:
-        if not node_is_verifiable_event(getattr(node, "labels", None)):
-            continue
-        fact_id = _entity_id(node)
-        if _close_open_fact(graph, brain_id, fact_id, node, "node", closed_at):
-            closed.append(fact_id)
-    return closed
+
+def finish_crawl_spec(
+    adapter: Any,
+    brain_id: str,
+    *,
+    live_source_keys: Iterable[str],
+    removed_source_keys: Iterable[str],
+    conflict_scan_task_id: str | None,
+    task_id: str | None = None,
+    now: datetime | None = None,
+    error: str | None = None,
+    warning: str | None = None,
+):
+    getter = getattr(adapter, "get_crawl_spec", None)
+    saver = getattr(adapter, "save_crawl_spec", None)
+    finisher = getattr(adapter, "finish_crawl_spec", None)
+    if callable(finisher):
+        return finisher(
+            brain_id,
+            live_source_keys=live_source_keys,
+            removed_source_keys=removed_source_keys,
+            conflict_scan_task_id=conflict_scan_task_id,
+            task_id=task_id,
+            now=now,
+            error=error,
+            warning=warning,
+        )
+    if not callable(getter) or not callable(saver):
+        return None
+    current = getter(brain_id)
+    if current is None:
+        return None
+    if (
+        task_id
+        and current.last_task_id
+        and current.last_task_id != task_id
+    ):
+        return current
+    finished = mark_finished(
+        current,
+        live_source_keys=live_source_keys,
+        removed_source_keys=removed_source_keys,
+        conflict_scan_task_id=conflict_scan_task_id,
+        now=now,
+        error=error,
+        warning=warning,
+    )
+    return saver(finished, brain_id)
 
 
 def enqueue_conflict_scan(brain_id: str) -> str:
@@ -296,64 +450,3 @@ def enqueue_conflict_scan(brain_id: str) -> str:
         task_id=task_id,
     )
     return task_id
-
-
-def _entity_id(entity: Any) -> str:
-    if entity is None:
-        return ""
-    return str(getattr(entity, "uuid", "") or "")
-
-
-def _props_map(value: Any) -> dict[str, Any]:
-    if isinstance(value, Mapping):
-        nested = value.get("properties")
-        if isinstance(nested, Mapping):
-            merged = dict(nested)
-            merged.update({k: v for k, v in value.items() if k != "properties"})
-            return merged
-        return dict(value)
-    props = getattr(value, "properties", None)
-    return dict(props) if isinstance(props, Mapping) else {}
-
-
-def _is_open(props: Mapping[str, Any]) -> bool:
-    return not (props.get("invalid_at") or props.get("valid_to"))
-
-
-def _close_open_fact(
-    graph: Any,
-    brain_id: str,
-    fact_id: str,
-    entity: Any,
-    updating: str,
-    closed_at: str,
-) -> bool:
-    if not fact_id:
-        return False
-    props = _props_map(entity)
-    if not _is_open(props):
-        return False
-    closed_props = close_validity(props, closed_at=closed_at, reason=REMOVED_REASON)
-    patch = {
-        "invalid_at": closed_props.get("invalid_at") or closed_at,
-        "deprecated": True,
-        "valid_to": closed_props.get("valid_to") or closed_at,
-        "retired_reason": closed_props.get("retired_reason") or REMOVED_REASON,
-    }
-    if updating == "relationship":
-        from src.core.intent.retire import apply_open_update
-
-        return apply_open_update(graph, fact_id, brain_id, patch)
-    updater = getattr(graph, "update_properties", None)
-    if not callable(updater):
-        return False
-    try:
-        updated = updater(
-            fact_id,
-            "node",
-            brain_id=brain_id,
-            new_properties=patch,
-        )
-    except TypeError:
-        updated = updater(fact_id, "node", brain_id, patch, [])
-    return updated is not None

@@ -63,6 +63,16 @@ CREATE TABLE IF NOT EXISTS data_crawl_specs (
 );
 CREATE INDEX IF NOT EXISTS idx_data_crawl_specs_due
     ON data_crawl_specs (enabled, last_crawled_at, last_started_at);
+CREATE TABLE IF NOT EXISTS data_source_sync (
+    brain_id TEXT NOT NULL,
+    bucket TEXT NOT NULL,
+    item_id TEXT NOT NULL,
+    document JSONB NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (brain_id, bucket, item_id)
+);
+CREATE INDEX IF NOT EXISTS idx_data_source_sync_bucket
+    ON data_source_sync (brain_id, bucket);
 """
 
 
@@ -1617,6 +1627,139 @@ class PostgreSQLDataClient(DataClient):
                 )
             conn.commit()
         return claimed
+
+    def finish_crawl_spec(
+        self,
+        brain_id: str,
+        *,
+        live_source_keys,
+        removed_source_keys,
+        conflict_scan_task_id,
+        task_id: str | None = None,
+        now=None,
+        error: str | None = None,
+        warning: str | None = None,
+    ):
+        from src.core.saving.help_center_crawl import mark_finished, spec_from_document
+        from src.core.saving.validity import parse_instant, utc_now
+
+        instant = now or utc_now()
+        with self._system_connection() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT document FROM data_crawl_specs
+                    WHERE brain_id = %s
+                    FOR UPDATE
+                    """,
+                    (brain_id,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    conn.commit()
+                    return None
+                spec = spec_from_document(row["document"], brain_id)
+                if spec is None:
+                    conn.commit()
+                    return None
+                if task_id and spec.last_task_id and spec.last_task_id != task_id:
+                    conn.commit()
+                    return spec
+                finished = mark_finished(
+                    spec,
+                    live_source_keys=live_source_keys,
+                    removed_source_keys=removed_source_keys,
+                    conflict_scan_task_id=conflict_scan_task_id,
+                    now=instant,
+                    error=error,
+                    warning=warning,
+                )
+                document = finished.model_dump(mode="json")
+                cur.execute(
+                    """
+                    UPDATE data_crawl_specs
+                    SET enabled = %s,
+                        last_crawled_at = %s,
+                        last_started_at = %s,
+                        document = %s::jsonb,
+                        updated_at = NOW()
+                    WHERE brain_id = %s
+                    """,
+                    (
+                        bool(finished.enabled),
+                        parse_instant(finished.last_crawled_at),
+                        parse_instant(finished.last_started_at),
+                        json.dumps(document, default=str),
+                        brain_id,
+                    ),
+                )
+            conn.commit()
+        return finished
+
+    def source_sync_put(self, brain_id: str, bucket: str, item_id: str, document: dict):
+        with self._system_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO data_source_sync (
+                        brain_id, bucket, item_id, document, updated_at
+                    )
+                    VALUES (%s, %s, %s, %s::jsonb, NOW())
+                    ON CONFLICT (brain_id, bucket, item_id) DO UPDATE SET
+                        document = EXCLUDED.document,
+                        updated_at = NOW()
+                    """,
+                    (brain_id, bucket, item_id, json.dumps(document, default=str)),
+                )
+            conn.commit()
+
+    def source_sync_get(self, brain_id: str, bucket: str, item_id: str):
+        with self._system_connection() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT document FROM data_source_sync
+                    WHERE brain_id = %s AND bucket = %s AND item_id = %s
+                    """,
+                    (brain_id, bucket, item_id),
+                )
+                row = cur.fetchone()
+        if not row:
+            return None
+        document = row["document"]
+        return dict(document) if isinstance(document, dict) else None
+
+    def source_sync_list(self, brain_id: str, bucket: str) -> dict[str, dict]:
+        with self._system_connection() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT item_id, document FROM data_source_sync
+                    WHERE brain_id = %s AND bucket = %s
+                    """,
+                    (brain_id, bucket),
+                )
+                rows = cur.fetchall()
+        found: dict[str, dict] = {}
+        for row in rows:
+            document = row["document"]
+            if isinstance(document, dict):
+                found[str(row["item_id"])] = dict(document)
+        return found
+
+    def source_sync_delete(self, brain_id: str, bucket: str, item_id: str) -> bool:
+        with self._system_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    DELETE FROM data_source_sync
+                    WHERE brain_id = %s AND bucket = %s AND item_id = %s
+                    """,
+                    (brain_id, bucket, item_id),
+                )
+                deleted = cur.rowcount > 0
+            conn.commit()
+        return deleted
 
 
 

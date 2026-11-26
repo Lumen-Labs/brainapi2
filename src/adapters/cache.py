@@ -44,6 +44,18 @@ class CacheAdapter:
         """
         return self.cache.set(key, value, brain_id, expires_in)
 
+    def set_nx(
+        self,
+        key: str,
+        value: str,
+        brain_id: str = "default",
+        expires_in: Optional[int] = None,
+    ) -> bool:
+        setter = getattr(self.cache, "set_nx", None)
+        if not callable(setter):
+            return False
+        return bool(setter(key, value, brain_id, expires_in))
+
     def delete(self, key: str, brain_id: str = "default") -> bool:
         """
         Delete a value from the cache.

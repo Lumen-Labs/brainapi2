@@ -104,7 +104,15 @@ async def lifespan(app: FastAPI):
 
     warmup_default_model()
     ctx = PluginContext.from_app(app)
-    loader = PluginLoader(plugins_dir=PLUGINS_DIR, context=ctx)
+    from src.core.plugins.paths import plugin_search_dirs
+
+    search_dirs = plugin_search_dirs(_project_root)
+    extra_dirs = search_dirs[1:]
+    loader = PluginLoader(
+        plugins_dir=search_dirs[0],
+        context=ctx,
+        extra_dirs=extra_dirs,
+    )
     results = loader.load_all()
 
     _log_plugin_banner(loader, results)

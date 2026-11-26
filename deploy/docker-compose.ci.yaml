@@ -40,3 +40,8 @@ services:
     environment: *ci-model-environment
     depends_on:
       embedding-stub: {condition: service_healthy}
+
+  brainapi-beat:
+    environment: *ci-model-environment
+    depends_on:
+      embedding-stub: {condition: service_healthy}

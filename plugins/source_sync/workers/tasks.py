@@ -11,7 +11,7 @@ if PLUGIN_DIR_STR not in sys.path:
 from celery.exceptions import Reject
 from src.workers.app import ingestion_app
 from source_sync_api import apply_payload_now, poll_source_now
-from source_sync_apply import dead_letter
+from source_sync_apply import DocumentBusy, dead_letter
 from source_sync_store import default_store
 
 
@@ -30,6 +30,8 @@ def apply_event_task(self, args: dict | None = None):
     payload = args or {}
     try:
         return apply_payload_now(payload)
+    except DocumentBusy:
+        raise
     except Exception as exc:
         retries = int(getattr(self.request, "retries", 0) or 0)
         maximum = int(getattr(self, "max_retries", 5) or 5)

@@ -8,7 +8,9 @@ plugins_app = typer.Typer(name="plugins", help="BrainAPI plugin management")
 app = typer.Typer(name="brainapi", help="BrainAPI CLI", no_args_is_help=True)
 app.add_typer(plugins_app, name="plugins")
 
-PLUGINS_DIR = Path(os.getenv("PLUGINS_DIR", "plugins"))
+from src.core.plugins.paths import install_plugins_dir
+
+PLUGINS_DIR = install_plugins_dir()
 REGISTRY_URL = os.getenv("PLUGIN_REGISTRY_URL", "https://registry.brain-api.dev")
 PUBLISHER_ID = os.getenv("PLUGIN_PUBLISHER_ID", "")
 PUBLISHER_API_KEY = os.getenv("PLUGIN_PUBLISHER_API_KEY", "")

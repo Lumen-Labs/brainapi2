@@ -464,6 +464,36 @@ class DataAdapter:
             return None
         return claimer(brain_id, now=now, force=force, task_id=task_id)
 
+    def finish_crawl_spec(self, brain_id: str = "default", **kwargs):
+        finisher = getattr(self.data, "finish_crawl_spec", None)
+        if not callable(finisher):
+            return None
+        return finisher(brain_id, **kwargs)
+
+    def source_sync_put(self, brain_id: str, bucket: str, item_id: str, document: dict):
+        writer = getattr(self.data, "source_sync_put", None)
+        if not callable(writer):
+            raise NotImplementedError("source_sync_put method not implemented")
+        return writer(brain_id, bucket, item_id, document)
+
+    def source_sync_get(self, brain_id: str, bucket: str, item_id: str):
+        getter = getattr(self.data, "source_sync_get", None)
+        if not callable(getter):
+            return None
+        return getter(brain_id, bucket, item_id)
+
+    def source_sync_list(self, brain_id: str, bucket: str):
+        lister = getattr(self.data, "source_sync_list", None)
+        if not callable(lister):
+            return {}
+        return lister(brain_id, bucket)
+
+    def source_sync_delete(self, brain_id: str, bucket: str, item_id: str) -> bool:
+        deleter = getattr(self.data, "source_sync_delete", None)
+        if not callable(deleter):
+            return False
+        return bool(deleter(brain_id, bucket, item_id))
+
     def get_conflict_scan_cursor(self, brain_id: str = "default"):
         getter = getattr(self.data, "get_conflict_scan_cursor", None)
         if not callable(getter):
