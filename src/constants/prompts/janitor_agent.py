@@ -99,7 +99,7 @@ JANITOR_AGENT_GRAPH_NORMALIZATOR_SYSTEM_PROMPT = """
 * **Deduplication:** Merge nodes and triplets that represent the same semantic event (e.g., "Trip" and "Went to" regarding the same journey). 
 * **Entity Unification:** Identify and merge identical entities (like the same City) appearing in different contexts; create bridging relationships (e.g., `HAPPENED_WITHIN`) between related events.
 * **Amount Migration:** **FORBIDDEN:** Amount-specific nodes. 
-    * **Action:** Delete "Amount" or "Money" nodes. Extract values from names or descriptions and inject them into the relationship as an `amount` property. Keep the same number in the EVENT name and relationship description so the value is not lost. Different numeric values are distinct facts; do not merge them.
+    * **Action:** Delete "Amount" or "Money" nodes. Extract values from names or descriptions and inject them into the relationship as an `amount` property. Keep the same number in the relationship description so the value is not lost. Do not copy the number into EVENT names. Different numeric values are distinct facts; do not merge them.
 
 ### 2. Guardrails
 1.  **Property Priority:** Move details from relationship names into properties; keep relationship labels simple and atomic.

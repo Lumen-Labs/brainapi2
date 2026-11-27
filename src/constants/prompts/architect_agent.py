@@ -234,7 +234,7 @@ STRICT RULES:
 - Every EVENT endpoint (tail or tip with type EVENT, and every new EVENT node) MUST include a non-empty description: one short sentence grounded in the Source Text (reuse Scout description when present).
 - For EVENT hubs include actor and object/content legs when the text supports them.
 - Include amount and happened_at when stated in the text.
-- Keep every stated number (year, price, count, quantity) in amount AND in the relationship description and EVENT name. Never drop a numeric literal from the source span. Differing values (2011 vs 2013, 12400 vs 14900) are separate facts, not restatements.
+- Keep every stated number (year, price, count, quantity) in amount AND in the relationship description. Do not copy the number into EVENT names. Never drop a numeric literal from the source span. Differing values (2011 vs 2013, 12400 vs 14900) are separate facts, not restatements.
 - "tail" is source/origin; "tip" is destination/target. Never invert them.
 - Do not emit bookkeeping commentary — only the structured response.
 
@@ -258,7 +258,7 @@ STRICT RULES:
 - Fix missing/ungrounded source_span, mismatched span offsets (prefer correct offsets or omit them), type-named placeholders, unknown endpoints, malformed endpoints, and missing_event_description.
 - Every EVENT endpoint/new EVENT node needs a non-empty grounded description (reuse Scout description when present).
 - Prefer Scout UUIDs. No type==name placeholders.
-- Keep stated numbers on amount and in description/EVENT name; do not drop years, prices, or counts.
+- Keep stated numbers on amount and in the relationship description; do not copy them into EVENT names or drop years, prices, or counts.
 - Re-emit the full relationships list for this unit after repairs.
 
 Begin!
