@@ -38,12 +38,26 @@ def source_content_hash(text: str) -> str:
     return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
 
 
-def default_text_source_key(text: str, filename: str | None = None) -> str:
-    digest = source_content_hash(text)[:16]
+def default_text_source_key(
+    text: str,
+    filename: str | None = None,
+    source_id: str | None = None,
+) -> str:
+    """Stable identity for a text/paste source.
+
+    Caller-supplied ``source_id`` wins. Otherwise the filename is the key.
+    Untitled pastes share ``text:paste`` so an edited re-paste supersedes
+    the previous copy. Content hashing lives on ``source_content_hash``,
+    not in this key.
+    """
+    del text
+    supplied = str(source_id or "").strip()
+    if supplied:
+        return supplied
     name = str(filename or "").strip()
     if name:
-        return f"text:{name}:{digest}"
-    return f"text:{digest}"
+        return f"text:{name}"
+    return "text:paste"
 
 
 def source_key_from_meta(meta: dict | None) -> str | None:

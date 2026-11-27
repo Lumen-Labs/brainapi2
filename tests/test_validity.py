@@ -474,11 +474,27 @@ class ValidityCardinalityTests(unittest.TestCase):
                 require_same_source=True,
             )
         )
-        self.assertFalse(
+        self.assertTrue(
             should_close_outgoing_edge(
                 relationship_name="HEADQUARTERED_IN",
                 existing_properties={},
                 incoming_source_key="press.txt",
+                require_same_source=True,
+            )
+        )
+        self.assertTrue(
+            should_close_outgoing_edge(
+                relationship_name="HEADQUARTERED_IN",
+                existing_properties={"source_key": "profile.txt"},
+                incoming_source_key="",
+                require_same_source=True,
+            )
+        )
+        self.assertFalse(
+            should_close_outgoing_edge(
+                relationship_name="WORKS_AT",
+                existing_properties={"source_key": "resume"},
+                incoming_source_key="resume",
                 require_same_source=True,
             )
         )

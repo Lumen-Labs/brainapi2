@@ -18,14 +18,19 @@ from src.core.saving.source_passages import (
 
 
 class DefaultTextSourceKeyTests(unittest.TestCase):
-    def test_hashes_content_and_includes_filename(self):
+    def test_stable_key_uses_source_id_or_filename(self):
         first = default_text_source_key("Halvorsen Dynamics")
         second = default_text_source_key("Halvorsen Dynamics", "profile.txt")
+        edited = default_text_source_key("Halvorsen Dynamics updated", "profile.txt")
         other = default_text_source_key("Corvella Teahouse")
-        self.assertTrue(first.startswith("text:"))
-        self.assertEqual(first, default_text_source_key("Halvorsen Dynamics"))
-        self.assertNotEqual(first, other)
-        self.assertIn("profile.txt", second)
+        supplied = default_text_source_key(
+            "Halvorsen Dynamics", "profile.txt", source_id="note-1"
+        )
+        self.assertEqual(first, "text:paste")
+        self.assertEqual(other, "text:paste")
+        self.assertEqual(second, "text:profile.txt")
+        self.assertEqual(second, edited)
+        self.assertEqual(supplied, "note-1")
         self.assertNotEqual(first, second)
 
 

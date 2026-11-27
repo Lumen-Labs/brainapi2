@@ -36,6 +36,10 @@ from src.core.saving.validity import (
     parse_instant,
     utc_now,
 )
+from src.core.saving.validity_cardinality import (
+    SINGLE_VALUED_RELATIONSHIP_TYPES,
+    single_valued_relationship_types,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +81,11 @@ MULTI_VALUED_PREDICATES = frozenset(
         "AFFECTED",
         "RESULTED",
         "WITHIN",
+        "EMPLOYED_BY",
+        "FOUNDED",
+        "HAS_TITLE",
+        "OPERATES",
+        "WORKS_AT",
     }
 )
 
@@ -112,63 +121,20 @@ FUNCTIONAL_PREDICATES = frozenset(
         "APPLIES",
         "ALLOWS",
         "PROHIBITS",
-        "HEADQUARTERED_IN",
         "LOCATED_IN",
         "BASED_IN",
-        "BORN_IN",
-        "LIVES_IN",
-        "LIVES_AT",
-        "FOUNDED",
-        "FOUNDED_IN",
-        "FOUNDED_YEAR",
-        "ESTABLISHED",
-        "ESTABLISHED_IN",
-        "HAS_CEO",
-        "CEO",
-        "LED_BY",
-        "HAS_TITLE",
-        "EMPLOYED_BY",
-        "WORKS_AT",
-        "MARRIED_TO",
         "EMPLOYEE_COUNT",
         "HAS_EMPLOYEE_COUNT",
-        "OPERATES",
     }
 )
 
-IDENTITY_FUNCTIONAL_PREDICATES = frozenset(
-    {
-        "HEADQUARTERED_IN",
-        "LOCATED_IN",
-        "BASED_IN",
-        "BORN_IN",
-        "LIVES_IN",
-        "LIVES_AT",
-        "FOUNDED",
-        "FOUNDED_IN",
-        "FOUNDED_YEAR",
-        "ESTABLISHED",
-        "ESTABLISHED_IN",
-        "HAS_CEO",
-        "CEO",
-        "LED_BY",
-        "HAS_TITLE",
-        "EMPLOYED_BY",
-        "WORKS_AT",
-        "MARRIED_TO",
-        "HAS_STATUS",
-        "STATUS",
-    }
-)
+IDENTITY_FUNCTIONAL_PREDICATES = SINGLE_VALUED_RELATIONSHIP_TYPES
 
-_ORG_SUBJECT_LABELS = frozenset(
-    {
-        "ORG",
-        "ORGANIZATION",
-        "COMPANY",
-        "POLICY",
-        "ENTITY",
-    }
+_COMPATIBLE_LABEL_GROUPS = (
+    frozenset({"ORG", "ORGANIZATION", "COMPANY", "CORPORATION", "BUSINESS"}),
+    frozenset({"PERSON", "PEOPLE", "HUMAN"}),
+    frozenset({"PLACE", "LOCATION", "CITY", "COUNTRY", "GEO", "GPE", "LOC"}),
+    frozenset({"POLICY", "RULE", "CLAUSE"}),
 )
 
 _DURATION_UNITS = {
@@ -579,11 +545,33 @@ def is_functional_predicate(predicate: str, values: Iterable[str] | None = None)
     name = normalize_predicate(predicate)
     if name in MULTI_VALUED_PREDICATES:
         return False
-    if name in FUNCTIONAL_PREDICATES or name in IDENTITY_FUNCTIONAL_PREDICATES:
+    if name in FUNCTIONAL_PREDICATES or name in single_valued_relationship_types():
         return True
     samples = [normalize_value(v) for v in (values or []) if v]
     if samples and all(parse_quantity(v) is not None for v in samples):
         return True
+    return False
+
+
+def _subject_labels(snapshot: dict[str, Any]) -> set[str]:
+    labels = {str(item).upper() for item in (snapshot.get("subject_labels") or [])}
+    subject_type = str(snapshot.get("subject_type") or "").strip().upper()
+    if subject_type:
+        labels.add(subject_type)
+    labels.discard("")
+    return labels
+
+
+def _compatible_subject_types(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    left_labels = _subject_labels(left)
+    right_labels = _subject_labels(right)
+    if not left_labels or not right_labels:
+        return False
+    if left_labels & right_labels:
+        return True
+    for group in _COMPATIBLE_LABEL_GROUPS:
+        if (left_labels & group) and (right_labels & group):
+            return True
     return False
 
 
@@ -596,11 +584,7 @@ def _same_conflict_subject(left: dict[str, Any], right: dict[str, Any]) -> bool:
     right_name = normalize_value(right.get("subject_name") or "")
     if not left_name or left_name != right_name:
         return False
-    if " " in left_name or len(left_name) >= 10:
-        return True
-    left_labels = {str(item).upper() for item in (left.get("subject_labels") or [])}
-    right_labels = {str(item).upper() for item in (right.get("subject_labels") or [])}
-    return bool(left_labels & right_labels & _ORG_SUBJECT_LABELS)
+    return _compatible_subject_types(left, right)
 
 
 def intervals_overlap(left: dict[str, Any], right: dict[str, Any]) -> bool:
@@ -654,6 +638,7 @@ def snapshot_from_triple(triple: Any) -> dict[str, Any] | None:
         "subject_uuid": subject_uuid,
         "subject_name": str(getattr(subject, "name", "") or ""),
         "subject_labels": list(getattr(subject, "labels", None) or []),
+        "subject_type": str(getattr(subject, "type", None) or ""),
         "predicate": predicate_name,
         "object_uuid": str(getattr(obj, "uuid", "") or ""),
         "object_name": object_name,
@@ -676,7 +661,7 @@ def snapshot_from_triple(triple: Any) -> dict[str, Any] | None:
 
 def _structurally_incompatible(left: dict[str, Any], right: dict[str, Any]) -> bool:
     predicate = normalize_predicate(left.get("predicate") or right.get("predicate") or "")
-    if predicate in IDENTITY_FUNCTIONAL_PREDICATES:
+    if predicate in single_valued_relationship_types():
         return True
     left_value = left.get("value") or ""
     right_value = right.get("value") or ""

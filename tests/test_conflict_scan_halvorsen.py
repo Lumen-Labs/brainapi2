@@ -2,6 +2,7 @@ import unittest
 
 from src.constants.kg import Node, Predicate
 from src.core.saving.conflicts import (
+    IDENTITY_FUNCTIONAL_PREDICATES,
     detect_conflicts,
     find_conflict_candidates,
     is_functional_predicate,
@@ -10,7 +11,10 @@ from src.core.saving.conflicts import (
 )
 from src.core.saving.identity import stamp_provenance
 from src.core.saving.source_passages import default_text_source_key
-from src.core.saving.validity_cardinality import should_close_outgoing_edge
+from src.core.saving.validity_cardinality import (
+    SINGLE_VALUED_RELATIONSHIP_TYPES,
+    should_close_outgoing_edge,
+)
 
 
 class MemoryConflictStore:
@@ -335,22 +339,34 @@ def _pairs(found):
 
 
 class HalvorsenConflictScanTests(unittest.TestCase):
-    def test_paste_path_assigns_distinct_source_keys(self):
-        key_a = _source_key(TEXT_A)
-        key_b = _source_key(TEXT_B)
+    def test_paste_path_assigns_stable_source_keys(self):
+        key_a = _source_key(TEXT_A, "profile.txt")
+        key_b = _source_key(TEXT_B, "press.txt")
         key_c = _source_key(TEXT_C)
-        self.assertTrue(key_a.startswith("text:"))
-        self.assertNotEqual(key_a, key_b)
-        self.assertNotEqual(key_b, key_c)
-        self.assertEqual(key_a, _source_key(TEXT_A))
-        self.assertIn("profile.txt", _source_key(TEXT_A, "profile.txt"))
+        self.assertEqual(key_a, "text:profile.txt")
+        self.assertEqual(key_b, "text:press.txt")
+        self.assertEqual(key_c, "text:paste")
+        self.assertEqual(key_a, _source_key("edited " + TEXT_A, "profile.txt"))
+        self.assertEqual(
+            default_text_source_key(TEXT_A, "profile.txt", source_id="qa-profile"),
+            "qa-profile",
+        )
 
     def test_identity_functional_predicates_are_recognized(self):
+        self.assertEqual(IDENTITY_FUNCTIONAL_PREDICATES, SINGLE_VALUED_RELATIONSHIP_TYPES)
+        self.assertTrue("HEADQUARTERED_IN" in IDENTITY_FUNCTIONAL_PREDICATES)
+        self.assertFalse("LOCATED_IN" in IDENTITY_FUNCTIONAL_PREDICATES)
+        self.assertFalse("WORKS_AT" in IDENTITY_FUNCTIONAL_PREDICATES)
         self.assertTrue(is_functional_predicate("HEADQUARTERED_IN", ["Bergen", "Oslo"]))
         self.assertTrue(is_functional_predicate("FOUNDED_IN", ["2011", "2013"]))
         self.assertTrue(is_functional_predicate("HAS_CEO", ["Ingrid Solheim", "Marcus Ekberg"]))
         self.assertTrue(is_functional_predicate("PRICE", ["12400 EUR", "14900 EUR"]))
+        self.assertTrue(is_functional_predicate("LOCATED_IN", ["Milan", "Italy"]))
         self.assertFalse(is_functional_predicate("HAS_FACTORY", ["Stavanger", "Trondheim"]))
+        self.assertFalse(is_functional_predicate("WORKS_AT", ["Acme", "Globex"]))
+        self.assertFalse(is_functional_predicate("FOUNDED", ["Acme", "Globex"]))
+        self.assertFalse(is_functional_predicate("HAS_TITLE", ["CEO", "Director"]))
+        self.assertFalse(is_functional_predicate("OPERATES", ["17 locations", "22 locations"]))
         self.assertFalse(values_equivalent("2011", "2013"))
         self.assertTrue(values_equivalent("2011", "2011"))
 
@@ -358,8 +374,8 @@ class HalvorsenConflictScanTests(unittest.TestCase):
         self.assertFalse(
             should_close_outgoing_edge(
                 relationship_name="HEADQUARTERED_IN",
-                existing_properties={"source_key": _source_key(TEXT_A)},
-                incoming_source_key=_source_key(TEXT_B),
+                existing_properties={"source_key": _source_key(TEXT_A, "profile.txt")},
+                incoming_source_key=_source_key(TEXT_B, "press.txt"),
                 require_same_source=True,
             )
         )
@@ -375,6 +391,14 @@ class HalvorsenConflictScanTests(unittest.TestCase):
             should_close_outgoing_edge(
                 relationship_name="HEADQUARTERED_IN",
                 existing_properties={},
+            )
+        )
+        self.assertTrue(
+            should_close_outgoing_edge(
+                relationship_name="HEADQUARTERED_IN",
+                existing_properties={},
+                incoming_source_key=_source_key(TEXT_B, "press.txt"),
+                require_same_source=True,
             )
         )
 
@@ -455,6 +479,184 @@ class HalvorsenConflictScanTests(unittest.TestCase):
         self.assertEqual(semantic, [])
         self.assertEqual(len(definite), 1)
         self.assertEqual(definite[0][2], "value_mismatch")
+
+    def test_located_in_milan_vs_italy_is_not_definite(self):
+        acme = _node("org-acme", "Acme", ["ORG", "COMPANY"])
+        snapshots = [
+            snapshot_from_triple(
+                _fact(
+                    acme,
+                    "loc-milan",
+                    "LOCATED_IN",
+                    _node("city-milan", "Milan"),
+                    source_key="wiki",
+                    valid_from="2024-01-01T00:00:00Z",
+                )
+            ),
+            snapshot_from_triple(
+                _fact(
+                    acme,
+                    "loc-italy",
+                    "LOCATED_IN",
+                    _node("country-italy", "Italy"),
+                    source_key="press",
+                    valid_from="2024-06-01T00:00:00Z",
+                )
+            ),
+        ]
+        definite, semantic = find_conflict_candidates(snapshots)
+        self.assertEqual(definite, [])
+        self.assertEqual(len(semantic), 1)
+
+    def test_two_jobs_are_not_a_conflict(self):
+        person = _node("person-a", "Ada Lovelace", ["PERSON"])
+        snapshots = [
+            snapshot_from_triple(
+                _fact(
+                    person,
+                    "job-acme",
+                    "WORKS_AT",
+                    _node("org-acme", "Acme"),
+                    source_key="resume",
+                    valid_from="2024-01-01T00:00:00Z",
+                )
+            ),
+            snapshot_from_triple(
+                _fact(
+                    person,
+                    "job-globex",
+                    "WORKS_AT",
+                    _node("org-globex", "Globex"),
+                    source_key="press",
+                    valid_from="2024-06-01T00:00:00Z",
+                )
+            ),
+        ]
+        definite, semantic = find_conflict_candidates(snapshots)
+        self.assertEqual(definite, [])
+        self.assertEqual(semantic, [])
+        found = detect_conflicts(
+            MemoryConflictStore(),
+            FakeGraph(
+                [
+                    _fact(
+                        person,
+                        "job-acme",
+                        "WORKS_AT",
+                        _node("org-acme", "Acme"),
+                        source_key="resume",
+                        valid_from="2024-01-01T00:00:00Z",
+                    ),
+                    _fact(
+                        person,
+                        "job-globex",
+                        "WORKS_AT",
+                        _node("org-globex", "Globex"),
+                        source_key="press",
+                        valid_from="2024-06-01T00:00:00Z",
+                    ),
+                ]
+            ),
+            "brain",
+            use_llm=False,
+        )
+        self.assertEqual(list(found), [])
+
+    def test_john_smith_nodes_with_different_labels_are_not_paired(self):
+        person = _node("person-js", "John Smith", ["PERSON"])
+        company = _node("org-js", "John Smith", ["ORG", "COMPANY"])
+        snapshots = [
+            snapshot_from_triple(
+                _fact(
+                    person,
+                    "hq-person",
+                    "HEADQUARTERED_IN",
+                    _node("city-oslo", "Oslo"),
+                    source_key="bio",
+                    valid_from="2024-01-01T00:00:00Z",
+                )
+            ),
+            snapshot_from_triple(
+                _fact(
+                    company,
+                    "hq-org",
+                    "HEADQUARTERED_IN",
+                    _node("city-bergen", "Bergen"),
+                    source_key="press",
+                    valid_from="2024-01-01T00:00:00Z",
+                )
+            ),
+        ]
+        definite, semantic = find_conflict_candidates(snapshots)
+        self.assertEqual(definite, [])
+        self.assertEqual(semantic, [])
+
+        org = _node("org-a", "Halvorsen Dynamics", ["ORG"])
+        company = _node("org-b", "Halvorsen Dynamics", ["COMPANY"])
+        compatible = [
+            snapshot_from_triple(
+                _fact(
+                    org,
+                    "hq-bergen",
+                    "HEADQUARTERED_IN",
+                    _node("city-bergen", "Bergen"),
+                    source_key="profile",
+                    valid_from="2024-03-01T00:00:00Z",
+                )
+            ),
+            snapshot_from_triple(
+                _fact(
+                    company,
+                    "hq-oslo",
+                    "HEADQUARTERED_IN",
+                    _node("city-oslo", "Oslo"),
+                    source_key="press",
+                    valid_from="2025-06-15T00:00:00Z",
+                )
+            ),
+        ]
+        definite_ok, semantic_ok = find_conflict_candidates(compatible)
+        self.assertEqual(semantic_ok, [])
+        self.assertEqual(len(definite_ok), 1)
+
+    def test_edited_repaste_closes_old_edges_instead_of_conflicting(self):
+        old_key = _source_key("Halvorsen is headquartered in Bergen.", "note.txt")
+        new_key = _source_key("Halvorsen is headquartered in Oslo.", "note.txt")
+        self.assertEqual(old_key, new_key)
+        self.assertTrue(
+            should_close_outgoing_edge(
+                relationship_name="HEADQUARTERED_IN",
+                existing_properties={"source_key": old_key},
+                incoming_source_key=new_key,
+                require_same_source=True,
+            )
+        )
+        org = _node("org-hd", "Halvorsen Dynamics", ["ORG", "COMPANY"])
+        snapshots = [
+            snapshot_from_triple(
+                _fact(
+                    org,
+                    "hq-bergen",
+                    "HEADQUARTERED_IN",
+                    _node("city-bergen", "Bergen"),
+                    source_key=old_key,
+                    valid_from="2024-03-01T00:00:00Z",
+                )
+            ),
+            snapshot_from_triple(
+                _fact(
+                    org,
+                    "hq-oslo",
+                    "HEADQUARTERED_IN",
+                    _node("city-oslo", "Oslo"),
+                    source_key=new_key,
+                    valid_from="2025-06-15T00:00:00Z",
+                )
+            ),
+        ]
+        definite, semantic = find_conflict_candidates(snapshots)
+        self.assertEqual(definite, [])
+        self.assertEqual(semantic, [])
 
 
 if __name__ == "__main__":

@@ -1028,13 +1028,14 @@ def _ingest_data(self, args, *, staged=False):
         if not payload.meta_keys:
             payload.meta_keys = {}
         if not source_key_from_meta(payload.meta_keys):
+            source_id = str(payload.meta_keys.get("source_id") or "").strip() or None
             filename = (
                 payload.meta_keys.get("filename")
                 or payload.meta_keys.get("source_filename")
                 or payload.meta_keys.get("source_file")
             )
             payload.meta_keys["source_key"] = default_text_source_key(
-                source_text, filename
+                source_text, filename, source_id=source_id
             )
         revision = prepare_source_revision(
             data_adapter,
