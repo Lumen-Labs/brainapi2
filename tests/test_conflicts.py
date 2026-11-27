@@ -7,6 +7,7 @@ from src.core.auth.scopes import VERIFICATION_PERMISSION_DENIED
 from src.core.saving.conflicts import (
     VerificationPermissionDenied,
     annotation_payload,
+    antonym_or_negation,
     claim_key_for,
     classify_disagreement,
     conflict_detect_max_relationships,
@@ -324,6 +325,92 @@ class QuantityAndMatchTests(unittest.TestCase):
                 {"value": "warehouse A", "polarity": "neutral"},
             )
         )
+
+    def test_antonym_and_negation_boundaries_and_direct_negation(self):
+        # Direct negation of the same claim is a deterministic polarity conflict.
+        self.assertTrue(antonym_or_negation("active", "not active"))
+        self.assertTrue(antonym_or_negation("restocking fee", "no restocking fee"))
+        self.assertTrue(antonym_or_negation("refundable", "non-refundable"))
+        kind, _ = classify_disagreement(
+            {"value": "active", "polarity": "neutral"},
+            {"value": "not active", "polarity": "neutral"},
+        )
+        self.assertEqual(kind, "polarity_conflict")
+
+        # Agreeing negated phrases, unrelated substrings, and unrelated terms
+        # with one negated side must not trigger deterministic polarity conflicts.
+        self.assertFalse(
+            antonym_or_negation("non-refundable deposit", "non-refundable fee")
+        )
+        self.assertFalse(antonym_or_negation("non-refundable", "nonrefundable"))
+        self.assertFalse(antonym_or_negation("yesterday", "north"))
+        self.assertFalse(antonym_or_negation("untrue", "false"))
+        self.assertFalse(antonym_or_negation("green", "no fee"))
+        for left_val, right_val in (
+            ("non-refundable deposit", "non-refundable fee"),
+            ("yesterday", "north"),
+            ("green", "no fee"),
+        ):
+            kind, _ = classify_disagreement(
+                {"value": left_val, "polarity": "neutral"},
+                {"value": right_val, "polarity": "neutral"},
+            )
+            self.assertNotEqual(kind, "polarity_conflict")
+            snaps = [
+                snapshot_from_triple(
+                    _triple(
+                        _node("p", "Policy"),
+                        _pred(
+                            "a",
+                            "HAS_POLICY",
+                            {"valid_from": "2024-01-01T00:00:00Z", "source_key": "s1"},
+                        ),
+                        _node("v1", left_val),
+                    )
+                ),
+                snapshot_from_triple(
+                    _triple(
+                        _node("p", "Policy"),
+                        _pred(
+                            "b",
+                            "HAS_POLICY",
+                            {"valid_from": "2024-01-01T00:00:00Z", "source_key": "s2"},
+                        ),
+                        _node("v2", right_val),
+                    )
+                ),
+            ]
+            definite, _ = find_conflict_candidates(snaps)
+            self.assertEqual(definite, [])
+
+        neg_snaps = [
+            snapshot_from_triple(
+                _triple(
+                    _node("p", "Policy"),
+                    _pred(
+                        "a",
+                        "HAS_STATUS",
+                        {"valid_from": "2024-01-01T00:00:00Z", "source_key": "s1"},
+                    ),
+                    _node("v1", "active"),
+                )
+            ),
+            snapshot_from_triple(
+                _triple(
+                    _node("p", "Policy"),
+                    _pred(
+                        "b",
+                        "HAS_STATUS",
+                        {"valid_from": "2024-01-01T00:00:00Z", "source_key": "s2"},
+                    ),
+                    _node("v2", "not active"),
+                )
+            ),
+        ]
+        definite, semantic = find_conflict_candidates(neg_snaps)
+        self.assertEqual(len(definite), 1)
+        self.assertEqual(definite[0][2], "polarity_conflict")
+        self.assertEqual(semantic, [])
 
 
 class DetectionEngineTests(unittest.TestCase):

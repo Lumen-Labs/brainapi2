@@ -198,6 +198,13 @@ _ANTONYM_PAIRS = (
     ("applies", "does not apply"),
     ("required", "optional"),
 )
+_ANTONYM_PATTERNS = tuple(
+    (
+        re.compile(rf"(?<![a-z0-9-]){re.escape(first)}(?![a-z0-9-])"),
+        re.compile(rf"(?<![a-z0-9-]){re.escape(second)}(?![a-z0-9-])"),
+    )
+    for first, second in _ANTONYM_PAIRS
+)
 _NEGATION_RE = re.compile(
     r"\b(not|no|never|non|without|cannot|can't)\b", re.I
 )
@@ -548,15 +555,25 @@ def opposite_polarity(left: str, right: str) -> bool:
     return {left, right} == {"positive", "negative"}
 
 
+def _strip_negation(text: str) -> str:
+    return re.sub(r"\s+", " ", _NEGATION_RE.sub(" ", text)).strip(" -")
+
+
 def antonym_or_negation(left: str, right: str) -> bool:
     a = normalize_value(left)
     b = normalize_value(right)
-    for first, second in _ANTONYM_PAIRS:
-        if (first in a and second in b) or (second in a and first in b):
+    for first, second in _ANTONYM_PATTERNS:
+        if (first.search(a) and second.search(b)) or (
+            second.search(a) and first.search(b)
+        ):
             return True
     a_neg = bool(_NEGATION_RE.search(a))
     b_neg = bool(_NEGATION_RE.search(b))
-    return a_neg != b_neg and bool(a) and bool(b) and a.replace("not ", "") != b.replace("not ", "")
+    if a_neg == b_neg or not a or not b:
+        return False
+    a_base = _strip_negation(a)
+    b_base = _strip_negation(b)
+    return bool(a_base) and a_base == b_base
 
 
 def is_functional_predicate(predicate: str, values: Iterable[str] | None = None) -> bool:
