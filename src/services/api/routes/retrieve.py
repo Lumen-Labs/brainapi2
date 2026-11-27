@@ -565,8 +565,9 @@ async def get_conflicts_list(
     source: Optional[str] = Query(
         None,
         description=(
-            "Exact source_key (`text:{filename}:{16-hex}` or `text:{16-hex}`) "
-            "or a substring of source_key, document title, or source quote"
+            "Exact source_key (`text:{filename}`, `text:paste`, or a caller source_id) "
+            "or a substring of source_key, document title, or source quote. "
+            "A document title such as QARC-20261126 is not the key unless stored as source_id."
         ),
     ),
     subject: Optional[str] = Query(None, description="Filter by subject name"),

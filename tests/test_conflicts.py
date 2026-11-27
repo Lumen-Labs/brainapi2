@@ -3196,7 +3196,7 @@ class NumericFactAndProvenanceTests(unittest.TestCase):
                     object=ConflictEntity(name="2011"),
                     value="2011",
                     source=ConflictSource(
-                        source_key="text:profile.txt:aaaaaaaaaaaaaaaa",
+                        source_key="text:profile.txt",
                         document="QARC-20261126 Halvorsen Dynamics company profile",
                     ),
                 )
@@ -3204,7 +3204,7 @@ class NumericFactAndProvenanceTests(unittest.TestCase):
         )
         self.assertTrue(conflict_matches_source_filter(conflict, "QARC-20261126"))
         self.assertTrue(
-            conflict_matches_source_filter(conflict, "text:profile.txt:aaaaaaaaaaaaaaaa")
+            conflict_matches_source_filter(conflict, "text:profile.txt")
         )
         self.assertFalse(conflict_matches_source_filter(conflict, "no-such-source"))
 

@@ -119,7 +119,7 @@ MCP_TOOL_SPECS: list[dict[str, object]] = [
         "parameters": {
             "brain_id": "str",
             "status": "open | resolved | dismissed (optional)",
-            "source": "str exact source_key (text:{filename}:{16-hex} or text:{16-hex}) or a substring of key/document/quote (optional)",
+            "source": "str exact source_key (text:{filename}, text:paste, or caller source_id) or a substring of key/document/quote (optional)",
             "subject": "str subject name (optional)",
             "since": "str ISO-8601 (optional)",
             "until": "str ISO-8601 (optional)",
