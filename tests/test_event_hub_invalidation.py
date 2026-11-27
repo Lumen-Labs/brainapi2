@@ -183,6 +183,35 @@ class EventHubInvalidationTests(unittest.TestCase):
         self.assertTrue(retrieve_mod._is_currently_valid(graph.predicate("rel-1")))
         self.assertTrue(retrieve_mod._is_currently_valid(graph.predicate("rel-2")))
 
+    def test_legacy_edge_without_source_key_is_closed(self):
+        from src.services.api.controllers import retrieve as retrieve_mod
+        from src.workers.tasks import ingestion as ingestion_mod
+
+        graph = _FakeGraphAdapter()
+        graph.add_node("alice", "Alice", "PERSON")
+        graph.add_node("nyc", "New York City", "CITY")
+        graph.add_node("sf", "San Francisco", "CITY")
+        graph.add_edge("rel-1", "alice", "LIVES_IN", "nyc")
+        graph.add_edge("rel-2", "alice", "LIVES_IN", "sf")
+
+        relationship = _relationship(
+            "rel-2",
+            _entity("alice", "Alice", "PERSON"),
+            "LIVES_IN",
+            _entity("sf", "San Francisco", "CITY"),
+            valid_at="02/02/2024",
+        )
+        relationship.properties["source_key"] = "source-a"
+
+        with patch.object(ingestion_mod, "graph_adapter", graph):
+            ingestion_mod._invalidate_superseded_relationships(
+                relationship, brain_id="brain-a"
+            )
+
+        self.assertEqual(graph.updates[0][0], "rel-1")
+        self.assertFalse(retrieve_mod._is_currently_valid(graph.predicate("rel-1")))
+        self.assertTrue(retrieve_mod._is_currently_valid(graph.predicate("rel-2")))
+
     def test_functional_attribute_edge_is_superseded_for_same_source(self):
         from src.services.api.controllers import retrieve as retrieve_mod
         from src.workers.tasks import ingestion as ingestion_mod

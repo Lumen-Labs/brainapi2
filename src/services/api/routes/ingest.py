@@ -144,12 +144,14 @@ def _upload_size(upload, content):
     return None
 
 
-def _plain_text_payload(brain_id, text, group_key, filename=None):
+def _plain_text_payload(brain_id, text, group_key, filename=None, source_id=None):
     meta_keys = {
-        "source_key": default_text_source_key(text, filename),
+        "source_key": default_text_source_key(text, filename, source_id=source_id),
     }
     if filename:
         meta_keys["filename"] = filename
+    if source_id:
+        meta_keys["source_id"] = source_id
     payload = {
         "data": {"data_type": "text", "text_data": text},
         "brain_id": brain_id,
