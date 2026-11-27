@@ -3196,7 +3196,7 @@ class NumericFactAndProvenanceTests(unittest.TestCase):
                     object=ConflictEntity(name="2011"),
                     value="2011",
                     source=ConflictSource(
-                        source_key="text:profile.txt",
+                        source_key="text:untitled:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                         document="QARC-20261126 Halvorsen Dynamics company profile",
                     ),
                 )
@@ -3204,9 +3204,32 @@ class NumericFactAndProvenanceTests(unittest.TestCase):
         )
         self.assertTrue(conflict_matches_source_filter(conflict, "QARC-20261126"))
         self.assertTrue(
-            conflict_matches_source_filter(conflict, "text:profile.txt")
+            conflict_matches_source_filter(
+                conflict, "text:untitled:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            )
         )
+        self.assertTrue(conflict_matches_source_filter(conflict, "text:untitled"))
+        self.assertFalse(conflict_matches_source_filter(conflict, "text:paste"))
         self.assertFalse(conflict_matches_source_filter(conflict, "no-such-source"))
+        with_source_id = FactConflict(
+            id="c-id",
+            pair_key="pair-id",
+            claim_key="claim-id",
+            disagreement_type="numeric_mismatch",
+            subject=ConflictEntity(name="Halvorsen Dynamics"),
+            predicate="FOUNDED_IN",
+            sides=[
+                ConflictSide(
+                    fact_id="a",
+                    subject=ConflictEntity(name="Halvorsen Dynamics"),
+                    predicate="FOUNDED_IN",
+                    object=ConflictEntity(name="2011"),
+                    value="2011",
+                    source=ConflictSource(source_key="qa-profile"),
+                )
+            ],
+        )
+        self.assertTrue(conflict_matches_source_filter(with_source_id, "qa-profile"))
 
     def test_dismiss_and_reopen_record_actor_and_time(self):
         store = MemoryConflictStore()

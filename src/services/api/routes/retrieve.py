@@ -565,9 +565,11 @@ async def get_conflicts_list(
     source: Optional[str] = Query(
         None,
         description=(
-            "Exact source_key (`text:{filename}`, `text:paste`, or a caller source_id) "
-            "or a substring of source_key, document title, or source quote. "
-            "A document title such as QARC-20261126 is not the key unless stored as source_id."
+            "Exact source_key: a caller source_id, an identity-scoped path "
+            "`text:{brain_id}:{path}`, or a unique untitled paste `text:untitled:{uuid}`. "
+            "`text:paste` is never a default. Also matches a substring of source_key, "
+            "document title, or source quote. A document title such as QARC-20261126 "
+            "is not the key unless stored as source_id."
         ),
     ),
     subject: Optional[str] = Query(None, description="Filter by subject name"),
