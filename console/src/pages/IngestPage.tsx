@@ -27,9 +27,41 @@ import {
 } from "../lib/api";
 import { PageFrame } from "../components/Workbench";
 
+function ingestSourceStorageKey(brainId: string) {
+  return `brainapi.ingestSourceId.${brainId}`;
+}
+
+function loadOrCreateSourceId(brainId: string): string {
+  const key = ingestSourceStorageKey(brainId);
+  try {
+    const stored = window.localStorage.getItem(key);
+    if (stored && stored.trim()) {
+      return stored.trim();
+    }
+  } catch {
+    return crypto.randomUUID();
+  }
+  const created = crypto.randomUUID();
+  try {
+    window.localStorage.setItem(key, created);
+  } catch {
+    return created;
+  }
+  return created;
+}
+
+function persistSourceId(brainId: string, sourceId: string) {
+  try {
+    window.localStorage.setItem(ingestSourceStorageKey(brainId), sourceId);
+  } catch {
+    return;
+  }
+}
+
 export default function IngestPage() {
   const session = getSession();
   const [text, setText] = useState("");
+  const [sourceId, setSourceId] = useState("");
   const [ingesting, setIngesting] = useState(false);
   const [ingestResult, setIngestResult] = useState<string | null>(null);
   const [ingestError, setIngestError] = useState<string | null>(null);
@@ -40,6 +72,14 @@ export default function IngestPage() {
   const [newBrainId, setNewBrainId] = useState("");
   const [creating, setCreating] = useState(false);
   const [createdPat, setCreatedPat] = useState<string | null>(null);
+
+  useEffect(() => {
+    const brainId = getSession()?.brainId;
+    if (!brainId) {
+      return;
+    }
+    setSourceId(loadOrCreateSourceId(brainId));
+  }, [session?.brainId]);
 
   useEffect(() => {
     if (!getSession()?.isSystemPat) {
@@ -60,12 +100,20 @@ export default function IngestPage() {
     setIngestResult(null);
     setTaskId(null);
     try {
+      const nextSourceId = sourceId.trim() || crypto.randomUUID();
+      if (session?.brainId) {
+        persistSourceId(session.brainId, nextSourceId);
+      }
+      if (nextSourceId !== sourceId) {
+        setSourceId(nextSourceId);
+      }
       const res = await apiFetch<{ message: string; task_id: string }>(
         "/ingest/",
         {
           method: "POST",
           body: JSON.stringify({
             data: { data_type: "text", text_data: text },
+            meta_keys: { source_id: nextSourceId },
           }),
         },
       );
@@ -140,6 +188,35 @@ export default function IngestPage() {
                     placeholder="Emily organized the AI Ethics Meetup in London on March 8, 2024."
                   />
                 </Field>
+                <div className="flex flex-wrap items-end gap-2">
+                  <TextField
+                    id="ingest-source-id"
+                    label="Source id"
+                    value={sourceId}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      setSourceId(next);
+                      if (session?.brainId) {
+                        persistSourceId(session.brainId, next);
+                      }
+                    }}
+                    placeholder="Stable id for re-paste revisions"
+                    containerClassName="min-w-[14rem] flex-1"
+                  />
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => {
+                      const next = crypto.randomUUID();
+                      setSourceId(next);
+                      if (session?.brainId) {
+                        persistSourceId(session.brainId, next);
+                      }
+                    }}
+                  >
+                    New source
+                  </Button>
+                </div>
                 {ingestError && (
                   <Alert variant="danger" title="Ingest failed">
                     {ingestError}

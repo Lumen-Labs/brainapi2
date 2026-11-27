@@ -3,6 +3,9 @@ import unittest
 
 from src.constants.data import TextChunk
 from src.core.saving.source_passages import (
+    SHARED_PASTE_KEY,
+    UNTITLED_KEY_PREFIX,
+    assign_revision_source_key,
     close_source_document,
     current_fact_candidates,
     current_record_texts,
@@ -13,25 +16,39 @@ from src.core.saving.source_passages import (
     screen_passage_hits,
     screened_passage_texts,
     source_content_hash,
+    unique_untitled_source_key,
     visible_passage_body,
 )
+from src.core.saving.validity_cardinality import should_close_outgoing_edge
 
 
 class DefaultTextSourceKeyTests(unittest.TestCase):
-    def test_stable_key_uses_source_id_or_filename(self):
+    def test_stable_key_uses_source_id_not_shared_paste(self):
         first = default_text_source_key("Halvorsen Dynamics")
         second = default_text_source_key("Halvorsen Dynamics", "profile.txt")
-        edited = default_text_source_key("Halvorsen Dynamics updated", "profile.txt")
         other = default_text_source_key("Corvella Teahouse")
         supplied = default_text_source_key(
             "Halvorsen Dynamics", "profile.txt", source_id="note-1"
         )
-        self.assertEqual(first, "text:paste")
-        self.assertEqual(other, "text:paste")
-        self.assertEqual(second, "text:profile.txt")
-        self.assertEqual(second, edited)
+        scoped = default_text_source_key(
+            "Halvorsen Dynamics",
+            "docs/profile.txt",
+            brain_id="brain",
+        )
+        other_brain = default_text_source_key(
+            "Halvorsen Dynamics",
+            "docs/profile.txt",
+            brain_id="other",
+        )
+        self.assertIsNone(first)
+        self.assertIsNone(other)
+        self.assertIsNone(second)
         self.assertEqual(supplied, "note-1")
-        self.assertNotEqual(first, second)
+        self.assertEqual(scoped, "text:brain:docs/profile.txt")
+        self.assertEqual(other_brain, "text:other:docs/profile.txt")
+        self.assertNotEqual(unique_untitled_source_key(), unique_untitled_source_key())
+        self.assertTrue(unique_untitled_source_key().startswith(UNTITLED_KEY_PREFIX))
+        self.assertEqual(SHARED_PASTE_KEY, "text:paste")
 
 
 class _Store:
@@ -105,6 +122,187 @@ class VisiblePassageTests(unittest.TestCase):
 
 
 class SourceRevisionTests(unittest.TestCase):
+    def _insert(self, store, text, meta, source_timestamp=None):
+        revision = prepare_source_revision(
+            store,
+            brain_id="brain",
+            source_text=text,
+            meta_keys=meta,
+            source_timestamp=source_timestamp,
+        )
+        if revision == "insert":
+            store.chunks.append(
+                TextChunk(
+                    id=f"c{len(store.chunks)+1}",
+                    text=text,
+                    metadata=dict(meta),
+                )
+            )
+        return revision
+
+    def test_two_untitled_ingests_survive_without_closing_edges(self):
+        store = _Store()
+        first_meta = {}
+        second_meta = {}
+        assign_revision_source_key(first_meta, "first untitled")
+        assign_revision_source_key(second_meta, "second untitled")
+        self.assertEqual(
+            self._insert(store, "first untitled", first_meta),
+            "insert",
+        )
+        self.assertEqual(
+            self._insert(store, "second untitled", second_meta),
+            "insert",
+        )
+        self.assertEqual(store.marked, [])
+        self.assertEqual(len(store.chunks), 2)
+        self.assertNotEqual(first_meta["source_key"], second_meta["source_key"])
+        self.assertTrue(first_meta["source_key"].startswith(UNTITLED_KEY_PREFIX))
+        self.assertFalse(
+            should_close_outgoing_edge(
+                relationship_name="HEADQUARTERED_IN",
+                existing_properties={"source_key": first_meta["source_key"]},
+                incoming_source_key=second_meta["source_key"],
+                require_same_source=True,
+            )
+        )
+
+    def test_older_untitled_ingest_is_not_skipped(self):
+        store = _Store()
+        newer = {}
+        older = {}
+        assign_revision_source_key(newer, "newer untitled")
+        assign_revision_source_key(older, "older untitled")
+        self.assertEqual(
+            self._insert(
+                store,
+                "newer untitled",
+                newer,
+                source_timestamp="2026-11-20T00:00:00Z",
+            ),
+            "insert",
+        )
+        self.assertEqual(
+            prepare_source_revision(
+                store,
+                brain_id="brain",
+                source_text="older untitled",
+                meta_keys=older,
+                source_timestamp="2020-01-01T00:00:00Z",
+            ),
+            "insert",
+        )
+        self.assertEqual(store.marked, [])
+
+    def test_same_filename_does_not_supersede_across_files(self):
+        store = _Store()
+        first_meta = {"filename": "notes.txt"}
+        second_meta = {"filename": "notes.txt"}
+        assign_revision_source_key(
+            first_meta, "file one", brain_id="brain", filename="notes.txt"
+        )
+        assign_revision_source_key(
+            second_meta, "file two", brain_id="brain", filename="notes.txt"
+        )
+        self.assertEqual(self._insert(store, "file one", first_meta), "insert")
+        self.assertEqual(
+            prepare_source_revision(
+                store,
+                brain_id="brain",
+                source_text="file two",
+                meta_keys=second_meta,
+                source_timestamp=None,
+            ),
+            "insert",
+        )
+        self.assertEqual(store.marked, [])
+        self.assertNotEqual(first_meta["source_key"], second_meta["source_key"])
+
+    def test_same_source_id_still_revises(self):
+        store = _Store()
+        first_meta = {}
+        second_meta = {}
+        assign_revision_source_key(
+            first_meta, "hello", source_id="note-1", filename="notes.txt"
+        )
+        assign_revision_source_key(
+            second_meta, "hello again", source_id="note-1", filename="notes.txt"
+        )
+        self.assertEqual(first_meta["source_key"], "note-1")
+        self.assertEqual(second_meta["source_key"], "note-1")
+        self.assertEqual(self._insert(store, "hello", first_meta), "insert")
+        self.assertEqual(
+            prepare_source_revision(
+                store,
+                brain_id="brain",
+                source_text="hello again",
+                meta_keys=second_meta,
+                source_timestamp=None,
+            ),
+            "insert",
+        )
+        self.assertEqual(store.marked[0][0], ["c1"])
+
+    def test_same_source_id_same_text_is_deduped(self):
+        store = _Store()
+        title = "Offer sheet"
+        body = f"{title}\nWidget priced at 310 EUR."
+        first_meta = {"title": title}
+        second_meta = {"title": title}
+        assign_revision_source_key(first_meta, body, source_id="offer-sheet")
+        assign_revision_source_key(second_meta, body, source_id="offer-sheet")
+        self.assertEqual(self._insert(store, body, first_meta), "insert")
+        self.assertEqual(
+            prepare_source_revision(
+                store,
+                brain_id="brain",
+                source_text=body,
+                meta_keys=second_meta,
+                source_timestamp=None,
+            ),
+            "unchanged",
+        )
+        self.assertEqual(len(store.chunks), 1)
+        self.assertEqual(store.marked, [])
+
+    def test_same_source_id_price_change_supersedes_old_passage(self):
+        store = _Store()
+        title = "Offer sheet"
+        first_text = f"{title}\nWidget priced at 310 EUR."
+        second_text = f"{title}\nWidget priced at 345 EUR."
+        first_meta = {"title": title}
+        second_meta = {"title": title}
+        assign_revision_source_key(first_meta, first_text, source_id="offer-sheet")
+        assign_revision_source_key(second_meta, second_text, source_id="offer-sheet")
+        self.assertEqual(self._insert(store, first_text, first_meta), "insert")
+        self.assertEqual(
+            prepare_source_revision(
+                store,
+                brain_id="brain",
+                source_text=second_text,
+                meta_keys=second_meta,
+                source_timestamp=None,
+            ),
+            "insert",
+        )
+        self.assertEqual(store.marked[0][0], ["c1"])
+        self.assertIn("345", second_text)
+        self.assertNotIn("345", store.chunks[0].text)
+
+    def test_title_alone_is_not_a_revision_key(self):
+        store = _Store()
+        title = "Offer sheet"
+        body = f"{title}\nWidget priced at 310 EUR."
+        first_meta = {"title": title}
+        second_meta = {"title": title}
+        assign_revision_source_key(first_meta, body)
+        assign_revision_source_key(second_meta, body)
+        self.assertEqual(self._insert(store, body, first_meta), "insert")
+        self.assertEqual(self._insert(store, body, second_meta), "insert")
+        self.assertEqual(store.marked, [])
+        self.assertEqual(len(store.chunks), 2)
+        self.assertNotEqual(first_meta["source_key"], second_meta["source_key"])
+
     def test_missing_key_does_not_touch_the_store(self):
         store = _Store()
         meta = {"title": "note"}

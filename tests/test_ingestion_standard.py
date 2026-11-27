@@ -238,6 +238,111 @@ class IngestDataObservationAndEnrichmentTests(unittest.TestCase):
         ]
         self.assertTrue(completed)
 
+    def test_ingest_commit_hooks_run_after_extraction(self):
+        from src.constants.embeddings import Vector
+        from src.core.saving.auto_kg import EnrichmentOrchestrationResult
+        from src.workers.tasks import ingestion as ingestion_mod
+
+        order = []
+
+        def fake_save_text_chunk(chunk, brain_id="default"):
+            order.append("save")
+            return chunk
+
+        def fake_enrich(text, targeting=None, brain_id="default", **kwargs):
+            order.append("enrich")
+            return EnrichmentOrchestrationResult(
+                session_id=None,
+                ingestion_session_id="ingest-1",
+                brain_id=brain_id,
+                enrichment_relationships=[],
+                should_consolidate=False,
+            )
+
+        def fake_hook(payload):
+            order.append("commit")
+
+        task = ingestion_mod.ingest_data
+        request = self._make_request()
+        args = {
+            "data": {"data_type": "text", "text_data": "Halvorsen Dynamics"},
+            "brain_id": "tenant-a",
+        }
+
+        with (
+            patch.object(ingestion_mod, "data_adapter") as data_adapter,
+            patch.object(ingestion_mod, "embeddings_adapter") as embeddings_adapter,
+            patch.object(ingestion_mod, "vector_store_adapter") as vector_store_adapter,
+            patch.object(ingestion_mod, "cache_adapter"),
+            patch.object(ingestion_mod, "enrich_kg_from_input", side_effect=fake_enrich),
+            patch.object(ingestion_mod, "_run_ingest_commit_hooks", side_effect=fake_hook),
+            patch.object(ingestion_mod.config, "pipeline_mode", "accurate"),
+            patch.object(ingestion_mod.config, "run_observations", False),
+            patch.object(ingestion_mod, "set_ingestion_task_status"),
+            patch("celery.chain") as chain_mock,
+        ):
+            chain_mock.return_value.apply_async = MagicMock()
+            data_adapter.save_text_chunk.side_effect = fake_save_text_chunk
+            embeddings_adapter.embed_text.return_value = Vector(
+                id="v1", embeddings=[0.1, 0.2], metadata={}
+            )
+            vector_store_adapter.add_vectors.return_value = ["v1"]
+            result = task.run.__func__(
+                type("Bound", (), {"request": request})(),
+                args,
+            )
+
+        self.assertEqual(result, "task-123")
+        self.assertEqual(order, ["save", "enrich", "commit"])
+
+    def test_ingest_commit_hooks_skip_when_extraction_fails(self):
+        from src.constants.embeddings import Vector
+        from src.workers.tasks import ingestion as ingestion_mod
+
+        hooks = []
+
+        def fake_save_text_chunk(chunk, brain_id="default"):
+            return chunk
+
+        task = ingestion_mod.ingest_data
+        request = self._make_request()
+        args = {
+            "data": {"data_type": "text", "text_data": "Halvorsen Dynamics"},
+            "brain_id": "tenant-a",
+        }
+
+        with (
+            patch.object(ingestion_mod, "data_adapter") as data_adapter,
+            patch.object(ingestion_mod, "embeddings_adapter") as embeddings_adapter,
+            patch.object(ingestion_mod, "vector_store_adapter") as vector_store_adapter,
+            patch.object(ingestion_mod, "cache_adapter"),
+            patch.object(
+                ingestion_mod,
+                "enrich_kg_from_input",
+                side_effect=RuntimeError("extract failed"),
+            ),
+            patch.object(
+                ingestion_mod,
+                "_run_ingest_commit_hooks",
+                side_effect=lambda payload: hooks.append(payload),
+            ),
+            patch.object(ingestion_mod.config, "pipeline_mode", "accurate"),
+            patch.object(ingestion_mod.config, "run_observations", False),
+            patch.object(ingestion_mod, "set_ingestion_task_status"),
+        ):
+            data_adapter.save_text_chunk.side_effect = fake_save_text_chunk
+            embeddings_adapter.embed_text.return_value = Vector(
+                id="v1", embeddings=[0.1, 0.2], metadata={}
+            )
+            vector_store_adapter.add_vectors.return_value = ["v1"]
+            with self.assertRaises(RuntimeError):
+                task.run.__func__(
+                    type("Bound", (), {"request": request})(),
+                    args,
+                )
+
+        self.assertEqual(hooks, [])
+
     def test_invalid_pipeline_mode_fails_ingest(self):
         from src.workers.tasks import ingestion as ingestion_mod
 

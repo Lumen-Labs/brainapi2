@@ -10,6 +10,7 @@ import hashlib
 import json
 from collections.abc import Callable
 from typing import Any, Literal
+from uuid import uuid4
 
 from src.constants.data import TextChunk
 from src.core.saving.history_intent import cosine
@@ -27,6 +28,8 @@ from src.core.saving.validity import (
 )
 
 Revision = Literal["plain", "insert", "unchanged"]
+SHARED_PASTE_KEY = "text:paste"
+UNTITLED_KEY_PREFIX = "text:untitled:"
 _PAGE = 100
 _LOOKUP_PAGE = 80
 _MAX_CHUNKS = 500
@@ -38,26 +41,80 @@ def source_content_hash(text: str) -> str:
     return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
 
 
+def identity_scoped_filename_key(
+    filename: str | None,
+    brain_id: str | None = None,
+) -> str | None:
+    name = str(filename or "").strip().replace("\\", "/")
+    brain = str(brain_id or "").strip()
+    if not name or not brain:
+        return None
+    if "/" not in name.strip("/"):
+        return None
+    return f"text:{brain}:{name.lstrip('/')}"
+
+
+def unique_untitled_source_key() -> str:
+    return f"{UNTITLED_KEY_PREFIX}{uuid4().hex}"
+
+
 def default_text_source_key(
     text: str,
     filename: str | None = None,
     source_id: str | None = None,
-) -> str:
-    """Stable identity for a text/paste source.
+    *,
+    brain_id: str | None = None,
+) -> str | None:
+    """Revision-stream key for a text ingest, or None if none should be shared.
 
-    Caller-supplied ``source_id`` wins. Otherwise the filename is the key.
-    Untitled pastes share ``text:paste`` so an edited re-paste supersedes
-    the previous copy. Content hashing lives on ``source_content_hash``,
-    not in this key.
+    Caller-supplied ``source_id`` starts a revision stream. A filename is used
+    only when it is identity-scoped with ``brain_id`` and a path that cannot
+    collide with another basename in the same brain. Untitled pastes and
+    basename-only uploads do not share ``text:paste``. Content hashing lives
+    on ``source_content_hash``, not in this key.
     """
     del text
     supplied = str(source_id or "").strip()
     if supplied:
         return supplied
-    name = str(filename or "").strip()
-    if name:
-        return f"text:{name}"
-    return "text:paste"
+    return identity_scoped_filename_key(filename, brain_id)
+
+
+def assign_revision_source_key(
+    meta_keys: dict | None,
+    text: str,
+    *,
+    brain_id: str | None = None,
+    filename: str | None = None,
+    source_id: str | None = None,
+) -> str | None:
+    """Set ``source_key`` on ``meta_keys`` when a revision stream is justified.
+
+    Untitled ingests get a unique key so they never supersede each other.
+    The shared fallback ``text:paste`` is not reused unless it is the
+    explicit ``source_id``.
+    """
+    if not isinstance(meta_keys, dict):
+        return None
+    supplied = str(source_id or meta_keys.get("source_id") or "").strip() or None
+    name = (
+        filename
+        or meta_keys.get("filename")
+        or meta_keys.get("source_filename")
+        or meta_keys.get("source_file")
+    )
+    existing = source_key_from_meta(meta_keys)
+    if existing and existing != SHARED_PASTE_KEY:
+        return existing
+    if existing == SHARED_PASTE_KEY and supplied == SHARED_PASTE_KEY:
+        return existing
+    key = default_text_source_key(
+        text, name, source_id=supplied, brain_id=brain_id
+    )
+    if not key:
+        key = unique_untitled_source_key()
+    meta_keys["source_key"] = key
+    return key
 
 
 def source_key_from_meta(meta: dict | None) -> str | None:

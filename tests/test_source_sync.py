@@ -40,9 +40,20 @@ from source_sync_connector import (
     list_max_pages,
     zendesk_signature,
 )
-from source_sync_store import AdapterDurable, SourceSyncStore, public_source
+from source_sync_store import (
+    AdapterDurable,
+    SourceSyncStore,
+    pending_delete_digest,
+    public_source,
+)
 from src.core.saving.validity import format_instant, utc_now
-from source_sync_api import create_admin_router, create_webhook_router
+from source_sync_api import (
+    create_admin_router,
+    create_webhook_router,
+    lookup_source_for_brain,
+    source_sync_approve_deletes,
+    source_sync_get_source,
+)
 from main import register
 
 
@@ -832,7 +843,14 @@ class SourceSyncApplyTests(unittest.TestCase):
         ):
             blocked = poll_once()
             self.assertTrue(blocked["retirement_aborted"])
-            approve_pending_deletes("brain", source["id"], store=store)
+            status = store.get("brain", source["id"])
+            approve_pending_deletes(
+                "brain",
+                source["id"],
+                count=int(status["pending_delete_count"]),
+                digest=status["pending_delete_hash"],
+                store=store,
+            )
             queued.clear()
             allowed = poll_once()
         self.assertIsNone(allowed["retirement_aborted"])
@@ -840,6 +858,72 @@ class SourceSyncApplyTests(unittest.TestCase):
         self.assertEqual(store.get("brain", source["id"])["pending_delete_count"], 0)
         self.assertFalse(store.get("brain", source["id"])["approve_pending_deletes"])
         self.assertEqual(store.get_seen_ids("brain", source["id"]), {"1"})
+
+    def test_changed_pending_set_resets_approval(self):
+        store = SourceSyncStore()
+        source = _source(
+            store,
+            sync_mode="poll",
+            base_url="https://example.zendesk.com",
+            api_token_env="ZENDESK_GUIDE_API_TOKEN",
+        )
+        store.set_seen_ids("brain", source["id"], {str(index) for index in range(1, 11)})
+        queued = []
+        live_ids = {"1"}
+
+        def getter(url, headers):
+            return {
+                "articles": [
+                    {
+                        "id": int(item),
+                        "title": "Keep",
+                        "body": "still here",
+                        "updated_at": "2026-11-25T12:00:00Z",
+                    }
+                    for item in sorted(live_ids)
+                ],
+                "next_page": None,
+            }
+
+        def poll_once():
+            from source_sync_connector import ZendeskGuideConnector, CONNECTORS
+
+            original = CONNECTORS["zendesk_guide"]
+            CONNECTORS["zendesk_guide"] = ZendeskGuideConnector(http_get=getter)
+            try:
+                return apply_poll(
+                    source,
+                    store=store,
+                    enqueue_event=lambda payload: queued.append(payload),
+                )
+            finally:
+                CONNECTORS["zendesk_guide"] = original
+
+        with patch.dict(
+            os.environ,
+            {
+                "ZENDESK_GUIDE_API_TOKEN": "token",
+                "SOURCE_SYNC_DELETE_MAX_RATIO": "0.2",
+                "SOURCE_SYNC_DELETE_MAX_PAGES": "50",
+            },
+        ):
+            blocked = poll_once()
+            self.assertTrue(blocked["retirement_aborted"])
+            status = store.get("brain", source["id"])
+            approve_pending_deletes(
+                "brain",
+                source["id"],
+                count=int(status["pending_delete_count"]),
+                digest=status["pending_delete_hash"],
+                store=store,
+            )
+            live_ids = {"1", "2"}
+            queued.clear()
+            skipped = poll_once()
+        self.assertTrue(skipped["retirement_aborted"])
+        self.assertEqual(skipped["deleted"], 0)
+        self.assertFalse(store.get("brain", source["id"])["approve_pending_deletes"])
+        self.assertEqual(store.get("brain", source["id"])["pending_delete_count"], 8)
 
     def test_older_ingest_commit_does_not_overwrite_newer_head(self):
         store = SourceSyncStore()
@@ -1141,17 +1225,118 @@ class SourceSyncRouteTests(unittest.TestCase):
             json={"name": "Help center", "source_type": "zendesk_guide"},
         )
         source_id = created.json()["id"]
-        empty = self.client.post(f"/source-sync/sources/{source_id}/approve-deletes")
+        empty = self.client.post(
+            f"/source-sync/sources/{source_id}/approve-deletes",
+            json={
+                "pending_delete_count": 4,
+                "pending_delete_hash": pending_delete_digest(["1", "2", "3", "4"]),
+            },
+        )
         self.assertEqual(empty.status_code, 409)
-        self.store.record_blocked_deletes("brain", source_id, 4, "cap exceeded")
-        approved = self.client.post(f"/source-sync/sources/{source_id}/approve-deletes")
+        missing = ["1", "2", "3", "4"]
+        self.store.record_blocked_deletes(
+            "brain", source_id, 4, "cap exceeded", missing_ids=missing
+        )
+        digest = pending_delete_digest(missing)
+        mismatch = self.client.post(
+            f"/source-sync/sources/{source_id}/approve-deletes",
+            json={
+                "pending_delete_count": 4,
+                "pending_delete_hash": pending_delete_digest(["other"]),
+            },
+        )
+        self.assertEqual(mismatch.status_code, 409)
+        self.assertEqual(mismatch.json()["detail"], "pending deletions changed")
+        approved = self.client.post(
+            f"/source-sync/sources/{source_id}/approve-deletes",
+            json={
+                "pending_delete_count": 4,
+                "pending_delete_hash": digest,
+            },
+        )
         self.assertEqual(approved.status_code, 200)
         self.assertTrue(approved.json()["approved"])
         self.assertEqual(approved.json()["task_id"], f"poll-{source_id}")
+        self.assertEqual(approved.json()["pending_delete_hash"], digest)
         fetched = self.client.get(f"/source-sync/sources/{source_id}")
         self.assertEqual(fetched.json()["pending_delete_count"], 4)
+        self.assertEqual(fetched.json()["pending_delete_hash"], digest)
+        self.assertEqual(fetched.json()["pending_delete_ids"], missing)
         self.assertTrue(fetched.json()["approve_pending_deletes"])
         self.assertTrue(fetched.json()["pending_delete_first_seen"])
+
+    def test_approve_deletes_is_not_found_for_another_brain(self):
+        other = self.store.create(
+            "other-brain",
+            {
+                "name": "Other",
+                "source_type": "zendesk_guide",
+                "sync_mode": "webhook",
+            },
+        )
+        missing = ["1", "2"]
+        self.store.record_blocked_deletes(
+            "other-brain", other["id"], 2, "cap exceeded", missing_ids=missing
+        )
+        missing_get = self.client.get(f"/source-sync/sources/{other['id']}")
+        self.assertEqual(missing_get.status_code, 404)
+        denied = self.client.post(
+            f"/source-sync/sources/{other['id']}/approve-deletes",
+            json={
+                "pending_delete_count": 2,
+                "pending_delete_hash": pending_delete_digest(missing),
+            },
+        )
+        self.assertEqual(denied.status_code, 404)
+
+
+class SourceSyncBrainScopeTests(unittest.TestCase):
+    def test_mcp_tools_cannot_read_or_approve_another_brain(self):
+        store = SourceSyncStore()
+        source_a = store.create(
+            "brain-a",
+            {
+                "name": "Alpha",
+                "source_type": "zendesk_guide",
+                "sync_mode": "webhook",
+            },
+        )
+        source_b = store.create(
+            "brain-b",
+            {
+                "name": "Beta",
+                "source_type": "zendesk_guide",
+                "sync_mode": "webhook",
+            },
+        )
+        self.assertEqual(
+            lookup_source_for_brain(store, "brain-a", source_a["id"])["id"],
+            source_a["id"],
+        )
+        with self.assertRaises(ValueError):
+            lookup_source_for_brain(store, "brain-a", source_b["id"])
+        store.record_blocked_deletes(
+            "brain-b", source_b["id"], 1, "cap exceeded", missing_ids=["9"]
+        )
+        digest = pending_delete_digest(["9"])
+        with (
+            patch("source_sync_api._mcp_brain", lambda brain_id: "brain-a"),
+            patch("source_sync_api._store", lambda: store),
+            patch("source_sync_api._enqueue_poll", lambda source_id: f"poll-{source_id}"),
+        ):
+            fetched = source_sync_get_source(source_b["id"], brain_id="brain-a")
+            self.assertEqual(fetched, {"ok": False, "error": "source not found"})
+            approved = source_sync_approve_deletes(
+                source_b["id"],
+                1,
+                digest,
+                brain_id="brain-a",
+            )
+            self.assertEqual(approved["ok"], False)
+            self.assertEqual(approved["error"], "source not found")
+            own = source_sync_get_source(source_a["id"], brain_id="brain-a")
+            self.assertTrue(own["ok"])
+            self.assertEqual(own["source"]["id"], source_a["id"])
 
 
 class PluginRegisterTests(unittest.TestCase):

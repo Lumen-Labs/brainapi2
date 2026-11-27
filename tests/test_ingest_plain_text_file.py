@@ -14,7 +14,7 @@ from src.core.saving.ingest_plain_text import (
     spreadsheet_experiment_owns_upload,
     uses_plain_text_ingest,
 )
-from src.core.saving.source_passages import default_text_source_key
+from src.core.saving.source_passages import UNTITLED_KEY_PREFIX, default_text_source_key
 from src.core.saving.ingest_staging import (
     REMOTE_OCR_DEADLINE_SECONDS,
     REMOTE_OCR_TIMEOUT_ERROR,
@@ -143,9 +143,8 @@ def test_txt_upload_uses_text_ingest_and_skips_docparser(monkeypatch):
     assert body["data"]["data_type"] == "text"
     assert body["data"]["text_data"] == "plain text body"
     assert body["meta_keys"]["filename"] == "notes.txt"
-    assert body["meta_keys"]["source_key"] == default_text_source_key(
-        "plain text body", "notes.txt"
-    )
+    assert body["meta_keys"]["source_key"].startswith(UNTITLED_KEY_PREFIX)
+    assert default_text_source_key("plain text body", "notes.txt") is None
     parser.assert_not_called()
     ingest.ingest_file_task.apply_async.assert_not_called()
 
@@ -170,6 +169,59 @@ def test_tiny_txt_upload_is_accepted(monkeypatch):
     payload = queued.call_args.kwargs["args"][0]
     assert payload["data"]["text_data"].startswith("QARC-20261126")
     assert payload["meta_keys"]["source_key"]
+
+
+def test_same_filename_uploads_get_distinct_source_keys(monkeypatch):
+    app, ingest = _ingest_app()
+    queued = Mock()
+    monkeypatch.setattr(ingest.config, "ocr_mode", "docparser")
+    monkeypatch.setattr(ingest, "set_ingestion_task_status", Mock())
+    monkeypatch.setattr(ingest.ingest_data_task, "apply_async", queued)
+    client = TestClient(app)
+    first = client.post(
+        "/ingest/file",
+        files={"file": ("notes.txt", b"first file body", "text/plain")},
+    )
+    second = client.post(
+        "/ingest/file",
+        files={"file": ("notes.txt", b"second file body", "text/plain")},
+    )
+    assert first.status_code == 202
+    assert second.status_code == 202
+    keys = [
+        call.kwargs["args"][0]["meta_keys"]["source_key"]
+        for call in queued.call_args_list
+    ]
+    assert len(keys) == 2
+    assert keys[0] != keys[1]
+    assert all(key.startswith(UNTITLED_KEY_PREFIX) for key in keys)
+
+
+def test_file_upload_source_id_is_the_revision_key(monkeypatch):
+    app, ingest = _ingest_app()
+    queued = Mock()
+    monkeypatch.setattr(ingest.config, "ocr_mode", "docparser")
+    monkeypatch.setattr(ingest, "set_ingestion_task_status", Mock())
+    monkeypatch.setattr(ingest.ingest_data_task, "apply_async", queued)
+    client = TestClient(app)
+    first = client.post(
+        "/ingest/file",
+        data={"source_id": "note-1"},
+        files={"file": ("notes.txt", b"first file body", "text/plain")},
+    )
+    second = client.post(
+        "/ingest/file",
+        data={"source_id": "note-1"},
+        files={"file": ("notes.txt", b"edited file body", "text/plain")},
+    )
+    assert first.status_code == 202
+    assert second.status_code == 202
+    keys = [
+        call.kwargs["args"][0]["meta_keys"]["source_key"]
+        for call in queued.call_args_list
+    ]
+    assert keys == ["note-1", "note-1"]
+    assert queued.call_args_list[0].kwargs["args"][0]["meta_keys"]["source_id"] == "note-1"
 
 
 def test_upload_read_failure_returns_422(monkeypatch):

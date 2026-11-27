@@ -183,7 +183,7 @@ def _fact(subject, fact_id, predicate, obj, **props):
 
 
 def _source_key(text, filename=None):
-    return default_text_source_key(text, filename)
+    return default_text_source_key(text, filename, source_id=filename or "qa-paste")
 
 
 def _halvorsen_triples(*, distinct_subject_uuids=False, close_dated_windows=False):
@@ -343,10 +343,12 @@ class HalvorsenConflictScanTests(unittest.TestCase):
         key_a = _source_key(TEXT_A, "profile.txt")
         key_b = _source_key(TEXT_B, "press.txt")
         key_c = _source_key(TEXT_C)
-        self.assertEqual(key_a, "text:profile.txt")
-        self.assertEqual(key_b, "text:press.txt")
-        self.assertEqual(key_c, "text:paste")
+        self.assertEqual(key_a, "profile.txt")
+        self.assertEqual(key_b, "press.txt")
+        self.assertEqual(key_c, "qa-paste")
         self.assertEqual(key_a, _source_key("edited " + TEXT_A, "profile.txt"))
+        self.assertIsNone(default_text_source_key(TEXT_A))
+        self.assertIsNone(default_text_source_key(TEXT_A, "profile.txt"))
         self.assertEqual(
             default_text_source_key(TEXT_A, "profile.txt", source_id="qa-profile"),
             "qa-profile",

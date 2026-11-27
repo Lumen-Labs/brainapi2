@@ -13,13 +13,24 @@ from celery.exceptions import Reject
 from src.core.saving.ingest_commit_hooks import register_ingest_commit_hook
 from src.workers.app import ingestion_app
 from source_sync_api import apply_payload_now, poll_source_now
-from source_sync_apply import commit_upsert_head_from_payload, record_failed_event
+from source_sync_apply import (
+    DocumentBusy,
+    commit_upsert_head_from_payload,
+    record_failed_event,
+)
 from source_sync_store import default_store
 
 
 def _commit_source_sync_head(payload) -> None:
+    meta = dict(getattr(payload, "meta_keys", None) or {})
     try:
         commit_upsert_head_from_payload(payload)
+    except DocumentBusy:
+        logging.getLogger("source_sync").warning(
+            "source_sync head commit lock busy source_sync_id=%s document_id=%s",
+            meta.get("source_sync_id"),
+            meta.get("source_document_id"),
+        )
     except Exception:
         logging.getLogger("source_sync").exception("source_sync head commit failed")
 

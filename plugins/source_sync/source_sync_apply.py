@@ -15,7 +15,11 @@ from source_sync_connector import (
     SourceFetchError,
     get_connector,
 )
-from source_sync_store import SourceSyncStore, default_store
+from source_sync_store import (
+    SourceSyncStore,
+    default_store,
+    pending_delete_digest,
+)
 
 QueueIngest = Callable[[dict[str, Any]], str | None]
 logger = logging.getLogger("source_sync")
@@ -48,6 +52,12 @@ def apply_event(
     action = event.action if event.action in {"upsert", "delete"} else "upsert"
     occurred_at = format_instant(parse_instant(event.occurred_at) or utc_now())
     if not store.acquire_document_lock(brain_id, source_id, event.document_id):
+        logger.warning(
+            "source_sync document lock busy brain_id=%s source_id=%s document_id=%s",
+            brain_id,
+            source_id,
+            event.document_id,
+        )
         raise DocumentBusy(f"document {event.document_id} is busy")
     try:
         head = store.document_head(brain_id, source_id, event.document_id)
@@ -161,6 +171,12 @@ def commit_upsert_head(
     store = store or default_store()
     stamp = format_instant(parse_instant(occurred_at) or utc_now())
     if not store.acquire_document_lock(brain_id, source_id, document_id):
+        logger.warning(
+            "source_sync head save lock busy brain_id=%s source_id=%s document_id=%s",
+            brain_id,
+            source_id,
+            document_id,
+        )
         raise DocumentBusy(f"document {document_id} is busy")
     try:
         head = store.document_head(brain_id, source_id, document_id)
@@ -227,17 +243,23 @@ def approve_pending_deletes(
     brain_id: str,
     source_id: str,
     *,
+    count: int,
+    digest: str,
     store: SourceSyncStore | None = None,
 ) -> dict[str, Any]:
     store = store or default_store()
     record = store.get(brain_id, source_id)
     if record is None:
         raise ValueError("source not found")
-    pending = int(record.get("pending_delete_count") or 0)
-    if pending <= 0:
-        raise ValueError("no pending deletions")
-    updated = store.arm_delete_approval(brain_id, source_id)
-    return updated or record
+    try:
+        updated = store.arm_delete_approval(
+            brain_id, source_id, count=count, digest=digest
+        )
+    except RuntimeError as exc:
+        raise ValueError(str(exc)) from exc
+    if updated is None:
+        raise ValueError("source not found")
+    return updated
 
 
 def dead_letter(
@@ -358,7 +380,12 @@ def _complete_poll(
     skip_deletes = listing.truncated or bool(abort)
     approved = False
     if abort and not listing.truncated:
-        approved = store.consume_delete_approval(brain_id, source_id)
+        approved = store.consume_delete_approval(
+            brain_id,
+            source_id,
+            count=len(missing),
+            digest=pending_delete_digest(missing),
+        )
         if approved:
             skip_deletes = False
     delete_abort = None
@@ -480,7 +507,7 @@ def _record_poll_safety(
         return
     if abort and skip_deletes:
         newly = store.record_blocked_deletes(
-            brain_id, source_id, len(missing), abort
+            brain_id, source_id, len(missing), abort, missing_ids=missing
         )
         if newly:
             _blocked_delete_dead_letter(store, source, missing, abort)

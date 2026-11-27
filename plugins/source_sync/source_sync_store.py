@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+import logging
 import threading
 import time
+from collections.abc import Callable, Iterable
 from typing import Any
 from uuid import uuid4
 
@@ -16,6 +19,10 @@ SEEN_BUCKET = "seen"
 DEAD_BUCKET = "dead"
 INDEX_BRAIN = "system"
 LOCK_TTL_SECONDS = 120
+SOURCE_LOCK_DOCUMENT = "_source"
+SOURCE_LOCK_ATTEMPTS = 3
+SOURCE_LOCK_RETRY_SECONDS = 0.05
+logger = logging.getLogger("source_sync")
 
 
 def _text(value: Any) -> str:
@@ -24,7 +31,15 @@ def _text(value: Any) -> str:
     return str(value).strip()
 
 
+def pending_delete_digest(ids: Iterable[str] | None) -> str:
+    normalized = sorted(
+        {str(item).strip() for item in (ids or []) if str(item).strip()}
+    )
+    return hashlib.sha256("\n".join(normalized).encode("utf-8")).hexdigest()
+
+
 def public_source(record: dict[str, Any]) -> dict[str, Any]:
+    pending_ids = _pending_ids(record)
     return {
         "id": record.get("id"),
         "name": record.get("name"),
@@ -41,9 +56,14 @@ def public_source(record: dict[str, Any]) -> dict[str, Any]:
         "pending_delete_count": int(record.get("pending_delete_count") or 0),
         "pending_delete_first_seen": record.get("pending_delete_first_seen"),
         "pending_delete_reason": record.get("pending_delete_reason"),
+        "pending_delete_ids": pending_ids,
+        "pending_delete_hash": record.get("pending_delete_hash")
+        or (pending_delete_digest(pending_ids) if pending_ids else None),
         "listing_truncated": bool(record.get("listing_truncated")),
         "listing_pages_fetched": record.get("listing_pages_fetched"),
         "approve_pending_deletes": bool(record.get("approve_pending_deletes")),
+        "approved_delete_count": record.get("approved_delete_count"),
+        "approved_delete_hash": record.get("approved_delete_hash"),
         "created_at": record.get("created_at"),
         "updated_at": record.get("updated_at"),
     }
@@ -143,9 +163,13 @@ class SourceSyncStore:
             "pending_delete_count": 0,
             "pending_delete_first_seen": None,
             "pending_delete_reason": None,
+            "pending_delete_ids": [],
+            "pending_delete_hash": None,
             "listing_truncated": False,
             "listing_pages_fetched": None,
             "approve_pending_deletes": False,
+            "approved_delete_count": None,
+            "approved_delete_hash": None,
             "created_at": now,
             "updated_at": now,
         }
@@ -286,54 +310,94 @@ class SourceSyncStore:
         source_id: str,
         count: int,
         reason: str,
+        missing_ids: Iterable[str] | None = None,
     ) -> bool:
-        record = self.get(brain_id, source_id)
-        if record is None:
-            return False
-        stamp = format_instant(utc_now())
-        first_seen = record.get("pending_delete_first_seen")
-        newly = not first_seen
-        record["pending_delete_count"] = int(count)
-        record["pending_delete_reason"] = reason
-        if newly:
-            record["pending_delete_first_seen"] = stamp
-        record["updated_at"] = stamp
-        self._put(brain_id, source_id, record)
-        return newly
+        ids = _pending_ids({"pending_delete_ids": list(missing_ids or [])})
+        digest = pending_delete_digest(ids)
+
+        def mutate(record: dict[str, Any]) -> bool:
+            stamp = format_instant(utc_now())
+            newly = not record.get("pending_delete_first_seen")
+            record["pending_delete_count"] = int(count)
+            record["pending_delete_reason"] = reason
+            record["pending_delete_ids"] = ids
+            record["pending_delete_hash"] = digest
+            if newly:
+                record["pending_delete_first_seen"] = stamp
+            record["updated_at"] = stamp
+            return newly
+
+        result = self._locked_update(brain_id, source_id, mutate)
+        return bool(result)
 
     def clear_blocked_deletes(self, brain_id: str, source_id: str) -> None:
-        record = self.get(brain_id, source_id)
-        if record is None:
-            return
-        if not (
-            record.get("pending_delete_count")
-            or record.get("pending_delete_first_seen")
-            or record.get("pending_delete_reason")
-        ):
-            return
-        record["pending_delete_count"] = 0
-        record["pending_delete_first_seen"] = None
-        record["pending_delete_reason"] = None
-        record["updated_at"] = format_instant(utc_now())
-        self._put(brain_id, source_id, record)
+        def mutate(record: dict[str, Any]) -> None:
+            if not (
+                record.get("pending_delete_count")
+                or record.get("pending_delete_first_seen")
+                or record.get("pending_delete_reason")
+                or record.get("pending_delete_ids")
+                or record.get("pending_delete_hash")
+            ):
+                return
+            record["pending_delete_count"] = 0
+            record["pending_delete_first_seen"] = None
+            record["pending_delete_reason"] = None
+            record["pending_delete_ids"] = []
+            record["pending_delete_hash"] = None
+            record["updated_at"] = format_instant(utc_now())
 
-    def arm_delete_approval(self, brain_id: str, source_id: str) -> dict[str, Any] | None:
-        record = self.get(brain_id, source_id)
-        if record is None:
-            return None
-        record["approve_pending_deletes"] = True
-        record["updated_at"] = format_instant(utc_now())
-        self._put(brain_id, source_id, record)
-        return record
+        self._locked_update(brain_id, source_id, mutate)
 
-    def consume_delete_approval(self, brain_id: str, source_id: str) -> bool:
-        record = self.get(brain_id, source_id)
-        if record is None or not record.get("approve_pending_deletes"):
-            return False
-        record["approve_pending_deletes"] = False
-        record["updated_at"] = format_instant(utc_now())
-        self._put(brain_id, source_id, record)
-        return True
+    def arm_delete_approval(
+        self,
+        brain_id: str,
+        source_id: str,
+        *,
+        count: int,
+        digest: str,
+    ) -> dict[str, Any] | None:
+        def mutate(record: dict[str, Any]) -> dict[str, Any]:
+            pending = int(record.get("pending_delete_count") or 0)
+            pending_hash = str(record.get("pending_delete_hash") or "")
+            if pending <= 0:
+                raise ValueError("no pending deletions")
+            if int(count) != pending or str(digest or "") != pending_hash:
+                raise ValueError("pending deletions changed")
+            record["approve_pending_deletes"] = True
+            record["approved_delete_count"] = pending
+            record["approved_delete_hash"] = pending_hash
+            record["updated_at"] = format_instant(utc_now())
+            return record
+
+        return self._locked_update(brain_id, source_id, mutate)
+
+    def consume_delete_approval(
+        self,
+        brain_id: str,
+        source_id: str,
+        *,
+        count: int | None = None,
+        digest: str | None = None,
+    ) -> bool:
+        def mutate(record: dict[str, Any]) -> bool:
+            if not record.get("approve_pending_deletes"):
+                return False
+            approved_count = int(record.get("approved_delete_count") or 0)
+            approved_hash = str(record.get("approved_delete_hash") or "")
+            record["approve_pending_deletes"] = False
+            record["approved_delete_count"] = None
+            record["approved_delete_hash"] = None
+            record["updated_at"] = format_instant(utc_now())
+            if not approved_hash:
+                return False
+            if count is not None and int(count) != approved_count:
+                return False
+            if digest is not None and str(digest or "") != approved_hash:
+                return False
+            return True
+
+        return bool(self._locked_update(brain_id, source_id, mutate))
 
     def set_listing_status(
         self,
@@ -370,6 +434,37 @@ class SourceSyncStore:
         items.sort(key=lambda item: str(item.get("recorded_at") or ""), reverse=True)
         return items
 
+    def _locked_update(
+        self,
+        brain_id: str,
+        source_id: str,
+        mutator: Callable[[dict[str, Any]], Any],
+    ) -> Any:
+        if not self._acquire_source_lock(brain_id, source_id):
+            logger.warning(
+                "source_sync source lock busy brain_id=%s source_id=%s",
+                brain_id,
+                source_id,
+            )
+            raise RuntimeError("source lock busy")
+        try:
+            record = self.get(brain_id, source_id)
+            if record is None:
+                return None
+            result = mutator(record)
+            self._put(brain_id, source_id, record)
+            return result
+        finally:
+            self.release_document_lock(brain_id, source_id, SOURCE_LOCK_DOCUMENT)
+
+    def _acquire_source_lock(self, brain_id: str, source_id: str) -> bool:
+        for attempt in range(SOURCE_LOCK_ATTEMPTS):
+            if self.acquire_document_lock(brain_id, source_id, SOURCE_LOCK_DOCUMENT):
+                return True
+            if attempt + 1 < SOURCE_LOCK_ATTEMPTS:
+                time.sleep(SOURCE_LOCK_RETRY_SECONDS)
+        return False
+
     def _put(self, brain_id: str, source_id: str, record: dict[str, Any]) -> None:
         self.durable.put(brain_id, SOURCES_BUCKET, source_id, record)
 
@@ -381,6 +476,11 @@ class SourceSyncStore:
         if isinstance(value, dict):
             return _text(value.get("brain_id"))
         return _text(value)
+
+
+def _pending_ids(record: dict[str, Any] | None) -> list[str]:
+    raw = (record or {}).get("pending_delete_ids") or []
+    return sorted({str(item).strip() for item in raw if str(item).strip()})
 
 
 def _head_id(source_id: str, document_id: str) -> str:

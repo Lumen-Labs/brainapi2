@@ -652,6 +652,90 @@ class EventHubInvalidationTests(unittest.TestCase):
         self.assertEqual(calls["n"], 1)
         self.assertEqual(graph.updates[0][0], "rel-old")
 
+    def test_revised_amount_does_not_reuse_superseded_open_edge(self):
+        from src.core.saving.identity import stable_relationship_id
+        from src.workers.tasks import ingestion as ingestion_mod
+
+        graph = _FakeGraphAdapter()
+        graph.add_node("widget", "Widget", "PRODUCT")
+        graph.add_node("eur", "EUR", "CURRENCY")
+        open_id = stable_relationship_id("widget", "PRICED_AT", "eur")
+        graph.add_edge(
+            open_id,
+            "widget",
+            "PRICED_AT",
+            "eur",
+            properties={
+                "amount": 310,
+                "source_chunk_ids": ["chunk-v1"],
+                "source_key": "offer-sheet",
+                "valid_from": "2026-01-01T00:00:00Z",
+            },
+        )
+        incoming = _relationship(
+            open_id,
+            _entity("widget", "Widget", "PRODUCT"),
+            "PRICED_AT",
+            _entity("eur", "EUR", "CURRENCY"),
+            valid_at="2026-11-27T00:00:00Z",
+        )
+        incoming.amount = 345
+        incoming.properties["amount"] = 345
+        incoming.properties["source_key"] = "offer-sheet"
+        incoming.properties["source_chunk_ids"] = ["chunk-v2"]
+        incoming.properties["valid_from"] = "2026-11-27T00:00:00Z"
+        with patch.object(ingestion_mod, "graph_adapter", graph):
+            ingestion_mod._assign_relationship_interval(
+                incoming,
+                brain_id="brain-a",
+                superseded_chunk_ids=["chunk-v1"],
+            )
+        self.assertNotEqual(incoming.uuid, open_id)
+        self.assertEqual(incoming.properties["amount"], 345)
+        self.assertEqual(incoming.properties["valid_from"], "2026-11-27T00:00:00Z")
+
+    def test_source_revision_closes_same_tip_price_edge(self):
+        from src.services.api.controllers import retrieve as retrieve_mod
+        from src.workers.tasks import ingestion as ingestion_mod
+
+        graph = _FakeGraphAdapter()
+        graph.add_node("widget", "Widget", "PRODUCT")
+        graph.add_node("eur", "EUR", "CURRENCY")
+        graph.add_edge(
+            "rel-310",
+            "widget",
+            "PRICED_AT",
+            "eur",
+            properties={
+                "amount": 310,
+                "source_chunk_ids": ["chunk-v1"],
+                "source_key": "offer-sheet",
+            },
+        )
+        incoming = _relationship(
+            "rel-345",
+            _entity("widget", "Widget", "PRODUCT"),
+            "PRICED_AT",
+            _entity("eur", "EUR", "CURRENCY"),
+            valid_at="2026-11-27T00:00:00Z",
+        )
+        incoming.amount = 345
+        incoming.properties["amount"] = 345
+        incoming.properties["source_key"] = "offer-sheet"
+        incoming.properties["source_chunk_ids"] = ["chunk-v2"]
+        with patch.object(ingestion_mod, "graph_adapter", graph):
+            ingestion_mod._invalidate_superseded_relationships(
+                incoming,
+                brain_id="brain-a",
+                superseded_chunk_ids=["chunk-v1"],
+            )
+        self.assertEqual(graph.updates[0][0], "rel-310")
+        self.assertEqual(
+            graph.updates[0][2].get("retired_reason"),
+            "source revision replaced this edge",
+        )
+        self.assertFalse(retrieve_mod._is_currently_valid(graph.predicate("rel-310")))
+
 
 if __name__ == "__main__":
     unittest.main()
