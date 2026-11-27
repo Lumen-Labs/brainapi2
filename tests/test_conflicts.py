@@ -3278,10 +3278,9 @@ class RestConflictActorAndReopenTests(unittest.TestCase):
 
     def _seed(self):
         store = MemoryConflictStore()
-        found = detect_conflicts(
-            store, FakeGraph(DetectionEngineTests()._refund_triples()), "brain"
-        )
-        return store, found[0]
+        graph = FakeGraph(DetectionEngineTests()._refund_triples())
+        found = detect_conflicts(store, graph, "brain")
+        return store, graph, found[0]
 
     def test_dismiss_uses_signed_usage_context_user(self):
         import base64
@@ -3292,12 +3291,15 @@ class RestConflictActorAndReopenTests(unittest.TestCase):
         import time
 
         payload = {
-            "jobId": "job-1",
+            "source": "dashboard_explore",
+            "billable": True,
+            "actorUserId": "99",
             "iat": int(time.time()),
             "exp": int(time.time()) + 60,
-            "userId": "99",
         }
-        encoded = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+        encoded = base64.urlsafe_b64encode(
+            json.dumps(payload, separators=(",", ":")).encode()
+        ).decode().rstrip("=")
         signature = base64.urlsafe_b64encode(
             hmac.new(
                 b"test-secret", f"v1.{encoded}".encode(), hashlib.sha256
@@ -3305,10 +3307,12 @@ class RestConflictActorAndReopenTests(unittest.TestCase):
         ).decode().rstrip("=")
         token = f"v1.{encoded}.{signature}"
 
-        store, conflict = self._seed()
+        store, graph, conflict = self._seed()
         api = self._app("system", ["brainapi"], store)
         with patch(
             "src.services.api.controllers.conflicts.data_adapter", store
+        ), patch(
+            "src.services.api.controllers.conflicts.graph_adapter", graph
         ), patch.dict(os.environ, {"USAGE_CONTEXT_SECRET": "test-secret"}):
             dismissed = api.post(
                 f"/retrieve/conflicts/{conflict.id}/dismiss",
@@ -3323,6 +3327,8 @@ class RestConflictActorAndReopenTests(unittest.TestCase):
 
         with patch(
             "src.services.api.controllers.conflicts.data_adapter", store
+        ), patch(
+            "src.services.api.controllers.conflicts.graph_adapter", graph
         ):
             reopened = api.post(
                 f"/retrieve/conflicts/{conflict.id}/reopen",

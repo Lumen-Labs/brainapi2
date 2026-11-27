@@ -239,7 +239,7 @@ def retry_sections(brain_id, import_id, section_ids):
             "attempt": row.get("attempt", 1) + 1}, "$unset": {"error": "", "cost": "", "execution_claimed":""}})
 
 
-def decode_usage_context(token):
+def decode_signed_usage_context(token):
     import base64
     try:
         version, encoded, signature = token.split(".")
@@ -252,14 +252,21 @@ def decode_usage_context(token):
         body = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
         if not (
             hmac.compare_digest(signature, expected)
+            and isinstance(body, dict)
             and body.get("exp", 0) >= time.time()
             and body.get("iat", 0) <= time.time() + 5
-            and bool(body.get("jobId"))
         ):
             return None
-        return body if isinstance(body, dict) else None
+        return body
     except (ValueError, TypeError, json.JSONDecodeError):
         return None
+
+
+def decode_usage_context(token):
+    body = decode_signed_usage_context(token)
+    if not body or not body.get("jobId"):
+        return None
+    return body
 
 
 def verify_usage_context(token):

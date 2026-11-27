@@ -2,7 +2,7 @@ import os
 import sys
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 ENV_DEFAULTS = {
     "BRAINPAT_TOKEN": "test-token",
@@ -620,12 +620,15 @@ def _signed_usage_context(secret, **body):
     import time
 
     payload = {
-        "jobId": "job-1",
+        "source": "dashboard_explore",
+        "billable": True,
         "iat": int(time.time()),
         "exp": int(time.time()) + 60,
-        **body,
     }
-    encoded = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+    payload.update(body)
+    encoded = base64.urlsafe_b64encode(
+        json.dumps(payload, separators=(",", ":")).encode()
+    ).decode().rstrip("=")
     signature = base64.urlsafe_b64encode(
         hmac.new(secret.encode(), f"v1.{encoded}".encode(), hashlib.sha256).digest()
     ).decode().rstrip("=")
@@ -643,22 +646,31 @@ class SystemUsageContextActorTests(unittest.TestCase):
 
     def test_signed_context_sets_user_actor_for_system_principal(self):
         from src.core.auth.scopes import VERIFICATION_SCOPE
+        from src.core.saving.ingest_manifest import (
+            decode_signed_usage_context,
+            decode_usage_context,
+        )
         from src.services.api.dependencies import require_verification_permission
 
-        token = _signed_usage_context("test-secret", userId="42")
+        token = _signed_usage_context("test-secret", actorUserId="42")
         request = self._request(
             "system",
             [DEFAULT_SCOPE, VERIFICATION_SCOPE],
             {"X-Usage-Context": token},
         )
         with patch.dict(os.environ, {"USAGE_CONTEXT_SECRET": "test-secret"}):
+            self.assertIsNone(decode_usage_context(token))
+            body = decode_signed_usage_context(token)
+            self.assertEqual(body["actorUserId"], "42")
+            self.assertEqual(body["source"], "dashboard_explore")
+            self.assertNotIn("jobId", body)
             self.assertEqual(require_verification_permission(request), "user:42")
 
     def test_missing_or_invalid_signature_falls_back_to_principal(self):
         from src.core.auth.scopes import VERIFICATION_SCOPE
         from src.services.api.dependencies import require_verification_permission
 
-        valid = _signed_usage_context("test-secret", userId="42")
+        valid = _signed_usage_context("test-secret", actorUserId="42")
         missing = self._request("system", [DEFAULT_SCOPE, VERIFICATION_SCOPE])
         invalid = self._request(
             "system",
@@ -670,16 +682,22 @@ class SystemUsageContextActorTests(unittest.TestCase):
             [DEFAULT_SCOPE, VERIFICATION_SCOPE],
             {"X-Usage-Context": "v1.not-a-token.nope"},
         )
+        pat = self._request(
+            "brainpat:demo",
+            [DEFAULT_SCOPE, VERIFICATION_SCOPE],
+            {"X-Usage-Context": valid + "tampered"},
+        )
         with patch.dict(os.environ, {"USAGE_CONTEXT_SECRET": "test-secret"}):
             self.assertEqual(require_verification_permission(missing), "system")
             self.assertEqual(require_verification_permission(invalid), "system")
             self.assertEqual(require_verification_permission(unsigned), "system")
+            self.assertEqual(require_verification_permission(pat), "brainpat:demo")
 
     def test_non_system_principal_is_unaffected_by_signed_context(self):
         from src.core.auth.scopes import VERIFICATION_SCOPE
         from src.services.api.dependencies import require_verification_permission
 
-        token = _signed_usage_context("test-secret", userId="42")
+        token = _signed_usage_context("test-secret", actorUserId="42")
         request = self._request(
             "brainpat:demo",
             [DEFAULT_SCOPE, VERIFICATION_SCOPE],
@@ -687,6 +705,134 @@ class SystemUsageContextActorTests(unittest.TestCase):
         )
         with patch.dict(os.environ, {"USAGE_CONTEXT_SECRET": "test-secret"}):
             self.assertEqual(require_verification_permission(request), "brainpat:demo")
+
+    def test_dashboard_token_sets_actor_for_verify_reject_and_conflict_resolve(self):
+        from fastapi import FastAPI, Request
+        from fastapi.testclient import TestClient
+
+        from src.adapters.graph import GraphAdapter
+        from src.core.auth.scopes import VERIFICATION_SCOPE
+        from src.core.saving.conflicts import detect_conflicts
+        from src.lib.postgresql.graph_store import PostgreSQLGraphStore, _BrainGraph
+        from src.services.api.errors import install_error_handlers
+        from src.services.api.routes.model import model_router
+        from src.services.api.routes.retrieve import retrieve_router
+        tests_dir = os.path.dirname(os.path.abspath(__file__))
+        if tests_dir not in sys.path:
+            sys.path.insert(0, tests_dir)
+        from test_conflicts import (
+            DetectionEngineTests,
+            FakeGraph,
+            MemoryConflictStore,
+        )
+
+        client = NetworkXGraphClient.__new__(NetworkXGraphClient)
+        store = PostgreSQLGraphStore.__new__(PostgreSQLGraphStore)
+        store._brains = {}
+        store._brains_lock = __import__("threading").RLock()
+        store._schema_ready = set()
+        store._search_ready_brains = set()
+        store._schema_lock = __import__("threading").Lock()
+        store._persist_node = MagicMock()
+        store._persist_relationship = MagicMock()
+        store.ensure_database = lambda brain_id: store._brains.setdefault(
+            brain_id, _BrainGraph(brain_id)
+        )
+        store.get_brain = lambda brain_id: store._brains[brain_id]
+        store._load_brain = lambda brain_id: store._brains.setdefault(
+            brain_id, _BrainGraph(brain_id)
+        )
+        store.invalidate_brain = lambda brain_id: None
+        client._store = store
+        graph = GraphAdapter()
+        graph.add_client(client)
+        alice = graph.add_nodes(
+            [Node(uuid="alice-1", name="Alice", labels=["PERSON"], description="p")],
+            "demo",
+        )[0]
+        bob = graph.add_nodes(
+            [Node(uuid="bob-1", name="Bob", labels=["PERSON"], description="p")],
+            "demo",
+        )[0]
+        made = Predicate(uuid="rel-made", name="KNOWS", description="knows")
+        graph.add_relationship(alice, made, bob, "demo")
+        other = Predicate(uuid="rel-other", name="LIKES", description="likes")
+        graph.add_relationship(alice, other, bob, "demo")
+
+        conflicts = MemoryConflictStore()
+        found = detect_conflicts(
+            conflicts, FakeGraph(DetectionEngineTests()._refund_triples()), "demo"
+        )
+        conflict = found[0]
+        token = _signed_usage_context("test-secret", actorUserId="42")
+        bad = token + "tampered"
+        data = MagicMock()
+        data.get_text_chunks_by_ids.return_value = ([], [])
+        data.get_text_chunks.return_value = ([], 0)
+
+        app = FastAPI()
+        install_error_handlers(app)
+
+        @app.middleware("http")
+        async def inject_brain(request: Request, call_next):
+            request.state.brain_id = "demo"
+            request.state.principal = getattr(request.state, "principal", None) or "system"
+            if request.headers.get("X-Test-Principal"):
+                request.state.principal = request.headers["X-Test-Principal"]
+            request.state.scopes = [DEFAULT_SCOPE, VERIFICATION_SCOPE]
+            return await call_next(request)
+
+        app.include_router(model_router)
+        app.include_router(retrieve_router)
+        api = TestClient(app)
+
+        with patch(
+            "src.services.api.controllers.verification.graph_adapter", graph
+        ), patch(
+            "src.services.kg_agent.main.graph_adapter", graph
+        ), patch(
+            "src.services.api.controllers.conflicts.data_adapter", conflicts
+        ), patch(
+            "src.services.api.controllers.conflicts.graph_adapter", graph
+        ), patch(
+            "src.services.data.main.data_adapter", data
+        ), patch.dict(os.environ, {"USAGE_CONTEXT_SECRET": "test-secret"}):
+            verified = api.post(
+                f"/model/facts/{made.uuid}/verify",
+                json={"note": "ok"},
+                headers={"X-Usage-Context": token},
+            )
+            rejected = api.post(
+                f"/model/facts/{other.uuid}/reject",
+                json={"note": "no"},
+                headers={"X-Usage-Context": token},
+            )
+            resolved = api.post(
+                f"/retrieve/conflicts/{conflict.id}/resolve",
+                json={"notes": "keep first", "method": "manual"},
+                headers={"X-Usage-Context": token},
+            )
+            fallback = api.post(
+                f"/model/facts/{made.uuid}/verify",
+                json={"note": "again"},
+                headers={
+                    "X-Usage-Context": bad,
+                    "X-Test-Principal": "brainpat:demo",
+                },
+            )
+
+        self.assertEqual(verified.status_code, 200, verified.text)
+        self.assertEqual(verified.json()["verification"]["verified_by"], "user:42")
+        self.assertEqual(rejected.status_code, 200, rejected.text)
+        self.assertEqual(rejected.json()["verification"]["verified_by"], "user:42")
+        self.assertEqual(resolved.status_code, 200, resolved.text)
+        self.assertEqual(
+            resolved.json()["conflict"]["resolution"]["resolved_by"], "user:42"
+        )
+        self.assertEqual(fallback.status_code, 200, fallback.text)
+        self.assertEqual(
+            fallback.json()["verification"]["verified_by"], "brainpat:demo"
+        )
 
 
 if __name__ == "__main__":
