@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
+from src.constants.conflicts import ConflictEntity, ConflictSide, ConflictSource, FactConflict
 from src.constants.kg import Node, Predicate, _coerce_datetime
 from src.core.auth.scopes import VERIFICATION_PERMISSION_DENIED
 from src.core.saving.conflicts import (
@@ -10,6 +11,7 @@ from src.core.saving.conflicts import (
     classify_disagreement,
     conflict_detect_max_relationships,
     conflict_detect_on_ingest_enabled,
+    conflict_matches_source_filter,
     detect_conflicts,
     dismiss_conflict,
     find_conflict_candidates,
@@ -22,6 +24,8 @@ from src.core.saving.conflicts import (
     pair_key_for,
     parse_date_value,
     parse_quantity,
+    present_conflict,
+    reopen_conflict,
     resolve_by_verified_fact,
     resolve_conflict,
     resolve_conflict_authorized,
@@ -83,9 +87,15 @@ def _node(uuid, name, labels=None, polarity="neutral"):
     )
 
 
-def _pred(uuid, name, value_props=None, description=""):
+def _pred(uuid, name, value_props=None, description="", amount=None):
     props = dict(value_props or {})
-    return Predicate(uuid=uuid, name=name, description=description, properties=props)
+    return Predicate(
+        uuid=uuid,
+        name=name,
+        description=description,
+        properties=props,
+        amount=amount,
+    )
 
 
 def _triple(subject, pred, obj):
@@ -141,7 +151,11 @@ class MemoryConflictStore:
         if status:
             items = [item for item in items if item.status == status]
         if source:
-            items = [item for item in items if source in item.source_keys()]
+            from src.core.saving.conflicts import conflict_matches_source_filter
+
+            items = [
+                item for item in items if conflict_matches_source_filter(item, source)
+            ]
         if subject:
             needle = subject.lower()
             items = [
@@ -163,6 +177,9 @@ class MemoryConflictStore:
     def get_text_chunks_by_ids(self, ids, with_observations, brain_id):
         return [self.chunks[item] for item in ids if item in self.chunks], []
 
+    def get_triples_by_uuid(self, uuids, brain_id=None, **kwargs):
+        return []
+
     def get_conflict_scan_cursor(self, brain_id):
         return self.cursors.get(brain_id)
 
@@ -177,6 +194,16 @@ class FakeGraph:
     def __init__(self, triples):
         self.triples = triples
         self.calls = []
+
+    def get_triples_by_uuid(self, uuids, brain_id=None, **kwargs):
+        wanted = {str(item) for item in uuids or []}
+        found = []
+        for triple in self.triples:
+            pred = triple[1]
+            uid = str(getattr(pred, "uuid", "") or "")
+            if uid in wanted:
+                found.append(triple)
+        return found
 
     def list_validity_relationships(
         self,
@@ -254,6 +281,11 @@ class QuantityAndMatchTests(unittest.TestCase):
         self.assertEqual(parse_quantity("two weeks")[0], 14)
         self.assertTrue(values_equivalent("30 days", "one month"))
         self.assertFalse(values_equivalent("30 days", "14 days"))
+        self.assertEqual(parse_quantity("12,400")[0], 12400)
+        self.assertEqual(parse_quantity("price 14,900")[0], 14900)
+        self.assertFalse(values_equivalent("Founded in 2011", "Founded in 2013"))
+        self.assertFalse(values_equivalent("price 12,400", "price 14,900"))
+        self.assertTrue(values_equivalent("Founded in 2011", "Founded in 2011"))
 
     def test_functional_vs_multivalued(self):
         self.assertTrue(is_functional_predicate("HAS_WINDOW", ["30 days", "14 days"]))
@@ -863,6 +895,7 @@ class McpConflictToolTests(unittest.TestCase):
             "get_conflict",
             "resolve_conflict",
             "dismiss_conflict",
+            "reopen_conflict",
             "conflict_report",
         ):
             self.assertIn(name, names)
@@ -3034,5 +3067,276 @@ class ConfigDefaultTests(unittest.TestCase):
         self.assertEqual(config.conflict_detect_max_relationships, 10000)
 
 
+class NumericFactAndProvenanceTests(unittest.TestCase):
+    def test_snapshot_keeps_amount_on_value_and_detects_year_conflict(self):
+        org = _node("org-1", "Halvorsen Dynamics", ["ORGANIZATION"])
+        founding = _node("evt-founding", "Halvorsen Dynamics founding", ["EVENT"])
+        left = snapshot_from_triple(
+            _triple(
+                org,
+                _pred(
+                    "f-2011",
+                    "FOUNDED_IN",
+                    {
+                        "source_key": "text:profile.txt:aaaaaaaaaaaaaaaa",
+                        "source_span": "Founded in 2011",
+                        "source_chunk_ids": ["chunk-a"],
+                    },
+                    description="Halvorsen Dynamics was founded",
+                    amount=2011,
+                ),
+                founding,
+            )
+        )
+        right = snapshot_from_triple(
+            _triple(
+                org,
+                _pred(
+                    "f-2013",
+                    "FOUNDED_IN",
+                    {
+                        "source_key": "text:counter.txt:bbbbbbbbbbbbbbbb",
+                        "source_span": "Founded in 2013",
+                    },
+                    description="Halvorsen Dynamics was founded",
+                    amount=2013,
+                ),
+                founding,
+            )
+        )
+        self.assertEqual(left["amount"], 2011.0)
+        self.assertIn("2011", left["value"])
+        self.assertEqual(left["source_key"], "text:profile.txt:aaaaaaaaaaaaaaaa")
+        self.assertEqual(left["source_text"], "Founded in 2011")
+        kind, _ = classify_disagreement(left, right)
+        self.assertEqual(kind, "numeric_mismatch")
+
+    def test_price_literals_with_commas_conflict(self):
+        kind, _ = classify_disagreement(
+            {"value": "price 12,400", "polarity": "neutral"},
+            {"value": "price 14,900", "polarity": "neutral"},
+        )
+        self.assertEqual(kind, "numeric_mismatch")
+
+    def test_present_conflict_fills_empty_subject_sides_and_provenance(self):
+        org = _node("org-1", "Halvorsen Dynamics", ["ORGANIZATION"])
+        founding = _node("evt-founding", "founding 2011", ["EVENT"])
+        pred = _pred(
+            "f-2011",
+            "FOUNDED_IN",
+            {
+                "source_key": "text:profile.txt:aaaaaaaaaaaaaaaa",
+                "source_span": "Founded in 2011",
+                "source_timestamp": "2026-11-26T00:00:00Z",
+            },
+            description="Halvorsen Dynamics was founded",
+            amount=2011,
+        )
+        graph = FakeGraph([_triple(org, pred, founding)])
+        empty = FactConflict(
+            id="c1",
+            pair_key="pair",
+            claim_key="claim",
+            disagreement_type="numeric_mismatch",
+            subject=ConflictEntity(),
+            predicate="FOUNDED_IN",
+            sides=[
+                ConflictSide(
+                    fact_id="f-2011",
+                    subject=ConflictEntity(),
+                    predicate="FOUNDED_IN",
+                    object=ConflictEntity(),
+                    value="",
+                    source=ConflictSource(),
+                ),
+                ConflictSide(
+                    fact_id="missing",
+                    subject=ConflictEntity(uuid="org-1", name="Halvorsen Dynamics"),
+                    predicate="FOUNDED_IN",
+                    object=ConflictEntity(uuid="evt-b", name="founding 2013"),
+                    value="2013",
+                    amount=2013,
+                    source=ConflictSource(
+                        source_key="text:counter.txt:bbbbbbbbbbbbbbbb",
+                        document="QARC-20261126 counter-brief",
+                        text="Founded in 2013",
+                        timestamp="2026-11-26T00:00:00Z",
+                    ),
+                ),
+            ],
+        )
+        filled = present_conflict(empty, graph=graph, brain_id="brain")
+        self.assertEqual(filled.subject.name, "Halvorsen Dynamics")
+        self.assertEqual(len(filled.sides), 2)
+        first = filled.sides[0]
+        self.assertEqual(first.subject.name, "Halvorsen Dynamics")
+        self.assertIn("2011", first.value)
+        self.assertEqual(first.amount, 2011.0)
+        self.assertEqual(first.source.source_key, "text:profile.txt:aaaaaaaaaaaaaaaa")
+        self.assertEqual(first.source.text, "Founded in 2011")
+        self.assertTrue(first.source.document)
+        self.assertEqual(first.source.timestamp, "2026-11-26T00:00:00Z")
+        second = filled.sides[1]
+        self.assertEqual(second.source.source_key, "text:counter.txt:bbbbbbbbbbbbbbbb")
+        self.assertIn("QARC-20261126", second.source.document)
+
+    def test_source_filter_matches_document_substring(self):
+        conflict = FactConflict(
+            id="c1",
+            pair_key="pair",
+            claim_key="claim",
+            disagreement_type="numeric_mismatch",
+            subject=ConflictEntity(name="Halvorsen Dynamics"),
+            predicate="FOUNDED_IN",
+            sides=[
+                ConflictSide(
+                    fact_id="a",
+                    subject=ConflictEntity(name="Halvorsen Dynamics"),
+                    predicate="FOUNDED_IN",
+                    object=ConflictEntity(name="2011"),
+                    value="2011",
+                    source=ConflictSource(
+                        source_key="text:untitled:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        document="QARC-20261126 Halvorsen Dynamics company profile",
+                    ),
+                )
+            ],
+        )
+        self.assertTrue(conflict_matches_source_filter(conflict, "QARC-20261126"))
+        self.assertTrue(
+            conflict_matches_source_filter(
+                conflict, "text:untitled:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            )
+        )
+        self.assertTrue(conflict_matches_source_filter(conflict, "text:untitled"))
+        self.assertFalse(conflict_matches_source_filter(conflict, "text:paste"))
+        self.assertFalse(conflict_matches_source_filter(conflict, "no-such-source"))
+        with_source_id = FactConflict(
+            id="c-id",
+            pair_key="pair-id",
+            claim_key="claim-id",
+            disagreement_type="numeric_mismatch",
+            subject=ConflictEntity(name="Halvorsen Dynamics"),
+            predicate="FOUNDED_IN",
+            sides=[
+                ConflictSide(
+                    fact_id="a",
+                    subject=ConflictEntity(name="Halvorsen Dynamics"),
+                    predicate="FOUNDED_IN",
+                    object=ConflictEntity(name="2011"),
+                    value="2011",
+                    source=ConflictSource(source_key="qa-profile"),
+                )
+            ],
+        )
+        self.assertTrue(conflict_matches_source_filter(with_source_id, "qa-profile"))
+
+    def test_dismiss_and_reopen_record_actor_and_time(self):
+        store = MemoryConflictStore()
+        found = detect_conflicts(
+            store, FakeGraph(DetectionEngineTests()._refund_triples()), "brain"
+        )
+        conflict = found[0]
+        dismissed = dismiss_conflict(
+            store, "brain", conflict.id, notes="noise", resolved_by="user:42"
+        )
+        self.assertEqual(dismissed.status, "dismissed")
+        self.assertEqual(dismissed.resolution.resolved_by, "user:42")
+        self.assertTrue(dismissed.resolution.resolved_at)
+        reopened = reopen_conflict(
+            store, "brain", conflict.id, notes="check again", resolved_by="user:42"
+        )
+        self.assertEqual(reopened.status, "open")
+        self.assertEqual(reopened.resolution.resolved_by, "user:42")
+        self.assertTrue(reopened.resolution.resolved_at)
+        self.assertIsNone(reopened.resolution.method)
+        listed, total = store.get_conflicts_list("brain", source="QARC-missing")
+        self.assertEqual(total, 0)
+
+
+class RestConflictActorAndReopenTests(unittest.TestCase):
+    def _app(self, principal, scopes, store):
+        from fastapi import FastAPI, Request
+        from fastapi.testclient import TestClient
+
+        from src.services.api.errors import install_error_handlers
+        from src.services.api.routes.retrieve import retrieve_router
+
+        app = FastAPI()
+        install_error_handlers(app)
+
+        @app.middleware("http")
+        async def inject_brain(request: Request, call_next):
+            request.state.brain_id = "brain"
+            request.state.principal = principal
+            request.state.scopes = scopes
+            return await call_next(request)
+
+        app.include_router(retrieve_router)
+        client = TestClient(app)
+        return client
+
+    def _seed(self):
+        store = MemoryConflictStore()
+        found = detect_conflicts(
+            store, FakeGraph(DetectionEngineTests()._refund_triples()), "brain"
+        )
+        return store, found[0]
+
+    def test_dismiss_uses_signed_usage_context_user(self):
+        import base64
+        import hashlib
+        import hmac
+        import json
+        import os
+        import time
+
+        payload = {
+            "jobId": "job-1",
+            "iat": int(time.time()),
+            "exp": int(time.time()) + 60,
+            "userId": "99",
+        }
+        encoded = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+        signature = base64.urlsafe_b64encode(
+            hmac.new(
+                b"test-secret", f"v1.{encoded}".encode(), hashlib.sha256
+            ).digest()
+        ).decode().rstrip("=")
+        token = f"v1.{encoded}.{signature}"
+
+        store, conflict = self._seed()
+        api = self._app("system", ["brainapi"], store)
+        with patch(
+            "src.services.api.controllers.conflicts.data_adapter", store
+        ), patch.dict(os.environ, {"USAGE_CONTEXT_SECRET": "test-secret"}):
+            dismissed = api.post(
+                f"/retrieve/conflicts/{conflict.id}/dismiss",
+                json={"notes": "dup"},
+                headers={"X-Usage-Context": token},
+            )
+        self.assertEqual(dismissed.status_code, 200, dismissed.text)
+        body = dismissed.json()["conflict"]
+        self.assertEqual(body["status"], "dismissed")
+        self.assertEqual(body["resolution"]["resolved_by"], "user:99")
+        self.assertTrue(body["resolution"]["resolved_at"])
+
+        with patch(
+            "src.services.api.controllers.conflicts.data_adapter", store
+        ):
+            reopened = api.post(
+                f"/retrieve/conflicts/{conflict.id}/reopen",
+                json={"notes": "look again"},
+            )
+        self.assertEqual(reopened.status_code, 200, reopened.text)
+        opened = reopened.json()["conflict"]
+        self.assertEqual(opened["status"], "open")
+        self.assertEqual(opened["resolution"]["resolved_by"], "system")
+        self.assertTrue(opened["resolution"]["resolved_at"])
+        self.assertGreaterEqual(len(opened["sides"]), 2)
+        self.assertTrue(opened["subject"]["name"])
+
+
 if __name__ == "__main__":
     unittest.main()
+

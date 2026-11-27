@@ -2,6 +2,7 @@ import os
 import sys
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 ENV_DEFAULTS = {
     "BRAINPAT_TOKEN": "test-token",
@@ -609,6 +610,83 @@ class ServiceIgnoresCallerIdentityWhenActorSet(unittest.TestCase):
             verified_by="attacker",
         )
         self.assertEqual(record.verification.verified_by, "brainpat:demo")
+
+
+def _signed_usage_context(secret, **body):
+    import base64
+    import hashlib
+    import hmac
+    import json
+    import time
+
+    payload = {
+        "jobId": "job-1",
+        "iat": int(time.time()),
+        "exp": int(time.time()) + 60,
+        **body,
+    }
+    encoded = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+    signature = base64.urlsafe_b64encode(
+        hmac.new(secret.encode(), f"v1.{encoded}".encode(), hashlib.sha256).digest()
+    ).decode().rstrip("=")
+    return f"v1.{encoded}.{signature}"
+
+
+class SystemUsageContextActorTests(unittest.TestCase):
+    def _request(self, principal, scopes, headers=None):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            state=SimpleNamespace(principal=principal, scopes=scopes),
+            headers=headers or {},
+        )
+
+    def test_signed_context_sets_user_actor_for_system_principal(self):
+        from src.core.auth.scopes import VERIFICATION_SCOPE
+        from src.services.api.dependencies import require_verification_permission
+
+        token = _signed_usage_context("test-secret", userId="42")
+        request = self._request(
+            "system",
+            [DEFAULT_SCOPE, VERIFICATION_SCOPE],
+            {"X-Usage-Context": token},
+        )
+        with patch.dict(os.environ, {"USAGE_CONTEXT_SECRET": "test-secret"}):
+            self.assertEqual(require_verification_permission(request), "user:42")
+
+    def test_missing_or_invalid_signature_falls_back_to_principal(self):
+        from src.core.auth.scopes import VERIFICATION_SCOPE
+        from src.services.api.dependencies import require_verification_permission
+
+        valid = _signed_usage_context("test-secret", userId="42")
+        missing = self._request("system", [DEFAULT_SCOPE, VERIFICATION_SCOPE])
+        invalid = self._request(
+            "system",
+            [DEFAULT_SCOPE, VERIFICATION_SCOPE],
+            {"X-Usage-Context": valid + "tampered"},
+        )
+        unsigned = self._request(
+            "system",
+            [DEFAULT_SCOPE, VERIFICATION_SCOPE],
+            {"X-Usage-Context": "v1.not-a-token.nope"},
+        )
+        with patch.dict(os.environ, {"USAGE_CONTEXT_SECRET": "test-secret"}):
+            self.assertEqual(require_verification_permission(missing), "system")
+            self.assertEqual(require_verification_permission(invalid), "system")
+            self.assertEqual(require_verification_permission(unsigned), "system")
+
+    def test_non_system_principal_is_unaffected_by_signed_context(self):
+        from src.core.auth.scopes import VERIFICATION_SCOPE
+        from src.services.api.dependencies import require_verification_permission
+
+        token = _signed_usage_context("test-secret", userId="42")
+        request = self._request(
+            "brainpat:demo",
+            [DEFAULT_SCOPE, VERIFICATION_SCOPE],
+            {"X-Usage-Context": token},
+        )
+        with patch.dict(os.environ, {"USAGE_CONTEXT_SECRET": "test-secret"}):
+            self.assertEqual(require_verification_permission(request), "brainpat:demo")
 
 
 if __name__ == "__main__":

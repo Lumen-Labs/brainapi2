@@ -41,6 +41,11 @@ def _to_response(record: FactRecord) -> FactVerificationRecord:
         object_name=record.object_name,
         object_labels=record.object_labels,
         labels=record.labels,
+        interview_id=record.interview_id,
+        topic_id=record.topic_id,
+        source_key=record.source_key,
+        source_chunk_id=record.source_chunk_id,
+        source=record.source,
     )
 
 
@@ -97,6 +102,10 @@ async def list_fact_verifications(
     include_rejected: bool = False,
     limit: int = 50,
     skip: int = 0,
+    interview_id: str | None = None,
+    topic_id: str | None = None,
+    entity_id: str | None = None,
+    source: str | None = None,
 ) -> FactVerificationListResponse:
     normalized = require_state(state)
     records, total = await asyncio.to_thread(
@@ -107,6 +116,10 @@ async def list_fact_verifications(
         include_rejected=include_rejected,
         limit=limit,
         skip=skip,
+        interview_id=interview_id,
+        topic_id=topic_id,
+        entity_id=entity_id,
+        source=source,
     )
     return FactVerificationListResponse(
         facts=[_to_response(record) for record in records],

@@ -1178,6 +1178,10 @@ class GraphAdapter:
         include_rejected: bool = False,
         limit: int = 50,
         skip: int = 0,
+        interview_id: str | None = None,
+        topic_id: str | None = None,
+        entity_id: str | None = None,
+        source: str | None = None,
     ) -> tuple[list[dict], int]:
         return self.graph.list_facts_by_verification(
             brain_id,
@@ -1185,6 +1189,10 @@ class GraphAdapter:
             include_rejected=include_rejected,
             limit=limit,
             skip=skip,
+            interview_id=interview_id,
+            topic_id=topic_id,
+            entity_id=entity_id,
+            source=source,
         )
 
     def rebuild_hub_bridge_index(self, brain_id: str = "default") -> int:

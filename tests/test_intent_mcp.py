@@ -247,6 +247,10 @@ class FakeGraph:
         include_rejected=False,
         limit=50,
         skip=0,
+        interview_id=None,
+        topic_id=None,
+        entity_id=None,
+        source=None,
     ):
         rows = []
         for subject_uuid, predicate, object_uuid in self.edges:
@@ -255,6 +259,16 @@ class FakeGraph:
             if state and current != state:
                 continue
             if not include_rejected and current == "rejected":
+                continue
+            from src.core.verification.facts import fact_row_matches_listing_filters
+
+            if not fact_row_matches_listing_filters(
+                row,
+                interview_id=interview_id,
+                topic_id=topic_id,
+                entity_id=entity_id,
+                source=source,
+            ):
                 continue
             rows.append(row)
         return rows[skip : skip + limit], len(rows)

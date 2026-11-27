@@ -239,18 +239,31 @@ def retry_sections(brain_id, import_id, section_ids):
             "attempt": row.get("attempt", 1) + 1}, "$unset": {"error": "", "cost": "", "execution_claimed":""}})
 
 
-def verify_usage_context(token):
+def decode_usage_context(token):
     import base64
     try:
         version, encoded, signature = token.split(".")
         secret = os.getenv("USAGE_CONTEXT_SECRET", "")
         if version != "v1" or not secret:
-            return False
-        expected = base64.urlsafe_b64encode(hmac.new(secret.encode(), f"v1.{encoded}".encode(), hashlib.sha256).digest()).decode().rstrip("=")
+            return None
+        expected = base64.urlsafe_b64encode(
+            hmac.new(secret.encode(), f"v1.{encoded}".encode(), hashlib.sha256).digest()
+        ).decode().rstrip("=")
         body = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
-        return hmac.compare_digest(signature, expected) and body.get("exp", 0) >= time.time() and body.get("iat", 0) <= time.time() + 5 and bool(body.get("jobId"))
-    except (ValueError, TypeError):
-        return False
+        if not (
+            hmac.compare_digest(signature, expected)
+            and body.get("exp", 0) >= time.time()
+            and body.get("iat", 0) <= time.time() + 5
+            and bool(body.get("jobId"))
+        ):
+            return None
+        return body if isinstance(body, dict) else None
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return None
+
+
+def verify_usage_context(token):
+    return decode_usage_context(token) is not None
 
 
 _runtime_tokens = {}

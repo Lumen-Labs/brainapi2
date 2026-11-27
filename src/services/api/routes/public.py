@@ -14,10 +14,22 @@ from src.services.api.controllers.search import search as search_controller
 from src.services.api.errors import ErrorResponse
 
 
+def running_build_id() -> str:
+    for key in ("BUILD_SHA", "GIT_SHA"):
+        value = (os.getenv(key) or "").strip()
+        if value:
+            return value
+    return "unknown"
+
+
 class HealthResponse(BaseModel):
     status: str = Field(description="Service health status.")
     service: str = Field(description="Service name.")
     version: str = Field(description="Running BrainAPI version.")
+    build: str = Field(
+        default="unknown",
+        description="Commit SHA or build ID for this image.",
+    )
 
 
 PUBLIC_ERROR_RESPONSES = {
@@ -38,7 +50,12 @@ public_router = APIRouter(tags=["public"])
 async def health() -> HealthResponse:
     """Return public liveness metadata without accessing customer data."""
 
-    return HealthResponse(status="ok", service="brainapi", version=BRAIN_VERSION)
+    return HealthResponse(
+        status="ok",
+        service="brainapi",
+        version=BRAIN_VERSION,
+        build=running_build_id(),
+    )
 
 
 @public_router.get(

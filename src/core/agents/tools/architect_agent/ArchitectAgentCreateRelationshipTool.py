@@ -453,7 +453,7 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
                             properties=getattr(rel, "properties", {}),
                             **(
                                 {"amount": getattr(rel, "amount", None)}
-                                if getattr(rel, "amount", None)
+                                if getattr(rel, "amount", None) is not None
                                 else {}
                             ),
                         )
@@ -534,7 +534,7 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
                         properties=getattr(rel, "properties", {}),
                         **(
                             {"amount": getattr(rel, "amount", None)}
-                            if getattr(rel, "amount", None)
+                            if getattr(rel, "amount", None) is not None
                             else {}
                         ),
                     )

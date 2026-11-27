@@ -284,6 +284,104 @@ def test_plain_text_variants_skip_docparser(monkeypatch, filename, content_type,
     parser.assert_not_called()
 
 
+def test_pdf_upload_source_id_is_forwarded_to_docling(monkeypatch):
+    app, ingest = _ingest_app()
+    queued = Mock()
+    monkeypatch.setattr(ingest.config, "ocr_mode", "docling")
+    monkeypatch.setattr(ingest, "set_ingestion_task_status", Mock())
+    monkeypatch.setattr(ingest.ingest_file_task, "apply_async", queued)
+    monkeypatch.setattr(ingest.ingest_data_task, "apply_async", Mock())
+
+    response = TestClient(app).post(
+        "/ingest/file",
+        data={"source_id": "offer-sheet"},
+        files={"file": ("report.pdf", b"%PDF-1.4 mock", "application/pdf")},
+    )
+    assert response.status_code == 202
+    queued.assert_called_once()
+    assert queued.call_args.kwargs["kwargs"]["source_id"] == "offer-sheet"
+    assert queued.call_args.kwargs["args"][1] == "report.pdf"
+
+
+def test_pdf_upload_source_id_is_cached_for_remote_ocr(monkeypatch):
+    app, ingest = _ingest_app()
+    parser = Mock(return_value=SimpleNamespace(status_code=200))
+    status = Mock()
+    monkeypatch.setattr(ingest.config, "ocr_mode", "docparser")
+    monkeypatch.setattr(ingest.config, "docparser_endpoint", "http://docparser.example")
+    monkeypatch.setattr(ingest.config, "docparser_token", "parser-token")
+    monkeypatch.setattr(ingest, "set_ingestion_task_status", status)
+    monkeypatch.setattr(ingest.ingest_data_task, "apply_async", Mock())
+    monkeypatch.setattr(ingest.requests, "post", parser)
+
+    response = TestClient(app).post(
+        "/ingest/file",
+        data={"source_id": "offer-sheet"},
+        files={"file": ("report.pdf", b"%PDF-1.4 mock", "application/pdf")},
+    )
+    assert response.status_code == 202
+    parser.assert_called_once()
+    extras = [
+        call.kwargs.get("extra") or {}
+        for call in status.call_args_list
+        if isinstance(call.kwargs.get("extra"), dict)
+    ]
+    assert any(extra.get("source_id") == "offer-sheet" for extra in extras)
+    assert any(extra.get("source_filename") == "report.pdf" for extra in extras)
+
+
+def test_file_page_payload_uses_supplied_source_id(monkeypatch):
+    from src.workers.tasks import ingestion as ingestion_mod
+
+    assert ingestion_mod._page_source_id(None, 1, 3) is None
+    assert ingestion_mod._page_source_id("offer-sheet", 1, 1) == "offer-sheet"
+    assert ingestion_mod._page_source_id("offer-sheet", 2, 3) == "offer-sheet:p2"
+    payload = ingestion_mod.build_file_page_ingest_payload(
+        "brain",
+        "page one",
+        source_id="offer-sheet",
+        filename="report.pdf",
+    )
+    assert payload["meta_keys"]["source_id"] == "offer-sheet"
+    assert payload["meta_keys"]["source_key"] == "offer-sheet"
+    assert payload["meta_keys"]["filename"] == "report.pdf"
+    untitled = ingestion_mod.build_file_page_ingest_payload(
+        "brain", "page one", filename="report.pdf"
+    )
+    assert "meta_keys" not in untitled
+
+    queued = []
+
+    def fake_async(*_args, **kwargs):
+        queued.append(kwargs["args"][0])
+
+    monkeypatch.setattr(
+        ingestion_mod, "_extract_file_pages", lambda *_a, **_k: ["page a", "page b"]
+    )
+    monkeypatch.setattr(ingestion_mod.ingest_data, "apply_async", fake_async)
+    monkeypatch.setattr(ingestion_mod, "set_ingestion_task_status", Mock())
+    request = Mock()
+    request.id = "file-1"
+    request.headers = {}
+    ingestion_mod.ingest_file.run.__func__(
+        type("Bound", (), {"request": request})(),
+        "Yg==",
+        "report.pdf",
+        "brain",
+        None,
+        None,
+        "offer-sheet",
+    )
+    assert [item["meta_keys"]["source_id"] for item in queued] == [
+        "offer-sheet:p1",
+        "offer-sheet:p2",
+    ]
+    assert [item["meta_keys"]["source_key"] for item in queued] == [
+        "offer-sheet:p1",
+        "offer-sheet:p2",
+    ]
+
+
 def test_pdf_upload_still_goes_to_docparser(monkeypatch):
     app, ingest = _ingest_app()
     parser = Mock(return_value=SimpleNamespace(status_code=200))
@@ -1078,6 +1176,65 @@ def test_expired_ocr_does_not_finalize_when_page_hash_unreadable(monkeypatch):
     queued.assert_not_called()
     assert result["status"] == "started"
     assert store[("task:ocr", "brain")]["status"] == "started"
+
+
+def test_dispatch_snapshot_threads_cached_source_id(monkeypatch):
+    cache, store, hashes = _writable_cache({
+        ("task:ocr", "brain"): {
+            "status": "started",
+            "task_id": "ocr",
+            "source_id": "offer-sheet",
+            "source_filename": "report.pdf",
+        },
+    })
+    hashes[("ocr_pages:ocr", "brain")] = {"p:0": "page one", "total": "1"}
+    monkeypatch.setattr("src.workers.tasks.ingestion.cache_adapter", cache)
+    queued = Mock()
+    monkeypatch.setattr("src.workers.tasks.ingestion.ingest_data.apply_async", queued)
+    from src.core.saving import unstaged_ocr
+
+    snapshot = unstaged_ocr.load_pages("brain", "ocr")
+    assert unstaged_ocr.dispatch_snapshot(
+        "brain", "ocr", store[("task:ocr", "brain")], snapshot,
+    )
+    queued.assert_called_once()
+    payload = queued.call_args.kwargs["args"][0]
+    assert payload["meta_keys"]["source_id"] == "offer-sheet"
+    assert payload["meta_keys"]["source_key"] == "offer-sheet"
+    assert payload["meta_keys"]["filename"] == "report.pdf"
+
+
+def test_ocr_callback_attaches_cached_source_id(monkeypatch):
+    app, ingest = _ingest_app()
+    _silence_remote_ocr_runs(monkeypatch)
+    cache, _store, _hashes = _writable_cache({
+        ("task:ocr", "brain"): {
+            "status": "queued",
+            "task_id": "ocr",
+            "source_id": "offer-sheet",
+            "source_filename": "report.pdf",
+        },
+    })
+    monkeypatch.setattr(ingest, "cache_adapter", cache)
+    monkeypatch.setattr("src.workers.tasks.ingestion.cache_adapter", cache)
+    queued = Mock()
+    monkeypatch.setattr(ingest.ingest_data_task, "apply_async", queued)
+    monkeypatch.setattr("src.workers.tasks.ingestion.ingest_data.apply_async", queued)
+    response = TestClient(app).post(
+        "/ingest/",
+        json={
+            "data": {"data_type": "text", "text_data": "page one"},
+            "page_index": 0,
+            "total_pages": 1,
+        },
+        headers={"Task-Identifier": "ocr"},
+    )
+    assert response.status_code == 202
+    queued.assert_called_once()
+    payload = queued.call_args.kwargs["args"][0]
+    assert payload["meta_keys"]["source_id"] == "offer-sheet"
+    assert payload["meta_keys"]["source_key"] == "offer-sheet"
+    assert payload["meta_keys"]["filename"] == "report.pdf"
 
 
 def test_dispatch_releases_claim_when_setup_fails(monkeypatch):

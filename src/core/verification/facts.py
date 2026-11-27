@@ -123,6 +123,11 @@ class FactRecord(BaseModel):
     object_name: Optional[str] = None
     object_labels: list[str] = Field(default_factory=list)
     labels: list[str] = Field(default_factory=list)
+    interview_id: Optional[str] = None
+    topic_id: Optional[str] = None
+    source_key: Optional[str] = None
+    source_chunk_id: Optional[str] = None
+    source: Optional[str] = None
 
 
 @contextmanager
@@ -498,6 +503,80 @@ def neighborhood_row_is_rejected(row: Any) -> bool:
     )
 
 
+def normalize_listing_filter(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def extract_fact_listing_fields(row: dict[str, Any]) -> dict[str, Optional[str]]:
+    props = _flatten_properties(_property_map(row.get("properties")))
+    interview_id = _optional_str(
+        row.get("interview_id")
+        or props.get("interview_id")
+        or props.get("interviewId")
+    )
+    topic_id = _optional_str(
+        row.get("topic_id") or props.get("topic_id") or props.get("topicId")
+    )
+    source_key = _optional_str(
+        props.get("source_key") or row.get("source_key") or props.get("source")
+    )
+    source_chunk_id = _optional_str(
+        props.get("source_chunk_id") or row.get("source_chunk_id")
+    )
+    if not source_chunk_id:
+        ids = props.get("source_chunk_ids") or row.get("source_chunk_ids") or []
+        if isinstance(ids, (list, tuple)) and ids:
+            source_chunk_id = _optional_str(ids[-1])
+    return {
+        "interview_id": interview_id,
+        "topic_id": topic_id,
+        "source_key": source_key,
+        "source_chunk_id": source_chunk_id,
+        "source": source_key,
+    }
+
+
+def fact_row_matches_listing_filters(
+    row: dict[str, Any],
+    *,
+    interview_id: str | None = None,
+    topic_id: str | None = None,
+    entity_id: str | None = None,
+    source: str | None = None,
+) -> bool:
+    interview_id = normalize_listing_filter(interview_id)
+    topic_id = normalize_listing_filter(topic_id)
+    entity_id = normalize_listing_filter(entity_id)
+    source = normalize_listing_filter(source)
+    fields = extract_fact_listing_fields(row)
+    if interview_id and fields["interview_id"] != interview_id:
+        return False
+    if topic_id and fields["topic_id"] != topic_id:
+        return False
+    if source:
+        candidates = {
+            fields["source_key"],
+            fields["source_chunk_id"],
+            fields["source"],
+        }
+        if source not in {item for item in candidates if item}:
+            return False
+    if entity_id:
+        props = _flatten_properties(_property_map(row.get("properties")))
+        ids = {
+            _optional_str(row.get("uuid")),
+            _optional_str(row.get("subject_uuid")),
+            _optional_str(row.get("object_uuid")),
+            _optional_str(props.get("entity_id")),
+        }
+        if entity_id not in {item for item in ids if item}:
+            return False
+    return True
+
+
 def record_from_graph_row(row: dict[str, Any]) -> FactRecord:
     kind = "relationship" if row.get("kind") == "relationship" else "node"
     props = dict(row.get("properties") or {})
@@ -505,6 +584,7 @@ def record_from_graph_row(row: dict[str, Any]) -> FactRecord:
     verification = extract_verification({**props, "uuid": fact_id})
     verification.fact_id = fact_id
     verification.kind = kind
+    listing = extract_fact_listing_fields({**row, "properties": props})
     return FactRecord(
         kind=kind,
         fact_id=fact_id,
@@ -520,6 +600,11 @@ def record_from_graph_row(row: dict[str, Any]) -> FactRecord:
         object_name=_optional_str(row.get("object_name")),
         object_labels=list(row.get("object_labels") or []),
         labels=list(row.get("labels") or []),
+        interview_id=listing["interview_id"],
+        topic_id=listing["topic_id"],
+        source_key=listing["source_key"],
+        source_chunk_id=listing["source_chunk_id"],
+        source=listing["source"],
     )
 
 

@@ -1350,8 +1350,15 @@ class PostgreSQLDataClient(DataClient):
             clauses.append("status = %s")
             params.append(status)
         if source:
-            clauses.append("%s = ANY(source_keys)")
-            params.append(source)
+            pattern = _ilike_pattern(source)
+            clauses.append(
+                "("
+                "%s = ANY(source_keys) OR "
+                "EXISTS (SELECT 1 FROM unnest(COALESCE(source_keys, ARRAY[]::text[])) AS k WHERE k ILIKE %s) OR "
+                "document::text ILIKE %s"
+                ")"
+            )
+            params.extend([source, pattern, pattern])
         if subject:
             clauses.append("subject_name ILIKE %s")
             params.append(_ilike_pattern(subject))

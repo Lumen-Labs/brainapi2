@@ -9,6 +9,7 @@ from src.core.saving.conflicts import (
     dismiss_conflict,
     get_conflict,
     list_conflicts,
+    reopen_conflict,
     resolve_conflict_authorized,
 )
 from src.core.saving.validity import InvalidAsOf, optional_instant
@@ -141,6 +142,7 @@ def dismiss_conflict_tool(
     *,
     authorized: bool,
     notes: str | None = None,
+    actor: str | None = None,
 ) -> dict[str, Any] | str:
     if not authorized:
         return "Unauthorized"
@@ -152,9 +154,40 @@ def dismiss_conflict_tool(
             brain_id,
             str(conflict_id).strip(),
             notes=notes or None,
+            resolved_by=(actor or "").strip() or "system",
         )
     except KeyError:
         return "Error: conflict not found"
+    return {"conflict": _dump(conflict)}
+
+
+def reopen_conflict_tool(
+    adapter: Any,
+    brain_id: str,
+    conflict_id: str,
+    *,
+    authorized: bool,
+    notes: str | None = None,
+    actor: str | None = None,
+    graph: Any | None = None,
+) -> dict[str, Any] | str:
+    if not authorized:
+        return "Unauthorized"
+    if not str(conflict_id or "").strip():
+        return "Error: conflict id is required"
+    try:
+        conflict = reopen_conflict(
+            adapter,
+            brain_id,
+            str(conflict_id).strip(),
+            notes=notes or None,
+            resolved_by=(actor or "").strip() or "system",
+            graph=graph,
+        )
+    except KeyError:
+        return "Error: conflict not found"
+    except ValueError as exc:
+        return f"Error: {exc}"
     return {"conflict": _dump(conflict)}
 
 

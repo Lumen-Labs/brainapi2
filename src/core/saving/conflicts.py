@@ -160,9 +160,10 @@ _DURATION_UNITS = {
 }
 
 _NUMBER_RE = re.compile(
-    r"(?P<num>\d+(?:\.\d+)?)\s*(?P<unit>days?|d|weeks?|wks?|wk|months?|mo|years?|yrs?|yr|hours?|hrs?|hr|fortnight)?",
+    r"(?P<num>\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)\s*(?P<unit>days?|d|weeks?|wks?|wk|months?|mo|years?|yrs?|yr|hours?|hrs?|hr|fortnight)?",
     re.I,
 )
+_EMBEDDED_YEAR_RE = re.compile(r"\b(1[0-9]{3}|20[0-9]{2})\b")
 _WORD_NUMBERS = {
     "a": 1.0,
     "an": 1.0,
@@ -405,13 +406,22 @@ def _polarity_of(node: Any, props: dict[str, Any]) -> str:
 
 
 def _amount_of(predicate: Any, props: dict[str, Any], value_text: str) -> float | None:
+    from src.core.saving.numeric_literals import coerce_amount, parse_stated_number
+
     raw = getattr(predicate, "amount", None)
     if raw is None:
         raw = props.get("amount")
     if isinstance(raw, (int, float)) and not isinstance(raw, bool):
         return float(raw)
+    if raw is not None and not isinstance(raw, str):
+        coerced = coerce_amount(raw)
+        if coerced is not None:
+            return coerced
     if parse_date_value(value_text) is not None:
         return None
+    stated = parse_stated_number(value_text)
+    if stated is not None:
+        return stated
     parsed = parse_quantity(value_text)
     if parsed is None:
         return None
@@ -432,7 +442,7 @@ def parse_quantity(text: str | None) -> tuple[float, str] | None:
     match = _NUMBER_RE.search(lowered)
     if not match:
         return None
-    number = float(match.group("num"))
+    number = float(match.group("num").replace(",", ""))
     unit = (match.group("unit") or "").lower()
     if unit in _DURATION_UNITS:
         return number * _DURATION_UNITS[unit], "days"
@@ -504,6 +514,10 @@ def _bare_year(text: str | None) -> int | None:
     return int(token)
 
 
+def _years_in(text: str | None) -> set[int]:
+    return {int(match.group(1)) for match in _EMBEDDED_YEAR_RE.finditer(normalize_value(text))}
+
+
 def values_equivalent(left: str, right: str) -> bool:
     a = normalize_value(left)
     b = normalize_value(right)
@@ -513,6 +527,10 @@ def values_equivalent(left: str, right: str) -> bool:
     year_b = _bare_year(right)
     if year_a is not None and year_b is not None:
         return year_a == year_b
+    years_a = _years_in(left)
+    years_b = _years_in(right)
+    if years_a and years_b and years_a != years_b:
+        return False
     date_a = parse_date_value(left)
     date_b = parse_date_value(right)
     if date_a is not None and date_b is not None:
@@ -631,8 +649,10 @@ def snapshot_from_triple(triple: Any) -> dict[str, Any] | None:
     predicate_name = str(getattr(predicate, "name", "") or props.get("rel_type") or "")
     object_name = str(getattr(obj, "name", "") or "")
     description = str(getattr(predicate, "description", "") or props.get("description") or "")
-    value = object_name or description
-    amount = _amount_of(predicate, props, value)
+    amount = _amount_of(predicate, props, object_name or description)
+    from src.core.saving.numeric_literals import display_numeric_value
+
+    value = display_numeric_value(object_name, description, amount)
     return {
         "fact_id": fact_id,
         "subject_uuid": subject_uuid,
@@ -656,6 +676,8 @@ def snapshot_from_triple(triple: Any) -> dict[str, Any] | None:
         "source_timestamp": props.get("source_timestamp"),
         "source_key": props.get("source_key"),
         "document": props.get("document") or props.get("source"),
+        "source_text": props.get("source_text") or props.get("source_span"),
+        "source_span": props.get("source_span"),
     }
 
 
@@ -706,6 +728,10 @@ def classify_disagreement(left: dict[str, Any], right: dict[str, Any]) -> tuple[
     year_a = _bare_year(left.get("value") or "")
     year_b = _bare_year(right.get("value") or "")
     if year_a is not None and year_b is not None and year_a != year_b:
+        return "numeric_mismatch", 0.96
+    years_a = _years_in(left.get("value") or "")
+    years_b = _years_in(right.get("value") or "")
+    if years_a and years_b and years_a != years_b:
         return "numeric_mismatch", 0.96
     qty_a = parse_quantity(left.get("value") or "")
     qty_b = parse_quantity(right.get("value") or "")
@@ -1304,6 +1330,14 @@ def _enrich_source(snapshot: dict[str, Any], chunks: dict[str, Any]) -> dict[str
         if text:
             enriched["source_text"] = text[:500]
         break
+    if not enriched.get("document"):
+        enriched["document"] = enriched.get("source_key")
+    if not enriched.get("source_text"):
+        enriched["source_text"] = (
+            enriched.get("source_span")
+            or enriched.get("description")
+            or enriched.get("source_text")
+        )
     return enriched
 
 
@@ -2042,6 +2076,161 @@ def _optional_graph(graph: Any | None = None) -> Any | None:
     return graph
 
 
+def conflict_matches_source_filter(
+    conflict: FactConflict | None, source: str | None
+) -> bool:
+    needle = (source or "").strip()
+    if not needle:
+        return True
+    if conflict is None:
+        return False
+    lowered = needle.lower()
+    candidates: list[str] = list(conflict.source_keys())
+    for side in conflict.sides or []:
+        src = side.source
+        candidates.extend(
+            [
+                src.source_key or "",
+                src.document or "",
+                src.text or "",
+            ]
+        )
+        candidates.extend(src.chunk_ids or [])
+    return any(lowered in str(item).lower() for item in candidates if item)
+
+
+def _triple_for_fact(graph: Any, brain_id: str, fact_id: str):
+    if graph is None or not fact_id:
+        return None
+    getter = getattr(graph, "get_triples_by_uuid", None)
+    if not callable(getter):
+        return None
+    try:
+        triples = getter([fact_id], brain_id)
+    except TypeError:
+        try:
+            triples = getter([fact_id], brain_id=brain_id)
+        except Exception:
+            return None
+    except Exception:
+        return None
+    if triples:
+        return triples[0]
+    return None
+
+
+def _side_from_fact_id(
+    fact_id: str, graph: Any, brain_id: str | None, data: Any
+) -> ConflictSide | None:
+    triple = _triple_for_fact(graph, brain_id or "", fact_id)
+    if triple is None:
+        return None
+    snap = snapshot_from_triple(triple)
+    if not snap:
+        return None
+    chunks = _load_chunk_map(data, brain_id or "", snap.get("source_chunk_ids") or [])
+    snap = _enrich_source(snap, chunks)
+    return _side_from_snapshot(snap)
+
+
+def _fill_side_from_graph(
+    side: ConflictSide, graph: Any, brain_id: str | None, data: Any
+) -> ConflictSide:
+    from src.core.saving.numeric_literals import coerce_amount, display_numeric_value
+
+    rebuilt = _side_from_fact_id(side.fact_id, graph, brain_id, data)
+    if rebuilt is None:
+        chunks = _load_chunk_map(data, brain_id or "", side.source.chunk_ids)
+        snap = {
+            "source_chunk_ids": side.source.chunk_ids,
+            "source_key": side.source.source_key,
+            "document": side.source.document,
+            "source_text": side.source.text,
+            "source_timestamp": side.source.timestamp,
+            "source_span": None,
+            "description": side.value,
+        }
+        enriched = _enrich_source(snap, chunks)
+        side.source = ConflictSource(
+            chunk_ids=list(enriched.get("source_chunk_ids") or side.source.chunk_ids),
+            source_key=enriched.get("source_key") or side.source.source_key,
+            document=enriched.get("document") or side.source.document,
+            timestamp=enriched.get("source_timestamp") or side.source.timestamp,
+            text=enriched.get("source_text") or side.source.text,
+        )
+        if side.amount is None:
+            side.amount = coerce_amount(side.value)
+        if side.value:
+            object_name = side.object.name if side.object else ""
+            side.value = display_numeric_value(object_name, side.value, side.amount)
+        return side
+    if not side.value:
+        side.value = rebuilt.value
+    if side.amount is None:
+        side.amount = rebuilt.amount
+    object_name = (side.object.name if side.object else "") or (
+        rebuilt.object.name if rebuilt.object else ""
+    )
+    side.value = display_numeric_value(object_name, side.value, side.amount)
+    if (not side.subject or not side.subject.name) and rebuilt.subject:
+        side.subject = rebuilt.subject
+    if (not side.object or not side.object.name) and rebuilt.object:
+        side.object = rebuilt.object
+    src = side.source
+    rebuilt_src = rebuilt.source
+    side.source = ConflictSource(
+        chunk_ids=src.chunk_ids or rebuilt_src.chunk_ids,
+        source_key=src.source_key or rebuilt_src.source_key,
+        document=src.document
+        or rebuilt_src.document
+        or src.source_key
+        or rebuilt_src.source_key,
+        timestamp=src.timestamp or rebuilt_src.timestamp,
+        text=src.text or rebuilt_src.text,
+    )
+    return side
+
+
+def present_conflict(
+    conflict: FactConflict | None,
+    *,
+    graph: Any | None = None,
+    brain_id: str | None = None,
+    data: Any | None = None,
+) -> FactConflict | None:
+    if conflict is None:
+        return None
+    from src.core.saving.conflict_verification import hydrate_conflict_sides
+
+    live_graph = _optional_graph(graph)
+    hydrate_conflict_sides(conflict, graph=live_graph, brain_id=brain_id)
+    if not conflict.sides:
+        rebuilt: list[ConflictSide] = []
+        for fact_id in conflict.fact_ids():
+            side = _side_from_fact_id(fact_id, live_graph, brain_id, data)
+            if side is not None:
+                rebuilt.append(side)
+        if rebuilt:
+            conflict.sides = rebuilt
+    else:
+        conflict.sides = [
+            _fill_side_from_graph(side, live_graph, brain_id, data)
+            for side in conflict.sides
+        ]
+    empty_subject = (
+        conflict.subject is None
+        or not ((conflict.subject.name or "").strip() or (conflict.subject.uuid or "").strip())
+    )
+    if empty_subject and conflict.sides:
+        for side in conflict.sides:
+            if side.subject and (
+                (side.subject.name or "").strip() or (side.subject.uuid or "").strip()
+            ):
+                conflict.subject = side.subject
+                break
+    return conflict
+
+
 def get_conflict(
     adapter: Any,
     brain_id: str,
@@ -2049,15 +2238,16 @@ def get_conflict(
     *,
     graph: Any | None = None,
 ) -> FactConflict | None:
-    from src.core.saving.conflict_verification import hydrate_conflict_sides
-
     row = adapter.get_conflict_by_id(conflict_id, brain_id)
     if isinstance(row, FactConflict):
         conflict = row
     else:
         conflict = conflict_from_document(row if isinstance(row, dict) else None)
-    return hydrate_conflict_sides(
-        conflict, graph=_optional_graph(graph), brain_id=brain_id
+    return present_conflict(
+        conflict,
+        graph=_optional_graph(graph),
+        brain_id=brain_id,
+        data=adapter,
     )
 
 
@@ -2092,14 +2282,12 @@ def list_conflicts(
             parsed = conflict_from_document(row if isinstance(row, dict) else None)
             if parsed is not None:
                 conflicts.append(parsed)
-    from src.core.saving.conflict_verification import hydrate_conflict_sides
-
     live_graph = _optional_graph(graph)
     hydrated = [
-        hydrate_conflict_sides(item, graph=live_graph, brain_id=brain_id)
+        present_conflict(item, graph=live_graph, brain_id=brain_id, data=adapter)
         for item in conflicts
     ]
-    return hydrated, int(total or len(hydrated))
+    return [item for item in hydrated if item is not None], int(total or len(hydrated))
 
 
 def _apply_resolution(
@@ -2111,7 +2299,7 @@ def _apply_resolution(
     method: str,
     winning_fact_id: str | None = None,
     notes: str | None = None,
-    resolved_by: str = "api",
+    resolved_by: str = "system",
     graph: Any | None = None,
     apply_facts: bool = True,
 ) -> FactConflict:
@@ -2184,7 +2372,7 @@ def resolve_conflict(
     winning_fact_id: str | None = None,
     notes: str | None = None,
     method: str = "manual",
-    resolved_by: str = "api",
+    resolved_by: str = "system",
     graph: Any | None = None,
     apply_facts: bool = True,
 ) -> FactConflict:
@@ -2248,7 +2436,7 @@ def dismiss_conflict(
     conflict_id: str,
     *,
     notes: str | None = None,
-    resolved_by: str = "api",
+    resolved_by: str = "system",
 ) -> FactConflict:
     return _apply_resolution(
         adapter,
@@ -2259,6 +2447,40 @@ def dismiss_conflict(
         notes=notes,
         resolved_by=resolved_by,
     )
+
+
+def reopen_conflict(
+    adapter: Any,
+    brain_id: str,
+    conflict_id: str,
+    *,
+    notes: str | None = None,
+    resolved_by: str = "system",
+    graph: Any | None = None,
+) -> FactConflict:
+    conflict = get_conflict(adapter, brain_id, conflict_id, graph=graph)
+    if conflict is None:
+        raise KeyError(conflict_id)
+    if conflict.status not in {"dismissed", "resolved"}:
+        raise ValueError("only dismissed or resolved conflicts can be reopened")
+    previous = conflict.resolution
+    extra = (notes or "").strip() or "reopened"
+    if previous and previous.notes:
+        extra = f"{previous.notes}; {extra}"
+    conflict.status = "open"
+    conflict.resolution = ConflictResolution(
+        method=None,
+        winning_fact_id=None,
+        notes=extra,
+        resolved_at=format_instant(utc_now()),
+        resolved_by=resolved_by,
+    )
+    from src.core.saving.conflict_verification import hydrate_conflict_sides
+
+    hydrate_conflict_sides(
+        conflict, graph=_optional_graph(graph), brain_id=brain_id
+    )
+    return adapter.update_conflict(conflict, brain_id) or conflict
 
 
 def resolve_by_verified_fact(

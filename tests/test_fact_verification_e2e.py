@@ -148,12 +148,26 @@ def _seed_facts(adapter: GraphAdapter) -> dict[str, str]:
     )
     adapter.add_relationship(alice, made, event, BRAIN_ID)
     adapter.add_relationship(event, targeted, bob, BRAIN_ID)
+    tagged = Predicate(
+        uuid="rel-tagged",
+        name="MENTIONED",
+        description="mentioned",
+        flow_key="flow-2",
+        properties={
+            "interview_id": "int-9",
+            "topic_id": "top-3",
+            "source_key": "src-notes",
+            "source_chunk_id": "chunk-77",
+        },
+    )
+    adapter.add_relationship(alice, tagged, bob, BRAIN_ID)
     return {
         "alice": alice.uuid,
         "event": event.uuid,
         "bob": bob.uuid,
         "made": made.uuid,
         "targeted": targeted.uuid,
+        "tagged": tagged.uuid,
     }
 
 
@@ -473,3 +487,54 @@ def test_concurrent_verification_appends_history():
     history = parse_history((row.get("properties") or {}).get("verification_history"))
     assert len(history) == 2
     assert {entry.note for entry in history} == {"one", "two"}
+
+
+def test_list_facts_returns_source_metadata_and_filters_server_side():
+    client = _memory_graph_client()
+    adapter = _adapter_for(client)
+    ids = _seed_facts(adapter)
+    with _patched_graph_adapter(adapter):
+        api = TestClient(_app())
+
+        listed = api.get("/model/facts")
+        assert listed.status_code == 200, listed.text
+        body = listed.json()
+        unfiltered_total = body["total"]
+        by_id = {item["fact_id"]: item for item in body["facts"]}
+        tagged = by_id[ids["tagged"]]
+        assert tagged["interview_id"] == "int-9"
+        assert tagged["topic_id"] == "top-3"
+        assert tagged["source_key"] == "src-notes"
+        assert tagged["source_chunk_id"] == "chunk-77"
+        assert tagged["source"] == "src-notes"
+        assert by_id[ids["made"]].get("interview_id") in (None, "")
+
+        by_interview = api.get("/model/facts", params={"interview_id": "int-9"})
+        assert by_interview.status_code == 200, by_interview.text
+        interview_body = by_interview.json()
+        assert interview_body["total"] == 1
+        assert interview_body["facts"][0]["fact_id"] == ids["tagged"]
+        assert interview_body["total"] < unfiltered_total
+
+        by_topic = api.get("/model/facts", params={"topic_id": "top-3"})
+        assert {item["fact_id"] for item in by_topic.json()["facts"]} == {ids["tagged"]}
+        assert by_topic.json()["total"] == 1
+
+        by_source = api.get("/model/facts", params={"source": "src-notes"})
+        assert {item["fact_id"] for item in by_source.json()["facts"]} == {ids["tagged"]}
+        assert by_source.json()["total"] == 1
+
+        by_entity = api.get("/model/facts", params={"entity_id": ids["alice"]})
+        entity_ids = {item["fact_id"] for item in by_entity.json()["facts"]}
+        assert ids["tagged"] in entity_ids
+        assert ids["made"] in entity_ids
+        assert ids["targeted"] not in entity_ids
+        assert by_entity.json()["total"] == len(entity_ids)
+
+        paged = api.get(
+            "/model/facts",
+            params={"entity_id": ids["alice"], "limit": 1, "skip": 0},
+        )
+        assert paged.status_code == 200
+        assert paged.json()["total"] == by_entity.json()["total"]
+        assert len(paged.json()["facts"]) == 1

@@ -192,7 +192,8 @@ class StructuredErrorTests(unittest.TestCase):
 
 class PublicApiTests(unittest.TestCase):
     def test_health_is_typed_and_public(self):
-        response = TestClient(_public_app()).get("/health")
+        with patch.dict(os.environ, {"BUILD_SHA": "", "GIT_SHA": ""}, clear=False):
+            response = TestClient(_public_app()).get("/health")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "ok")
         self.assertEqual(response.json()["service"], "brainapi")
@@ -202,6 +203,21 @@ class PublicApiTests(unittest.TestCase):
         ]
         self.assertEqual(expected, "2.23.0")
         self.assertEqual(response.json()["version"], expected)
+        self.assertEqual(response.json()["build"], "unknown")
+        self.assertEqual(
+            set(response.json()),
+            {"status", "service", "version", "build"},
+        )
+
+    def test_health_reports_build_sha_from_env(self):
+        with patch.dict(os.environ, {"BUILD_SHA": "deadbeef123"}):
+            response = TestClient(_public_app()).get("/health")
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["status"], "ok")
+        self.assertEqual(body["service"], "brainapi")
+        self.assertEqual(body["build"], "deadbeef123")
+        self.assertIn("version", body)
 
     def test_full_app_exempts_machine_routes_and_authenticates_protected_routes(self):
         from src.services.api.app import app

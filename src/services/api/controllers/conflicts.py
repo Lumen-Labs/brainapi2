@@ -15,6 +15,7 @@ from src.core.saving.conflicts import (
     dismiss_conflict,
     get_conflict,
     list_conflicts,
+    reopen_conflict,
     resolve_conflict_authorized,
 )
 from src.services.api.dependencies import verification_denied_exception
@@ -132,10 +133,17 @@ async def dismiss_conflict_by_id(
     id: str,
     brain_id: str = "default",
     notes: Optional[str] = None,
+    actor: Optional[str] = None,
 ):
     def _dismiss():
         try:
-            return dismiss_conflict(data_adapter, brain_id, id, notes=notes)
+            return dismiss_conflict(
+                data_adapter,
+                brain_id,
+                id,
+                notes=notes,
+                resolved_by=(actor or "").strip() or "system",
+            )
         except KeyError:
             raise HTTPException(status_code=404, detail="Conflict not found")
 
@@ -143,6 +151,36 @@ async def dismiss_conflict_by_id(
     return JSONResponse(
         content={
             "message": "Conflict dismissed",
+            "conflict": _dump(result),
+        }
+    )
+
+
+async def reopen_conflict_by_id(
+    id: str,
+    brain_id: str = "default",
+    notes: Optional[str] = None,
+    actor: Optional[str] = None,
+):
+    def _reopen():
+        try:
+            return reopen_conflict(
+                data_adapter,
+                brain_id,
+                id,
+                notes=notes,
+                resolved_by=(actor or "").strip() or "system",
+                graph=graph_adapter,
+            )
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Conflict not found")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    result = await asyncio.to_thread(_reopen)
+    return JSONResponse(
+        content={
+            "message": "Conflict reopened",
             "conflict": _dump(result),
         }
     )

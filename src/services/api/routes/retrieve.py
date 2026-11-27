@@ -15,12 +15,13 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from src.core.auth.scopes import has_verification_scope
 from src.services.api.dependencies import (
-    get_auth_principal,
     get_auth_scopes,
     get_brain_id,
+    resolve_request_actor,
 )
 from src.services.api.constants.requests import (
     ConflictDismissRequest,
+    ConflictReopenRequest,
     ConflictResolveRequest,
     ConflictScanRequest,
     GetEntityContextResponse,
@@ -91,6 +92,7 @@ from src.services.api.controllers.conflicts import (
     get_conflict_by_id as get_conflict_by_id_controller,
     get_conflict_report as get_conflict_report_controller,
     get_conflicts_list as get_conflicts_list_controller,
+    reopen_conflict_by_id as reopen_conflict_by_id_controller,
     resolve_conflict_by_id as resolve_conflict_by_id_controller,
     start_conflict_scan as start_conflict_scan_controller,
 )
@@ -560,7 +562,16 @@ async def get_conflicts_list(
     limit: int = 10,
     skip: int = 0,
     status: Optional[str] = Query(None, description="open, resolved, or dismissed"),
-    source: Optional[str] = Query(None, description="Filter by source_key"),
+    source: Optional[str] = Query(
+        None,
+        description=(
+            "Exact source_key: a caller source_id, an identity-scoped path "
+            "`text:{brain_id}:{path}`, or a unique untitled paste `text:untitled:{uuid}`. "
+            "`text:paste` is never a default. Also matches a substring of source_key, "
+            "document title, or source quote. A document title such as QARC-20261126 "
+            "is not the key unless stored as source_id."
+        ),
+    ),
     subject: Optional[str] = Query(None, description="Filter by subject name"),
     since: Optional[str] = Query(None, description="ISO-8601 detected_at start"),
     until: Optional[str] = Query(None, description="ISO-8601 detected_at end"),
@@ -609,7 +620,7 @@ async def resolve_conflict_by_id(
     id: str,
     request: ConflictResolveRequest = Body(default_factory=ConflictResolveRequest),
     brain_id: str = Depends(get_brain_id),
-    actor: Optional[str] = Depends(get_auth_principal),
+    actor: str = Depends(resolve_request_actor),
     scopes: list[str] = Depends(get_auth_scopes),
 ):
     return await resolve_conflict_by_id_controller(
@@ -628,8 +639,23 @@ async def dismiss_conflict_by_id(
     id: str,
     request: ConflictDismissRequest = Body(default_factory=ConflictDismissRequest),
     brain_id: str = Depends(get_brain_id),
+    actor: str = Depends(resolve_request_actor),
 ):
-    return await dismiss_conflict_by_id_controller(id, brain_id, request.notes)
+    return await dismiss_conflict_by_id_controller(
+        id, brain_id, request.notes, actor=actor
+    )
+
+
+@retrieve_router.post(path="/conflicts/{id}/reopen", response_model=ConflictItemResponse)
+async def reopen_conflict_by_id(
+    id: str,
+    request: ConflictReopenRequest = Body(default_factory=ConflictReopenRequest),
+    brain_id: str = Depends(get_brain_id),
+    actor: str = Depends(resolve_request_actor),
+):
+    return await reopen_conflict_by_id_controller(
+        id, brain_id, request.notes, actor=actor
+    )
 
 
 @retrieve_router.get(path="/changelogs/{id}", response_model=ChangelogItemResponse)

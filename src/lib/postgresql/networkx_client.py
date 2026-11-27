@@ -227,14 +227,18 @@ class NetworkXGraphClient(GraphClient):
             rel_props.pop(key, None)
         for attr in ("properties", "happened_at", "last_updated", "amount"):
             value = getattr(predicate, attr, None)
-            if value:
-                if attr == "properties" and isinstance(value, dict):
-                    value = {
-                        key: item
-                        for key, item in value.items()
-                        if not is_reserved_verification_key(key)
-                    }
-                rel_props[attr] = value
+            if attr == "amount":
+                if value is None:
+                    continue
+            elif not value:
+                continue
+            if attr == "properties" and isinstance(value, dict):
+                value = {
+                    key: item
+                    for key, item in value.items()
+                    if not is_reserved_verification_key(key)
+                }
+            rel_props[attr] = value
         for attr in ("properties", "description", "happened_at", "flow_key", "last_updated", "amount"):
             for obj in (subject, to_object):
                 value = getattr(obj, attr, None)
@@ -1902,13 +1906,22 @@ class NetworkXGraphClient(GraphClient):
         include_rejected: bool = False,
         limit: int = 50,
         skip: int = 0,
+        interview_id: Optional[str] = None,
+        topic_id: Optional[str] = None,
+        entity_id: Optional[str] = None,
+        source: Optional[str] = None,
     ) -> tuple[list[dict], int]:
-        from src.core.verification.facts import normalize_state
+        from src.core.verification.facts import (
+            fact_row_matches_listing_filters,
+            normalize_state,
+        )
 
         self._store.ensure_database(brain_id)
         brain = self._store.get_brain(brain_id)
         rows: list[dict] = []
-        for source, target, key, edge_data in brain.graph.edges(keys=True, data=True):
+        for subject_uuid, object_uuid, key, edge_data in brain.graph.edges(
+            keys=True, data=True
+        ):
             if str(edge_data.get("rel_type") or "") == "HUB_BRIDGE":
                 continue
             current = normalize_state(edge_data.get("verification_state"))
@@ -1916,7 +1929,18 @@ class NetworkXGraphClient(GraphClient):
                 continue
             if not include_rejected and current == "rejected":
                 continue
-            rows.append(self._relationship_fact_row(brain, source, target, key, edge_data))
+            row = self._relationship_fact_row(
+                brain, subject_uuid, object_uuid, key, edge_data
+            )
+            if not fact_row_matches_listing_filters(
+                row,
+                interview_id=interview_id,
+                topic_id=topic_id,
+                entity_id=entity_id,
+                source=source,
+            ):
+                continue
+            rows.append(row)
         for node_uuid, data in brain.graph.nodes(data=True):
             labels = {str(label).upper() for label in (data.get("labels") or [])}
             if "EVENT" not in labels:
@@ -1926,7 +1950,16 @@ class NetworkXGraphClient(GraphClient):
                 continue
             if not include_rejected and current == "rejected":
                 continue
-            rows.append(self._node_fact_row(brain, node_uuid))
+            row = self._node_fact_row(brain, node_uuid)
+            if not fact_row_matches_listing_filters(
+                row,
+                interview_id=interview_id,
+                topic_id=topic_id,
+                entity_id=entity_id,
+                source=source,
+            ):
+                continue
+            rows.append(row)
         rows.sort(key=lambda row: str(row.get("uuid") or ""))
         total = len(rows)
         return rows[skip : skip + limit], total

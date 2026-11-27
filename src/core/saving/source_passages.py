@@ -195,7 +195,11 @@ def prepare_source_revision(
     recorded_at: str | None = None,
     out_superseded: list[str] | None = None,
 ) -> Revision:
-    """Mark older current chunks for this key, or report that the hash is unchanged.
+    """Collect older current chunk ids for this key, or report an unchanged hash.
+
+    Inserts do not mark the previous copy superseded. The caller marks those
+    ids after the new revision is extracted and written. Unchanged re-pastes
+    still close leftover stale copies immediately.
 
     Mutates ``meta_keys`` to record ``source_content_hash`` when a new copy will be stored.
     """
@@ -227,10 +231,7 @@ def prepare_source_revision(
             _mark(adapter, brain_id, stale, closed_at),
         )
         return "unchanged"
-    _record_superseded(
-        out_superseded,
-        _mark(adapter, brain_id, current, closed_at),
-    )
+    _record_superseded(out_superseded, _chunk_ids(current))
     meta_keys["source_content_hash"] = digest
     stamped = stamp_valid_from(
         meta_keys, source_timestamp, recorded_at=ingest_at
@@ -265,6 +266,10 @@ def close_source_document(
     if not current:
         return []
     return _mark(adapter, brain_id, current, _stamp(closed_at))
+
+
+def _chunk_ids(chunks: list[TextChunk]) -> list[str]:
+    return [str(chunk.id) for chunk in chunks if getattr(chunk, "id", None)]
 
 
 def _record_superseded(out_superseded: list[str] | None, ids: list[str]) -> None:

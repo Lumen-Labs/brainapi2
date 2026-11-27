@@ -36,6 +36,14 @@ def principal_for_system() -> str:
     return "system"
 
 
+def is_system_principal(principal: str | None) -> bool:
+    return str(principal or "").strip() == principal_for_system()
+
+
+def principal_for_user(user_id: str) -> str:
+    return f"user:{user_id}"
+
+
 def principal_for_brain(name_key: str) -> str:
     return f"brainpat:{name_key}"
 

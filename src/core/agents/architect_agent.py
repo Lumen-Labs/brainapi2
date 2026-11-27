@@ -87,6 +87,8 @@ from src.utils.similarity.vectors import cosine_similarity
 class ArchitectOutputLimitError(ValueError):
     """A relationship batch was cut off before its output could be validated."""
 
+    code = "extraction_output_limit"
+
 
 HISTORY_MAX_MESSAGES = 25
 HISTORY_MAX_MESSAGES_DELETE = 8
@@ -154,8 +156,31 @@ def _to_architect_relationship(relationship) -> ArchitectAgentRelationship:
             data.get("name") or "",
             tip_uuid or "",
             data.get("flow_key"),
+            data.get("amount"),
         )
     return ArchitectAgentRelationship(**data)
+
+
+def _relationship_seen_key(rel) -> tuple:
+    from src.core.saving.numeric_literals import (
+        amount_identity_token,
+        retain_numeric_on_relationship,
+    )
+
+    retain_numeric_on_relationship(rel)
+    return (
+        getattr(getattr(rel, "tail", None), "uuid", None),
+        getattr(getattr(rel, "tip", None), "uuid", None),
+        getattr(rel, "name", None),
+        amount_identity_token(getattr(rel, "amount", None)),
+    )
+
+
+def _amount_kwargs(rel) -> dict:
+    amount = getattr(rel, "amount", None)
+    if amount is None:
+        return {}
+    return {"amount": amount}
 
 
 def ingestion_triples_to_relationships(
@@ -453,7 +478,7 @@ class ArchitectAgent:
                     properties=getattr(rel, "properties", {}) or {},
                     **(
                         {"amount": rel.amount}
-                        if getattr(rel, "amount", None)
+                        if getattr(rel, "amount", None) is not None
                         else {}
                     ),
                 )
@@ -529,11 +554,7 @@ class ArchitectAgent:
                         name=rel.name,
                         description=rel.description,
                         properties=getattr(rel, "properties", {}) or {},
-                        **(
-                            {"amount": getattr(rel, "amount", None)}
-                            if getattr(rel, "amount", None)
-                            else {}
-                        ),
+                        **_amount_kwargs(rel),
                     )
                 )
 
@@ -822,7 +843,7 @@ class ArchitectAgent:
                     ):
                         tip_uuid = rel.tip.uuid
                         tail_uuid = rel.tail.uuid
-                        rel_key = (tail_uuid, tip_uuid, rel.name)
+                        rel_key = _relationship_seen_key(rel)
                         if rel_key not in seen_relationship_keys:
                             seen_relationship_keys.add(rel_key)
                             new_relationships.append(rel)
@@ -976,7 +997,7 @@ class ArchitectAgent:
                 name=rel.name,
                 description=rel.description,
                 properties=getattr(rel, "properties", {}) or {},
-                **({"amount": rel.amount} if getattr(rel, "amount", None) else {}),
+                **({"amount": rel.amount} if getattr(rel, "amount", None) is not None else {}),
             )
             for rel in relationships
         ]
@@ -1045,11 +1066,7 @@ class ArchitectAgent:
                             description=rel.description,
                             tail=rel.tail,
                             properties=getattr(rel, "properties", {}),
-                            **(
-                                {"amount": getattr(rel, "amount", None)}
-                                if getattr(rel, "amount", None)
-                                else {}
-                            ),
+                            **_amount_kwargs(rel),
                         )
                         for rel in fixed_relationships
                     ]
@@ -1124,11 +1141,7 @@ class ArchitectAgent:
                         description=rel.description,
                         tail=rel.tail,
                         properties=getattr(rel, "properties", {}),
-                        **(
-                            {"amount": getattr(rel, "amount", None)}
-                            if getattr(rel, "amount", None)
-                            else {}
-                        ),
+                        **_amount_kwargs(rel),
                     )
                 )
 
@@ -1336,7 +1349,7 @@ class ArchitectAgent:
                     ):
                         tip_uuid = rel.tip.uuid
                         tail_uuid = rel.tail.uuid
-                        rel_key = (tail_uuid, tip_uuid, rel.name)
+                        rel_key = _relationship_seen_key(rel)
                         if rel_key not in seen_relationship_keys:
                             seen_relationship_keys.add(rel_key)
                             new_relationships.append(rel)
@@ -1746,18 +1759,20 @@ Description: {targeting.description}
                     props["span_end"] = rel.span_end
                 if rel.happened_at and not props.get("happened_at"):
                     props["happened_at"] = rel.happened_at
-                accepted_rels.append(
-                    _to_architect_relationship(
-                        {
-                            "tail": rel.tail.model_dump(mode="json"),
-                            "tip": rel.tip.model_dump(mode="json"),
-                            "name": rel.name,
-                            "description": rel.description,
-                            "amount": rel.amount,
-                            "properties": props,
-                        }
-                    )
+                from src.core.saving.numeric_literals import retain_numeric_on_relationship
+
+                converted = _to_architect_relationship(
+                    {
+                        "tail": rel.tail.model_dump(mode="json"),
+                        "tip": rel.tip.model_dump(mode="json"),
+                        "name": rel.name,
+                        "description": rel.description,
+                        "amount": rel.amount,
+                        "properties": props,
+                    }
                 )
+                retain_numeric_on_relationship(converted)
+                accepted_rels.append(converted)
             if accepted_rels and escalate_reason is None:
                 self.queue_relationships_for_persistence(accepted_rels)
 

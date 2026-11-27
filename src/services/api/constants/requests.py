@@ -641,6 +641,11 @@ class FactVerificationRecord(BaseModel):
     object_name: Optional[str] = None
     object_labels: List[str] = Field(default_factory=list)
     labels: List[str] = Field(default_factory=list)
+    interview_id: Optional[str] = None
+    topic_id: Optional[str] = None
+    source_key: Optional[str] = None
+    source_chunk_id: Optional[str] = None
+    source: Optional[str] = None
 
 
 class FactVerificationListResponse(BaseModel):
@@ -785,6 +790,10 @@ class ConflictResolveRequest(BaseModel):
 
 
 class ConflictDismissRequest(BaseModel):
+    notes: Optional[str] = None
+
+
+class ConflictReopenRequest(BaseModel):
     notes: Optional[str] = None
 
 

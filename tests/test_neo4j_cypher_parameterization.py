@@ -941,11 +941,22 @@ class Neo4jQueryParameterizationTests(unittest.TestCase):
             include_rejected=False,
             limit=10,
             skip=0,
+            interview_id=payload,
+            topic_id=payload,
+            entity_id=payload,
+            source=payload,
         )
         self.assertTrue(client.driver.calls)
         for query, params, _db in client.driver.calls:
             self.assertNotIn(payload, query)
             self.assertTrue(params)
+        list_query = next(
+            query for query, _params, _db in client.driver.calls if "SKIP $skip" in query
+        )
+        self.assertIn("$interview_id", list_query)
+        self.assertIn("$topic_id", list_query)
+        self.assertIn("$entity_id", list_query)
+        self.assertIn("$source", list_query)
         first_query, first_params, _db = client.driver.calls[0]
         self.assertIn("$uuid", first_query)
         self.assertEqual(first_params["uuid"], payload)

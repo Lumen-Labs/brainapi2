@@ -174,28 +174,36 @@ def _file_accepted(task_id):
     )
 
 
-async def _queue_docling_file(brain_id, task, filename, content, context, group_key):
+async def _queue_docling_file(
+    brain_id, task, filename, content, context, group_key, source_id=None
+):
     content_b64 = base64.b64encode(content).decode("ascii")
     set_ingestion_task_status(
         task, brain_id, "queued", stage="queued", group_tracking=group_key,
     )
+    discovery = {"filename": filename, "group_tracking": group_key}
+    if source_id:
+        discovery["source_id"] = source_id
     if (
         os.getenv("STAGED_INGESTION_ENABLED") == "1"
         and os.getenv("STAGED_ENRICHMENT_ENABLED") == "1"
     ):
         _submit_staged(
             brain_id, task,
-            {"filename": filename, "group_tracking": group_key},
+            discovery,
             context, kind="file_discovery", discovery=True,
             file_content=content_b64,
         )
         return
     for attempt in range(MAX_TASK_RETRIES):
         try:
+            kwargs = {"headers": {"pipeline_operation": context}} if context else {}
+            if source_id:
+                kwargs["kwargs"] = {"source_id": source_id}
             ingest_file_task.apply_async(
                 args=[content_b64, filename, brain_id, group_key],
                 task_id=task,
-                **({"headers":{"pipeline_operation":context}} if context else {}),
+                **kwargs,
             )
             return
         except OperationalError:
@@ -204,7 +212,9 @@ async def _queue_docling_file(brain_id, task, filename, content, context, group_
             await asyncio.sleep(RETRY_DELAY_BASE * (attempt + 1))
 
 
-def _forward_remote_ocr(request, brain_id, task, file, filename, content, group_key):
+def _forward_remote_ocr(
+    request, brain_id, task, file, filename, content, group_key, source_id=None
+):
     app_host = "{}://{}".format(
         request.headers.get("X-Forwarded-Proto") or request.url.scheme,
         request.headers.get("X-Forwarded-Host")
@@ -216,6 +226,10 @@ def _forward_remote_ocr(request, brain_id, task, file, filename, content, group_
     extra = {"remote_ocr_deadline": deadline}
     if small:
         extra["small_remote_ocr"] = True
+    if source_id:
+        extra["source_id"] = source_id
+    if filename:
+        extra["source_filename"] = filename
     set_ingestion_task_status(
         task,
         brain_id,
@@ -329,6 +343,13 @@ def _read_task_cache(brain_id, task_id):
     return dict(raw)
 
 
+def _cached_source_fields(brain_id, task_id):
+    try:
+        return _read_task_cache(brain_id, task_id) or {}
+    except RedisError:
+        return {}
+
+
 _OCR_CALLBACK_FIELDS = {"status", "error", "page_index", "total_pages"}
 
 
@@ -345,6 +366,33 @@ def _ingest_task_payload(data):
     ).model_dump(mode="json")
 
 
+def _attach_cached_source_id(payload, cached):
+    source_id = str((cached or {}).get("source_id") or "").strip() or None
+    filename = str((cached or {}).get("source_filename") or "").strip() or None
+    if not source_id:
+        return payload
+    from src.core.saving.source_passages import assign_revision_source_key
+
+    meta = dict(payload.get("meta_keys") or {})
+    meta["source_id"] = source_id
+    if filename:
+        meta["filename"] = filename
+    text = ""
+    data = payload.get("data") or {}
+    if isinstance(data, dict):
+        text = str(data.get("text_data") or "")
+    assign_revision_source_key(
+        meta,
+        text,
+        brain_id=payload.get("brain_id"),
+        filename=filename,
+        source_id=source_id,
+    )
+    attached = dict(payload)
+    attached["meta_keys"] = meta
+    return attached
+
+
 def _accept_remote_ocr_callback(brain_id, task_id, data, context):
     from src.core.saving import ingest_staging
 
@@ -356,9 +404,15 @@ def _accept_remote_ocr_callback(brain_id, task_id, data, context):
             brain_id, task_id, error, page_index=page_index, total_pages=total_pages,
         )
         return _ocr_callback_accepted(task_id)
+    cached = _cached_source_fields(brain_id, task_id)
     _submit_staged(
-        brain_id, task_id, _ingest_task_payload(data), context, existing_ocr=True,
-        page_index=page_index, total_pages=total_pages,
+        brain_id,
+        task_id,
+        _attach_cached_source_id(_ingest_task_payload(data), cached),
+        context,
+        existing_ocr=True,
+        page_index=page_index,
+        total_pages=total_pages,
     )
     return _ocr_callback_accepted(task_id)
 
@@ -588,11 +642,16 @@ async def _queue_ingest_payload(data, brain_id, task_id, context, flow_task_iden
         group_tracking=data.group_tracking,
         extra=extra,
     )
+    payload = _ingest_task_payload(data)
+    if flow_task_identifier:
+        payload = _attach_cached_source_id(
+            payload, _cached_source_fields(brain_id, task_id)
+        )
 
     if os.getenv("STAGED_INGESTION_ENABLED") == "1" and (
         data.skip_enrichment or os.getenv("STAGED_ENRICHMENT_ENABLED") == "1"
     ):
-        _submit_staged(brain_id, task_id, _ingest_task_payload(data), context)
+        _submit_staged(brain_id, task_id, payload, context)
         return JSONResponse(
             status_code=202,
             content={"message": "Ingestion accepted", "task_id": task_id},
@@ -605,7 +664,7 @@ async def _queue_ingest_payload(data, brain_id, task_id, context, flow_task_iden
     for attempt in range(MAX_TASK_RETRIES):
         try:
             ingest_data_task.apply_async(
-                args=[_ingest_task_payload(data)],
+                args=[payload],
                 task_id=task_id,
                 **({"headers": headers} if headers else {}),
             )
@@ -904,9 +963,9 @@ async def _dispatch_file_ingest(
     if config.ocr_mode == "docling":
         payload = file.file.read() if content is None else content
         await _queue_docling_file(
-            brain_id, task, filename, payload, context, group_key,
+            brain_id, task, filename, payload, context, group_key, source_id,
         )
         return
     _forward_remote_ocr(
-        request, brain_id, task, file, filename, content, group_key,
+        request, brain_id, task, file, filename, content, group_key, source_id,
     )

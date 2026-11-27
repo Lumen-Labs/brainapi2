@@ -771,7 +771,15 @@ class MongoClient(DataClient):
         if status:
             query["status"] = status
         if source:
-            query["sides.source.source_key"] = source
+            import re as _re
+
+            escaped = _re.escape(source)
+            query["$or"] = [
+                {"sides.source.source_key": source},
+                {"sides.source.source_key": {"$regex": escaped, "$options": "i"}},
+                {"sides.source.document": {"$regex": escaped, "$options": "i"}},
+                {"sides.source.text": {"$regex": escaped, "$options": "i"}},
+            ]
         if subject:
             query["subject.name"] = {"$regex": subject, "$options": "i"}
         if since is not None or until is not None:
