@@ -62,6 +62,11 @@ class ProvenanceHelpersTests(unittest.TestCase):
         )
         self.assertEqual(props["source_chunk_ids"], ["chunk-0", "chunk-1", "chunk-2"])
         self.assertEqual(props["source_timestamp"], "01/05/2023")
+        keyed = stamp_provenance(
+            {"source_chunk_ids": ["chunk-1"]},
+            source_key="text:profile.txt:abc",
+        )
+        self.assertEqual(keyed["source_key"], "text:profile.txt:abc")
 
 
 class RelativeDateTests(unittest.TestCase):

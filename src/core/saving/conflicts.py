@@ -99,6 +99,9 @@ FUNCTIONAL_PREDICATES = frozenset(
         "RATE",
         "AMOUNT",
         "PRICE",
+        "COSTS",
+        "PRICED_AT",
+        "UNIT_PRICE",
         "DEADLINE",
         "VALIDITY",
         "RETENTION",
@@ -111,6 +114,60 @@ FUNCTIONAL_PREDICATES = frozenset(
         "PROHIBITS",
         "HEADQUARTERED_IN",
         "LOCATED_IN",
+        "BASED_IN",
+        "BORN_IN",
+        "LIVES_IN",
+        "LIVES_AT",
+        "FOUNDED",
+        "FOUNDED_IN",
+        "FOUNDED_YEAR",
+        "ESTABLISHED",
+        "ESTABLISHED_IN",
+        "HAS_CEO",
+        "CEO",
+        "LED_BY",
+        "HAS_TITLE",
+        "EMPLOYED_BY",
+        "WORKS_AT",
+        "MARRIED_TO",
+        "EMPLOYEE_COUNT",
+        "HAS_EMPLOYEE_COUNT",
+        "OPERATES",
+    }
+)
+
+IDENTITY_FUNCTIONAL_PREDICATES = frozenset(
+    {
+        "HEADQUARTERED_IN",
+        "LOCATED_IN",
+        "BASED_IN",
+        "BORN_IN",
+        "LIVES_IN",
+        "LIVES_AT",
+        "FOUNDED",
+        "FOUNDED_IN",
+        "FOUNDED_YEAR",
+        "ESTABLISHED",
+        "ESTABLISHED_IN",
+        "HAS_CEO",
+        "CEO",
+        "LED_BY",
+        "HAS_TITLE",
+        "EMPLOYED_BY",
+        "WORKS_AT",
+        "MARRIED_TO",
+        "HAS_STATUS",
+        "STATUS",
+    }
+)
+
+_ORG_SUBJECT_LABELS = frozenset(
+    {
+        "ORG",
+        "ORGANIZATION",
+        "COMPANY",
+        "POLICY",
+        "ENTITY",
     }
 )
 
@@ -471,11 +528,25 @@ def _instant_key(value) -> tuple | None:
         return None
 
 
+_YEAR_RE = re.compile(r"^(1[0-9]{3}|20[0-9]{2})$")
+
+
+def _bare_year(text: str | None) -> int | None:
+    token = normalize_value(text)
+    if not _YEAR_RE.fullmatch(token):
+        return None
+    return int(token)
+
+
 def values_equivalent(left: str, right: str) -> bool:
     a = normalize_value(left)
     b = normalize_value(right)
     if a == b:
         return True
+    year_a = _bare_year(left)
+    year_b = _bare_year(right)
+    if year_a is not None and year_b is not None:
+        return year_a == year_b
     date_a = parse_date_value(left)
     date_b = parse_date_value(right)
     if date_a is not None and date_b is not None:
@@ -508,12 +579,28 @@ def is_functional_predicate(predicate: str, values: Iterable[str] | None = None)
     name = normalize_predicate(predicate)
     if name in MULTI_VALUED_PREDICATES:
         return False
-    if name in FUNCTIONAL_PREDICATES:
+    if name in FUNCTIONAL_PREDICATES or name in IDENTITY_FUNCTIONAL_PREDICATES:
         return True
     samples = [normalize_value(v) for v in (values or []) if v]
     if samples and all(parse_quantity(v) is not None for v in samples):
         return True
     return False
+
+
+def _same_conflict_subject(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    left_uuid = str(left.get("subject_uuid") or "").strip()
+    right_uuid = str(right.get("subject_uuid") or "").strip()
+    if left_uuid and right_uuid and left_uuid == right_uuid:
+        return True
+    left_name = normalize_value(left.get("subject_name") or "")
+    right_name = normalize_value(right.get("subject_name") or "")
+    if not left_name or left_name != right_name:
+        return False
+    if " " in left_name or len(left_name) >= 10:
+        return True
+    left_labels = {str(item).upper() for item in (left.get("subject_labels") or [])}
+    right_labels = {str(item).upper() for item in (right.get("subject_labels") or [])}
+    return bool(left_labels & right_labels & _ORG_SUBJECT_LABELS)
 
 
 def intervals_overlap(left: dict[str, Any], right: dict[str, Any]) -> bool:
@@ -588,6 +675,9 @@ def snapshot_from_triple(triple: Any) -> dict[str, Any] | None:
 
 
 def _structurally_incompatible(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    predicate = normalize_predicate(left.get("predicate") or right.get("predicate") or "")
+    if predicate in IDENTITY_FUNCTIONAL_PREDICATES:
+        return True
     left_value = left.get("value") or ""
     right_value = right.get("value") or ""
     if parse_quantity(left_value) and parse_quantity(right_value):
@@ -628,9 +718,18 @@ def classify_disagreement(left: dict[str, Any], right: dict[str, Any]) -> tuple[
                 return "value_mismatch", 0.96
         elif _date_key(date_a) != _date_key(date_b):
             return "value_mismatch", 0.96
+    year_a = _bare_year(left.get("value") or "")
+    year_b = _bare_year(right.get("value") or "")
+    if year_a is not None and year_b is not None and year_a != year_b:
+        return "numeric_mismatch", 0.96
     qty_a = parse_quantity(left.get("value") or "")
     qty_b = parse_quantity(right.get("value") or "")
-    if qty_a and qty_b and qty_a[1] == qty_b[1] and not math.isclose(qty_a[0], qty_b[0], rel_tol=0.02, abs_tol=0.05):
+    if (
+        qty_a
+        and qty_b
+        and qty_a[1] == qty_b[1]
+        and not math.isclose(qty_a[0], qty_b[0], rel_tol=0.02, abs_tol=0.05)
+    ):
         return "numeric_mismatch", 0.96
     amount_a = left.get("amount")
     amount_b = right.get("amount")
@@ -1374,18 +1473,38 @@ def judge_semantic_pairs(
 
 def find_conflict_candidates(
     snapshots: list[dict[str, Any]],
-) -> tuple[list[tuple[dict[str, Any], dict[str, Any], str, float]], list[tuple[dict[str, Any], dict[str, Any]]]]:
+) -> tuple[
+    list[tuple[dict[str, Any], dict[str, Any], str, float]],
+    list[tuple[dict[str, Any], dict[str, Any]]],
+]:
     grouped: dict[str, list[dict[str, Any]]] = {}
+    name_groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for snapshot in snapshots:
         subject_uuid = str(snapshot.get("subject_uuid") or "").strip()
         predicate = str(snapshot.get("predicate") or "").strip()
-        if not subject_uuid or not predicate:
+        if not predicate:
             continue
-        key = claim_key_for(subject_uuid, predicate)
-        grouped.setdefault(key, []).append(snapshot)
+        if subject_uuid:
+            key = claim_key_for(subject_uuid, predicate)
+            grouped.setdefault(key, []).append(snapshot)
+        name = normalize_value(snapshot.get("subject_name") or "")
+        if name:
+            name_groups.setdefault((name, normalize_predicate(predicate)), []).append(
+                snapshot
+            )
+    member_lists = list(grouped.values())
+    for members in name_groups.values():
+        uuids = {
+            str(item.get("subject_uuid") or "").strip()
+            for item in members
+            if str(item.get("subject_uuid") or "").strip()
+        }
+        if len(uuids) > 1:
+            member_lists.append(members)
     definite: list[tuple[dict[str, Any], dict[str, Any], str, float]] = []
     semantic: list[tuple[dict[str, Any], dict[str, Any]]] = []
-    for members in grouped.values():
+    seen_pairs: set[str] = set()
+    for members in member_lists:
         if len(members) < 2:
             continue
         predicate = members[0].get("predicate") or ""
@@ -1396,7 +1515,10 @@ def find_conflict_candidates(
             for right in members[i + 1 :]:
                 if left.get("fact_id") == right.get("fact_id"):
                     continue
-                if (left.get("subject_uuid") or "") != (right.get("subject_uuid") or ""):
+                pair = pair_key_for(left.get("fact_id") or "", right.get("fact_id") or "")
+                if pair in seen_pairs:
+                    continue
+                if not _same_conflict_subject(left, right):
                     continue
                 if normalize_predicate(left.get("predicate") or "") != normalize_predicate(
                     right.get("predicate") or ""
@@ -1411,6 +1533,7 @@ def find_conflict_candidates(
                 classified = classify_disagreement(left, right)
                 if classified is None:
                     continue
+                seen_pairs.add(pair)
                 kind, confidence = classified
                 if kind == "value_mismatch" and not _structurally_incompatible(left, right):
                     semantic.append((left, right))

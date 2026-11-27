@@ -143,6 +143,7 @@ def enrich_kg_from_input(
     brain_id: str = "default",
     source_chunk_id: Optional[str] = None,
     source_timestamp: Optional[str] = None,
+    source_key: Optional[str] = None,
     preferred_extraction_entities: Optional[List[str]] = None,
 ) -> EnrichmentOrchestrationResult:
     """
@@ -160,6 +161,7 @@ def enrich_kg_from_input(
         ingestion_session_id,
         source_chunk_id=source_chunk_id,
         source_timestamp=source_timestamp,
+        source_key=source_key,
         preferred_extraction_entities=preferred_extraction_entities,
     )
 
@@ -171,6 +173,7 @@ def _enrich_kg_impl(
     ingestion_session_id: str,
     source_chunk_id: Optional[str] = None,
     source_timestamp: Optional[str] = None,
+    source_key: Optional[str] = None,
     preferred_extraction_entities: Optional[List[str]] = None,
 ) -> EnrichmentOrchestrationResult:
     from src.core.saving.identity import stamp_provenance
@@ -352,6 +355,7 @@ def _enrich_kg_impl(
             payload.get("properties"),
             source_chunk_id=source_chunk_id,
             source_timestamp=source_timestamp,
+            source_key=source_key,
         )
         for endpoint_key in ("tail", "tip"):
             endpoint = payload.get(endpoint_key) or {}
@@ -359,6 +363,7 @@ def _enrich_kg_impl(
                 endpoint.get("properties"),
                 source_chunk_id=source_chunk_id,
                 source_timestamp=source_timestamp,
+                source_key=source_key,
             )
             payload[endpoint_key] = endpoint
         enrichment_relationships.append(payload)

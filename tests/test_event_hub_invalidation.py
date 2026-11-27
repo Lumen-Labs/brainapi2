@@ -148,7 +148,7 @@ class EventHubInvalidationTests(unittest.TestCase):
         self.assertTrue(retrieve_mod._is_currently_valid(graph.predicate("rel-1")))
         self.assertTrue(retrieve_mod._is_currently_valid(graph.predicate("rel-2")))
 
-    def test_functional_attribute_edge_is_still_superseded(self):
+    def test_functional_attribute_edge_is_not_closed_across_sources(self):
         from src.services.api.controllers import retrieve as retrieve_mod
         from src.workers.tasks import ingestion as ingestion_mod
 
@@ -156,7 +156,13 @@ class EventHubInvalidationTests(unittest.TestCase):
         graph.add_node("alice", "Alice", "PERSON")
         graph.add_node("nyc", "New York City", "CITY")
         graph.add_node("sf", "San Francisco", "CITY")
-        graph.add_edge("rel-1", "alice", "LIVES_IN", "nyc")
+        graph.add_edge(
+            "rel-1",
+            "alice",
+            "LIVES_IN",
+            "nyc",
+            properties={"source_key": "source-a"},
+        )
         graph.add_edge("rel-2", "alice", "LIVES_IN", "sf")
 
         relationship = _relationship(
@@ -166,6 +172,42 @@ class EventHubInvalidationTests(unittest.TestCase):
             _entity("sf", "San Francisco", "CITY"),
             valid_at="02/02/2024",
         )
+        relationship.properties["source_key"] = "source-b"
+
+        with patch.object(ingestion_mod, "graph_adapter", graph):
+            ingestion_mod._invalidate_superseded_relationships(
+                relationship, brain_id="brain-a"
+            )
+
+        self.assertEqual(graph.updates, [])
+        self.assertTrue(retrieve_mod._is_currently_valid(graph.predicate("rel-1")))
+        self.assertTrue(retrieve_mod._is_currently_valid(graph.predicate("rel-2")))
+
+    def test_functional_attribute_edge_is_superseded_for_same_source(self):
+        from src.services.api.controllers import retrieve as retrieve_mod
+        from src.workers.tasks import ingestion as ingestion_mod
+
+        graph = _FakeGraphAdapter()
+        graph.add_node("alice", "Alice", "PERSON")
+        graph.add_node("nyc", "New York City", "CITY")
+        graph.add_node("sf", "San Francisco", "CITY")
+        graph.add_edge(
+            "rel-1",
+            "alice",
+            "LIVES_IN",
+            "nyc",
+            properties={"source_key": "source-a"},
+        )
+        graph.add_edge("rel-2", "alice", "LIVES_IN", "sf")
+
+        relationship = _relationship(
+            "rel-2",
+            _entity("alice", "Alice", "PERSON"),
+            "LIVES_IN",
+            _entity("sf", "San Francisco", "CITY"),
+            valid_at="02/02/2024",
+        )
+        relationship.properties["source_key"] = "source-a"
 
         with patch.object(ingestion_mod, "graph_adapter", graph):
             ingestion_mod._invalidate_superseded_relationships(
@@ -545,7 +587,13 @@ class EventHubInvalidationTests(unittest.TestCase):
         graph.add_node("alice", "Alice", "PERSON")
         graph.add_node("paris", "Paris", "CITY")
         graph.add_node("lyon", "Lyon", "CITY")
-        graph.add_edge("rel-old", "alice", "LIVES_IN", "lyon")
+        graph.add_edge(
+            "rel-old",
+            "alice",
+            "LIVES_IN",
+            "lyon",
+            properties={"source_key": "profile"},
+        )
         calls = {"n": 0}
         real_get = graph.get_neighbors
 
@@ -561,6 +609,7 @@ class EventHubInvalidationTests(unittest.TestCase):
             _entity("paris", "Paris", "CITY"),
             valid_at="2024-06-01T00:00:00Z",
         )
+        relationship.properties["source_key"] = "profile"
         with patch.object(ingestion_mod, "graph_adapter", graph):
             neighbors = ingestion_mod._relationship_neighbor_map(
                 relationship, brain_id="brain-a"

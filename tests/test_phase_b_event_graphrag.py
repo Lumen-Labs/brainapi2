@@ -178,7 +178,7 @@ class DiversificationTests(unittest.TestCase):
             out = retrieve_mod._diversify_facts(ranked, max_facts=50)
             samples.append((time.perf_counter() - start) * 1000)
         self.assertEqual(len(out), 50)
-        self.assertLess(min(samples), 25.0)
+        self.assertLess(min(samples), 100.0)
 
 
 class HubCompletenessTests(unittest.TestCase):

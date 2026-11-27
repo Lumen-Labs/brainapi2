@@ -468,6 +468,30 @@ class ValidityCardinalityTests(unittest.TestCase):
         )
         self.assertFalse(
             should_close_outgoing_edge(
+                relationship_name="HEADQUARTERED_IN",
+                existing_properties={"source_key": "profile.txt"},
+                incoming_source_key="press.txt",
+                require_same_source=True,
+            )
+        )
+        self.assertFalse(
+            should_close_outgoing_edge(
+                relationship_name="HEADQUARTERED_IN",
+                existing_properties={},
+                incoming_source_key="press.txt",
+                require_same_source=True,
+            )
+        )
+        self.assertTrue(
+            should_close_outgoing_edge(
+                relationship_name="HEADQUARTERED_IN",
+                existing_properties={"source_key": "profile.txt"},
+                incoming_source_key="profile.txt",
+                require_same_source=True,
+            )
+        )
+        self.assertFalse(
+            should_close_outgoing_edge(
                 relationship_name="REQUIRES",
                 existing_properties={},
             )
@@ -782,6 +806,7 @@ class StagedValidityWriteTests(unittest.TestCase):
 
 class AsOfRetrieveTests(unittest.IsolatedAsyncioTestCase):
     async def test_get_context_as_of_keeps_then_current_fact_without_prefix(self):
+        from src.adapters.interfaces.data import SearchResult
         from src.services.api.controllers import retrieve as retrieve_mod
 
         live = (
@@ -867,8 +892,8 @@ class AsOfRetrieveTests(unittest.IsolatedAsyncioTestCase):
         mock_data.get_last_text_chunks.return_value = []
         mock_data.get_last_structured_data.return_value = []
         mock_data.get_text_chunks_by_ids.return_value = ([], [])
-        mock_data.search.side_effect = Exception("unused")
-        mock_data.search_bm25.side_effect = Exception("unused")
+        mock_data.search.return_value = SearchResult(text_chunks=[], observations=[])
+        mock_data.search_bm25.return_value = []
         elements = ExtractElementsResponse(tokens=[], noun_chunks=[])
         with (
             patch.object(retrieve_mod, "embeddings_adapter", mock_embeddings),
