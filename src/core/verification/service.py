@@ -12,7 +12,11 @@ from src.core.verification.facts import (
     FactHistoryEntry,
     FactRecord,
     VerificationState,
+    attach_chunk_listing_metadata,
+    fact_record_matches_listing_filters,
+    listing_chunk_ids_for_filters,
     node_is_verifiable_event,
+    normalize_listing_filter,
     normalize_state,
     record_from_graph_row,
     utc_now_iso,
@@ -118,14 +122,36 @@ def apply_verification_action(
     )
     if updated is None:
         raise FactNotFound(fact_id)
-    return record_from_graph_row(updated)
+    return attach_chunk_listing_metadata(
+        [record_from_graph_row(updated)], brain_id
+    )[0]
 
 
 def get_fact_record(graph, fact_id: str, brain_id: str) -> FactRecord:
     row = graph.get_fact_record(fact_id, brain_id)
     if row is None:
         raise FactNotFound(fact_id)
-    return record_from_graph_row(row)
+    return attach_chunk_listing_metadata(
+        [record_from_graph_row(row)], brain_id
+    )[0]
+
+
+def _list_all_fact_rows(graph, brain_id: str, **kwargs) -> list[dict]:
+    skip = 0
+    page = 500
+    collected: list[dict] = []
+    while True:
+        rows, total = graph.list_facts_by_verification(
+            brain_id,
+            skip=skip,
+            limit=page,
+            **kwargs,
+        )
+        collected.extend(rows or [])
+        skip += len(rows or [])
+        if not rows or skip >= int(total or 0):
+            break
+    return collected
 
 
 def list_fact_records(
@@ -141,15 +167,53 @@ def list_fact_records(
     entity_id: str | None = None,
     source: str | None = None,
 ) -> tuple[list[FactRecord], int]:
-    rows, total = graph.list_facts_by_verification(
+    interview_id = normalize_listing_filter(interview_id)
+    topic_id = normalize_listing_filter(topic_id)
+    source = normalize_listing_filter(source)
+    post_filter = bool(interview_id or topic_id or source)
+    graph_kwargs = {
+        "state": state,
+        "include_rejected": include_rejected if state != REJECTED else True,
+        "entity_id": entity_id,
+        "interview_id": None if post_filter else interview_id,
+        "topic_id": None if post_filter else topic_id,
+        "source": None if post_filter else source,
+    }
+    if post_filter:
+        rows = _list_all_fact_rows(graph, brain_id, **graph_kwargs)
+        graph_total = len(rows)
+    else:
+        rows, graph_total = graph.list_facts_by_verification(
+            brain_id,
+            limit=limit,
+            skip=skip,
+            **graph_kwargs,
+        )
+    records = attach_chunk_listing_metadata(
+        [record_from_graph_row(row) for row in rows],
         brain_id,
-        state=state,
-        include_rejected=include_rejected if state != REJECTED else True,
-        limit=limit,
-        skip=skip,
-        interview_id=interview_id,
-        topic_id=topic_id,
-        entity_id=entity_id,
-        source=source,
     )
-    return [record_from_graph_row(row) for row in rows], int(total or 0)
+    if post_filter:
+        matching = listing_chunk_ids_for_filters(
+            brain_id,
+            interview_id=interview_id,
+            topic_id=topic_id,
+            source=source,
+        )
+        records = [
+            record
+            for record in records
+            if fact_record_matches_listing_filters(
+                record,
+                interview_id=interview_id,
+                topic_id=topic_id,
+                source=source,
+                interview_chunk_ids=matching["interview"],
+                topic_chunk_ids=matching["topic"],
+                source_chunk_ids=matching["source"],
+            )
+        ]
+        total = len(records)
+        records = records[skip : skip + limit]
+        return records, total
+    return records, int(graph_total or 0)

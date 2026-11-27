@@ -46,6 +46,7 @@ def _to_response(record: FactRecord) -> FactVerificationRecord:
         source_key=record.source_key,
         source_chunk_id=record.source_chunk_id,
         source=record.source,
+        meta_keys=dict(record.meta_keys or {}),
     )
 
 
@@ -124,4 +125,5 @@ async def list_fact_verifications(
     return FactVerificationListResponse(
         facts=[_to_response(record) for record in records],
         total=total,
+        filteredTotal=total,
     )

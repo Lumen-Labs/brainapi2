@@ -712,6 +712,7 @@ def _list_facts_sync(
         return json.dumps(
             {
                 "total": total,
+                "filteredTotal": total,
                 "facts": [record.model_dump(mode="json") for record in records],
             },
             default=str,
