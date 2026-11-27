@@ -54,7 +54,7 @@ from src.core.saving.ingest_plain_text import (
     is_blank_plain_text,
     uses_plain_text_ingest,
 )
-from src.core.saving.source_passages import default_text_source_key
+from src.core.saving.source_passages import assign_revision_source_key
 from src.constants.tasks.ingestion import IngestionTaskArgs
 from src.core.saving.ingest_staging import (
     REMOTE_OCR_EMPTY_ERROR,
@@ -145,13 +145,18 @@ def _upload_size(upload, content):
 
 
 def _plain_text_payload(brain_id, text, group_key, filename=None, source_id=None):
-    meta_keys = {
-        "source_key": default_text_source_key(text, filename, source_id=source_id),
-    }
+    meta_keys = {}
     if filename:
         meta_keys["filename"] = filename
     if source_id:
         meta_keys["source_id"] = source_id
+    assign_revision_source_key(
+        meta_keys,
+        text,
+        brain_id=brain_id,
+        filename=filename,
+        source_id=source_id,
+    )
     payload = {
         "data": {"data_type": "text", "text_data": text},
         "brain_id": brain_id,
@@ -832,6 +837,7 @@ async def ingest_file(
     file: Annotated[UploadFile, File()],
     brain_id: str = Depends(get_brain_id),
     group_tracking: Annotated[str | None, Form()] = None,
+    source_id: Annotated[str | None, Form()] = None,
 ):
     """
     Ingest a file into the processing pipeline and save to the memory.
@@ -846,12 +852,16 @@ async def ingest_file(
         group_key = normalize_group_tracking(raw_group, strict=True)
     except InvalidGroupTracking as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    raw_source = source_id or request.query_params.get("source_id")
+    source_key_id = str(raw_source).strip() if raw_source else None
 
     imported = await _try_spreadsheet_import(file, brain_id, task, group_key)
     if imported is not None:
         return imported
     try:
-        await _dispatch_file_ingest(request, file, brain_id, task, context, group_key)
+        await _dispatch_file_ingest(
+            request, file, brain_id, task, context, group_key, source_key_id
+        )
     except RedisError as exc:
         raise cache_unavailable() from exc
     except HTTPException:
@@ -861,7 +871,9 @@ async def ingest_file(
     return _file_accepted(task)
 
 
-async def _dispatch_file_ingest(request, file, brain_id, task, context, group_key):
+async def _dispatch_file_ingest(
+    request, file, brain_id, task, context, group_key, source_id=None
+):
     filename = file.filename or "file"
     staged_file = (
         os.getenv("STAGED_INGESTION_ENABLED") == "1"
@@ -882,7 +894,9 @@ async def _dispatch_file_ingest(request, file, brain_id, task, context, group_ke
         await _queue_text_ingest(
             brain_id,
             task,
-            _plain_text_payload(brain_id, text, group_key, filename=filename),
+            _plain_text_payload(
+                brain_id, text, group_key, filename=filename, source_id=source_id
+            ),
             context,
             group_key,
         )

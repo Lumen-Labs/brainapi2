@@ -618,19 +618,22 @@ def _assign_relationship_interval(
     *,
     brain_id: str,
     neighbors=None,
+    superseded_chunk_ids=None,
 ) -> None:
     """Keep a closed interval intact when the same fact is observed again.
 
     Only outgoing same-endpoint edges are considered. Open edges reuse their
     identifier and original ``valid_from``. Distinct ``flow_key`` values keep
     separate open edges when both sides have a key; otherwise reuse is by
-    endpoints and name. Closed edges get a new identifier keyed by the new
-    start so MERGE cannot overwrite the historical interval. Neighbor lookup
-    failures propagate so the caller can retry instead of merging onto a
-    closed interval.
+    endpoints and name. An open edge whose source chunks this ingest just
+    superseded is treated as closed so a revised amount cannot overwrite it.
+    Closed edges get a new identifier keyed by the new start so MERGE cannot
+    overwrite the historical interval. Neighbor lookup failures propagate so
+    the caller can retry instead of merging onto a closed interval.
     """
     from src.core.saving.identity import stable_relationship_id, stable_uuid
     from src.core.saving.validity import VALID_FROM, is_valid_at
+    from src.core.saving.validity_cardinality import existing_edge_from_superseded_source
 
     base = relationship.uuid or stable_relationship_id(
         relationship.tail.uuid,
@@ -657,10 +660,14 @@ def _assign_relationship_interval(
         if rel_flow and pred_flow and rel_flow != pred_flow:
             continue
         props = getattr(predicate, "properties", None) or {}
+        uuid = getattr(predicate, "uuid", None)
+        if existing_edge_from_superseded_source(props, superseded_chunk_ids):
+            if uuid:
+                closed_ids.append(str(uuid))
+            continue
         if is_valid_at(props, None, deprecated=bool(getattr(predicate, "deprecated", False))):
             open_match = predicate
             break
-        uuid = getattr(predicate, "uuid", None)
         if uuid:
             closed_ids.append(str(uuid))
     if open_match is not None:
@@ -728,11 +735,13 @@ def _invalidate_superseded_relationships(
             continue
         if (predicate.name or "").strip().upper() != (relationship.name or "").strip().upper():
             continue
-        if neighbor.uuid == relationship.tip.uuid:
+        props = getattr(predicate, "properties", None) or {}
+        if neighbor.uuid == relationship.tip.uuid and not existing_edge_from_superseded_source(
+            props, superseded_chunk_ids
+        ):
             continue
         if getattr(predicate, "uuid", None) == relationship.uuid:
             continue
-        props = getattr(predicate, "properties", None) or {}
         if props.get("invalid_at") or props.get("valid_to"):
             continue
         incoming_key = str((relationship.properties or {}).get("source_key") or "").strip()
@@ -1020,7 +1029,7 @@ def _ingest_data(self, args, *, staged=False):
         )
 
         from src.core.saving.source_passages import (
-            default_text_source_key,
+            assign_revision_source_key,
             prepare_source_revision,
             source_key_from_meta,
         )
@@ -1033,16 +1042,11 @@ def _ingest_data(self, args, *, staged=False):
             payload.source_timestamp = format_instant(source_instant)
         if not payload.meta_keys:
             payload.meta_keys = {}
-        if not source_key_from_meta(payload.meta_keys):
-            source_id = str(payload.meta_keys.get("source_id") or "").strip() or None
-            filename = (
-                payload.meta_keys.get("filename")
-                or payload.meta_keys.get("source_filename")
-                or payload.meta_keys.get("source_file")
-            )
-            payload.meta_keys["source_key"] = default_text_source_key(
-                source_text, filename, source_id=source_id
-            )
+        assign_revision_source_key(
+            payload.meta_keys,
+            source_text,
+            brain_id=payload.brain_id,
+        )
         revision = prepare_source_revision(
             data_adapter,
             brain_id=payload.brain_id,
@@ -1074,7 +1078,6 @@ def _ingest_data(self, args, *, staged=False):
 
         checkpoint()
         text_chunk = _save_source(payload, source_text, self.request.id)
-        _run_ingest_commit_hooks(payload)
         if superseded_ids:
             close_at = payload.source_timestamp or recorded_at
             data_adapter.mark_text_chunks_superseded(
@@ -1095,6 +1098,7 @@ def _ingest_data(self, args, *, staged=False):
             cost_ledger.embed.add_usage(calls=1)
 
         if payload.skip_enrichment:
+            _run_ingest_commit_hooks(payload)
             set_ingestion_task_status(
                 self.request.id,
                 payload.brain_id,
@@ -1155,6 +1159,7 @@ def _ingest_data(self, args, *, staged=False):
         cost_ledger.merge(
             IngestCostLedger.from_dict(getattr(enrich_result, "cost", None))
         )
+        _run_ingest_commit_hooks(payload)
         parent_task_id = self.request.id
         set_ingestion_task_status(
             parent_task_id,
@@ -1539,7 +1544,11 @@ def process_architect_relationships(self, args: dict):
                             relationship, brain_id=brain_id
                         )
                         _assign_relationship_interval(
-                            relationship, brain_id=brain_id, neighbors=neighbors
+                            relationship,
+                            brain_id=brain_id,
+                            neighbors=neighbors,
+                            superseded_chunk_ids=args.get("superseded_chunk_ids")
+                            or [],
                         )
                         try:
                             edge_created = not graph_adapter.get_triples_by_uuid(
