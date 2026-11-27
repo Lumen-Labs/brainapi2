@@ -11,7 +11,12 @@ from src.core.saving.validity import format_instant, utc_now
 
 
 def _side_line(side) -> str:
-    source = side.source.source_key or side.source.document or "unknown source"
+    source = (
+        side.source.source_key
+        or side.source.document
+        or (side.source.chunk_ids[0] if side.source.chunk_ids else "")
+        or "unknown source"
+    )
     window = side.valid_from or "open"
     if side.valid_to:
         window = f"{window} .. {side.valid_to}"

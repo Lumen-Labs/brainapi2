@@ -136,6 +136,10 @@ def list_fact_records(
     include_rejected: bool = False,
     limit: int = 50,
     skip: int = 0,
+    interview_id: str | None = None,
+    topic_id: str | None = None,
+    entity_id: str | None = None,
+    source: str | None = None,
 ) -> tuple[list[FactRecord], int]:
     rows, total = graph.list_facts_by_verification(
         brain_id,
@@ -143,5 +147,9 @@ def list_fact_records(
         include_rejected=include_rejected if state != REJECTED else True,
         limit=limit,
         skip=skip,
+        interview_id=interview_id,
+        topic_id=topic_id,
+        entity_id=entity_id,
+        source=source,
     )
     return [record_from_graph_row(row) for row in rows], int(total or 0)

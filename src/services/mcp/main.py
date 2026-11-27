@@ -59,6 +59,7 @@ from src.services.mcp.conflicts import (
     dismiss_conflict_tool,
     read_conflict,
     read_conflicts,
+    reopen_conflict_tool,
     resolve_conflict_tool,
 )
 from src.services.mcp.versions import (
@@ -688,6 +689,10 @@ def _list_facts_sync(
     include_rejected: bool,
     limit: int,
     skip: int,
+    interview_id: str = "",
+    topic_id: str = "",
+    entity_id: str = "",
+    source: str = "",
 ) -> Any:
     try:
         _require_brain_access(brain_id)
@@ -699,6 +704,10 @@ def _list_facts_sync(
             include_rejected=include_rejected,
             limit=limit,
             skip=skip,
+            interview_id=interview_id or None,
+            topic_id=topic_id or None,
+            entity_id=entity_id or None,
+            source=source or None,
         )
         return json.dumps(
             {
@@ -723,14 +732,28 @@ async def list_facts_by_verification(
     include_rejected: bool = False,
     limit: int = 50,
     skip: int = 0,
+    interview_id: str = "",
+    topic_id: str = "",
+    entity_id: str = "",
+    source: str = "",
 ) -> Any:
     """
     List facts in a brain filtered by verification state:
     unverified, verified, or rejected. Default listing hides rejected facts
-    unless include_rejected is true or state is rejected.
+    unless include_rejected is true or state is rejected. Optional interview_id,
+    topic_id, entity_id, and source filters are applied before pagination.
     """
     return await asyncio.to_thread(
-        _list_facts_sync, brain_id, state, include_rejected, limit, skip
+        _list_facts_sync,
+        brain_id,
+        state,
+        include_rejected,
+        limit,
+        skip,
+        interview_id,
+        topic_id,
+        entity_id,
+        source,
     )
 
 
@@ -1022,12 +1045,14 @@ async def resolve_conflict(
 
 
 def _dismiss_conflict_sync(brain_id: str, conflict_id: str, notes: str) -> Any:
+    principal, _scopes = _current_principal_and_scopes()
     result = dismiss_conflict_tool(
         data_adapter,
         brain_id,
         conflict_id,
         authorized=bool(guard_brainpat(auth_token_var.get(), brain_id)),
         notes=notes or None,
+        actor=principal,
     )
     if isinstance(result, str):
         return raise_if_tool_error_result(result)
@@ -1040,6 +1065,30 @@ async def dismiss_conflict(brain_id: str, id: str = "", notes: str = "") -> Any:
     Dismiss a conflict without choosing a winning fact.
     """
     return await asyncio.to_thread(_dismiss_conflict_sync, brain_id, id, notes)
+
+
+def _reopen_conflict_sync(brain_id: str, conflict_id: str, notes: str) -> Any:
+    principal, _scopes = _current_principal_and_scopes()
+    result = reopen_conflict_tool(
+        data_adapter,
+        brain_id,
+        conflict_id,
+        authorized=bool(guard_brainpat(auth_token_var.get(), brain_id)),
+        notes=notes or None,
+        actor=principal,
+        graph=graph_adapter,
+    )
+    if isinstance(result, str):
+        return raise_if_tool_error_result(result)
+    return json.dumps(result, default=str)
+
+
+@mcp.tool()
+async def reopen_conflict(brain_id: str, id: str = "", notes: str = "") -> Any:
+    """
+    Reopen a dismissed or resolved conflict. Does not change fact verification.
+    """
+    return await asyncio.to_thread(_reopen_conflict_sync, brain_id, id, notes)
 
 
 def _conflict_report_sync(

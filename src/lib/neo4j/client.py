@@ -3326,19 +3326,44 @@ class Neo4jClient(GraphClient):
         include_rejected: bool = False,
         limit: int = 50,
         skip: int = 0,
+        interview_id: Optional[str] = None,
+        topic_id: Optional[str] = None,
+        entity_id: Optional[str] = None,
+        source: Optional[str] = None,
     ) -> tuple[list[dict], int]:
+        from src.core.verification.facts import normalize_listing_filter
+
         params = {
             "state": state,
             "include_rejected": bool(include_rejected),
             "skip": require_limit(skip, name="skip"),
             "limit": require_limit(limit),
+            "interview_id": normalize_listing_filter(interview_id),
+            "topic_id": normalize_listing_filter(topic_id),
+            "entity_id": normalize_listing_filter(entity_id),
+            "source": normalize_listing_filter(source),
         }
+        rel_listing = (
+            "AND ($interview_id IS NULL OR toString(coalesce(r['interview_id'], '')) = $interview_id)\n"
+            "AND ($topic_id IS NULL OR toString(coalesce(r['topic_id'], '')) = $topic_id)\n"
+            "AND ($source IS NULL OR toString(coalesce(r['source_key'], r['source'], '')) = $source)\n"
+            "AND ($entity_id IS NULL OR a['uuid'] = $entity_id OR b['uuid'] = $entity_id "
+            "OR toString(coalesce(r['entity_id'], '')) = $entity_id)\n"
+        )
+        node_listing = (
+            "AND ($interview_id IS NULL OR toString(coalesce(n['interview_id'], '')) = $interview_id)\n"
+            "AND ($topic_id IS NULL OR toString(coalesce(n['topic_id'], '')) = $topic_id)\n"
+            "AND ($source IS NULL OR toString(coalesce(n['source_key'], n['source'], '')) = $source)\n"
+            "AND ($entity_id IS NULL OR n['uuid'] = $entity_id "
+            "OR toString(coalesce(n['entity_id'], '')) = $entity_id)\n"
+        )
         inner = (
             "MATCH (a)-[r]->(b)\n"
             "WHERE type(r) <> 'HUB_BRIDGE'\n"
             "AND ($state IS NULL OR coalesce(r['verification_state'], 'unverified') = $state)\n"
             "AND ($include_rejected OR coalesce(r['verification_state'], 'unverified') <> 'rejected')\n"
-            "RETURN 'relationship' AS kind,\n"
+            + rel_listing
+            + "RETURN 'relationship' AS kind,\n"
             "       r['uuid'] AS uuid,\n"
             "       type(r) AS name,\n"
             "       coalesce(r['description'], '') AS description,\n"
@@ -3355,7 +3380,8 @@ class Neo4jClient(GraphClient):
             "WHERE any(label IN labels(n) WHERE toUpper(label) = 'EVENT')\n"
             "AND ($state IS NULL OR coalesce(n['verification_state'], 'unverified') = $state)\n"
             "AND ($include_rejected OR coalesce(n['verification_state'], 'unverified') <> 'rejected')\n"
-            "RETURN 'node' AS kind,\n"
+            + node_listing
+            + "RETURN 'node' AS kind,\n"
             "       n['uuid'] AS uuid,\n"
             "       n['name'] AS name,\n"
             "       coalesce(n['description'], '') AS description,\n"

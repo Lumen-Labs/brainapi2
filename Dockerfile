@@ -60,7 +60,7 @@ RUN /app/.venv/bin/python scripts/preload_docker_models.py --spacy-only \
 FROM python:3.11.14-slim-bookworm
 
 ARG BUILD_DATE
-ARG BUILD_SHA
+ARG BUILD_SHA=unknown
 
 LABEL build_date="${BUILD_DATE}" \
       build_sha="${BUILD_SHA}"
@@ -74,7 +74,8 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_RETRIES=8 \
     PIP_TIMEOUT=900 \
-    PIP_DEFAULT_TIMEOUT=900
+    PIP_DEFAULT_TIMEOUT=900 \
+    BUILD_SHA=${BUILD_SHA}
 
 RUN apt-get update && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends \

@@ -119,7 +119,7 @@ MCP_TOOL_SPECS: list[dict[str, object]] = [
         "parameters": {
             "brain_id": "str",
             "status": "open | resolved | dismissed (optional)",
-            "source": "str source_key (optional)",
+            "source": "str exact source_key (text:{filename}:{16-hex} or text:{16-hex}) or a substring of key/document/quote (optional)",
             "subject": "str subject name (optional)",
             "since": "str ISO-8601 (optional)",
             "until": "str ISO-8601 (optional)",
@@ -156,6 +156,15 @@ MCP_TOOL_SPECS: list[dict[str, object]] = [
         },
     },
     {
+        "name": "reopen_conflict",
+        "description": "Reopens a dismissed or resolved conflict so it is open again. Does not change fact verification state.",
+        "parameters": {
+            "brain_id": "str",
+            "id": "str",
+            "notes": "str (optional)",
+        },
+    },
+    {
         "name": "conflict_report",
         "description": "Conflict report with summary counts and per-conflict details. format=json or markdown.",
         "parameters": {
@@ -185,7 +194,7 @@ HISTORY_NAVIGATION_GUIDE = (
     "include invalid_at or deprecated. "
     "list_changelogs and get_changelog read prior graph changes; pass since and until for the knowledge-state diff. "
     "list_source_versions reads the current copy and previous copies of a source. "
-    "list_conflicts, get_conflict, resolve_conflict, dismiss_conflict, and conflict_report cover cross-source contradictions."
+    "list_conflicts, get_conflict, resolve_conflict, dismiss_conflict, reopen_conflict, and conflict_report cover cross-source contradictions."
 )
 
 

@@ -147,6 +147,8 @@ class IngestionManager:
                 "node_ids": [rel_data.tail.uuid, rel_data.tip.uuid],
                 "predicate": rel_data.name,
             }
+            if getattr(rel_data, "amount", None) is not None:
+                v_rel.metadata["amount"] = rel_data.amount
             task_ids = (rel_data.properties or {}).get("ingest_task_ids")
             if task_ids:
                 v_rel.metadata["ingest_task_ids"] = list(task_ids)

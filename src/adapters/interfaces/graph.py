@@ -529,6 +529,10 @@ class GraphClient(ABC):
         include_rejected: bool = False,
         limit: int = 50,
         skip: int = 0,
+        interview_id: Optional[str] = None,
+        topic_id: Optional[str] = None,
+        entity_id: Optional[str] = None,
+        source: Optional[str] = None,
     ) -> tuple[list[dict], int]:
         """List fact relationships and EVENT nodes filtered by verification state."""
         raise NotImplementedError("list_facts_by_verification method not implemented")

@@ -134,6 +134,10 @@ async def list_facts(
     include_rejected: bool = False,
     limit: int = 50,
     skip: int = 0,
+    interview_id: str | None = None,
+    topic_id: str | None = None,
+    entity_id: str | None = None,
+    source: str | None = None,
     brain_id: str = Depends(get_brain_id),
 ):
     return await list_fact_verifications(
@@ -142,6 +146,10 @@ async def list_facts(
         include_rejected=include_rejected,
         limit=limit,
         skip=skip,
+        interview_id=interview_id,
+        topic_id=topic_id,
+        entity_id=entity_id,
+        source=source,
     )
 
 

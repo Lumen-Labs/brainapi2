@@ -301,12 +301,17 @@ def _resolve_relationship_entities(
         for entity in (relationship.tail, relationship.tip):
             unique_entities.setdefault(_entity_key(entity), entity)
 
+    from src.core.saving.numeric_literals import retain_numeric_on_relationship
+
+    for relationship in relationships:
+        retain_numeric_on_relationship(relationship)
     pre_stable_rel_ids = {
         id(relationship): stable_relationship_id(
             relationship.tail.uuid,
             relationship.name,
             relationship.tip.uuid,
             relationship.flow_key,
+            getattr(relationship, "amount", None),
         )
         for relationship in relationships
     }
@@ -567,6 +572,7 @@ def _resolve_relationship_entities(
             relationship.name,
             relationship.tip.uuid,
             relationship.flow_key,
+            getattr(relationship, "amount", None),
         )
 
 
@@ -640,6 +646,7 @@ def _assign_relationship_interval(
         relationship.name,
         relationship.tip.uuid,
         relationship.flow_key,
+        getattr(relationship, "amount", None),
     )
     neighbors = _relationship_neighbor_map(
         relationship, brain_id=brain_id, neighbors=neighbors
@@ -1242,6 +1249,15 @@ def _ingest_data(self, args, *, staged=False):
         raise
     except Exception as e:
         brain_id = payload.brain_id if payload else args.get("brain_id", "default")
+        extra = telemetry_extra(
+            operation=INGEST_DATA_OPERATION,
+            kind=kind_for_ingest_data(payload) if payload else "text",
+            pipeline_mode=config.pipeline_mode,
+            started_at_ms=started_at_ms,
+        )
+        error_code = getattr(e, "code", None)
+        if error_code:
+            extra["error_code"] = str(error_code)
         set_ingestion_task_status(
             self.request.id,
             brain_id,
@@ -1249,12 +1265,7 @@ def _ingest_data(self, args, *, staged=False):
             stage="failed",
             error=str(e),
             cost=cost_ledger.to_dict() if cost_ledger is not None else None,
-            extra=telemetry_extra(
-                operation=INGEST_DATA_OPERATION,
-                kind=kind_for_ingest_data(payload) if payload else "text",
-                pipeline_mode=config.pipeline_mode,
-                started_at_ms=started_at_ms,
-            ),
+            extra=extra,
         )
         raise
 
@@ -1450,8 +1461,15 @@ def process_architect_relationships(self, args: dict):
                             brain_id=brain_id,
                         )
                         if similar_rel:
-                            similar_tail, _, similar_tip = similar_rel[0]
-                            if (
+                            similar_tail, similar_pred, similar_tip = similar_rel[0]
+                            from src.core.saving.numeric_literals import amounts_differ
+
+                            if amounts_differ(
+                                getattr(similar_pred, "amount", None),
+                                getattr(relationship, "amount", None),
+                            ):
+                                similar_rel = None
+                            elif (
                                 _is_same_graph_node(similar_tail, relationship.tail)
                                 and _is_same_graph_node(similar_tip, relationship.tip)
                             ) or (
@@ -1589,6 +1607,11 @@ def process_architect_relationships(self, args: dict):
                                     **(
                                         {"v_id": v_rel_id}
                                         if v_rel_id is not None
+                                        else {}
+                                    ),
+                                    **(
+                                        {"amount": relationship.amount}
+                                        if getattr(relationship, "amount", None) is not None
                                         else {}
                                     ),
                                 },

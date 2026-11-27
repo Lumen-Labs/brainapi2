@@ -28,6 +28,7 @@ from src.core.saving.architect_scratchpad import (
 )
 from src.core.saving.ingestion_manager import IngestionManager
 from src.core.saving.ingest_cost import IngestCostLedger, track_stage
+from src.core.saving.ingest_limits import bind_output_cap
 from src.services.input.agents import (
     cache_adapter,
     embeddings_adapter,
@@ -38,6 +39,7 @@ from src.services.input.agents import (
 from src.utils.text_chunking import chunk_text
 
 _PRIOR_UNIT_WINDOW = 4
+_OUTPUT_LIMIT_SPLIT_FLOOR = 256
 
 
 @dataclass
@@ -154,16 +156,17 @@ def enrich_kg_from_input(
     """
 
     ingestion_session_id = str(uuid.uuid4())
-    return _enrich_kg_impl(
-        input,
-        targeting,
-        brain_id,
-        ingestion_session_id,
-        source_chunk_id=source_chunk_id,
-        source_timestamp=source_timestamp,
-        source_key=source_key,
-        preferred_extraction_entities=preferred_extraction_entities,
-    )
+    with bind_output_cap(config.ingest_max_new_tokens):
+        return _enrich_kg_impl(
+            input,
+            targeting,
+            brain_id,
+            ingestion_session_id,
+            source_chunk_id=source_chunk_id,
+            source_timestamp=source_timestamp,
+            source_key=source_key,
+            preferred_extraction_entities=preferred_extraction_entities,
+        )
 
 
 def _enrich_kg_impl(
@@ -236,16 +239,39 @@ def _enrich_kg_impl(
                 )
             except ArchitectOutputLimitError:
                 cleaned = unit_text.strip()
-                if len(cleaned) <= 256:
-                    raise
-                parts = chunk_text(cleaned, max_chars=len(cleaned) // 2)
-                for index, part in enumerate(parts):
-                    _run_architect_unit(
-                        part,
-                        _filter_entities_for_text(unit_entities, part),
-                        reset=reset and index == 0,
-                        with_context=with_context,
+                if len(cleaned) > _OUTPUT_LIMIT_SPLIT_FLOOR:
+                    parts = chunk_text(cleaned, max_chars=max(len(cleaned) // 2, 1))
+                    if len(parts) > 1:
+                        for index, part in enumerate(parts):
+                            _run_architect_unit(
+                                part,
+                                _filter_entities_for_text(unit_entities, part),
+                                reset=reset and index == 0,
+                                with_context=with_context,
+                            )
+                        return
+                rels = getattr(architect_agent, "relationships_set", None)
+                pending = getattr(architect_agent, "pending_persistence_batches", None)
+                already = (isinstance(rels, list) and bool(rels)) or (
+                    isinstance(pending, list) and bool(pending)
+                )
+                try:
+                    architect_agent.run_tooler(
+                        with_context(unit_text) if with_context else unit_text,
+                        unit_entities,
+                        targeting=targeting,
+                        brain_id=brain_id,
+                        timeout=20000,
+                        ingestion_session_id=ingestion_session_id,
+                        mode=("coarse" if mode == "coarse" else "granular"),
+                        reset=reset,
                     )
+                    cost_ledger.record_architect_unit(escalated=True)
+                    return
+                except ArchitectOutputLimitError:
+                    if already:
+                        return
+                    raise
         else:
             architect_agent.run_tooler(
                 with_context(unit_text) if with_context else unit_text,

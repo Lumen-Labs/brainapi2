@@ -61,6 +61,7 @@ async def execute_mcp_tool(
         list_changelogs,
         list_conflicts,
         list_source_versions,
+        reopen_conflict,
         resolve_conflict,
         search_memory,
         search_semantically,
@@ -198,6 +199,13 @@ async def execute_mcp_tool(
             return result if isinstance(result, str) else json.dumps(result, default=str)
         if tool_name == "dismiss_conflict":
             result = await dismiss_conflict(
+                brain_id=str(params.get("brain_id") or ""),
+                id=str(params.get("id") or ""),
+                notes=str(params.get("notes") or ""),
+            )
+            return result if isinstance(result, str) else json.dumps(result, default=str)
+        if tool_name == "reopen_conflict":
+            result = await reopen_conflict(
                 brain_id=str(params.get("brain_id") or ""),
                 id=str(params.get("id") or ""),
                 notes=str(params.get("notes") or ""),

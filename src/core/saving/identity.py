@@ -30,7 +30,10 @@ def stable_relationship_id(
     predicate: str,
     tip_uuid: str,
     flow_key: Optional[str] = None,
+    amount: Optional[Any] = None,
 ) -> str:
+    from src.core.saving.numeric_literals import amount_identity_token
+
     parts = [
         "rel",
         tail_uuid or "",
@@ -39,6 +42,9 @@ def stable_relationship_id(
     ]
     if flow_key:
         parts.append(flow_key)
+    token = amount_identity_token(amount)
+    if token:
+        parts.append(token)
     return stable_uuid(*parts)
 
 
