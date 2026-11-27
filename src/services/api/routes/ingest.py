@@ -343,6 +343,13 @@ def _read_task_cache(brain_id, task_id):
     return dict(raw)
 
 
+def _cached_source_fields(brain_id, task_id):
+    try:
+        return _read_task_cache(brain_id, task_id) or {}
+    except RedisError:
+        return {}
+
+
 _OCR_CALLBACK_FIELDS = {"status", "error", "page_index", "total_pages"}
 
 
@@ -397,7 +404,7 @@ def _accept_remote_ocr_callback(brain_id, task_id, data, context):
             brain_id, task_id, error, page_index=page_index, total_pages=total_pages,
         )
         return _ocr_callback_accepted(task_id)
-    cached = _read_task_cache(brain_id, task_id) or {}
+    cached = _cached_source_fields(brain_id, task_id)
     _submit_staged(
         brain_id,
         task_id,
@@ -638,7 +645,7 @@ async def _queue_ingest_payload(data, brain_id, task_id, context, flow_task_iden
     payload = _ingest_task_payload(data)
     if flow_task_identifier:
         payload = _attach_cached_source_id(
-            payload, _read_task_cache(brain_id, task_id) or {}
+            payload, _cached_source_fields(brain_id, task_id)
         )
 
     if os.getenv("STAGED_INGESTION_ENABLED") == "1" and (
