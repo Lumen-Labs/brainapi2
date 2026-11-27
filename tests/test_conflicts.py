@@ -40,6 +40,7 @@ from src.services.mcp.conflicts import (
     dismiss_conflict_tool,
     read_conflict,
     read_conflicts,
+    reopen_conflict_tool,
     resolve_conflict_tool,
 )
 from src.services.mcp.prompt import MCP_TOOL_SPECS
@@ -934,9 +935,36 @@ class McpConflictToolTests(unittest.TestCase):
         )
         conflict_id = next(iter(store.rows))
         dismissed = dismiss_conflict_tool(
-            store, "brain", conflict_id, authorized=True, notes="noise"
+            store,
+            "brain",
+            conflict_id,
+            authorized=True,
+            notes="noise",
+            actor="brainpat:brain",
+            has_verification=True,
         )
         self.assertEqual(dismissed["conflict"]["status"], "dismissed")
+        denied = reopen_conflict_tool(
+            store,
+            "brain",
+            conflict_id,
+            authorized=True,
+            notes="look again",
+            actor="brainpat:brain",
+            has_verification=False,
+        )
+        self.assertIn(VERIFICATION_PERMISSION_DENIED, str(denied))
+        self.assertEqual(store.rows[conflict_id].status, "dismissed")
+        reopened = reopen_conflict_tool(
+            store,
+            "brain",
+            conflict_id,
+            authorized=True,
+            notes="look again",
+            actor="brainpat:brain",
+            has_verification=True,
+        )
+        self.assertEqual(reopened["conflict"]["status"], "open")
 
     def test_verified_side_denied_without_verification_scope(self):
         store = MemoryConflictStore()
@@ -3306,7 +3334,7 @@ class RestConflictActorAndReopenTests(unittest.TestCase):
         token = f"v1.{encoded}.{signature}"
 
         store, conflict = self._seed()
-        api = self._app("system", ["brainapi"], store)
+        api = self._app("system", ["brainapi", "verification"], store)
         with patch(
             "src.services.api.controllers.conflicts.data_adapter", store
         ), patch.dict(os.environ, {"USAGE_CONTEXT_SECRET": "test-secret"}):
@@ -3335,6 +3363,48 @@ class RestConflictActorAndReopenTests(unittest.TestCase):
         self.assertTrue(opened["resolution"]["resolved_at"])
         self.assertGreaterEqual(len(opened["sides"]), 2)
         self.assertTrue(opened["subject"]["name"])
+
+    def test_dismiss_and_reopen_denied_without_verification_scope(self):
+        store, conflict = self._seed()
+        api = self._app("brainpat:brain", ["brainapi"], store)
+        with patch("src.services.api.controllers.conflicts.data_adapter", store):
+            dismissed = api.post(
+                f"/retrieve/conflicts/{conflict.id}/dismiss",
+                json={"notes": "dup"},
+            )
+            reopened = api.post(
+                f"/retrieve/conflicts/{conflict.id}/reopen",
+                json={"notes": "look again"},
+            )
+        self.assertEqual(dismissed.status_code, 403)
+        self.assertEqual(dismissed.json()["error"]["code"], VERIFICATION_PERMISSION_DENIED)
+        self.assertEqual(reopened.status_code, 403)
+        self.assertEqual(reopened.json()["error"]["code"], VERIFICATION_PERMISSION_DENIED)
+        self.assertEqual(store.rows[conflict.id].status, "open")
+
+    def test_dismiss_and_reopen_succeed_with_verification_scope(self):
+        store, conflict = self._seed()
+        api = self._app("brainpat:brain", ["brainapi", "verification"], store)
+        with patch("src.services.api.controllers.conflicts.data_adapter", store):
+            dismissed = api.post(
+                f"/retrieve/conflicts/{conflict.id}/dismiss",
+                json={"notes": "dup"},
+            )
+        self.assertEqual(dismissed.status_code, 200, dismissed.text)
+        self.assertEqual(dismissed.json()["conflict"]["status"], "dismissed")
+        self.assertEqual(
+            dismissed.json()["conflict"]["resolution"]["resolved_by"], "brainpat:brain"
+        )
+        with patch("src.services.api.controllers.conflicts.data_adapter", store):
+            reopened = api.post(
+                f"/retrieve/conflicts/{conflict.id}/reopen",
+                json={"notes": "look again"},
+            )
+        self.assertEqual(reopened.status_code, 200, reopened.text)
+        self.assertEqual(reopened.json()["conflict"]["status"], "open")
+        self.assertEqual(
+            reopened.json()["conflict"]["resolution"]["resolved_by"], "brainpat:brain"
+        )
 
 
 if __name__ == "__main__":
