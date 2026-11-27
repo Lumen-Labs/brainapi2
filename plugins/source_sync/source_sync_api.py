@@ -35,6 +35,11 @@ class RecheckBody(BaseModel):
     force: bool = Field(default=False)
 
 
+class ApproveDeletesBody(BaseModel):
+    pending_delete_count: int
+    pending_delete_hash: str
+
+
 def _store():
     return default_store()
 
@@ -107,10 +112,20 @@ def create_admin_router() -> APIRouter:
         return {"status": "queued", "task_id": task_id, "source_id": source_id}
 
     @router.post("/sources/{source_id}/approve-deletes")
-    def approve_source_deletes(source_id: str, brain_id: str = Depends(_brain_id)):
+    def approve_source_deletes(
+        source_id: str,
+        body: ApproveDeletesBody,
+        brain_id: str = Depends(_brain_id),
+    ):
         store = _store()
         try:
-            record = approve_pending_deletes(brain_id, source_id, store=store)
+            record = approve_pending_deletes(
+                brain_id,
+                source_id,
+                count=body.pending_delete_count,
+                digest=body.pending_delete_hash,
+                store=store,
+            )
         except ValueError as exc:
             detail = str(exc)
             status = 404 if detail == "source not found" else 409
@@ -122,6 +137,7 @@ def create_admin_router() -> APIRouter:
             "source_id": source_id,
             "approved": True,
             "pending_delete_count": int(record.get("pending_delete_count") or 0),
+            "pending_delete_hash": record.get("pending_delete_hash"),
         }
 
     @router.get("/dead-letters")
@@ -177,7 +193,8 @@ def apply_payload_now(
 ) -> dict[str, Any]:
     store = store or _store()
     source_id = str(payload.get("source_id") or "")
-    record = store.get_any(source_id)
+    brain_id = str(payload.get("brain_id") or "")
+    record = store.get(brain_id, source_id) if brain_id else store.get_any(source_id)
     if record is None:
         raise ValueError("source not found")
     event = event_from_payload(payload)
@@ -217,40 +234,77 @@ def _public_with_webhook(record: dict[str, Any]) -> dict[str, Any]:
     return public
 
 
+def lookup_source_for_brain(store, brain_id: str, source_id: str) -> dict[str, Any]:
+    record = store.get(brain_id, source_id)
+    if record is None:
+        raise ValueError("source not found")
+    return record
+
+
+def _mcp_brain(brain_id: str) -> str:
+    from src.core.intent.brain import resolve_brain
+    from src.core.instances import data_adapter
+    from src.services.mcp.main import auth_token_var
+    from src.services.mcp.utils import guard_brainpat
+
+    return resolve_brain(
+        auth_token_var.get(),
+        brain_id,
+        data_adapter=data_adapter,
+        guard=guard_brainpat,
+    )
+
+
+def source_sync_get_source(source_id: str, brain_id: str = "") -> dict[str, Any]:
+    try:
+        resolved = _mcp_brain(brain_id)
+        record = lookup_source_for_brain(_store(), resolved, source_id)
+    except Exception as exc:
+        return _mcp_lookup_error(exc)
+    return {"ok": True, "source": _public_with_webhook(record)}
+
+
+def source_sync_approve_deletes(
+    source_id: str,
+    pending_delete_count: int,
+    pending_delete_hash: str,
+    brain_id: str = "",
+) -> dict[str, Any]:
+    try:
+        resolved = _mcp_brain(brain_id)
+        store = _store()
+        lookup_source_for_brain(store, resolved, source_id)
+        updated = approve_pending_deletes(
+            resolved,
+            source_id,
+            count=pending_delete_count,
+            digest=pending_delete_hash,
+            store=store,
+        )
+    except Exception as exc:
+        return _mcp_lookup_error(exc)
+    task_id = _enqueue_poll(str(updated.get("id") or source_id))
+    return {
+        "ok": True,
+        "status": "queued",
+        "task_id": task_id,
+        "source_id": updated.get("id"),
+        "pending_delete_count": int(updated.get("pending_delete_count") or 0),
+        "pending_delete_hash": updated.get("pending_delete_hash"),
+    }
+
+
+def _mcp_lookup_error(exc: BaseException) -> dict[str, Any]:
+    detail = str(exc)
+    if detail in {"no pending deletions", "pending deletions changed", "source lock busy"}:
+        return {"ok": False, "error": detail}
+    return {"ok": False, "error": "source not found"}
+
+
 def register_mcp_tools(context) -> None:
     register = getattr(context, "register_mcp_tool", None)
     if not callable(register):
         return
-
-    def source_sync_get_source(source_id: str, brain_id: str = "default") -> dict[str, Any]:
-        record = _store().get(brain_id, source_id) or _store().get_any(source_id)
-        if record is None:
-            return {"ok": False, "error": "source not found"}
-        return {"ok": True, "source": _public_with_webhook(record)}
-
-    def source_sync_approve_deletes(
-        source_id: str, brain_id: str = "default"
-    ) -> dict[str, Any]:
-        store = _store()
-        record = store.get(brain_id, source_id) or store.get_any(source_id)
-        if record is None:
-            return {"ok": False, "error": "source not found"}
-        try:
-            updated = approve_pending_deletes(
-                str(record.get("brain_id") or brain_id),
-                str(record.get("id") or source_id),
-                store=store,
-            )
-        except ValueError as exc:
-            return {"ok": False, "error": str(exc)}
-        task_id = _enqueue_poll(str(updated.get("id") or source_id))
-        return {
-            "ok": True,
-            "status": "queued",
-            "task_id": task_id,
-            "source_id": updated.get("id"),
-            "pending_delete_count": int(updated.get("pending_delete_count") or 0),
-        }
 
     register(
         source_sync_get_source,
@@ -262,6 +316,7 @@ def register_mcp_tools(context) -> None:
         name="source_sync_approve_deletes",
         description=(
             "One-shot approval to apply pending source-sync deletions that exceeded "
-            "the delete cap, then queue a poll."
+            "the delete cap, then queue a poll. Pass pending_delete_count and "
+            "pending_delete_hash from source_sync_get_source."
         ),
     )
