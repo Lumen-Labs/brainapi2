@@ -143,9 +143,15 @@ def dismiss_conflict_tool(
     authorized: bool,
     notes: str | None = None,
     actor: str | None = None,
+    has_verification: bool = False,
 ) -> dict[str, Any] | str:
     if not authorized:
         return "Unauthorized"
+    if not has_verification or not (actor or "").strip():
+        return (
+            f"Error: {VERIFICATION_PERMISSION_DENIED}: "
+            "verification scope is required"
+        )
     if not str(conflict_id or "").strip():
         return "Error: conflict id is required"
     try:
@@ -170,9 +176,15 @@ def reopen_conflict_tool(
     notes: str | None = None,
     actor: str | None = None,
     graph: Any | None = None,
+    has_verification: bool = False,
 ) -> dict[str, Any] | str:
     if not authorized:
         return "Unauthorized"
+    if not has_verification or not (actor or "").strip():
+        return (
+            f"Error: {VERIFICATION_PERMISSION_DENIED}: "
+            "verification scope is required"
+        )
     if not str(conflict_id or "").strip():
         return "Error: conflict id is required"
     try:

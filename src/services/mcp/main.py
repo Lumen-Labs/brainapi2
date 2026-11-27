@@ -1045,7 +1045,7 @@ async def resolve_conflict(
 
 
 def _dismiss_conflict_sync(brain_id: str, conflict_id: str, notes: str) -> Any:
-    principal, _scopes = _current_principal_and_scopes()
+    principal, scopes = _current_principal_and_scopes()
     result = dismiss_conflict_tool(
         data_adapter,
         brain_id,
@@ -1053,6 +1053,7 @@ def _dismiss_conflict_sync(brain_id: str, conflict_id: str, notes: str) -> Any:
         authorized=bool(guard_brainpat(auth_token_var.get(), brain_id)),
         notes=notes or None,
         actor=principal,
+        has_verification=has_verification_scope(scopes),
     )
     if isinstance(result, str):
         return raise_if_tool_error_result(result)
@@ -1068,7 +1069,7 @@ async def dismiss_conflict(brain_id: str, id: str = "", notes: str = "") -> Any:
 
 
 def _reopen_conflict_sync(brain_id: str, conflict_id: str, notes: str) -> Any:
-    principal, _scopes = _current_principal_and_scopes()
+    principal, scopes = _current_principal_and_scopes()
     result = reopen_conflict_tool(
         data_adapter,
         brain_id,
@@ -1077,6 +1078,7 @@ def _reopen_conflict_sync(brain_id: str, conflict_id: str, notes: str) -> Any:
         notes=notes or None,
         actor=principal,
         graph=graph_adapter,
+        has_verification=has_verification_scope(scopes),
     )
     if isinstance(result, str):
         return raise_if_tool_error_result(result)

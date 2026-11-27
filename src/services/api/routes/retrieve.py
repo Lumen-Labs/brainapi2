@@ -17,6 +17,7 @@ from src.core.auth.scopes import has_verification_scope
 from src.services.api.dependencies import (
     get_auth_scopes,
     get_brain_id,
+    require_verification_permission,
     resolve_request_actor,
 )
 from src.services.api.constants.requests import (
@@ -639,7 +640,7 @@ async def dismiss_conflict_by_id(
     id: str,
     request: ConflictDismissRequest = Body(default_factory=ConflictDismissRequest),
     brain_id: str = Depends(get_brain_id),
-    actor: str = Depends(resolve_request_actor),
+    actor: str = Depends(require_verification_permission),
 ):
     return await dismiss_conflict_by_id_controller(
         id, brain_id, request.notes, actor=actor
@@ -651,7 +652,7 @@ async def reopen_conflict_by_id(
     id: str,
     request: ConflictReopenRequest = Body(default_factory=ConflictReopenRequest),
     brain_id: str = Depends(get_brain_id),
-    actor: str = Depends(resolve_request_actor),
+    actor: str = Depends(require_verification_permission),
 ):
     return await reopen_conflict_by_id_controller(
         id, brain_id, request.notes, actor=actor
