@@ -346,7 +346,9 @@ def test_compose_loads_image_plugins_and_runs_beat(profile):
         "PLUGINS_EXTRA_DIR",
         "SOURCE_SYNC_WEBHOOK_MAX_AGE_SECONDS",
         "SOURCE_SYNC_DELETE_MAX_RATIO",
+        "SOURCE_SYNC_LIST_MAX_PAGES",
         "HELP_CENTER_RETIRE_MAX_RATIO",
+        "HELP_CENTER_RECHECK_MAX_PAGES",
         "SPREADSHEET_EXPERIMENT_BRAINS",
     ):
         assert name in guide

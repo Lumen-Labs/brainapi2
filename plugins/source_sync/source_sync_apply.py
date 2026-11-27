@@ -9,7 +9,12 @@ from src.core.saving.help_center_crawl import retirement_cap
 from src.core.saving.source_citations import close_orphaned_citing_facts
 from src.core.saving.source_passages import close_source_document
 from src.core.saving.validity import format_instant, parse_instant, utc_now
-from source_sync_connector import SourceEvent, SourceFetchError, get_connector
+from source_sync_connector import (
+    DocumentListing,
+    SourceEvent,
+    SourceFetchError,
+    get_connector,
+)
 from source_sync_store import SourceSyncStore, default_store
 
 QueueIngest = Callable[[dict[str, Any]], str | None]
@@ -91,20 +96,26 @@ def apply_event(
             ingest_id = queue_ingest(
                 _ingest_payload(source, event, key_name, body, occurred_at)
             )
-        store.save_document_head(
-            brain_id,
-            source_id,
-            event.document_id,
-            {
+            store.mark_synced(brain_id, source_id, occurred_at)
+            return {
+                "status": "queued",
+                "source_id": source_id,
+                "document_id": event.document_id,
                 "revision": event.revision,
-                "action": action,
-                "occurred_at": occurred_at,
                 "source_key": key_name,
-            },
+                "task_id": ingest_id,
+            }
+        _write_document_head(
+            store,
+            brain_id=brain_id,
+            source_id=source_id,
+            event=event,
+            occurred_at=occurred_at,
+            source_key=key_name,
         )
         store.mark_synced(brain_id, source_id, occurred_at)
         return {
-            "status": "queued" if ingest_id else "applied",
+            "status": "applied",
             "source_id": source_id,
             "document_id": event.document_id,
             "revision": event.revision,
@@ -125,16 +136,108 @@ def apply_poll(
     enqueue_event: Callable[[dict[str, Any]], Any] | None = None,
 ) -> dict[str, Any]:
     store = store or default_store()
-    events = get_connector(str(source.get("source_type") or "")).list_documents(source)
+    listing = get_connector(str(source.get("source_type") or "")).list_documents(source)
     return _complete_poll(
         source,
-        events,
+        listing,
         store=store,
         data=data,
         graph=graph,
         queue_ingest=queue_ingest,
         enqueue_event=enqueue_event,
     )
+
+
+def commit_upsert_head(
+    *,
+    brain_id: str,
+    source_id: str,
+    document_id: str,
+    revision: str,
+    occurred_at: str,
+    source_key: str,
+    store: SourceSyncStore | None = None,
+) -> dict[str, Any]:
+    store = store or default_store()
+    stamp = format_instant(parse_instant(occurred_at) or utc_now())
+    if not store.acquire_document_lock(brain_id, source_id, document_id):
+        raise DocumentBusy(f"document {document_id} is busy")
+    try:
+        head = store.document_head(brain_id, source_id, document_id)
+        decision = _head_decision(head, revision, stamp, "upsert")
+        if decision in {"duplicate", "stale"}:
+            return {
+                "status": decision,
+                "source_id": source_id,
+                "document_id": document_id,
+                "revision": revision,
+            }
+        store.save_document_head(
+            brain_id,
+            source_id,
+            document_id,
+            {
+                "revision": revision,
+                "action": "upsert",
+                "occurred_at": stamp,
+                "source_key": source_key,
+                "ingest_status": "committed",
+            },
+        )
+        store.mark_synced(brain_id, source_id, stamp)
+        return {
+            "status": "committed",
+            "source_id": source_id,
+            "document_id": document_id,
+            "revision": revision,
+            "source_key": source_key,
+        }
+    finally:
+        store.release_document_lock(brain_id, source_id, document_id)
+
+
+def commit_upsert_head_from_payload(
+    payload: Any,
+    *,
+    store: SourceSyncStore | None = None,
+) -> dict[str, Any] | None:
+    meta = dict(getattr(payload, "meta_keys", None) or {})
+    source_id = str(meta.get("source_sync_id") or "")
+    document_id = str(meta.get("source_document_id") or "")
+    if not source_id or not document_id:
+        return None
+    brain_id = str(getattr(payload, "brain_id", None) or meta.get("brain_id") or "default")
+    source_key = str(
+        meta.get("source_key")
+        or source_key_for(str(meta.get("source_type") or ""), document_id)
+    )
+    occurred_at = str(getattr(payload, "source_timestamp", None) or "")
+    return commit_upsert_head(
+        brain_id=brain_id,
+        source_id=source_id,
+        document_id=document_id,
+        revision=str(meta.get("source_revision") or ""),
+        occurred_at=occurred_at,
+        source_key=source_key,
+        store=store,
+    )
+
+
+def approve_pending_deletes(
+    brain_id: str,
+    source_id: str,
+    *,
+    store: SourceSyncStore | None = None,
+) -> dict[str, Any]:
+    store = store or default_store()
+    record = store.get(brain_id, source_id)
+    if record is None:
+        raise ValueError("source not found")
+    pending = int(record.get("pending_delete_count") or 0)
+    if pending <= 0:
+        raise ValueError("no pending deletions")
+    updated = store.arm_delete_approval(brain_id, source_id)
+    return updated or record
 
 
 def dead_letter(
@@ -238,7 +341,7 @@ def event_from_payload(payload: dict[str, Any]) -> SourceEvent:
 
 def _complete_poll(
     source: dict[str, Any],
-    events: list[SourceEvent],
+    listing: DocumentListing,
     *,
     store: SourceSyncStore,
     data: Any | None,
@@ -246,15 +349,35 @@ def _complete_poll(
     queue_ingest: QueueIngest | None,
     enqueue_event: Callable[[dict[str, Any]], Any] | None,
 ) -> dict[str, Any]:
+    events = listing.events
     brain_id = str(source.get("brain_id") or "default")
     source_id = str(source.get("id") or "")
     live_ids, missing, abort = _poll_gap(
         store, brain_id=brain_id, source_id=source_id, events=events
     )
+    skip_deletes = listing.truncated or bool(abort)
+    approved = False
+    if abort and not listing.truncated:
+        approved = store.consume_delete_approval(brain_id, source_id)
+        if approved:
+            skip_deletes = False
+    delete_abort = None
+    if skip_deletes:
+        delete_abort = abort or "listing truncated; deletes skipped"
+    _record_poll_safety(
+        store,
+        source,
+        abort=abort,
+        truncated=listing.truncated,
+        missing=missing,
+        pages_fetched=listing.pages_fetched,
+        skip_deletes=skip_deletes,
+        approved=approved,
+    )
     deletes = _maybe_emit_missing_deletes(
         source,
         missing,
-        abort,
+        delete_abort,
         store=store,
         data=data,
         graph=graph,
@@ -276,9 +399,15 @@ def _complete_poll(
         source_id=source_id,
         live_ids=live_ids,
         missing=missing,
-        abort=abort,
+        abort=delete_abort,
     )
-    return _poll_result(applied, deletes, abort)
+    return _poll_result(
+        applied,
+        deletes,
+        delete_abort,
+        truncated=listing.truncated,
+        pages_fetched=listing.pages_fetched,
+    )
 
 
 def _poll_gap(
@@ -310,7 +439,12 @@ def _commit_poll_seen(
 
 
 def _poll_result(
-    applied: dict[str, Any], deletes: list[str], abort: str | None
+    applied: dict[str, Any],
+    deletes: list[str],
+    abort: str | None,
+    *,
+    truncated: bool = False,
+    pages_fetched: int = 0,
 ) -> dict[str, Any]:
     payload = {
         "status": applied["status"],
@@ -318,10 +452,82 @@ def _poll_result(
         "deleted": len(deletes),
         "deleted_ids": deletes,
         "retirement_aborted": abort,
+        "listing_truncated": truncated,
+        "listing_pages_fetched": pages_fetched,
     }
     if "results" in applied:
         payload["results"] = applied["results"]
     return payload
+
+
+def _record_poll_safety(
+    store: SourceSyncStore,
+    source: dict[str, Any],
+    *,
+    abort: str | None,
+    truncated: bool,
+    missing: list[str],
+    pages_fetched: int,
+    skip_deletes: bool,
+    approved: bool,
+) -> None:
+    brain_id = str(source.get("brain_id") or "default")
+    source_id = str(source.get("id") or "")
+    store.set_listing_status(
+        brain_id, source_id, truncated=truncated, pages_fetched=pages_fetched
+    )
+    if truncated:
+        return
+    if abort and skip_deletes:
+        newly = store.record_blocked_deletes(
+            brain_id, source_id, len(missing), abort
+        )
+        if newly:
+            _blocked_delete_dead_letter(store, source, missing, abort)
+        return
+    store.clear_blocked_deletes(brain_id, source_id)
+    if not approved:
+        store.consume_delete_approval(brain_id, source_id)
+
+
+def _blocked_delete_dead_letter(
+    store: SourceSyncStore,
+    source: dict[str, Any],
+    missing: list[str],
+    abort: str,
+) -> None:
+    store.record_dead_letter(
+        str(source.get("brain_id") or "default"),
+        {
+            "kind": "retirement_blocked",
+            "source_id": source.get("id"),
+            "error": abort,
+            "pending_delete_count": len(missing),
+        },
+    )
+
+
+def _write_document_head(
+    store: SourceSyncStore,
+    *,
+    brain_id: str,
+    source_id: str,
+    event: SourceEvent,
+    occurred_at: str,
+    source_key: str,
+) -> None:
+    store.save_document_head(
+        brain_id,
+        source_id,
+        event.document_id,
+        {
+            "revision": event.revision,
+            "action": event.action if event.action in {"upsert", "delete"} else "upsert",
+            "occurred_at": occurred_at,
+            "source_key": source_key,
+            "ingest_status": "committed",
+        },
+    )
 
 
 def _maybe_emit_missing_deletes(

@@ -14,6 +14,7 @@ from src.constants.kg import Node, Predicate
 from src.core.saving.validity import format_instant, utc_now
 from src.core.saving.help_center_crawl import (
     CrawlSpec,
+    RecheckQuotaStop,
     classify_crawl_pages,
     claim_crawl_spec,
     close_removed_pages,
@@ -65,6 +66,7 @@ for key, value in ENV_DEFAULTS.items():
 ROOT = "https://help.example.com/docs"
 LIVE = "https://help.example.com/docs/refunds"
 GONE = "https://help.example.com/docs/old-policy"
+GONE_TWO = "https://help.example.com/docs/older-policy"
 NOW = datetime(2026, 11, 25, 12, 0, tzinfo=timezone.utc)
 
 
@@ -418,6 +420,49 @@ class CloseRemovedPagesTests(unittest.TestCase):
         self.assertEqual(
             retained_source_keys(spec, merged, [], aborted=False),
             [GONE, LIVE],
+        )
+
+    def test_recheck_budget_leaves_unchecked_urls_for_next_run(self):
+        spec = _spec(last_seen_source_keys=[LIVE, GONE, GONE_TWO])
+        classified = classify_crawl_pages(
+            [CrawledPage(url=LIVE, text="Refunds stay 30 days.")],
+            spec,
+        )
+        fetched = []
+
+        def fetch_pages(url):
+            fetched.append(url)
+            return [CrawledPage(url=url, text="", status_code=404)]
+
+        merged = recheck_unseen_previous_pages(
+            classified, spec, fetch_pages, budget=1
+        )
+        self.assertEqual(fetched, [GONE])
+        self.assertEqual(merged["gone_keys"], [GONE])
+        self.assertEqual(merged["recheck_remaining"], [GONE_TWO])
+        self.assertIn("budget", merged["recheck_stopped"])
+        self.assertEqual(
+            retained_source_keys(spec, merged, [GONE], aborted=False),
+            [GONE_TWO, LIVE],
+        )
+
+    def test_recheck_quota_stop_keeps_unchecked_urls(self):
+        spec = _spec(last_seen_source_keys=[LIVE, GONE, GONE_TWO])
+        classified = classify_crawl_pages(
+            [CrawledPage(url=LIVE, text="Refunds stay 30 days.")],
+            spec,
+        )
+
+        def fetch_pages(url):
+            raise RecheckQuotaStop("crawler quota exceeded")
+
+        merged = recheck_unseen_previous_pages(classified, spec, fetch_pages, budget=50)
+        self.assertEqual(merged["gone_keys"], [])
+        self.assertEqual(merged["recheck_remaining"], [GONE, GONE_TWO])
+        self.assertEqual(merged["recheck_stopped"], "crawler quota exceeded")
+        self.assertEqual(
+            retained_source_keys(spec, merged, [], aborted=False),
+            [GONE, GONE_TWO, LIVE],
         )
 
     def test_empty_failed_crawl_does_not_retire(self):
@@ -790,6 +835,80 @@ class RecrawlTaskTests(unittest.TestCase):
         self.assertEqual(store.saved[-1].last_seen_source_keys, [LIVE])
         urls = [call.args[0].url for call in crawler.crawl_pages.call_args_list]
         self.assertEqual(urls, [ROOT, GONE])
+
+    def test_recheck_quota_error_stops_and_keeps_remaining(self):
+        from src.lib.crawler.errors import CrawlerQuotaError
+        from src.workers.tasks import help_center as help_mod
+
+        request = MagicMock()
+        request.id = "recrawl-quota"
+        spec = _spec(last_seen_source_keys=[LIVE, GONE, GONE_TWO])
+        store = _Store(spec=spec, chunks=[_chunk("gone-1", GONE)])
+        crawler = MagicMock()
+
+        def crawl_pages(req):
+            if req.url == ROOT:
+                return [CrawledPage(url=LIVE, canonical_url=LIVE, text="Refunds stay 30 days.")]
+            raise CrawlerQuotaError("remaining included pages")
+
+        crawler.crawl_pages.side_effect = crawl_pages
+        with patch.object(help_mod, "claim_crawl_spec", return_value=spec), patch(
+            "src.core.instances.crawler_adapter", crawler
+        ), patch(
+            "src.services.data.main.data_adapter", store
+        ), patch(
+            "src.services.kg_agent.main.graph_adapter", _Graph()
+        ), patch(
+            "src.workers.tasks.ingestion.ingest_data"
+        ) as ingest_data, patch(
+            "src.workers.tasks.conflicts.scan_conflicts.apply_async",
+            return_value=MagicMock(),
+        ), patch(
+            "src.workers.tasks.ingestion.set_ingestion_task_status",
+            return_value={},
+        ):
+            ingest_data.apply_async.return_value = MagicMock()
+            result = help_mod.recrawl_help_center.run.__func__(
+                type("Bound", (), {"request": request})(),
+                {"brain_id": "brain-a", "force": True},
+            )
+        self.assertEqual(result["removed"], [])
+        self.assertIn("quota", result["recheck_stopped"])
+        self.assertEqual(result["recheck_remaining"], [GONE, GONE_TWO])
+        self.assertEqual(
+            store.saved[-1].last_seen_source_keys, [GONE, GONE_TWO, LIVE]
+        )
+        self.assertEqual(store.marked, [])
+
+
+class RecheckPageErrorTests(unittest.TestCase):
+    def test_quota_and_rate_limit_stop_recheck(self):
+        from src.lib.crawler.errors import CrawlerFailedError, CrawlerQuotaError
+        from src.workers.tasks import help_center as help_mod
+
+        spec = _spec()
+        crawler = MagicMock()
+        crawler.crawl_pages.side_effect = CrawlerQuotaError("no pages left")
+        with self.assertRaises(RecheckQuotaStop):
+            help_mod._recheck_page(
+                crawler,
+                spec,
+                GONE,
+                "task-1",
+                (CrawlerQuotaError, CrawlerFailedError),
+            )
+        crawler.crawl_pages.side_effect = None
+        crawler.crawl_pages.return_value = [
+            CrawledPage(url=GONE, text="", status_code=429)
+        ]
+        with self.assertRaises(RecheckQuotaStop):
+            help_mod._recheck_page(
+                crawler,
+                spec,
+                GONE,
+                "task-1",
+                (CrawlerQuotaError, CrawlerFailedError),
+            )
 
 
 class HelpCenterQueueRoutingTests(unittest.TestCase):

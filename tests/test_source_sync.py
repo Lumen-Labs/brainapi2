@@ -24,7 +24,9 @@ from source_sync_apply import (
     DocumentBusy,
     apply_event,
     apply_poll,
+    approve_pending_deletes,
     close_citing_facts,
+    commit_upsert_head,
     dead_letter,
     event_from_payload,
     poll_delete_abort_reason,
@@ -217,24 +219,23 @@ class ZendeskConnectorTests(unittest.TestCase):
         )
 
     def test_poll_lists_articles_through_injected_http(self):
-        pages = {
-            "https://example.zendesk.com/api/v2/help_center/articles.json?per_page=100": {
-                "articles": [
-                    {
-                        "id": 1,
-                        "title": "A",
-                        "body": "first",
-                        "updated_at": "2026-11-01T00:00:00Z",
-                    }
-                ],
-                "next_page": None,
-            }
+        page = {
+            "articles": [
+                {
+                    "id": 1,
+                    "title": "A",
+                    "body": "first",
+                    "updated_at": "2026-11-01T00:00:00Z",
+                }
+            ],
+            "next_page": None,
         }
 
         def getter(url, headers):
             self.assertIn("Authorization", headers)
-            self.assertIn("per_page=100", url)
-            return pages[url]
+            self.assertIn("page", url)
+            self.assertIn("size", url)
+            return page
 
         connector = ZendeskGuideConnector(http_get=getter)
         missing = {
@@ -245,8 +246,9 @@ class ZendeskConnectorTests(unittest.TestCase):
             connector.list_documents(missing)
         self.assertIsNone(os.getenv("ZENDESK_GUIDE_API_TOKEN"))
         with patch.dict(os.environ, {"ZENDESK_GUIDE_API_TOKEN": "token"}):
-            events = connector.list_documents(missing)
-        self.assertEqual([item.document_id for item in events], ["1"])
+            listing = connector.list_documents(missing)
+        self.assertEqual([item.document_id for item in listing.events], ["1"])
+        self.assertFalse(listing.truncated)
 
     def test_list_documents_raises_when_articles_list_is_missing(self):
         def getter(url, headers):
@@ -263,11 +265,12 @@ class ZendeskConnectorTests(unittest.TestCase):
                 )
         self.assertIn("articles list", str(raised.exception))
 
-    def test_list_documents_raises_when_page_limit_is_hit(self):
+    def test_list_documents_truncates_when_page_limit_is_hit(self):
         def getter(url, headers):
             return {
                 "articles": [{"id": 1, "title": "A", "body": "keep"}],
-                "next_page": url,
+                "links": {"next": url},
+                "meta": {"has_more": True},
             }
 
         connector = ZendeskGuideConnector(http_get=getter)
@@ -279,14 +282,15 @@ class ZendeskConnectorTests(unittest.TestCase):
             },
         ):
             self.assertEqual(list_max_pages(), 2)
-            with self.assertRaises(SourceFetchError) as raised:
-                connector.list_documents(
-                    {
-                        "base_url": "https://example.zendesk.com",
-                        "api_token_env": "ZENDESK_GUIDE_API_TOKEN",
-                    }
-                )
-        self.assertIn("exceeded 2 pages", str(raised.exception))
+            listing = connector.list_documents(
+                {
+                    "base_url": "https://example.zendesk.com",
+                    "api_token_env": "ZENDESK_GUIDE_API_TOKEN",
+                }
+            )
+        self.assertTrue(listing.truncated)
+        self.assertEqual(listing.pages_fetched, 2)
+        self.assertEqual(len(listing.events), 2)
 
 
 class SourceSyncStoreTests(unittest.TestCase):
@@ -396,6 +400,33 @@ class SourceSyncApplyTests(unittest.TestCase):
         self.assertEqual(
             store.get("brain", source["id"])["last_synced"], "2026-11-25T12:00:00Z"
         )
+        self.assertIsNone(store.document_head("brain", source["id"], "4410"))
+        retry = apply_event(
+            event_from_payload(
+                {
+                    "action": "upsert",
+                    "document_id": "4410",
+                    "revision": "rev-1",
+                    "title": "Refunds",
+                    "body": "Refunds are accepted within 30 days.",
+                }
+            ),
+            source,
+            store=store,
+            queue_ingest=queue_ingest,
+        )
+        self.assertEqual(retry["status"], "queued")
+        self.assertEqual(len(queued), 2)
+        committed = commit_upsert_head(
+            brain_id="brain",
+            source_id=source["id"],
+            document_id="4410",
+            revision="rev-1",
+            occurred_at="2026-11-25T12:00:00Z",
+            source_key="zendesk_guide:4410",
+            store=store,
+        )
+        self.assertEqual(committed["status"], "committed")
         again = apply_event(
             event_from_payload(
                 {
@@ -411,7 +442,7 @@ class SourceSyncApplyTests(unittest.TestCase):
             queue_ingest=queue_ingest,
         )
         self.assertEqual(again["status"], "duplicate")
-        self.assertEqual(len(queued), 1)
+        self.assertEqual(len(queued), 2)
 
     def test_delete_closes_passages_and_facts_at_deletion_time(self):
         store = SourceSyncStore()
@@ -464,6 +495,15 @@ class SourceSyncApplyTests(unittest.TestCase):
             source,
             store=store,
             queue_ingest=lambda payload: "task-new",
+        )
+        commit_upsert_head(
+            brain_id="brain",
+            source_id=source["id"],
+            document_id="4410",
+            revision="rev-2",
+            occurred_at="2026-11-25T14:00:00Z",
+            source_key="zendesk_guide:4410",
+            store=store,
         )
         stale = apply_event(
             event_from_payload(
@@ -661,6 +701,199 @@ class SourceSyncApplyTests(unittest.TestCase):
             {str(index) for index in range(1, 11)},
         )
         self.assertEqual(poll_delete_abort_reason(10, 9) is not None, True)
+        status = store.get("brain", source["id"])
+        self.assertEqual(status["pending_delete_count"], 9)
+        self.assertTrue(status["pending_delete_first_seen"])
+        self.assertIn("exceeds retirement cap", status["pending_delete_reason"])
+        letters = store.list_dead_letters("brain")
+        self.assertEqual(letters[0]["kind"], "retirement_blocked")
+        self.assertEqual(letters[0]["pending_delete_count"], 9)
+        first_seen = status["pending_delete_first_seen"]
+        queued.clear()
+        with patch.dict(
+            os.environ,
+            {
+                "ZENDESK_GUIDE_API_TOKEN": "token",
+                "SOURCE_SYNC_DELETE_MAX_RATIO": "0.2",
+                "SOURCE_SYNC_DELETE_MAX_PAGES": "50",
+            },
+        ):
+            from source_sync_connector import ZendeskGuideConnector, CONNECTORS
+
+            original = CONNECTORS["zendesk_guide"]
+            CONNECTORS["zendesk_guide"] = ZendeskGuideConnector(http_get=getter)
+            try:
+                apply_poll(
+                    source,
+                    store=store,
+                    enqueue_event=lambda payload: queued.append(payload),
+                )
+            finally:
+                CONNECTORS["zendesk_guide"] = original
+        self.assertEqual(store.get("brain", source["id"])["pending_delete_first_seen"], first_seen)
+        self.assertEqual(len(store.list_dead_letters("brain")), 1)
+
+    def test_poll_applies_upserts_when_listing_is_truncated(self):
+        store = SourceSyncStore()
+        source = _source(
+            store,
+            sync_mode="poll",
+            base_url="https://example.zendesk.com",
+            api_token_env="ZENDESK_GUIDE_API_TOKEN",
+        )
+        store.set_seen_ids("brain", source["id"], {"1", "2"})
+        queued = []
+
+        def getter(url, headers):
+            return {
+                "articles": [
+                    {
+                        "id": 1,
+                        "title": "Keep",
+                        "body": "still here",
+                        "updated_at": "2026-11-25T12:00:00Z",
+                    }
+                ],
+                "links": {"next": url},
+                "meta": {"has_more": True},
+            }
+
+        with patch.dict(
+            os.environ,
+            {
+                "ZENDESK_GUIDE_API_TOKEN": "token",
+                "SOURCE_SYNC_LIST_MAX_PAGES": "1",
+            },
+        ):
+            from source_sync_connector import ZendeskGuideConnector, CONNECTORS
+
+            original = CONNECTORS["zendesk_guide"]
+            CONNECTORS["zendesk_guide"] = ZendeskGuideConnector(http_get=getter)
+            try:
+                result = apply_poll(
+                    source,
+                    store=store,
+                    enqueue_event=lambda payload: queued.append(payload),
+                )
+            finally:
+                CONNECTORS["zendesk_guide"] = original
+        self.assertTrue(result["listing_truncated"])
+        self.assertEqual(result["deleted"], 0)
+        self.assertEqual([item["action"] for item in queued], ["upsert"])
+        self.assertEqual(store.get_seen_ids("brain", source["id"]), {"1", "2"})
+        self.assertTrue(store.get("brain", source["id"])["listing_truncated"])
+        self.assertEqual(store.get("brain", source["id"])["pending_delete_count"], 0)
+
+    def test_approve_pending_deletes_allows_over_cap_poll(self):
+        store = SourceSyncStore()
+        source = _source(
+            store,
+            sync_mode="poll",
+            base_url="https://example.zendesk.com",
+            api_token_env="ZENDESK_GUIDE_API_TOKEN",
+        )
+        store.set_seen_ids("brain", source["id"], {str(index) for index in range(1, 11)})
+        queued = []
+
+        def getter(url, headers):
+            return {
+                "articles": [
+                    {
+                        "id": 1,
+                        "title": "Keep",
+                        "body": "still here",
+                        "updated_at": "2026-11-25T12:00:00Z",
+                    }
+                ],
+                "next_page": None,
+            }
+
+        def poll_once():
+            from source_sync_connector import ZendeskGuideConnector, CONNECTORS
+
+            original = CONNECTORS["zendesk_guide"]
+            CONNECTORS["zendesk_guide"] = ZendeskGuideConnector(http_get=getter)
+            try:
+                return apply_poll(
+                    source,
+                    store=store,
+                    enqueue_event=lambda payload: queued.append(payload),
+                )
+            finally:
+                CONNECTORS["zendesk_guide"] = original
+
+        with patch.dict(
+            os.environ,
+            {
+                "ZENDESK_GUIDE_API_TOKEN": "token",
+                "SOURCE_SYNC_DELETE_MAX_RATIO": "0.2",
+                "SOURCE_SYNC_DELETE_MAX_PAGES": "50",
+            },
+        ):
+            blocked = poll_once()
+            self.assertTrue(blocked["retirement_aborted"])
+            approve_pending_deletes("brain", source["id"], store=store)
+            queued.clear()
+            allowed = poll_once()
+        self.assertIsNone(allowed["retirement_aborted"])
+        self.assertEqual(allowed["deleted"], 9)
+        self.assertEqual(store.get("brain", source["id"])["pending_delete_count"], 0)
+        self.assertFalse(store.get("brain", source["id"])["approve_pending_deletes"])
+        self.assertEqual(store.get_seen_ids("brain", source["id"]), {"1"})
+
+    def test_older_ingest_commit_does_not_overwrite_newer_head(self):
+        store = SourceSyncStore()
+        source = _source(store)
+        apply_event(
+            event_from_payload(
+                {
+                    "action": "upsert",
+                    "document_id": "4410",
+                    "revision": "rev-old",
+                    "body": "old",
+                    "occurred_at": "2026-11-25T12:00:00Z",
+                }
+            ),
+            source,
+            store=store,
+            queue_ingest=lambda payload: "task-old",
+        )
+        apply_event(
+            event_from_payload(
+                {
+                    "action": "upsert",
+                    "document_id": "4410",
+                    "revision": "rev-new",
+                    "body": "new",
+                    "occurred_at": "2026-11-25T14:00:00Z",
+                }
+            ),
+            source,
+            store=store,
+            queue_ingest=lambda payload: "task-new",
+        )
+        commit_upsert_head(
+            brain_id="brain",
+            source_id=source["id"],
+            document_id="4410",
+            revision="rev-new",
+            occurred_at="2026-11-25T14:00:00Z",
+            source_key="zendesk_guide:4410",
+            store=store,
+        )
+        skipped = commit_upsert_head(
+            brain_id="brain",
+            source_id=source["id"],
+            document_id="4410",
+            revision="rev-old",
+            occurred_at="2026-11-25T12:00:00Z",
+            source_key="zendesk_guide:4410",
+            store=store,
+        )
+        self.assertEqual(skipped["status"], "stale")
+        head = store.document_head("brain", source["id"], "4410")
+        self.assertEqual(head["revision"], "rev-new")
+        self.assertEqual(head["ingest_status"], "committed")
 
     def test_lock_race_is_dead_lettered_after_retries(self):
         store = SourceSyncStore()
@@ -721,6 +954,58 @@ class SourceSyncApplyTests(unittest.TestCase):
             queue_ingest=lambda payload: "task-2",
         )
         self.assertEqual(retried["status"], "queued")
+        self.assertIsNone(store.document_head("brain", source["id"], "1"))
+
+    def test_ingest_payload_commits_head_after_source_save(self):
+        from source_sync_apply import commit_upsert_head_from_payload
+
+        store = SourceSyncStore()
+        source = _source(store)
+        apply_event(
+            event_from_payload(
+                {
+                    "action": "upsert",
+                    "document_id": "4410",
+                    "revision": "rev-1",
+                    "body": "hello",
+                    "occurred_at": "2026-11-25T12:00:00Z",
+                }
+            ),
+            source,
+            store=store,
+            queue_ingest=lambda payload: "task-1",
+        )
+        self.assertIsNone(store.document_head("brain", source["id"], "4410"))
+        payload = SimpleNamespace(
+            brain_id="brain",
+            source_timestamp="2026-11-25T12:00:00Z",
+            meta_keys={
+                "source_sync_id": source["id"],
+                "source_document_id": "4410",
+                "source_revision": "rev-1",
+                "source_key": "zendesk_guide:4410",
+            },
+        )
+        result = commit_upsert_head_from_payload(payload, store=store)
+        self.assertEqual(result["status"], "committed")
+        self.assertEqual(
+            store.document_head("brain", source["id"], "4410")["revision"], "rev-1"
+        )
+
+    def test_ingest_commit_hooks_run_registered_handlers(self):
+        from src.core.saving.ingest_commit_hooks import (
+            register_ingest_commit_hook,
+            run_ingest_commit_hooks,
+            unregister_ingest_commit_hook,
+        )
+
+        seen = []
+        register_ingest_commit_hook(seen.append)
+        try:
+            run_ingest_commit_hooks("payload")
+            self.assertEqual(seen, ["payload"])
+        finally:
+            unregister_ingest_commit_hook(seen.append)
 
     def test_dead_letter_is_listed_without_secrets(self):
         store = SourceSyncStore()
@@ -849,6 +1134,24 @@ class SourceSyncRouteTests(unittest.TestCase):
         self.assertEqual(accepted.json()["count"], 1)
         self.assertEqual(self.queued[0]["document_id"], "77")
         self.assertEqual(self.queued[0]["action"], "upsert")
+
+    def test_approve_deletes_requires_pending_and_queues_poll(self):
+        created = self.client.post(
+            "/source-sync/sources",
+            json={"name": "Help center", "source_type": "zendesk_guide"},
+        )
+        source_id = created.json()["id"]
+        empty = self.client.post(f"/source-sync/sources/{source_id}/approve-deletes")
+        self.assertEqual(empty.status_code, 409)
+        self.store.record_blocked_deletes("brain", source_id, 4, "cap exceeded")
+        approved = self.client.post(f"/source-sync/sources/{source_id}/approve-deletes")
+        self.assertEqual(approved.status_code, 200)
+        self.assertTrue(approved.json()["approved"])
+        self.assertEqual(approved.json()["task_id"], f"poll-{source_id}")
+        fetched = self.client.get(f"/source-sync/sources/{source_id}")
+        self.assertEqual(fetched.json()["pending_delete_count"], 4)
+        self.assertTrue(fetched.json()["approve_pending_deletes"])
+        self.assertTrue(fetched.json()["pending_delete_first_seen"])
 
 
 class PluginRegisterTests(unittest.TestCase):

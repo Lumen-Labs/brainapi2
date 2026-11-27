@@ -25,6 +25,11 @@ REMOVED_REASON = "source page removed"
 GONE_STATUS_CODES = frozenset({404, 410})
 DEFAULT_RETIRE_MAX_RATIO = 0.2
 DEFAULT_RETIRE_MAX_PAGES = 50
+DEFAULT_RECHECK_MAX_PAGES = 50
+
+
+class RecheckQuotaStop(RuntimeError):
+    pass
 
 
 class CrawlSpec(BaseModel):
@@ -363,7 +368,8 @@ def merge_classified(
         + list(extra.get("ingestible") or []),
         "page_count": int(classified.get("page_count") or 0)
         + int(extra.get("page_count") or 0),
-        "truncated": bool(classified.get("truncated")),
+        "truncated": bool(classified.get("truncated"))
+        or bool(extra.get("truncated")),
     }
     return merged
 
@@ -372,14 +378,32 @@ def recheck_unseen_previous_pages(
     classified: dict[str, Any],
     spec: CrawlSpec,
     fetch_pages: Callable[[str], Iterable[Any]],
+    *,
+    budget: int | None = None,
 ) -> dict[str, Any]:
+    urls = previous_keys_not_discovered(classified, spec.last_seen_source_keys)
     extra_pages: list[Any] = []
-    for url in previous_keys_not_discovered(classified, spec.last_seen_source_keys):
-        fetched = list(fetch_pages(url) or [])
+    remaining: list[str] = []
+    stopped = None
+    limit = None if budget is None else max(0, int(budget))
+    for index, url in enumerate(urls):
+        if limit is not None and index >= limit:
+            remaining = urls[index:]
+            stopped = f"recheck budget {limit} exhausted"
+            break
+        try:
+            fetched = list(fetch_pages(url) or [])
+        except RecheckQuotaStop as exc:
+            remaining = urls[index:]
+            stopped = str(exc) or "recheck stopped on quota"
+            break
         extra_pages.extend(fetched or [_failed_recheck_page(url)])
-    if not extra_pages:
-        return classified
-    return merge_classified(classified, classify_crawl_pages(extra_pages, spec))
+    merged = classified
+    if extra_pages:
+        merged = merge_classified(classified, classify_crawl_pages(extra_pages, spec))
+    merged["recheck_remaining"] = remaining
+    merged["recheck_stopped"] = stopped
+    return merged
 
 
 def retained_source_keys(

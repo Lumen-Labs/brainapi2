@@ -17,7 +17,7 @@ DEFAULT_WEBHOOK_MAX_AGE_SECONDS = 300
 WEBHOOK_FUTURE_SKEW_SECONDS = 60
 DEFAULT_LIST_PAGE_SIZE = 100
 ZENDESK_MAX_PAGE_SIZE = 100
-DEFAULT_LIST_MAX_PAGES = 50
+DEFAULT_LIST_MAX_PAGES = 500
 
 HttpGet = Callable[[str, dict[str, str]], dict[str, Any]]
 
@@ -42,6 +42,13 @@ class SourceEvent:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class DocumentListing:
+    events: list[SourceEvent]
+    truncated: bool = False
+    pages_fetched: int = 0
+
+
 class SourceConnector(Protocol):
     source_type: str
     supports_webhooks: bool
@@ -55,7 +62,7 @@ class SourceConnector(Protocol):
 
     def parse_webhook(self, headers: dict[str, str], body: bytes) -> list[SourceEvent]: ...
 
-    def list_documents(self, connection: dict[str, Any]) -> list[SourceEvent]: ...
+    def list_documents(self, connection: dict[str, Any]) -> DocumentListing: ...
 
     def fetch_document(
         self, connection: dict[str, Any], document_id: str
@@ -144,16 +151,23 @@ def _articles_batch(page: Any) -> list[Any]:
 
 
 def _next_page_url(page: dict[str, Any]) -> str:
+    links = _as_dict(page.get("links"))
+    href = _text(links.get("next"))
+    if href:
+        return href
     next_page = page.get("next_page")
     if isinstance(next_page, dict):
         href = _text(next_page.get("href"))
         if href:
             return href
-    url = _text(next_page)
-    if url:
-        return url
-    links = _as_dict(page.get("links"))
-    return _text(links.get("next"))
+    return _text(next_page)
+
+
+def _page_has_more(page: dict[str, Any]) -> bool:
+    meta = _as_dict(page.get("meta"))
+    if "has_more" in meta:
+        return bool(meta.get("has_more"))
+    return bool(_next_page_url(page))
 
 
 def generic_hmac_hex(secret: str, body: bytes, timestamp: str = "") -> str:
@@ -231,27 +245,31 @@ class ZendeskGuideConnector:
         event = self._event_from_payload(payload)
         return [event] if event is not None else []
 
-    def list_documents(self, connection: dict[str, Any]) -> list[SourceEvent]:
+    def list_documents(self, connection: dict[str, Any]) -> DocumentListing:
         articles = []
-        url = _url_with_query(self._articles_url(connection), per_page=list_page_size())
+        url = _url_with_query(
+            self._articles_url(connection), **{"page[size]": list_page_size()}
+        )
         headers = self._auth_headers(connection)
         getter = self._getter()
         limit = list_max_pages()
         seen = 0
+        truncated = False
         while url:
             if seen >= limit:
-                raise SourceFetchError(
-                    f"article listing exceeded {limit} pages without completing"
-                )
+                truncated = True
+                break
             page = getter(url, headers)
             batch = _articles_batch(page)
             for article in batch:
                 event = self._event_from_article(_as_dict(article), action="upsert")
                 if event is not None:
                     articles.append(event)
-            url = _next_page_url(page)
+            url = _next_page_url(page) if _page_has_more(page) else ""
             seen += 1
-        return articles
+        return DocumentListing(
+            events=articles, truncated=truncated, pages_fetched=seen
+        )
 
     def fetch_document(
         self, connection: dict[str, Any], document_id: str
