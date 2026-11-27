@@ -646,11 +646,13 @@ class FactVerificationRecord(BaseModel):
     source_key: Optional[str] = None
     source_chunk_id: Optional[str] = None
     source: Optional[str] = None
+    meta_keys: dict[str, str] = Field(default_factory=dict)
 
 
 class FactVerificationListResponse(BaseModel):
     facts: List[FactVerificationRecord]
     total: int
+    filteredTotal: int = 0
 
 
 class GetEntityInfoResponse(BaseModel):

@@ -142,7 +142,7 @@ async def dismiss_conflict_by_id(
                 brain_id,
                 id,
                 notes=notes,
-                resolved_by=(actor or "").strip() or "system",
+                resolved_by=actor,
             )
         except KeyError:
             raise HTTPException(status_code=404, detail="Conflict not found")
@@ -169,7 +169,7 @@ async def reopen_conflict_by_id(
                 brain_id,
                 id,
                 notes=notes,
-                resolved_by=(actor or "").strip() or "system",
+                resolved_by=actor,
                 graph=graph_adapter,
             )
         except KeyError:

@@ -48,18 +48,18 @@ def _usage_context_user_id(request: Request) -> str | None:
     )
     if not token:
         return None
-    from src.core.saving.ingest_manifest import decode_usage_context
+    from src.core.saving.ingest_manifest import decode_signed_usage_context
 
-    body = decode_usage_context(token)
+    body = decode_signed_usage_context(token)
     if not body:
         return None
-    for key in ("userId", "user_id"):
+    for key in ("actorUserId", "actor_user_id", "userId", "user_id"):
         value = body.get(key)
         if value is not None and str(value).strip():
             return str(value).strip()
     user = body.get("user")
     if isinstance(user, dict):
-        for key in ("id", "userId", "user_id"):
+        for key in ("id", "userId", "user_id", "actorUserId"):
             value = user.get(key)
             if value is not None and str(value).strip():
                 return str(value).strip()

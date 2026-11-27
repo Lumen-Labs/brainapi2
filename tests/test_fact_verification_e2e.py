@@ -44,6 +44,7 @@ for key, value in ENV_DEFAULTS.items():
     os.environ.setdefault(key, value)
 
 from src.adapters.graph import GraphAdapter
+from src.constants.data import TextChunk
 from src.constants.kg import Node, Predicate
 from src.core.verification.facts import REJECTED, UNVERIFIED, VERIFIED, verification_scope
 from src.lib.postgresql.graph_store import PostgreSQLGraphStore, _BrainGraph
@@ -87,7 +88,8 @@ def _adapter_for(client) -> GraphAdapter:
 
 
 @contextmanager
-def _patched_graph_adapter(adapter: GraphAdapter):
+def _patched_graph_adapter(adapter: GraphAdapter, data=None):
+    data = data if data is not None else _MemoryChunks()
     patches = [
         patch("src.services.api.controllers.model.graph_adapter", adapter),
         patch("src.services.api.controllers.retrieve.graph_adapter", adapter),
@@ -95,6 +97,7 @@ def _patched_graph_adapter(adapter: GraphAdapter):
         patch("src.core.search.entities.graph_adapter", adapter),
         patch("src.core.search.relationships.graph_adapter", adapter),
         patch("src.services.kg_agent.main.graph_adapter", adapter),
+        patch("src.services.data.main.data_adapter", data),
     ]
     for item in patches:
         item.start()
@@ -507,12 +510,16 @@ def test_list_facts_returns_source_metadata_and_filters_server_side():
         assert tagged["source_key"] == "src-notes"
         assert tagged["source_chunk_id"] == "chunk-77"
         assert tagged["source"] == "src-notes"
+        assert tagged["meta_keys"]["interviewId"] == "int-9"
+        assert tagged["meta_keys"]["topicId"] == "top-3"
+        assert tagged["meta_keys"]["source"] == "src-notes"
         assert by_id[ids["made"]].get("interview_id") in (None, "")
 
         by_interview = api.get("/model/facts", params={"interview_id": "int-9"})
         assert by_interview.status_code == 200, by_interview.text
         interview_body = by_interview.json()
         assert interview_body["total"] == 1
+        assert interview_body["filteredTotal"] == 1
         assert interview_body["facts"][0]["fact_id"] == ids["tagged"]
         assert interview_body["total"] < unfiltered_total
 
@@ -538,3 +545,100 @@ def test_list_facts_returns_source_metadata_and_filters_server_side():
         assert paged.status_code == 200
         assert paged.json()["total"] == by_entity.json()["total"]
         assert len(paged.json()["facts"]) == 1
+
+
+class _MemoryChunks:
+    def __init__(self):
+        self.chunks = {}
+
+    def save_text_chunk(self, chunk, brain_id="default"):
+        self.chunks[chunk.id] = chunk
+        return chunk
+
+    def get_text_chunks_by_ids(self, ids, with_observations, brain_id):
+        found = [self.chunks[item] for item in ids if item in self.chunks]
+        return found, []
+
+    def get_text_chunks(
+        self,
+        brain_id="default",
+        limit=10,
+        skip=0,
+        query_text=None,
+        metadata_eq=None,
+        order="desc",
+    ):
+        items = list(self.chunks.values())
+        if metadata_eq:
+            matched = []
+            for chunk in items:
+                meta = chunk.metadata or {}
+                if all(str(meta.get(key)) == str(value) for key, value in metadata_eq.items()):
+                    matched.append(chunk)
+            items = matched
+        total = len(items)
+        return items[skip : skip + limit], total
+
+
+def test_list_facts_resolves_interview_id_through_ingest_chunks():
+    client = _memory_graph_client()
+    adapter = _adapter_for(client)
+    data = _MemoryChunks()
+    alice = adapter.add_nodes(
+        [Node(uuid="alice-i", name="Alice", labels=["PERSON"], description="person")],
+        BRAIN_ID,
+    )[0]
+    bob = adapter.add_nodes(
+        [Node(uuid="bob-i", name="Bob", labels=["PERSON"], description="person")],
+        BRAIN_ID,
+    )[0]
+    wanted = data.save_text_chunk(
+        TextChunk(
+            id="chunk-interview-a",
+            text="Alice knows Bob from the interview.",
+            metadata={"interview_id": "int-ingest", "topicId": "top-ingest", "source": "notes"},
+        ),
+        BRAIN_ID,
+    )
+    other = data.save_text_chunk(
+        TextChunk(
+            id="chunk-interview-b",
+            text="Other import about Carol.",
+            metadata={"interview_id": "int-other"},
+        ),
+        BRAIN_ID,
+    )
+    kept = Predicate(
+        uuid="rel-interview-a",
+        name="KNOWS",
+        description="knows",
+        properties={"source_chunk_ids": [wanted.id]},
+    )
+    skipped = Predicate(
+        uuid="rel-interview-b",
+        name="MENTIONED",
+        description="mentioned",
+        properties={"source_chunk_ids": [other.id]},
+    )
+    adapter.add_relationship(alice, kept, bob, BRAIN_ID)
+    adapter.add_relationship(alice, skipped, bob, BRAIN_ID)
+    with _patched_graph_adapter(adapter, data=data):
+        api = TestClient(_app())
+        listed = api.get("/model/facts", params={"interview_id": "int-ingest"})
+        assert listed.status_code == 200, listed.text
+        body = listed.json()
+        fact_ids = {item["fact_id"] for item in body["facts"]}
+        assert kept.uuid in fact_ids
+        assert skipped.uuid not in fact_ids
+        assert body["total"] == 1
+        assert body["filteredTotal"] == 1
+        fact = body["facts"][0]
+        assert fact["interview_id"] == "int-ingest"
+        assert fact["topic_id"] == "top-ingest"
+        assert fact["source"] == "notes"
+        assert fact["meta_keys"]["interviewId"] == "int-ingest"
+        assert fact["meta_keys"]["topicId"] == "top-ingest"
+        assert fact["meta_keys"]["source"] == "notes"
+
+        other_list = api.get("/model/facts", params={"interview_id": "int-other"})
+        assert {item["fact_id"] for item in other_list.json()["facts"]} == {skipped.uuid}

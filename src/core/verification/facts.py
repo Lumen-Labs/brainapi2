@@ -21,6 +21,7 @@ Rejected-content filtering (default `include_rejected=false`):
 from __future__ import annotations
 
 import json
+import sys
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timezone
@@ -128,6 +129,7 @@ class FactRecord(BaseModel):
     source_key: Optional[str] = None
     source_chunk_id: Optional[str] = None
     source: Optional[str] = None
+    meta_keys: dict[str, str] = Field(default_factory=dict)
 
 
 @contextmanager
@@ -510,7 +512,52 @@ def normalize_listing_filter(value: Any) -> str | None:
     return text or None
 
 
-def extract_fact_listing_fields(row: dict[str, Any]) -> dict[str, Optional[str]]:
+def listing_meta_keys(
+    interview_id: str | None,
+    topic_id: str | None,
+    source: str | None,
+) -> dict[str, str]:
+    keys: dict[str, str] = {}
+    if interview_id:
+        keys["interviewId"] = interview_id
+    if topic_id:
+        keys["topicId"] = topic_id
+    if source:
+        keys["source"] = source
+    return keys
+
+
+def _chunk_id_list(value: Any) -> list[str]:
+    ids: list[str] = []
+    if isinstance(value, (list, tuple, set)):
+        values = value
+    elif value in (None, ""):
+        values = []
+    else:
+        values = [value]
+    for item in values:
+        text = _optional_str(item)
+        if text and text not in ids:
+            ids.append(text)
+    return ids
+
+
+def source_chunk_ids_from_listing_row(row: dict[str, Any]) -> list[str]:
+    props = _flatten_properties(_property_map(row.get("properties")))
+    ids: list[str] = []
+    for value in (
+        row.get("source_chunk_ids"),
+        props.get("source_chunk_ids"),
+        row.get("source_chunk_id"),
+        props.get("source_chunk_id"),
+    ):
+        for chunk_id in _chunk_id_list(value):
+            if chunk_id not in ids:
+                ids.append(chunk_id)
+    return ids
+
+
+def extract_fact_listing_fields(row: dict[str, Any]) -> dict[str, Any]:
     props = _flatten_properties(_property_map(row.get("properties")))
     interview_id = _optional_str(
         row.get("interview_id")
@@ -523,19 +570,19 @@ def extract_fact_listing_fields(row: dict[str, Any]) -> dict[str, Optional[str]]
     source_key = _optional_str(
         props.get("source_key") or row.get("source_key") or props.get("source")
     )
+    chunk_ids = source_chunk_ids_from_listing_row({**row, "properties": props})
     source_chunk_id = _optional_str(
         props.get("source_chunk_id") or row.get("source_chunk_id")
     )
-    if not source_chunk_id:
-        ids = props.get("source_chunk_ids") or row.get("source_chunk_ids") or []
-        if isinstance(ids, (list, tuple)) and ids:
-            source_chunk_id = _optional_str(ids[-1])
+    if not source_chunk_id and chunk_ids:
+        source_chunk_id = chunk_ids[-1]
     return {
         "interview_id": interview_id,
         "topic_id": topic_id,
         "source_key": source_key,
         "source_chunk_id": source_chunk_id,
         "source": source_key,
+        "source_chunk_ids": chunk_ids,
     }
 
 
@@ -577,6 +624,220 @@ def fact_row_matches_listing_filters(
     return True
 
 
+def _chunk_metadata_map(chunk: Any) -> dict[str, Any]:
+    meta = getattr(chunk, "metadata", None)
+    if isinstance(meta, dict):
+        return meta
+    return {}
+
+
+def meta_keys_from_chunk_metadata(meta: dict[str, Any] | None) -> dict[str, str]:
+    mapping = meta if isinstance(meta, dict) else {}
+    return listing_meta_keys(
+        _optional_str(
+            mapping.get("interviewId")
+            or mapping.get("interview_id")
+            or mapping.get("interviewid")
+        ),
+        _optional_str(
+            mapping.get("topicId") or mapping.get("topic_id") or mapping.get("topicid")
+        ),
+        _optional_str(
+            mapping.get("source")
+            or mapping.get("source_key")
+            or mapping.get("sourceId")
+            or mapping.get("source_id")
+        ),
+    )
+
+
+def fact_record_chunk_ids(record: FactRecord) -> list[str]:
+    ids: list[str] = []
+    if record.source_chunk_id:
+        ids.append(record.source_chunk_id)
+    props = _flatten_properties(_property_map(record.properties))
+    for value in (
+        props.get("source_chunk_ids"),
+        record.properties.get("source_chunk_ids")
+        if isinstance(record.properties, dict)
+        else None,
+    ):
+        for chunk_id in _chunk_id_list(value):
+            if chunk_id not in ids:
+                ids.append(chunk_id)
+    return ids
+
+
+def _listing_data_adapter():
+    try:
+        from src.services.data.main import data_adapter
+    except Exception:
+        return None
+    inner = getattr(data_adapter, "data", data_adapter)
+    if "pytest" in sys.modules and type(inner).__name__ == "MongoClient":
+        return None
+    return data_adapter
+
+
+def _load_chunks_by_ids(brain_id: str, chunk_ids: list[str]) -> dict[str, Any]:
+    if not chunk_ids:
+        return {}
+    try:
+        data_adapter = _listing_data_adapter()
+        getter = getattr(data_adapter, "get_text_chunks_by_ids", None) if data_adapter else None
+        if not callable(getter):
+            return {}
+        loaded, _observations = getter(chunk_ids, False, brain_id)
+    except Exception:
+        return {}
+    if not isinstance(loaded, (list, tuple)):
+        return {}
+    by_id: dict[str, Any] = {}
+    for chunk in loaded:
+        chunk_id = _optional_str(getattr(chunk, "id", None))
+        if chunk_id:
+            by_id[chunk_id] = chunk
+    return by_id
+
+
+def _chunks_matching_metadata(
+    brain_id: str, keys: tuple[str, ...], value: str
+) -> list[str]:
+    ids: list[str] = []
+    try:
+        data_adapter = _listing_data_adapter()
+        getter = getattr(data_adapter, "get_text_chunks", None) if data_adapter else None
+        if not callable(getter):
+            return ids
+    except Exception:
+        return ids
+    for key in keys:
+        skip = 0
+        while True:
+            try:
+                chunks, total = getter(
+                    brain_id=brain_id,
+                    limit=200,
+                    skip=skip,
+                    metadata_eq={key: value},
+                )
+            except Exception:
+                break
+            for chunk in chunks or []:
+                chunk_id = _optional_str(getattr(chunk, "id", None))
+                if chunk_id and chunk_id not in ids:
+                    ids.append(chunk_id)
+            skip += len(chunks or [])
+            if not chunks or skip >= int(total or 0):
+                break
+    return ids
+
+
+def listing_chunk_ids_for_filters(
+    brain_id: str,
+    *,
+    interview_id: str | None = None,
+    topic_id: str | None = None,
+    source: str | None = None,
+) -> dict[str, list[str]]:
+    return {
+        "interview": _chunks_matching_metadata(
+            brain_id,
+            ("interview_id", "interviewId"),
+            interview_id,
+        )
+        if interview_id
+        else [],
+        "topic": _chunks_matching_metadata(
+            brain_id, ("topic_id", "topicId"), topic_id
+        )
+        if topic_id
+        else [],
+        "source": _chunks_matching_metadata(
+            brain_id, ("source", "source_key", "sourceId", "source_id"), source
+        )
+        if source
+        else [],
+    }
+
+
+def attach_chunk_listing_metadata(
+    records: list[FactRecord], brain_id: str
+) -> list[FactRecord]:
+    wanted: list[str] = []
+    for record in records:
+        for chunk_id in fact_record_chunk_ids(record):
+            if chunk_id not in wanted:
+                wanted.append(chunk_id)
+    chunks_by_id = _load_chunks_by_ids(brain_id, wanted)
+    if not chunks_by_id:
+        for record in records:
+            if not record.meta_keys:
+                record.meta_keys = listing_meta_keys(
+                    record.interview_id, record.topic_id, record.source or record.source_key
+                )
+        return records
+    for record in records:
+        merged = listing_meta_keys(
+            record.interview_id, record.topic_id, record.source or record.source_key
+        )
+        for chunk_id in reversed(fact_record_chunk_ids(record)):
+            chunk = chunks_by_id.get(chunk_id)
+            if chunk is None:
+                continue
+            got = meta_keys_from_chunk_metadata(_chunk_metadata_map(chunk))
+            for key, value in got.items():
+                if value and key not in merged:
+                    merged[key] = value
+        if merged.get("interviewId") and not record.interview_id:
+            record.interview_id = merged["interviewId"]
+        if merged.get("topicId") and not record.topic_id:
+            record.topic_id = merged["topicId"]
+        source = merged.get("source")
+        if source:
+            if not record.source:
+                record.source = source
+            if not record.source_key:
+                record.source_key = source
+        record.meta_keys = merged
+    return records
+
+
+def fact_record_matches_listing_filters(
+    record: FactRecord,
+    *,
+    interview_id: str | None = None,
+    topic_id: str | None = None,
+    source: str | None = None,
+    interview_chunk_ids: list[str] | None = None,
+    topic_chunk_ids: list[str] | None = None,
+    source_chunk_ids: list[str] | None = None,
+) -> bool:
+    cited = set(fact_record_chunk_ids(record))
+    if interview_id:
+        if record.interview_id != interview_id and not (
+            cited and set(interview_chunk_ids or []) & cited
+        ):
+            return False
+    if topic_id:
+        if record.topic_id != topic_id and not (
+            cited and set(topic_chunk_ids or []) & cited
+        ):
+            return False
+    if source:
+        candidates = {
+            record.source_key,
+            record.source_chunk_id,
+            record.source,
+            (record.meta_keys or {}).get("source"),
+        }
+        if source not in {item for item in candidates if item} and not (
+            cited and set(source_chunk_ids or []) & cited
+        ):
+            return False
+    return True
+
+
 def record_from_graph_row(row: dict[str, Any]) -> FactRecord:
     kind = "relationship" if row.get("kind") == "relationship" else "node"
     props = dict(row.get("properties") or {})
@@ -585,6 +846,7 @@ def record_from_graph_row(row: dict[str, Any]) -> FactRecord:
     verification.fact_id = fact_id
     verification.kind = kind
     listing = extract_fact_listing_fields({**row, "properties": props})
+    source = listing["source"]
     return FactRecord(
         kind=kind,
         fact_id=fact_id,
@@ -604,7 +866,10 @@ def record_from_graph_row(row: dict[str, Any]) -> FactRecord:
         topic_id=listing["topic_id"],
         source_key=listing["source_key"],
         source_chunk_id=listing["source_chunk_id"],
-        source=listing["source"],
+        source=source,
+        meta_keys=listing_meta_keys(
+            listing["interview_id"], listing["topic_id"], source
+        ),
     )
 
 
