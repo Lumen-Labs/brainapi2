@@ -1,6 +1,8 @@
 import os
 import re
+import tomllib
 import unittest
+from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
 ENV_DEFAULTS = {
@@ -194,7 +196,12 @@ class PublicApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "ok")
         self.assertEqual(response.json()["service"], "brainapi")
-        self.assertTrue(response.json()["version"])
+        pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+        expected = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"][
+            "version"
+        ]
+        self.assertEqual(expected, "2.23.0")
+        self.assertEqual(response.json()["version"], expected)
 
     def test_full_app_exempts_machine_routes_and_authenticates_protected_routes(self):
         from src.services.api.app import app

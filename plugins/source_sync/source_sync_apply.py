@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
+import os
 from typing import Any, Callable
 from uuid import uuid4
 
+from src.core.saving.help_center_crawl import retirement_cap
 from src.core.saving.source_citations import close_orphaned_citing_facts
 from src.core.saving.source_passages import close_source_document
 from src.core.saving.validity import format_instant, parse_instant, utc_now
@@ -10,6 +13,10 @@ from source_sync_connector import SourceEvent, SourceFetchError, get_connector
 from source_sync_store import SourceSyncStore, default_store
 
 QueueIngest = Callable[[dict[str, Any]], str | None]
+logger = logging.getLogger("source_sync")
+
+DEFAULT_DELETE_MAX_RATIO = 0.2
+DEFAULT_DELETE_MAX_PAGES = 50
 
 
 class DocumentBusy(RuntimeError):
@@ -118,66 +125,16 @@ def apply_poll(
     enqueue_event: Callable[[dict[str, Any]], Any] | None = None,
 ) -> dict[str, Any]:
     store = store or default_store()
-    connector = get_connector(str(source.get("source_type") or ""))
-    events = connector.list_documents(source)
-    brain_id = str(source.get("brain_id") or "default")
-    source_id = str(source.get("id") or "")
-    live_ids = {event.document_id for event in events if event.document_id}
-    previous_ids = store.list_open_document_ids(brain_id, source_id)
-    missing = sorted(previous_ids - live_ids)
-    queued = []
-    deletes = []
-    for document_id in missing:
-        delete_event = SourceEvent(
-            action="delete",
-            document_id=document_id,
-            revision=format_instant(utc_now()),
-            occurred_at=format_instant(utc_now()),
-        )
-        payload = event_task_payload(source, delete_event)
-        deletes.append(document_id)
-        if enqueue_event is not None:
-            enqueue_event(payload)
-        else:
-            apply_event(
-                delete_event,
-                source,
-                store=store,
-                data=data,
-                graph=graph,
-                queue_ingest=queue_ingest,
-            )
-    results = []
-    if enqueue_event is not None:
-        for event in events:
-            enqueue_event(event_task_payload(source, event))
-            queued.append(event.document_id)
-        store.set_seen_ids(brain_id, source_id, live_ids)
-        return {
-            "status": "enqueued",
-            "count": len(queued),
-            "deleted": len(deletes),
-            "deleted_ids": deletes,
-        }
-    for event in events:
-        results.append(
-            apply_event(
-                event,
-                source,
-                store=store,
-                data=data,
-                graph=graph,
-                queue_ingest=queue_ingest,
-            )
-        )
-    store.set_seen_ids(brain_id, source_id, live_ids)
-    return {
-        "status": "applied",
-        "count": len(results),
-        "results": results,
-        "deleted": len(deletes),
-        "deleted_ids": deletes,
-    }
+    events = get_connector(str(source.get("source_type") or "")).list_documents(source)
+    return _complete_poll(
+        source,
+        events,
+        store=store,
+        data=data,
+        graph=graph,
+        queue_ingest=queue_ingest,
+        enqueue_event=enqueue_event,
+    )
 
 
 def dead_letter(
@@ -199,6 +156,56 @@ def dead_letter(
             "error": str(error),
         },
     )
+
+
+def record_failed_event(
+    payload: dict[str, Any],
+    error: BaseException | str,
+    *,
+    retries: int,
+    max_retries: int,
+    store: SourceSyncStore | None = None,
+) -> dict[str, Any] | None:
+    if int(retries) < int(max_retries):
+        return None
+    store = store or default_store()
+    source_id = str(payload.get("source_id") or "")
+    source = store.get_any(source_id) or {
+        "id": source_id,
+        "brain_id": payload.get("brain_id") or "default",
+    }
+    return dead_letter(source, payload, str(error), store=store)
+
+
+def poll_delete_max_ratio() -> float:
+    raw = os.getenv("SOURCE_SYNC_DELETE_MAX_RATIO", str(DEFAULT_DELETE_MAX_RATIO))
+    try:
+        parsed = float(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_DELETE_MAX_RATIO
+    return parsed if parsed > 0 else DEFAULT_DELETE_MAX_RATIO
+
+
+def poll_delete_max_pages() -> int:
+    raw = os.getenv("SOURCE_SYNC_DELETE_MAX_PAGES", str(DEFAULT_DELETE_MAX_PAGES))
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_DELETE_MAX_PAGES
+    return parsed if parsed > 0 else DEFAULT_DELETE_MAX_PAGES
+
+
+def poll_delete_abort_reason(previous_count: int, delete_count: int) -> str | None:
+    if delete_count <= 0:
+        return None
+    cap = retirement_cap(
+        previous_count,
+        ratio=poll_delete_max_ratio(),
+        max_pages=poll_delete_max_pages(),
+    )
+    if delete_count > cap:
+        return f"poll delete count {delete_count} exceeds retirement cap {cap}"
+    return None
 
 
 def event_task_payload(source: dict[str, Any], event: SourceEvent) -> dict[str, Any]:
@@ -227,6 +234,186 @@ def event_from_payload(payload: dict[str, Any]) -> SourceEvent:
         occurred_at=payload.get("occurred_at"),
         metadata=dict(payload.get("metadata") or {}),
     )
+
+
+def _complete_poll(
+    source: dict[str, Any],
+    events: list[SourceEvent],
+    *,
+    store: SourceSyncStore,
+    data: Any | None,
+    graph: Any | None,
+    queue_ingest: QueueIngest | None,
+    enqueue_event: Callable[[dict[str, Any]], Any] | None,
+) -> dict[str, Any]:
+    brain_id = str(source.get("brain_id") or "default")
+    source_id = str(source.get("id") or "")
+    live_ids, missing, abort = _poll_gap(
+        store, brain_id=brain_id, source_id=source_id, events=events
+    )
+    deletes = _maybe_emit_missing_deletes(
+        source,
+        missing,
+        abort,
+        store=store,
+        data=data,
+        graph=graph,
+        queue_ingest=queue_ingest,
+        enqueue_event=enqueue_event,
+    )
+    applied = _apply_listed_events(
+        source,
+        events,
+        store=store,
+        data=data,
+        graph=graph,
+        queue_ingest=queue_ingest,
+        enqueue_event=enqueue_event,
+    )
+    _commit_poll_seen(
+        store,
+        brain_id=brain_id,
+        source_id=source_id,
+        live_ids=live_ids,
+        missing=missing,
+        abort=abort,
+    )
+    return _poll_result(applied, deletes, abort)
+
+
+def _poll_gap(
+    store: SourceSyncStore,
+    *,
+    brain_id: str,
+    source_id: str,
+    events: list[SourceEvent],
+) -> tuple[set[str], list[str], str | None]:
+    live_ids = {event.document_id for event in events if event.document_id}
+    previous_ids = store.list_open_document_ids(brain_id, source_id)
+    missing = sorted(previous_ids - live_ids)
+    return live_ids, missing, poll_delete_abort_reason(len(previous_ids), len(missing))
+
+
+def _commit_poll_seen(
+    store: SourceSyncStore,
+    *,
+    brain_id: str,
+    source_id: str,
+    live_ids: set[str],
+    missing: list[str],
+    abort: str | None,
+) -> None:
+    retained = set(live_ids)
+    if abort:
+        retained.update(missing)
+    store.set_seen_ids(brain_id, source_id, retained)
+
+
+def _poll_result(
+    applied: dict[str, Any], deletes: list[str], abort: str | None
+) -> dict[str, Any]:
+    payload = {
+        "status": applied["status"],
+        "count": applied["count"],
+        "deleted": len(deletes),
+        "deleted_ids": deletes,
+        "retirement_aborted": abort,
+    }
+    if "results" in applied:
+        payload["results"] = applied["results"]
+    return payload
+
+
+def _maybe_emit_missing_deletes(
+    source: dict[str, Any],
+    missing: list[str],
+    abort: str | None,
+    *,
+    store: SourceSyncStore,
+    data: Any | None,
+    graph: Any | None,
+    queue_ingest: QueueIngest | None,
+    enqueue_event: Callable[[dict[str, Any]], Any] | None,
+) -> list[str]:
+    if abort:
+        logger.warning(
+            "source_sync poll skipped deletes source_id=%s count=%s reason=%s",
+            source.get("id"),
+            len(missing),
+            abort,
+        )
+        return []
+    return _emit_missing_deletes(
+        source,
+        missing,
+        store=store,
+        data=data,
+        graph=graph,
+        queue_ingest=queue_ingest,
+        enqueue_event=enqueue_event,
+    )
+
+
+def _emit_missing_deletes(
+    source: dict[str, Any],
+    missing: list[str],
+    *,
+    store: SourceSyncStore,
+    data: Any | None,
+    graph: Any | None,
+    queue_ingest: QueueIngest | None,
+    enqueue_event: Callable[[dict[str, Any]], Any] | None,
+) -> list[str]:
+    deletes = []
+    closed_at = format_instant(utc_now())
+    for document_id in missing:
+        delete_event = SourceEvent(
+            action="delete",
+            document_id=document_id,
+            revision=closed_at,
+            occurred_at=closed_at,
+        )
+        deletes.append(document_id)
+        if enqueue_event is not None:
+            enqueue_event(event_task_payload(source, delete_event))
+            continue
+        apply_event(
+            delete_event,
+            source,
+            store=store,
+            data=data,
+            graph=graph,
+            queue_ingest=queue_ingest,
+        )
+    return deletes
+
+
+def _apply_listed_events(
+    source: dict[str, Any],
+    events: list[SourceEvent],
+    *,
+    store: SourceSyncStore,
+    data: Any | None,
+    graph: Any | None,
+    queue_ingest: QueueIngest | None,
+    enqueue_event: Callable[[dict[str, Any]], Any] | None,
+) -> dict[str, Any]:
+    if enqueue_event is not None:
+        for event in events:
+            enqueue_event(event_task_payload(source, event))
+        return {"status": "enqueued", "count": len(events)}
+    results = [
+        apply_event(
+            event,
+            source,
+            store=store,
+            data=data,
+            graph=graph,
+            queue_ingest=queue_ingest,
+        )
+        for event in events
+    ]
+    return {"status": "applied", "count": len(results), "results": results}
 
 
 def close_citing_facts(

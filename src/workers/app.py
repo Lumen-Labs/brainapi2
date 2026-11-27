@@ -33,7 +33,7 @@ from src.workers.redis_url import redis_connection_url
 apply_kombu_redis_unblocked_patch()
 
 from celery import Celery
-from celery.signals import worker_process_init
+from celery.signals import worker_process_init, worker_ready, worker_shutdown
 from kombu import Queue
 
 from src.config import config
@@ -165,10 +165,12 @@ def _reset_postgres_pools_after_fork(**_kwargs):
 
 
 def _start_help_center_ticker():
+    _register_help_center_ticker(worker_ready, worker_shutdown)
+
+
+def _register_help_center_ticker(ready, shutdown):
     import logging
     from threading import Event, Thread
-
-    from celery.signals import worker_ready, worker_shutdown
 
     stop = Event()
     tick = max(30, int(getattr(config, "help_center_crawl_tick_seconds", 900) or 900))
@@ -183,16 +185,18 @@ def _start_help_center_ticker():
                 logging.getLogger(__name__).exception("Could not enqueue help-center recrawls")
             stop.wait(tick)
 
-    @worker_ready.connect
-    def _start_help_center_recrawl(**kwargs):
+    def _start_help_center_recrawl(**_kwargs):
         if not config.crawler_is_configured:
             return
         stop.clear()
         Thread(target=_tick, name="help-center-recrawl", daemon=True).start()
 
-    @worker_shutdown.connect
-    def _stop_help_center_recrawl(**kwargs):
+    def _stop_help_center_recrawl(**_kwargs):
         stop.set()
+
+    ready.connect(_start_help_center_recrawl, weak=False)
+    shutdown.connect(_stop_help_center_recrawl, weak=False)
+    return _start_help_center_recrawl, _stop_help_center_recrawl
 
 
 _start_help_center_ticker()
@@ -201,8 +205,6 @@ _start_help_center_ticker()
 if os.getenv("STAGED_INGESTION_ENABLED") == "1" and os.getenv("INGEST_PUBLICATION_LOCK_DIR"):
     import logging
     from threading import Event, Thread
-
-    from celery.signals import worker_ready, worker_shutdown
 
     _recovery_stop = Event()
 
@@ -221,11 +223,12 @@ if os.getenv("STAGED_INGESTION_ENABLED") == "1" and os.getenv("INGEST_PUBLICATIO
                 logging.getLogger(__name__).exception("Could not scan staged ingestions")
             _recovery_stop.wait(5)
 
-    @worker_ready.connect
-    def _start_ingestion_recovery(**kwargs):
+    def _start_ingestion_recovery(**_kwargs):
         _recovery_stop.clear()
         Thread(target=_recover_ingestion, name="ingestion-recovery", daemon=True).start()
 
-    @worker_shutdown.connect
-    def _stop_ingestion_recovery(**kwargs):
+    def _stop_ingestion_recovery(**_kwargs):
         _recovery_stop.set()
+
+    worker_ready.connect(_start_ingestion_recovery, weak=False)
+    worker_shutdown.connect(_stop_ingestion_recovery, weak=False)

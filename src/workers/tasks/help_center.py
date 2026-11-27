@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from uuid import uuid4
 
 from src.core.saving.help_center_crawl import (
@@ -8,8 +9,12 @@ from src.core.saving.help_center_crawl import (
     close_removed_pages,
     enqueue_conflict_scan,
     finish_crawl_spec,
+    recheck_unseen_previous_pages,
+    retained_source_keys,
     retirement_abort_reason,
 )
+
+logger = logging.getLogger(__name__)
 from src.core.saving.ingest_access_gate import guard_worker
 from src.core.saving.validity import format_instant, utc_now
 from src.lib.tracing.ingest_telemetry import INGEST_URL_OPERATION, now_ms, telemetry_extra
@@ -89,11 +94,25 @@ def recrawl_help_center(self, args: dict | None = None):
                 idempotency_key=self.request.id,
             )
         )
-        classified = classify_crawl_pages(pages, spec)
-        ingestible = classified["ingestible"]
-        live_keys = list(classified["live_keys"])
+        classified = recheck_unseen_previous_pages(
+            classify_crawl_pages(pages, spec),
+            spec,
+            lambda url: _recheck_page(
+                crawler_adapter,
+                spec,
+                url,
+                self.request.id,
+                (
+                    CrawlerConfigError,
+                    CrawlerQuotaError,
+                    CrawlerFailedError,
+                    CrawlerTimeoutError,
+                    OSError,
+                ),
+            ),
+        )
         task_ids = []
-        for page in ingestible:
+        for page in classified["ingestible"]:
             page_task_id = str(uuid4())
             task_ids.append(page_task_id)
             set_ingestion_task_status(
@@ -127,7 +146,6 @@ def recrawl_help_center(self, args: dict | None = None):
         )
         closed_at = format_instant(utc_now())
         removed = []
-        finish_live = live_keys
         if abort_reason is None:
             removed = close_removed_pages(
                 data_adapter,
@@ -138,7 +156,14 @@ def recrawl_help_center(self, args: dict | None = None):
                 closed_at=closed_at,
             )
         else:
-            finish_live = list(spec.last_seen_source_keys or [])
+            logger.warning(
+                "help_center retirement skipped brain_id=%s reason=%s",
+                brain_id,
+                abort_reason,
+            )
+        finish_live = retained_source_keys(
+            spec, classified, removed, aborted=abort_reason is not None
+        )
         scan_id = enqueue_conflict_scan(brain_id)
         finished = finish_crawl_spec(
             data_adapter,
@@ -227,6 +252,23 @@ def run_due_help_center_crawls(self, args: dict | None = None):
         recrawl_help_center.apply_async(args=[{"brain_id": brain_id, "force": False}])
         queued.append(brain_id)
     return {"queued": queued}
+
+
+def _recheck_page(crawler, spec, url, task_id, errors):
+    from src.adapters.interfaces.crawler import CrawlRequest
+
+    try:
+        return crawler.crawl_pages(
+            CrawlRequest(
+                url=url,
+                max_pages=1,
+                allowed_domains=list(spec.allowed_domains or []),
+                allowed_path_prefixes=list(spec.allowed_path_prefixes or []),
+                idempotency_key=f"{task_id}:recheck:{url}",
+            )
+        )
+    except errors:
+        return []
 
 
 def _enqueue_page(

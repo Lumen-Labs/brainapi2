@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Any, Iterable, Optional
+from types import SimpleNamespace
+from typing import Any, Callable, Iterable, Optional
 from urllib.parse import urlsplit
 from uuid import uuid4
 
@@ -326,6 +327,84 @@ def retirement_abort_reason(
     if len(gone) > cap:
         return f"gone page count {len(gone)} exceeds retirement cap {cap}"
     return None
+
+
+def discovered_source_keys(classified: dict[str, Any]) -> set[str]:
+    keys: set[str] = set()
+    for field in ("live_keys", "gone_keys", "failed_keys"):
+        keys.update(str(key) for key in classified.get(field) or [] if key)
+    return keys
+
+
+def previous_keys_not_discovered(
+    classified: dict[str, Any],
+    previous_keys: Iterable[str] | None,
+) -> list[str]:
+    seen = discovered_source_keys(classified)
+    found = []
+    for key in previous_keys or []:
+        text = str(key or "").strip()
+        if text and text not in seen and text not in found:
+            found.append(text)
+    return found
+
+
+def merge_classified(
+    classified: dict[str, Any], extra: dict[str, Any]
+) -> dict[str, Any]:
+    merged = {
+        "live_keys": list(classified.get("live_keys") or [])
+        + list(extra.get("live_keys") or []),
+        "gone_keys": list(classified.get("gone_keys") or [])
+        + list(extra.get("gone_keys") or []),
+        "failed_keys": list(classified.get("failed_keys") or [])
+        + list(extra.get("failed_keys") or []),
+        "ingestible": list(classified.get("ingestible") or [])
+        + list(extra.get("ingestible") or []),
+        "page_count": int(classified.get("page_count") or 0)
+        + int(extra.get("page_count") or 0),
+        "truncated": bool(classified.get("truncated")),
+    }
+    return merged
+
+
+def recheck_unseen_previous_pages(
+    classified: dict[str, Any],
+    spec: CrawlSpec,
+    fetch_pages: Callable[[str], Iterable[Any]],
+) -> dict[str, Any]:
+    extra_pages: list[Any] = []
+    for url in previous_keys_not_discovered(classified, spec.last_seen_source_keys):
+        fetched = list(fetch_pages(url) or [])
+        extra_pages.extend(fetched or [_failed_recheck_page(url)])
+    if not extra_pages:
+        return classified
+    return merge_classified(classified, classify_crawl_pages(extra_pages, spec))
+
+
+def retained_source_keys(
+    spec: CrawlSpec,
+    classified: dict[str, Any],
+    removed: Iterable[str],
+    *,
+    aborted: bool,
+) -> list[str]:
+    previous = {str(key) for key in (spec.last_seen_source_keys or []) if key}
+    live = {str(key) for key in classified.get("live_keys") or [] if key}
+    if aborted:
+        return sorted(previous)
+    retired = {str(key) for key in removed if key}
+    return sorted((previous | live) - retired)
+
+
+def _failed_recheck_page(url: str) -> Any:
+    return SimpleNamespace(
+        url=url,
+        canonical_url=url,
+        text="",
+        status_code=None,
+        skip_reason="recheck failed",
+    )
 
 
 def close_removed_pages(

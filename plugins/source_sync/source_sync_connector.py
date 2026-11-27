@@ -7,7 +7,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
-from urllib.parse import urljoin
+from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 from datetime import datetime, timezone
 
@@ -15,6 +15,9 @@ from src.core.saving.validity import format_instant, parse_instant, utc_now
 
 DEFAULT_WEBHOOK_MAX_AGE_SECONDS = 300
 WEBHOOK_FUTURE_SKEW_SECONDS = 60
+DEFAULT_LIST_PAGE_SIZE = 100
+ZENDESK_MAX_PAGE_SIZE = 100
+DEFAULT_LIST_MAX_PAGES = 50
 
 HttpGet = Callable[[str, dict[str, str]], dict[str, Any]]
 
@@ -88,13 +91,69 @@ def _occurred_at(detail: dict[str, Any]) -> str:
     return format_instant(parsed or utc_now())
 
 
-def webhook_max_age_seconds() -> int:
-    raw = os.getenv("SOURCE_SYNC_WEBHOOK_MAX_AGE_SECONDS", str(DEFAULT_WEBHOOK_MAX_AGE_SECONDS))
+def _positive_env(name: str, default: int, *, ceiling: int | None = None) -> int:
+    raw = os.getenv(name, str(default))
     try:
         parsed = int(raw)
     except (TypeError, ValueError):
-        return DEFAULT_WEBHOOK_MAX_AGE_SECONDS
-    return parsed if parsed > 0 else DEFAULT_WEBHOOK_MAX_AGE_SECONDS
+        parsed = default
+    if parsed <= 0:
+        parsed = default
+    if ceiling is not None:
+        parsed = min(parsed, ceiling)
+    return parsed
+
+
+def webhook_max_age_seconds() -> int:
+    return _positive_env(
+        "SOURCE_SYNC_WEBHOOK_MAX_AGE_SECONDS", DEFAULT_WEBHOOK_MAX_AGE_SECONDS
+    )
+
+
+def list_page_size() -> int:
+    return _positive_env(
+        "SOURCE_SYNC_LIST_PAGE_SIZE",
+        DEFAULT_LIST_PAGE_SIZE,
+        ceiling=ZENDESK_MAX_PAGE_SIZE,
+    )
+
+
+def list_max_pages() -> int:
+    return _positive_env("SOURCE_SYNC_LIST_MAX_PAGES", DEFAULT_LIST_MAX_PAGES)
+
+
+def _url_with_query(url: str, **params: Any) -> str:
+    parts = urlsplit(url)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    for key, value in params.items():
+        if value is None:
+            continue
+        query[str(key)] = str(value)
+    return urlunsplit(
+        (parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment)
+    )
+
+
+def _articles_batch(page: Any) -> list[Any]:
+    if not isinstance(page, dict):
+        raise SourceFetchError("article listing returned a malformed page")
+    batch = page.get("articles")
+    if not isinstance(batch, list):
+        raise SourceFetchError("article listing page missing articles list")
+    return batch
+
+
+def _next_page_url(page: dict[str, Any]) -> str:
+    next_page = page.get("next_page")
+    if isinstance(next_page, dict):
+        href = _text(next_page.get("href"))
+        if href:
+            return href
+    url = _text(next_page)
+    if url:
+        return url
+    links = _as_dict(page.get("links"))
+    return _text(links.get("next"))
 
 
 def generic_hmac_hex(secret: str, body: bytes, timestamp: str = "") -> str:
@@ -174,29 +233,24 @@ class ZendeskGuideConnector:
 
     def list_documents(self, connection: dict[str, Any]) -> list[SourceEvent]:
         articles = []
-        url = self._articles_url(connection)
+        url = _url_with_query(self._articles_url(connection), per_page=list_page_size())
         headers = self._auth_headers(connection)
         getter = self._getter()
+        limit = list_max_pages()
         seen = 0
-        while url and seen < 50:
+        while url:
+            if seen >= limit:
+                raise SourceFetchError(
+                    f"article listing exceeded {limit} pages without completing"
+                )
             page = getter(url, headers)
-            batch = page.get("articles") if isinstance(page, dict) else None
-            if not isinstance(batch, list):
-                break
+            batch = _articles_batch(page)
             for article in batch:
                 event = self._event_from_article(_as_dict(article), action="upsert")
                 if event is not None:
                     articles.append(event)
-            next_page = _as_dict(page.get("next_page") if isinstance(page, dict) else None)
-            url = _text(page.get("next_page") if isinstance(page, dict) else "")
-            if isinstance(next_page, dict):
-                url = _text(next_page.get("href")) or url
-            if not url:
-                links = _as_dict(page.get("links") if isinstance(page, dict) else None)
-                url = _text(links.get("next"))
+            url = _next_page_url(page)
             seen += 1
-            if not batch:
-                break
         return articles
 
     def fetch_document(
