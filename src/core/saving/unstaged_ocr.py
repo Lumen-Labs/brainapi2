@@ -349,6 +349,22 @@ def dispatch_snapshot(brain_id, task_id, cached, snapshot, context=None, extra=N
     group_key = cached.get("group_tracking")
     if group_key:
         payload["group_tracking"] = group_key
+    source_id = str(cached.get("source_id") or "").strip() or None
+    filename = str(cached.get("source_filename") or "").strip() or None
+    if source_id:
+        from src.core.saving.source_passages import assign_revision_source_key
+
+        meta_keys = {"source_id": source_id}
+        if filename:
+            meta_keys["filename"] = filename
+        assign_revision_source_key(
+            meta_keys,
+            payload["data"]["text_data"],
+            brain_id=brain_id,
+            filename=filename,
+            source_id=source_id,
+        )
+        payload["meta_keys"] = meta_keys
     error = None
     if extra.get("ocr_partial"):
         error = _ocr_partial_error(

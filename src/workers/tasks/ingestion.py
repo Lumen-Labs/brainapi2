@@ -918,6 +918,56 @@ def _run_ingest_commit_hooks(payload):
     run_ingest_commit_hooks(payload)
 
 
+def _commit_snapshot(payload):
+    return {
+        "brain_id": getattr(payload, "brain_id", None),
+        "source_timestamp": getattr(payload, "source_timestamp", None),
+        "meta_keys": dict(getattr(payload, "meta_keys", None) or {}),
+    }
+
+
+def _payload_from_commit_snapshot(snapshot, brain_id):
+    if not snapshot:
+        return None
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        brain_id=snapshot.get("brain_id") or brain_id,
+        source_timestamp=snapshot.get("source_timestamp"),
+        meta_keys=snapshot.get("meta_keys") or {},
+    )
+
+
+def _commit_successful_ingest(payload, superseded_ids=None, new_chunk_id=None):
+    from src.core.saving.validity import format_instant, parse_instant, utc_now
+
+    ids = [str(item) for item in (superseded_ids or []) if item]
+    if ids:
+        close_at = getattr(payload, "source_timestamp", None) or format_instant(utc_now())
+        data_adapter.mark_text_chunks_superseded(
+            ids,
+            close_at,
+            payload.brain_id,
+            superseded_by=str(new_chunk_id) if new_chunk_id else None,
+            valid_to=format_instant(parse_instant(close_at) or utc_now()),
+        )
+    _run_ingest_commit_hooks(payload)
+
+
+def _unpublish_failed_revision(brain_id, chunk_id):
+    if not brain_id or not chunk_id:
+        return
+    from src.core.saving.validity import format_instant, utc_now
+
+    stamp = format_instant(utc_now())
+    data_adapter.mark_text_chunks_superseded(
+        [str(chunk_id)],
+        stamp,
+        brain_id,
+        valid_to=stamp,
+    )
+
+
 def _save_source(payload, source_text, task_id=None):
     from src.core.saving.ingest_effects import remember, stamp_task_ids
 
@@ -993,6 +1043,7 @@ def _ingest_data(self, args, *, staged=False):
     payload = None
     started_at_ms = now_ms()
     cost_ledger = None
+    new_chunk_id = None
     try:
         payload = IngestionTaskArgs(**args)
         from src.config import validate_pipeline_mode
@@ -1067,7 +1118,7 @@ def _ingest_data(self, args, *, staged=False):
             from src.core.saving.ingest_effects import remember
 
             remember(payload.brain_id, self.request.id, {})
-            _run_ingest_commit_hooks(payload)
+            _commit_successful_ingest(payload)
             set_ingestion_task_status(
                 self.request.id,
                 payload.brain_id,
@@ -1085,15 +1136,7 @@ def _ingest_data(self, args, *, staged=False):
 
         checkpoint()
         text_chunk = _save_source(payload, source_text, self.request.id)
-        if superseded_ids:
-            close_at = payload.source_timestamp or recorded_at
-            data_adapter.mark_text_chunks_superseded(
-                superseded_ids,
-                close_at,
-                payload.brain_id,
-                superseded_by=str(text_chunk.id),
-                valid_to=format_instant(parse_instant(close_at) or utc_now()),
-            )
+        new_chunk_id = str(text_chunk.id)
 
         if config.pipeline_mode == "lightweight":
             print("[DEBUG (ingest_data)]: Lightweight pipeline mode selected")
@@ -1105,7 +1148,7 @@ def _ingest_data(self, args, *, staged=False):
             cost_ledger.embed.add_usage(calls=1)
 
         if payload.skip_enrichment:
-            _run_ingest_commit_hooks(payload)
+            _commit_successful_ingest(payload, superseded_ids, new_chunk_id)
             set_ingestion_task_status(
                 self.request.id,
                 payload.brain_id,
@@ -1166,7 +1209,6 @@ def _ingest_data(self, args, *, staged=False):
         cost_ledger.merge(
             IngestCostLedger.from_dict(getattr(enrich_result, "cost", None))
         )
-        _run_ingest_commit_hooks(payload)
         parent_task_id = self.request.id
         set_ingestion_task_status(
             parent_task_id,
@@ -1223,6 +1265,9 @@ def _ingest_data(self, args, *, staged=False):
                 None,
                 None,
                 cost_ledger.to_dict(),
+                _commit_snapshot(payload),
+                list(superseded_ids),
+                new_chunk_id,
             )
         )
         if staged:
@@ -1242,13 +1287,18 @@ def _ingest_data(self, args, *, staged=False):
             for step in steps:
                 step.set(headers=headers)
         checkpoint()
-        chain(*steps).apply_async(link_error=mark_ingestion_chain_failed.s(parent_task_id, payload.brain_id))
+        chain(*steps).apply_async(
+            link_error=mark_ingestion_chain_failed.s(
+                parent_task_id, payload.brain_id, new_chunk_id
+            )
+        )
         return parent_task_id
 
     except Ignore:
         raise
     except Exception as e:
         brain_id = payload.brain_id if payload else args.get("brain_id", "default")
+        _unpublish_failed_revision(brain_id, new_chunk_id)
         extra = telemetry_extra(
             operation=INGEST_DATA_OPERATION,
             kind=kind_for_ingest_data(payload) if payload else "text",
@@ -1283,11 +1333,18 @@ def finalize_ingestion_task(
     errors: Optional[list] = None,
     counts: Optional[dict] = None,
     cost: Optional[dict] = None,
+    commit_payload: Optional[dict] = None,
+    superseded_ids: Optional[list] = None,
+    new_chunk_id: Optional[str] = None,
 ):
     try:
         graph_adapter.rebuild_topic_index(brain_id)
     except Exception as e:
         print(f"[!] Topic index rebuild failed: {e}")
+    if status == "completed":
+        snapshot = _payload_from_commit_snapshot(commit_payload, brain_id)
+        if snapshot is not None:
+            _commit_successful_ingest(snapshot, superseded_ids, new_chunk_id)
     set_ingestion_task_status(
         parent_task_id,
         brain_id,
@@ -2277,6 +2334,7 @@ def ingest_file(
     brain_id: str,
     group_tracking: Optional[str] = None,
     content_parts: Optional[int] = None,
+    source_id: Optional[str] = None,
 ):
     """
     Ingest a file via Docling: convert to markdown (per page), enqueue one
@@ -2294,12 +2352,21 @@ def ingest_file(
             content = content_b64 if content_parts is None else load_file(
                 brain_id, staged_root, content_parts,
             )
-            return [
-                {"payload": build_file_page_ingest_payload(
-                    brain_id, markdown, group_tracking=group_tracking,
-                )}
+            pages = [
+                markdown
                 for markdown in _extract_file_pages(content, filename)
                 if markdown.strip()
+            ]
+            total = len(pages)
+            return [
+                {"payload": build_file_page_ingest_payload(
+                    brain_id,
+                    markdown,
+                    group_tracking=group_tracking,
+                    source_id=_page_source_id(source_id, index, total),
+                    filename=filename,
+                )}
+                for index, markdown in enumerate(pages, start=1)
             ]
 
         execute_staged_unit(brain_id, staged_root, self.request.id, discover, discovery=True)
@@ -2346,9 +2413,16 @@ def ingest_file(
             stage="queued",
             group_tracking=group_tracking,
         )
-    for page_task_id, markdown in zip(task_ids, page_markdowns):
+    total_pages = len(page_markdowns)
+    for index, (page_task_id, markdown) in enumerate(
+        zip(task_ids, page_markdowns), start=1
+    ):
         payload = build_file_page_ingest_payload(
-            brain_id, markdown, group_tracking=group_tracking
+            brain_id,
+            markdown,
+            group_tracking=group_tracking,
+            source_id=_page_source_id(source_id, index, total_pages),
+            filename=filename,
         )
         for attempt in range(FILE_INGEST_MAX_RETRIES):
             try:
@@ -2592,12 +2666,24 @@ def ingest_url(self, args: dict):
 
 
 
+def _page_source_id(source_id: Optional[str], index: int, total: int) -> Optional[str]:
+    supplied = str(source_id or "").strip() or None
+    if not supplied:
+        return None
+    if total <= 1:
+        return supplied
+    return f"{supplied}:p{index}"
+
+
 def build_file_page_ingest_payload(
     brain_id: str,
     markdown: str,
     group_tracking: Optional[str] = None,
+    source_id: Optional[str] = None,
+    filename: Optional[str] = None,
 ) -> dict:
     from src.core.saving.ingest_groups import normalize_group_tracking
+    from src.core.saving.source_passages import assign_revision_source_key
 
     payload = {
         "data": IngestionTaskTextArgs(
@@ -2609,6 +2695,19 @@ def build_file_page_ingest_payload(
     key = normalize_group_tracking(group_tracking, strict=False)
     if key:
         payload["group_tracking"] = key
+    supplied = str(source_id or "").strip() or None
+    if supplied:
+        meta_keys: dict = {"source_id": supplied}
+        if filename:
+            meta_keys["filename"] = filename
+        assign_revision_source_key(
+            meta_keys,
+            markdown,
+            brain_id=brain_id,
+            filename=filename,
+            source_id=supplied,
+        )
+        payload["meta_keys"] = meta_keys
     return payload
 
 
@@ -2618,5 +2717,8 @@ from src.core.saving.ingest_manifest import install_task_context
 install_task_context()
 
 @ingestion_app.task
-def mark_ingestion_chain_failed(request, exc, traceback, parent_task_id, brain_id):
+def mark_ingestion_chain_failed(
+    request, exc, traceback, parent_task_id, brain_id, new_chunk_id=None
+):
+    _unpublish_failed_revision(brain_id, new_chunk_id)
     set_ingestion_task_status(parent_task_id, brain_id, "failed", stage="failed", error=str(exc))

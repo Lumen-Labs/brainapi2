@@ -231,6 +231,7 @@ class SourceRevisionTests(unittest.TestCase):
         self.assertEqual(first_meta["source_key"], "note-1")
         self.assertEqual(second_meta["source_key"], "note-1")
         self.assertEqual(self._insert(store, "hello", first_meta), "insert")
+        pending: list[str] = []
         self.assertEqual(
             prepare_source_revision(
                 store,
@@ -238,10 +239,12 @@ class SourceRevisionTests(unittest.TestCase):
                 source_text="hello again",
                 meta_keys=second_meta,
                 source_timestamp=None,
+                out_superseded=pending,
             ),
             "insert",
         )
-        self.assertEqual(store.marked[0][0], ["c1"])
+        self.assertEqual(pending, ["c1"])
+        self.assertEqual(store.marked, [])
 
     def test_same_source_id_same_text_is_deduped(self):
         store = _Store()
@@ -275,6 +278,7 @@ class SourceRevisionTests(unittest.TestCase):
         assign_revision_source_key(first_meta, first_text, source_id="offer-sheet")
         assign_revision_source_key(second_meta, second_text, source_id="offer-sheet")
         self.assertEqual(self._insert(store, first_text, first_meta), "insert")
+        pending: list[str] = []
         self.assertEqual(
             prepare_source_revision(
                 store,
@@ -282,10 +286,12 @@ class SourceRevisionTests(unittest.TestCase):
                 source_text=second_text,
                 meta_keys=second_meta,
                 source_timestamp=None,
+                out_superseded=pending,
             ),
             "insert",
         )
-        self.assertEqual(store.marked[0][0], ["c1"])
+        self.assertEqual(pending, ["c1"])
+        self.assertEqual(store.marked, [])
         self.assertIn("345", second_text)
         self.assertNotIn("345", store.chunks[0].text)
 
@@ -341,7 +347,7 @@ class SourceRevisionTests(unittest.TestCase):
         self.assertEqual(store.marked, [])
         self.assertNotIn("superseded_at", current.metadata)
 
-    def test_new_hash_marks_the_previous_chunk_and_keeps_it(self):
+    def test_new_hash_collects_the_previous_chunk_without_marking(self):
         previous = TextChunk(
             id="c1",
             text="hello",
@@ -349,6 +355,7 @@ class SourceRevisionTests(unittest.TestCase):
         )
         store = _Store([previous])
         meta = {"source_key": "src-1"}
+        pending: list[str] = []
         self.assertEqual(
             prepare_source_revision(
                 store,
@@ -356,14 +363,13 @@ class SourceRevisionTests(unittest.TestCase):
                 source_text="hello again",
                 meta_keys=meta,
                 source_timestamp="16/11/2026",
+                out_superseded=pending,
             ),
             "insert",
         )
-        self.assertEqual(store.marked[0][0], ["c1"])
-        self.assertEqual(store.marked[0][1], "16/11/2026")
-        self.assertIsNotNone(store.marked[0][3])
-        self.assertEqual(previous.metadata["superseded_at"], "16/11/2026")
-        self.assertTrue(previous.metadata.get("valid_to"))
+        self.assertEqual(pending, ["c1"])
+        self.assertEqual(store.marked, [])
+        self.assertNotIn("superseded_at", previous.metadata)
         self.assertEqual(previous.text, "hello")
         self.assertEqual(meta["source_content_hash"], source_content_hash("hello again"))
 
@@ -392,13 +398,14 @@ class SourceRevisionTests(unittest.TestCase):
         self.assertEqual(store.marked, [])
         self.assertNotIn("superseded_at", current.metadata)
 
-    def test_unhashed_copies_of_the_same_source_are_all_marked(self):
+    def test_unhashed_copies_of_the_same_source_are_all_collected(self):
         copies = [
             TextChunk(id="c1", text="first", metadata={"source_key": "src-1"}),
             TextChunk(id="c2", text="second", metadata={"source_key": "src-1"}),
         ]
         store = _Store(copies)
         meta = {"source_key": "src-1"}
+        pending: list[str] = []
         self.assertEqual(
             prepare_source_revision(
                 store,
@@ -406,13 +413,12 @@ class SourceRevisionTests(unittest.TestCase):
                 source_text="second",
                 meta_keys=meta,
                 source_timestamp="16/11/2026",
+                out_superseded=pending,
             ),
             "insert",
         )
-        self.assertEqual(len(store.marked), 1)
-        self.assertEqual(set(store.marked[0][0]), {"c1", "c2"})
-        self.assertEqual(store.marked[0][1], "16/11/2026")
-        self.assertIsNotNone(store.marked[0][3])
+        self.assertEqual(store.marked, [])
+        self.assertEqual(set(pending), {"c1", "c2"})
 
     def test_screen_drops_superseded_hits_unless_history(self):
         live = TextChunk(id="live", text="now", metadata={"source_key": "src-1"})
@@ -1260,6 +1266,7 @@ class SourceRevisionStampTests(unittest.TestCase):
         )
         store = _Store([previous])
         meta = {"source_key": "src-1"}
+        pending: list[str] = []
         self.assertEqual(
             prepare_source_revision(
                 store,
@@ -1267,12 +1274,14 @@ class SourceRevisionStampTests(unittest.TestCase):
                 source_text="hello again",
                 meta_keys=meta,
                 source_timestamp=None,
+                out_superseded=pending,
             ),
             "insert",
         )
         self.assertNotIn("valid_from", meta)
-        self.assertEqual(store.marked[0][1], meta["recorded_at"])
-        self.assertEqual(store.marked[0][3], meta["recorded_at"])
+        self.assertTrue(meta["recorded_at"])
+        self.assertEqual(pending, ["c1"])
+        self.assertEqual(store.marked, [])
 
     def test_source_date_does_not_become_recorded_at(self):
         previous = TextChunk(
@@ -1297,8 +1306,7 @@ class SourceRevisionStampTests(unittest.TestCase):
         self.assertEqual(meta["valid_from"], "2020-01-01T00:00:00Z")
         self.assertEqual(meta["recorded_at"], recorded_at)
         self.assertNotEqual(meta["recorded_at"], meta["valid_from"])
-        self.assertEqual(store.marked[0][1], "2020-01-01T00:00:00Z")
-        self.assertEqual(store.marked[0][3], "2020-01-01T00:00:00Z")
+        self.assertEqual(store.marked, [])
 
 
 if __name__ == "__main__":

@@ -349,6 +349,7 @@ class IngestDataTaskTelemetryTests(unittest.TestCase):
         ):
             cache_adapter.get.side_effect = fake_get
             cache_adapter.set.side_effect = fake_set
+            data_adapter.get_text_chunks.return_value = ([], 0)
             data_adapter.save_text_chunk.side_effect = lambda chunk, brain_id="default": chunk
             embeddings_adapter.embed_text.return_value = Vector(
                 id="v1", embeddings=[0.1], metadata={}

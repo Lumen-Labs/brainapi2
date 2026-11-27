@@ -41,6 +41,7 @@ from source_sync_connector import (
     zendesk_signature,
 )
 from source_sync_store import (
+    PENDING_DELETE_IDS_CAP,
     AdapterDurable,
     SourceSyncStore,
     pending_delete_digest,
@@ -315,6 +316,28 @@ class SourceSyncStoreTests(unittest.TestCase):
         self.assertEqual(updated["last_synced"], "2026-11-25T12:00:00Z")
         listed = store.list("brain")
         self.assertEqual(listed[0]["last_synced"], "2026-11-25T12:00:00Z")
+
+    def test_pending_delete_ids_are_capped_on_store_and_get(self):
+        store = SourceSyncStore()
+        record = _source(store, name="Refunds")
+        missing = [f"{index:04d}" for index in range(PENDING_DELETE_IDS_CAP + 25)]
+        store.record_blocked_deletes(
+            "brain", record["id"], len(missing), "cap exceeded", missing_ids=missing
+        )
+        fetched = store.get("brain", record["id"])
+        self.assertEqual(fetched["pending_delete_count"], len(missing))
+        self.assertEqual(fetched["pending_delete_hash"], pending_delete_digest(missing))
+        self.assertEqual(fetched["pending_delete_ids"], missing[:PENDING_DELETE_IDS_CAP])
+        public = public_source(fetched)
+        self.assertEqual(public["pending_delete_ids"], missing[:PENDING_DELETE_IDS_CAP])
+        self.assertTrue(public["pending_delete_ids_truncated"])
+        self.assertEqual(public["pending_delete_count"], len(missing))
+        self.assertEqual(public["pending_delete_hash"], pending_delete_digest(missing))
+        legacy = dict(fetched)
+        legacy["pending_delete_ids"] = list(missing)
+        truncated = public_source(legacy)
+        self.assertEqual(truncated["pending_delete_ids"], missing[:PENDING_DELETE_IDS_CAP])
+        self.assertTrue(truncated["pending_delete_ids_truncated"])
 
     def test_document_lock_serializes_the_same_document(self):
         store = SourceSyncStore()

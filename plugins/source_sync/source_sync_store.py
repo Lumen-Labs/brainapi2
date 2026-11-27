@@ -22,6 +22,7 @@ LOCK_TTL_SECONDS = 120
 SOURCE_LOCK_DOCUMENT = "_source"
 SOURCE_LOCK_ATTEMPTS = 3
 SOURCE_LOCK_RETRY_SECONDS = 0.05
+PENDING_DELETE_IDS_CAP = 100
 logger = logging.getLogger("source_sync")
 
 
@@ -40,6 +41,8 @@ def pending_delete_digest(ids: Iterable[str] | None) -> str:
 
 def public_source(record: dict[str, Any]) -> dict[str, Any]:
     pending_ids = _pending_ids(record)
+    shown_ids = pending_ids[:PENDING_DELETE_IDS_CAP]
+    pending_count = int(record.get("pending_delete_count") or 0)
     return {
         "id": record.get("id"),
         "name": record.get("name"),
@@ -53,10 +56,12 @@ def public_source(record: dict[str, Any]) -> dict[str, Any]:
         "api_token_env": record.get("api_token_env") or None,
         "skip_enrichment": bool(record.get("skip_enrichment")),
         "last_synced": record.get("last_synced"),
-        "pending_delete_count": int(record.get("pending_delete_count") or 0),
+        "pending_delete_count": pending_count,
         "pending_delete_first_seen": record.get("pending_delete_first_seen"),
         "pending_delete_reason": record.get("pending_delete_reason"),
-        "pending_delete_ids": pending_ids,
+        "pending_delete_ids": shown_ids,
+        "pending_delete_ids_truncated": pending_count > len(shown_ids)
+        or len(pending_ids) > PENDING_DELETE_IDS_CAP,
         "pending_delete_hash": record.get("pending_delete_hash")
         or (pending_delete_digest(pending_ids) if pending_ids else None),
         "listing_truncated": bool(record.get("listing_truncated")),
@@ -320,7 +325,7 @@ class SourceSyncStore:
             newly = not record.get("pending_delete_first_seen")
             record["pending_delete_count"] = int(count)
             record["pending_delete_reason"] = reason
-            record["pending_delete_ids"] = ids
+            record["pending_delete_ids"] = ids[:PENDING_DELETE_IDS_CAP]
             record["pending_delete_hash"] = digest
             if newly:
                 record["pending_delete_first_seen"] = stamp

@@ -155,6 +155,7 @@ class IngestDataObservationAndEnrichmentTests(unittest.TestCase):
             patch("celery.chain") as chain_mock,
         ):
             chain_mock.return_value.apply_async = MagicMock()
+            data_adapter.get_text_chunks.return_value = ([], 0)
             data_adapter.save_text_chunk.side_effect = fake_save_text_chunk
             data_adapter.save_observations.side_effect = fake_save_observations
             embeddings_adapter.embed_text.return_value = Vector(
@@ -215,6 +216,7 @@ class IngestDataObservationAndEnrichmentTests(unittest.TestCase):
             patch.object(ingestion_mod.config, "pipeline_mode", "accurate"),
             patch.object(ingestion_mod, "set_ingestion_task_status") as set_status,
         ):
+            data_adapter.get_text_chunks.return_value = ([], 0)
             data_adapter.save_text_chunk.side_effect = fake_save_text_chunk
             embeddings_adapter.embed_text.return_value = Vector(
                 id="v1", embeddings=[0.1, 0.2], metadata={}
@@ -238,7 +240,7 @@ class IngestDataObservationAndEnrichmentTests(unittest.TestCase):
         ]
         self.assertTrue(completed)
 
-    def test_ingest_commit_hooks_run_after_extraction(self):
+    def test_ingest_commit_hooks_run_after_chain_finalize(self):
         from src.constants.embeddings import Vector
         from src.core.saving.auto_kg import EnrichmentOrchestrationResult
         from src.workers.tasks import ingestion as ingestion_mod
@@ -247,6 +249,7 @@ class IngestDataObservationAndEnrichmentTests(unittest.TestCase):
 
         def fake_save_text_chunk(chunk, brain_id="default"):
             order.append("save")
+            chunk.id = "new-chunk"
             return chunk
 
         def fake_enrich(text, targeting=None, brain_id="default", **kwargs):
@@ -255,7 +258,7 @@ class IngestDataObservationAndEnrichmentTests(unittest.TestCase):
                 session_id=None,
                 ingestion_session_id="ingest-1",
                 brain_id=brain_id,
-                enrichment_relationships=[],
+                enrichment_relationships=[{"name": "FOUNDED_IN"}],
                 should_consolidate=False,
             )
 
@@ -282,6 +285,7 @@ class IngestDataObservationAndEnrichmentTests(unittest.TestCase):
             patch("celery.chain") as chain_mock,
         ):
             chain_mock.return_value.apply_async = MagicMock()
+            data_adapter.get_text_chunks.return_value = ([], 0)
             data_adapter.save_text_chunk.side_effect = fake_save_text_chunk
             embeddings_adapter.embed_text.return_value = Vector(
                 id="v1", embeddings=[0.1, 0.2], metadata={}
@@ -293,7 +297,35 @@ class IngestDataObservationAndEnrichmentTests(unittest.TestCase):
             )
 
         self.assertEqual(result, "task-123")
+        self.assertEqual(order, ["save", "enrich"])
+        self.assertTrue(chain_mock.called)
+        finalize = ingestion_mod.finalize_ingestion_task
+        finalize_request = MagicMock()
+        finalize_request.id = "finalize-1"
+        with (
+            patch.object(ingestion_mod, "graph_adapter"),
+            patch.object(ingestion_mod, "set_ingestion_task_status"),
+            patch.object(ingestion_mod, "_run_ingest_commit_hooks", side_effect=fake_hook),
+            patch.object(ingestion_mod, "data_adapter") as data_adapter,
+        ):
+            finalize.run.__func__(
+                type("Bound", (), {"request": finalize_request})(),
+                "task-123",
+                "tenant-a",
+                "completed",
+                None,
+                None,
+                None,
+                None,
+                {"brain_id": "tenant-a", "meta_keys": {"source_id": "note-1"}},
+                ["old-chunk"],
+                "new-chunk",
+            )
         self.assertEqual(order, ["save", "enrich", "commit"])
+        data_adapter.mark_text_chunks_superseded.assert_called_once()
+        self.assertEqual(
+            data_adapter.mark_text_chunks_superseded.call_args.args[0], ["old-chunk"]
+        )
 
     def test_ingest_commit_hooks_skip_when_extraction_fails(self):
         from src.constants.embeddings import Vector
@@ -301,7 +333,11 @@ class IngestDataObservationAndEnrichmentTests(unittest.TestCase):
 
         hooks = []
 
+        saved = []
+
         def fake_save_text_chunk(chunk, brain_id="default"):
+            chunk.id = "new-chunk"
+            saved.append(chunk.id)
             return chunk
 
         task = ingestion_mod.ingest_data
@@ -309,6 +345,7 @@ class IngestDataObservationAndEnrichmentTests(unittest.TestCase):
         args = {
             "data": {"data_type": "text", "text_data": "Halvorsen Dynamics"},
             "brain_id": "tenant-a",
+            "meta_keys": {"source_id": "offer-sheet", "source_key": "offer-sheet"},
         }
 
         with (
@@ -331,6 +368,7 @@ class IngestDataObservationAndEnrichmentTests(unittest.TestCase):
             patch.object(ingestion_mod, "set_ingestion_task_status"),
         ):
             data_adapter.save_text_chunk.side_effect = fake_save_text_chunk
+            data_adapter.get_text_chunks.return_value = ([], 0)
             embeddings_adapter.embed_text.return_value = Vector(
                 id="v1", embeddings=[0.1, 0.2], metadata={}
             )
@@ -342,6 +380,143 @@ class IngestDataObservationAndEnrichmentTests(unittest.TestCase):
                 )
 
         self.assertEqual(hooks, [])
+        self.assertEqual(saved, ["new-chunk"])
+        data_adapter.mark_text_chunks_superseded.assert_called()
+        marked_ids = [
+            call.args[0]
+            for call in data_adapter.mark_text_chunks_superseded.call_args_list
+        ]
+        self.assertEqual(marked_ids, [["new-chunk"]])
+
+    def test_failed_revision_leaves_previous_passage_current(self):
+        from src.constants.data import TextChunk
+        from src.constants.embeddings import Vector
+        from src.workers.tasks import ingestion as ingestion_mod
+
+        hooks = []
+        previous = TextChunk(
+            id="old-chunk",
+            text="previous offer",
+            metadata={
+                "source_key": "offer-sheet",
+                "source_content_hash": "old-hash",
+            },
+        )
+
+        def fake_save_text_chunk(chunk, brain_id="default"):
+            chunk.id = "new-chunk"
+            return chunk
+
+        task = ingestion_mod.ingest_data
+        request = self._make_request()
+        args = {
+            "data": {"data_type": "text", "text_data": "revised offer"},
+            "brain_id": "tenant-a",
+            "meta_keys": {"source_id": "offer-sheet", "source_key": "offer-sheet"},
+        }
+
+        with (
+            patch.object(ingestion_mod, "data_adapter") as data_adapter,
+            patch.object(ingestion_mod, "embeddings_adapter") as embeddings_adapter,
+            patch.object(ingestion_mod, "vector_store_adapter") as vector_store_adapter,
+            patch.object(ingestion_mod, "cache_adapter"),
+            patch.object(
+                ingestion_mod,
+                "enrich_kg_from_input",
+                side_effect=RuntimeError("extract failed"),
+            ),
+            patch.object(
+                ingestion_mod,
+                "_run_ingest_commit_hooks",
+                side_effect=lambda payload: hooks.append(payload),
+            ),
+            patch.object(ingestion_mod.config, "pipeline_mode", "accurate"),
+            patch.object(ingestion_mod.config, "run_observations", False),
+            patch.object(ingestion_mod, "set_ingestion_task_status"),
+        ):
+            data_adapter.save_text_chunk.side_effect = fake_save_text_chunk
+            data_adapter.get_text_chunks.return_value = ([previous], 1)
+            embeddings_adapter.embed_text.return_value = Vector(
+                id="v1", embeddings=[0.1, 0.2], metadata={}
+            )
+            vector_store_adapter.add_vectors.return_value = ["v1"]
+            with self.assertRaises(RuntimeError):
+                task.run.__func__(
+                    type("Bound", (), {"request": request})(),
+                    args,
+                )
+
+        self.assertEqual(hooks, [])
+        self.assertNotIn("superseded_at", previous.metadata)
+        marked_ids = [
+            call.args[0]
+            for call in data_adapter.mark_text_chunks_superseded.call_args_list
+        ]
+        self.assertEqual(marked_ids, [["new-chunk"]])
+
+    def test_ingest_commit_hooks_skip_when_chain_fails(self):
+        from src.workers.tasks import ingestion as ingestion_mod
+
+        hooks = []
+        failed = ingestion_mod.mark_ingestion_chain_failed
+        with (
+            patch.object(ingestion_mod, "data_adapter") as data_adapter,
+            patch.object(ingestion_mod, "set_ingestion_task_status") as set_status,
+            patch.object(
+                ingestion_mod,
+                "_run_ingest_commit_hooks",
+                side_effect=lambda payload: hooks.append(payload),
+            ),
+        ):
+            failed(
+                {"id": "rel-1"},
+                RuntimeError("graph write failed"),
+                None,
+                "task-123",
+                "tenant-a",
+                "new-chunk",
+            )
+
+        self.assertEqual(hooks, [])
+        data_adapter.mark_text_chunks_superseded.assert_called_once()
+        self.assertEqual(
+            data_adapter.mark_text_chunks_superseded.call_args.args[0], ["new-chunk"]
+        )
+        set_status.assert_called_once()
+        self.assertEqual(set_status.call_args.args[2], "failed")
+
+    def test_finalize_failed_status_does_not_commit(self):
+        from src.workers.tasks import ingestion as ingestion_mod
+
+        hooks = []
+        finalize = ingestion_mod.finalize_ingestion_task
+        finalize_request = MagicMock()
+        finalize_request.id = "finalize-fail"
+        with (
+            patch.object(ingestion_mod, "graph_adapter"),
+            patch.object(ingestion_mod, "set_ingestion_task_status"),
+            patch.object(
+                ingestion_mod,
+                "_run_ingest_commit_hooks",
+                side_effect=lambda payload: hooks.append(payload),
+            ),
+            patch.object(ingestion_mod, "data_adapter") as data_adapter,
+        ):
+            finalize.run.__func__(
+                type("Bound", (), {"request": finalize_request})(),
+                "task-123",
+                "tenant-a",
+                "failed",
+                "graph write failed",
+                None,
+                None,
+                None,
+                {"brain_id": "tenant-a", "meta_keys": {"source_id": "note-1"}},
+                ["old-chunk"],
+                "new-chunk",
+            )
+        self.assertEqual(hooks, [])
+        data_adapter.mark_text_chunks_superseded.assert_not_called()
 
     def test_invalid_pipeline_mode_fails_ingest(self):
         from src.workers.tasks import ingestion as ingestion_mod
