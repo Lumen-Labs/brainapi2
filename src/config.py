@@ -725,6 +725,9 @@ class Config:
         self.help_center_retire_max_pages = int(
             os.getenv("HELP_CENTER_RETIRE_MAX_PAGES", "50")
         )
+        self.help_center_recheck_max_pages = int(
+            os.getenv("HELP_CENTER_RECHECK_MAX_PAGES", "50")
+        )
         self.pipeline_mode: Literal["lightweight", "accurate"] = validate_pipeline_mode(
             os.getenv("PIPELINE_MODE", "accurate")
         )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 
@@ -9,10 +10,21 @@ if PLUGIN_DIR_STR not in sys.path:
     sys.path.insert(0, PLUGIN_DIR_STR)
 
 from celery.exceptions import Reject
+from src.core.saving.ingest_commit_hooks import register_ingest_commit_hook
 from src.workers.app import ingestion_app
 from source_sync_api import apply_payload_now, poll_source_now
-from source_sync_apply import record_failed_event
+from source_sync_apply import commit_upsert_head_from_payload, record_failed_event
 from source_sync_store import default_store
+
+
+def _commit_source_sync_head(payload) -> None:
+    try:
+        commit_upsert_head_from_payload(payload)
+    except Exception:
+        logging.getLogger("source_sync").exception("source_sync head commit failed")
+
+
+register_ingest_commit_hook(_commit_source_sync_head)
 
 
 @ingestion_app.task(

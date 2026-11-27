@@ -38,6 +38,12 @@ def public_source(record: dict[str, Any]) -> dict[str, Any]:
         "api_token_env": record.get("api_token_env") or None,
         "skip_enrichment": bool(record.get("skip_enrichment")),
         "last_synced": record.get("last_synced"),
+        "pending_delete_count": int(record.get("pending_delete_count") or 0),
+        "pending_delete_first_seen": record.get("pending_delete_first_seen"),
+        "pending_delete_reason": record.get("pending_delete_reason"),
+        "listing_truncated": bool(record.get("listing_truncated")),
+        "listing_pages_fetched": record.get("listing_pages_fetched"),
+        "approve_pending_deletes": bool(record.get("approve_pending_deletes")),
         "created_at": record.get("created_at"),
         "updated_at": record.get("updated_at"),
     }
@@ -134,6 +140,12 @@ class SourceSyncStore:
             "api_email": _text(payload.get("api_email")),
             "skip_enrichment": bool(payload.get("skip_enrichment")),
             "last_synced": None,
+            "pending_delete_count": 0,
+            "pending_delete_first_seen": None,
+            "pending_delete_reason": None,
+            "listing_truncated": False,
+            "listing_pages_fetched": None,
+            "approve_pending_deletes": False,
             "created_at": now,
             "updated_at": now,
         }
@@ -267,6 +279,77 @@ class SourceSyncStore:
             lock = self._locks.get(f"{brain_id}:{key}")
         if lock is not None and lock.locked():
             lock.release()
+
+    def record_blocked_deletes(
+        self,
+        brain_id: str,
+        source_id: str,
+        count: int,
+        reason: str,
+    ) -> bool:
+        record = self.get(brain_id, source_id)
+        if record is None:
+            return False
+        stamp = format_instant(utc_now())
+        first_seen = record.get("pending_delete_first_seen")
+        newly = not first_seen
+        record["pending_delete_count"] = int(count)
+        record["pending_delete_reason"] = reason
+        if newly:
+            record["pending_delete_first_seen"] = stamp
+        record["updated_at"] = stamp
+        self._put(brain_id, source_id, record)
+        return newly
+
+    def clear_blocked_deletes(self, brain_id: str, source_id: str) -> None:
+        record = self.get(brain_id, source_id)
+        if record is None:
+            return
+        if not (
+            record.get("pending_delete_count")
+            or record.get("pending_delete_first_seen")
+            or record.get("pending_delete_reason")
+        ):
+            return
+        record["pending_delete_count"] = 0
+        record["pending_delete_first_seen"] = None
+        record["pending_delete_reason"] = None
+        record["updated_at"] = format_instant(utc_now())
+        self._put(brain_id, source_id, record)
+
+    def arm_delete_approval(self, brain_id: str, source_id: str) -> dict[str, Any] | None:
+        record = self.get(brain_id, source_id)
+        if record is None:
+            return None
+        record["approve_pending_deletes"] = True
+        record["updated_at"] = format_instant(utc_now())
+        self._put(brain_id, source_id, record)
+        return record
+
+    def consume_delete_approval(self, brain_id: str, source_id: str) -> bool:
+        record = self.get(brain_id, source_id)
+        if record is None or not record.get("approve_pending_deletes"):
+            return False
+        record["approve_pending_deletes"] = False
+        record["updated_at"] = format_instant(utc_now())
+        self._put(brain_id, source_id, record)
+        return True
+
+    def set_listing_status(
+        self,
+        brain_id: str,
+        source_id: str,
+        *,
+        truncated: bool,
+        pages_fetched: int | None,
+    ) -> None:
+        record = self.get(brain_id, source_id)
+        if record is None:
+            return
+        record["listing_truncated"] = bool(truncated)
+        record["listing_pages_fetched"] = pages_fetched
+        record["updated_at"] = format_instant(utc_now())
+        self._put(brain_id, source_id, record)
 
     def record_dead_letter(self, brain_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         item = {

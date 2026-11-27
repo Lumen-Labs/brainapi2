@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from source_sync_apply import (
     apply_event,
     apply_poll,
+    approve_pending_deletes,
     event_from_payload,
     event_task_payload,
     queue_ingest_task,
@@ -105,6 +106,24 @@ def create_admin_router() -> APIRouter:
         task_id = _enqueue_poll(source_id)
         return {"status": "queued", "task_id": task_id, "source_id": source_id}
 
+    @router.post("/sources/{source_id}/approve-deletes")
+    def approve_source_deletes(source_id: str, brain_id: str = Depends(_brain_id)):
+        store = _store()
+        try:
+            record = approve_pending_deletes(brain_id, source_id, store=store)
+        except ValueError as exc:
+            detail = str(exc)
+            status = 404 if detail == "source not found" else 409
+            raise HTTPException(status_code=status, detail=detail) from exc
+        task_id = _enqueue_poll(source_id)
+        return {
+            "status": "queued",
+            "task_id": task_id,
+            "source_id": source_id,
+            "approved": True,
+            "pending_delete_count": int(record.get("pending_delete_count") or 0),
+        }
+
     @router.get("/dead-letters")
     def list_dead_letters(brain_id: str = Depends(_brain_id)):
         items = _store().list_dead_letters(brain_id)
@@ -196,3 +215,53 @@ def _public_with_webhook(record: dict[str, Any]) -> dict[str, Any]:
     public = public_source(record)
     public["webhook_path"] = f"/source-sync/webhooks/{record.get('id')}"
     return public
+
+
+def register_mcp_tools(context) -> None:
+    register = getattr(context, "register_mcp_tool", None)
+    if not callable(register):
+        return
+
+    def source_sync_get_source(source_id: str, brain_id: str = "default") -> dict[str, Any]:
+        record = _store().get(brain_id, source_id) or _store().get_any(source_id)
+        if record is None:
+            return {"ok": False, "error": "source not found"}
+        return {"ok": True, "source": _public_with_webhook(record)}
+
+    def source_sync_approve_deletes(
+        source_id: str, brain_id: str = "default"
+    ) -> dict[str, Any]:
+        store = _store()
+        record = store.get(brain_id, source_id) or store.get_any(source_id)
+        if record is None:
+            return {"ok": False, "error": "source not found"}
+        try:
+            updated = approve_pending_deletes(
+                str(record.get("brain_id") or brain_id),
+                str(record.get("id") or source_id),
+                store=store,
+            )
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        task_id = _enqueue_poll(str(updated.get("id") or source_id))
+        return {
+            "ok": True,
+            "status": "queued",
+            "task_id": task_id,
+            "source_id": updated.get("id"),
+            "pending_delete_count": int(updated.get("pending_delete_count") or 0),
+        }
+
+    register(
+        source_sync_get_source,
+        name="source_sync_get_source",
+        description="Get a source-sync source and its pending-delete or truncation status.",
+    )
+    register(
+        source_sync_approve_deletes,
+        name="source_sync_approve_deletes",
+        description=(
+            "One-shot approval to apply pending source-sync deletions that exceeded "
+            "the delete cap, then queue a poll."
+        ),
+    )

@@ -1,4 +1,8 @@
-from source_sync_api import create_admin_router, create_webhook_router
+from source_sync_api import (
+    create_admin_router,
+    create_webhook_router,
+    register_mcp_tools,
+)
 
 
 def register(context) -> None:
@@ -8,3 +12,4 @@ def register(context) -> None:
         skip_pat=True,
         skip_brain=True,
     )
+    register_mcp_tools(context)

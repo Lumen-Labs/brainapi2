@@ -4,6 +4,7 @@ import logging
 from uuid import uuid4
 
 from src.core.saving.help_center_crawl import (
+    RecheckQuotaStop,
     claim_crawl_spec,
     classify_crawl_pages,
     close_removed_pages,
@@ -110,6 +111,7 @@ def recrawl_help_center(self, args: dict | None = None):
                     OSError,
                 ),
             ),
+            budget=getattr(config, "help_center_recheck_max_pages", 50),
         )
         task_ids = []
         for page in classified["ingestible"]:
@@ -161,6 +163,10 @@ def recrawl_help_center(self, args: dict | None = None):
                 brain_id,
                 abort_reason,
             )
+        recheck_warning = classified.get("recheck_stopped")
+        warning = abort_reason
+        if recheck_warning:
+            warning = f"{warning}; {recheck_warning}" if warning else str(recheck_warning)
         finish_live = retained_source_keys(
             spec, classified, removed, aborted=abort_reason is not None
         )
@@ -172,7 +178,7 @@ def recrawl_help_center(self, args: dict | None = None):
             removed_source_keys=removed,
             conflict_scan_task_id=scan_id,
             task_id=self.request.id,
-            warning=abort_reason,
+            warning=warning,
         )
         set_ingestion_task_status(
             self.request.id,
@@ -205,6 +211,8 @@ def recrawl_help_center(self, args: dict | None = None):
             "conflict_scan_task_id": scan_id,
             "last_crawled_at": None if finished is None else finished.last_crawled_at,
             "retirement_aborted": abort_reason,
+            "recheck_stopped": recheck_warning,
+            "recheck_remaining": classified.get("recheck_remaining") or [],
         }
     except (
         CrawlerConfigError,
@@ -256,19 +264,53 @@ def run_due_help_center_crawls(self, args: dict | None = None):
 
 def _recheck_page(crawler, spec, url, task_id, errors):
     from src.adapters.interfaces.crawler import CrawlRequest
+    from src.lib.crawler.errors import CrawlerQuotaError
 
     try:
-        return crawler.crawl_pages(
-            CrawlRequest(
-                url=url,
-                max_pages=1,
-                allowed_domains=list(spec.allowed_domains or []),
-                allowed_path_prefixes=list(spec.allowed_path_prefixes or []),
-                idempotency_key=f"{task_id}:recheck:{url}",
+        pages = list(
+            crawler.crawl_pages(
+                CrawlRequest(
+                    url=url,
+                    max_pages=1,
+                    allowed_domains=list(spec.allowed_domains or []),
+                    allowed_path_prefixes=list(spec.allowed_path_prefixes or []),
+                    idempotency_key=f"{task_id}:recheck:{url}",
+                )
             )
+            or []
         )
-    except errors:
+    except CrawlerQuotaError as exc:
+        raise RecheckQuotaStop("crawler quota exceeded") from exc
+    except errors as exc:
+        if _is_rate_or_quota(exc):
+            raise RecheckQuotaStop("crawler rate limited") from exc
         return []
+    if any(_page_is_rate_or_quota(page) for page in pages):
+        raise RecheckQuotaStop("crawler rate limited")
+    return pages
+
+
+def _page_is_rate_or_quota(page) -> bool:
+    try:
+        status = int(getattr(page, "status_code", None) or 0)
+    except (TypeError, ValueError):
+        status = 0
+    return status in {429, 402}
+
+
+def _is_rate_or_quota(exc) -> bool:
+    from src.lib.crawler.errors import CrawlerQuotaError
+
+    if isinstance(exc, CrawlerQuotaError):
+        return True
+    try:
+        status = int(getattr(exc, "status_code", None) or 0)
+    except (TypeError, ValueError):
+        status = 0
+    if status in {429, 402}:
+        return True
+    text = str(exc).lower()
+    return "429" in text or "rate limit" in text or "quota" in text
 
 
 def _enqueue_page(

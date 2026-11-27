@@ -896,6 +896,12 @@ def graph_ingest_account(
     return item_errors, ledger, write_edge
 
 
+def _run_ingest_commit_hooks(payload):
+    from src.core.saving.ingest_commit_hooks import run_ingest_commit_hooks
+
+    run_ingest_commit_hooks(payload)
+
+
 def _save_source(payload, source_text, task_id=None):
     from src.core.saving.ingest_effects import remember, stamp_task_ids
 
@@ -1049,6 +1055,7 @@ def _ingest_data(self, args, *, staged=False):
             from src.core.saving.ingest_effects import remember
 
             remember(payload.brain_id, self.request.id, {})
+            _run_ingest_commit_hooks(payload)
             set_ingestion_task_status(
                 self.request.id,
                 payload.brain_id,
@@ -1066,6 +1073,7 @@ def _ingest_data(self, args, *, staged=False):
 
         checkpoint()
         text_chunk = _save_source(payload, source_text, self.request.id)
+        _run_ingest_commit_hooks(payload)
         if superseded_ids:
             close_at = payload.source_timestamp or recorded_at
             data_adapter.mark_text_chunks_superseded(
