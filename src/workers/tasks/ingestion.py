@@ -606,6 +606,16 @@ def _relationship_flow_key(obj) -> str:
     return str(getattr(obj, "flow_key", None) or props.get("flow_key") or "").strip()
 
 
+def _relationship_amount(obj):
+    amount = getattr(obj, "amount", None)
+    if amount is not None:
+        return amount
+    props = getattr(obj, "properties", None) or {}
+    if isinstance(props, dict):
+        return props.get("amount")
+    return None
+
+
 def _relationship_neighbor_map(
     relationship: ArchitectAgentRelationship,
     *,
@@ -629,31 +639,36 @@ def _assign_relationship_interval(
     """Keep a closed interval intact when the same fact is observed again.
 
     Only outgoing same-endpoint edges are considered. Open edges reuse their
-    identifier and original ``valid_from``. Distinct ``flow_key`` values keep
-    separate open edges when both sides have a key; otherwise reuse is by
-    endpoints and name. An open edge whose source chunks this ingest just
+    identifier and original ``valid_from`` when the amount also matches.
+    Distinct amounts keep separate open edges so a later source cannot
+    overwrite a counter-value. Distinct ``flow_key`` values keep separate
+    open edges when both sides have a key; otherwise reuse is by endpoints,
+    name, and amount. An open edge whose source chunks this ingest just
     superseded is treated as closed so a revised amount cannot overwrite it.
     Closed edges get a new identifier keyed by the new start so MERGE cannot
     overwrite the historical interval. Neighbor lookup failures propagate so
     the caller can retry instead of merging onto a closed interval.
     """
     from src.core.saving.identity import stable_relationship_id, stable_uuid
+    from src.core.saving.numeric_literals import amounts_differ
     from src.core.saving.validity import VALID_FROM, is_valid_at
     from src.core.saving.validity_cardinality import existing_edge_from_superseded_source
 
-    base = relationship.uuid or stable_relationship_id(
+    amount_id = stable_relationship_id(
         relationship.tail.uuid,
         relationship.name,
         relationship.tip.uuid,
         relationship.flow_key,
-        getattr(relationship, "amount", None),
+        _relationship_amount(relationship),
     )
+    base = relationship.uuid or amount_id
     neighbors = _relationship_neighbor_map(
         relationship, brain_id=brain_id, neighbors=neighbors
     )
     open_match = None
     closed_ids: list[str] = []
     rel_flow = _relationship_flow_key(relationship)
+    incoming_amount = _relationship_amount(relationship)
     for predicate, neighbor in (neighbors or {}).get(relationship.tail.uuid) or []:
         if not predicate or not neighbor:
             continue
@@ -665,6 +680,8 @@ def _assign_relationship_interval(
             continue
         pred_flow = _relationship_flow_key(predicate)
         if rel_flow and pred_flow and rel_flow != pred_flow:
+            continue
+        if amounts_differ(_relationship_amount(predicate), incoming_amount):
             continue
         props = getattr(predicate, "properties", None) or {}
         uuid = getattr(predicate, "uuid", None)
@@ -691,15 +708,15 @@ def _assign_relationship_interval(
             relationship.properties or {}
         ).get("source_timestamp")
         token = str(start or "") or "|".join(sorted(closed_ids))
-        candidate = stable_uuid("rel-interval", base, token)
+        candidate = stable_uuid("rel-interval", amount_id, token)
         existing = set(closed_ids)
         n = 0
         while candidate in existing:
             n += 1
-            candidate = stable_uuid("rel-interval", base, token, str(n))
+            candidate = stable_uuid("rel-interval", amount_id, token, str(n))
         relationship.uuid = candidate
         return
-    relationship.uuid = base
+    relationship.uuid = amount_id
 
 
 def _invalidate_superseded_relationships(
@@ -724,6 +741,7 @@ def _invalidate_superseded_relationships(
     neighbors = _relationship_neighbor_map(
         relationship, brain_id=brain_id, neighbors=neighbors
     )
+    from src.core.saving.numeric_literals import amounts_differ
     from src.core.saving.validity_cardinality import (
         existing_edge_from_superseded_source,
         should_close_outgoing_edge,
@@ -733,6 +751,7 @@ def _invalidate_superseded_relationships(
     valid_at = (relationship.properties or {}).get("valid_at") or (
         relationship.properties or {}
     ).get("source_timestamp")
+    incoming_amount = _relationship_amount(relationship)
     for predicate, neighbor in pairs:
         if not predicate or not neighbor:
             continue
@@ -743,9 +762,10 @@ def _invalidate_superseded_relationships(
         if (predicate.name or "").strip().upper() != (relationship.name or "").strip().upper():
             continue
         props = getattr(predicate, "properties", None) or {}
-        if neighbor.uuid == relationship.tip.uuid and not existing_edge_from_superseded_source(
-            props, superseded_chunk_ids
-        ):
+        superseded = existing_edge_from_superseded_source(props, superseded_chunk_ids)
+        if amounts_differ(_relationship_amount(predicate), incoming_amount) and not superseded:
+            continue
+        if neighbor.uuid == relationship.tip.uuid and not superseded:
             continue
         if getattr(predicate, "uuid", None) == relationship.uuid:
             continue

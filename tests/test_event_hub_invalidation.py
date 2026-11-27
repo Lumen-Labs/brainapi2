@@ -736,6 +736,196 @@ class EventHubInvalidationTests(unittest.TestCase):
         )
         self.assertFalse(retrieve_mod._is_currently_valid(graph.predicate("rel-310")))
 
+    def test_two_source_price_amounts_keep_both_edges_and_conflict(self):
+        from src.core.saving.conflicts import detect_conflicts
+        from src.core.saving.identity import stable_relationship_id
+        from src.workers.tasks import ingestion as ingestion_mod
+
+        class _Store:
+            def __init__(self):
+                self.rows = {}
+                self.cursors = {}
+
+            def save_conflict(self, conflict, brain_id):
+                self.rows[conflict.id] = conflict
+                return conflict
+
+            def update_conflict(self, conflict, brain_id, **kwargs):
+                self.rows[conflict.id] = conflict
+                return conflict
+
+            def get_conflict_by_id(self, id, brain_id):
+                return self.rows.get(id)
+
+            def get_conflict_by_pair_key(self, pair_key, brain_id):
+                for row in self.rows.values():
+                    if row.pair_key == pair_key:
+                        return row
+                return None
+
+            def get_conflicts_list(self, brain_id, **kwargs):
+                items = list(self.rows.values())
+                return items, len(items)
+
+            def get_open_conflicts_for_facts(self, fact_ids, brain_id):
+                wanted = set(fact_ids)
+                return [
+                    item
+                    for item in self.rows.values()
+                    if item.status == "open" and wanted.intersection(item.fact_ids())
+                ]
+
+            def get_text_chunks_by_ids(self, ids, with_observations, brain_id):
+                return [], []
+
+            def get_triples_by_uuid(self, uuids, brain_id=None, **kwargs):
+                return []
+
+            def get_conflict_scan_cursor(self, brain_id):
+                return self.cursors.get(brain_id)
+
+            def set_conflict_scan_cursor(self, brain_id, cursor):
+                if cursor:
+                    self.cursors[brain_id] = dict(cursor)
+                else:
+                    self.cursors.pop(brain_id, None)
+
+        class _Graph:
+            def __init__(self, triples):
+                self.triples = triples
+
+            def get_triples_by_uuid(self, uuids, brain_id=None, **kwargs):
+                wanted = {str(item) for item in uuids or []}
+                return [
+                    triple
+                    for triple in self.triples
+                    if str(getattr(triple[1], "uuid", "") or "") in wanted
+                ]
+
+            def list_validity_relationships(
+                self,
+                brain_id,
+                skip=0,
+                limit=100,
+                since=None,
+                until=None,
+                subject_uuids=None,
+                relationship_uuids=None,
+                after_subject_uuid=None,
+                after_predicate=None,
+                after_relationship_uuid=None,
+            ):
+                items = self.triples
+                return items[skip : skip + limit], len(items)
+
+        graph = _FakeGraphAdapter()
+        graph.add_node("widget", "Widget", "PRODUCT")
+        graph.add_node("eur", "EUR", "CURRENCY")
+        cheap_id = stable_relationship_id("widget", "PRICED_AT", "eur", amount=12400)
+        graph.add_edge(
+            cheap_id,
+            "widget",
+            "PRICED_AT",
+            "eur",
+            properties={
+                "amount": 12400,
+                "source_key": "source-a",
+                "source_chunk_ids": ["chunk-a"],
+                "valid_from": "2026-01-01T00:00:00Z",
+            },
+        )
+        dear = _relationship(
+            cheap_id,
+            _entity("widget", "Widget", "PRODUCT"),
+            "PRICED_AT",
+            _entity("eur", "EUR", "CURRENCY"),
+            valid_at="2026-02-01T00:00:00Z",
+        )
+        dear.amount = 14900
+        dear.properties["amount"] = 14900
+        dear.properties["source_key"] = "source-b"
+        dear.properties["source_chunk_ids"] = ["chunk-b"]
+        dear.properties["valid_from"] = "2026-02-01T00:00:00Z"
+        with patch.object(ingestion_mod, "graph_adapter", graph):
+            ingestion_mod._assign_relationship_interval(dear, brain_id="brain-a")
+            ingestion_mod._invalidate_superseded_relationships(
+                dear, brain_id="brain-a"
+            )
+        self.assertNotEqual(dear.uuid, cheap_id)
+        self.assertEqual(graph.updates, [])
+        graph.add_edge(
+            dear.uuid,
+            "widget",
+            "PRICED_AT",
+            "eur",
+            properties=dict(dear.properties),
+        )
+
+        same = _relationship(
+            cheap_id,
+            _entity("widget", "Widget", "PRODUCT"),
+            "PRICED_AT",
+            _entity("eur", "EUR", "CURRENCY"),
+            valid_at="2026-03-01T00:00:00Z",
+        )
+        same.amount = 12400
+        same.properties["amount"] = 12400
+        same.properties["source_key"] = "source-a"
+        same.properties["source_chunk_ids"] = ["chunk-a-retry"]
+        same.properties["valid_from"] = "2026-03-01T00:00:00Z"
+        with patch.object(ingestion_mod, "graph_adapter", graph):
+            ingestion_mod._assign_relationship_interval(same, brain_id="brain-a")
+        self.assertEqual(same.uuid, cheap_id)
+        self.assertEqual(same.properties["valid_from"], "2026-01-01T00:00:00Z")
+
+        store = _Store()
+        widget = Node(uuid="widget", name="Widget", labels=["PRODUCT"])
+        eur = Node(uuid="eur", name="EUR", labels=["CURRENCY"])
+        found = detect_conflicts(
+            store,
+            _Graph(
+                [
+                    (
+                        widget,
+                        Predicate(
+                            uuid=cheap_id,
+                            name="PRICED_AT",
+                            description="Kestrel X2 pump costs 12,400 EUR",
+                            amount=12400,
+                            properties={
+                                "amount": 12400,
+                                "source_key": "source-a",
+                                "valid_from": "2026-01-01T00:00:00Z",
+                            },
+                        ),
+                        eur,
+                    ),
+                    (
+                        widget,
+                        Predicate(
+                            uuid=dear.uuid,
+                            name="PRICED_AT",
+                            description="Kestrel X2 pump costs 14,900 EUR",
+                            amount=14900,
+                            properties={
+                                "amount": 14900,
+                                "source_key": "source-b",
+                                "valid_from": "2026-02-01T00:00:00Z",
+                            },
+                        ),
+                        eur,
+                    ),
+                ]
+            ),
+            "brain-a",
+        )
+        numeric = [
+            item for item in found if item.disagreement_type == "numeric_mismatch"
+        ]
+        self.assertEqual(len(numeric), 1)
+        self.assertEqual(set(numeric[0].fact_ids()), {cheap_id, dear.uuid})
+
 
 if __name__ == "__main__":
     unittest.main()
+
