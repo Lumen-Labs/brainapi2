@@ -85,7 +85,6 @@ def test_compose_profiles_render_with_escaped_healthchecks(profile):
 
 
 @pytest.mark.skipif(shutil.which("docker") is None, reason="Docker unavailable")
-@pytest.mark.skipif(shutil.which("docker") is None, reason="Docker unavailable")
 def test_heavy_compose_rejects_missing_neo4j_licence():
     env = _compose_env("heavy")
     env.pop("NEO4J_ACCEPT_LICENSE_AGREEMENT")
@@ -194,6 +193,10 @@ def test_heavy_requires_neo4j_licence_opt_in():
     assert "${NEO4J_ACCEPT_LICENSE_AGREEMENT:?NEO4J_ACCEPT_LICENSE_AGREEMENT is required}" in source
     env = (DEPLOY / "env.heavy.example").read_text(encoding="utf-8")
     assert 'NEO4J_ACCEPT_LICENSE_AGREEMENT=""' in env
+    workflow = (ROOT / ".github" / "workflows" / "heavy-validation.yaml").read_text(
+        encoding="utf-8"
+    )
+    assert "NEO4J_ACCEPT_LICENSE_AGREEMENT: yes" in workflow
 
 
 def test_backup_manifest_verification_detects_tampering(tmp_path):
