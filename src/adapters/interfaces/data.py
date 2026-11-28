@@ -112,7 +112,7 @@ class DataClient(ABC):
         raise NotImplementedError("save_structured_data method not implemented")
 
     @abstractmethod
-    def create_brain(self, name_key: str) -> Brain:
+    def create_brain(self, name_key: str, pat_scopes: list[str] | None = None) -> Brain:
         """
         Create a new brain in the data client.
         """
@@ -138,6 +138,10 @@ class DataClient(ABC):
         Get the list of brains from the data client.
         """
         raise NotImplementedError("get_brains_list method not implemented")
+
+    def ping(self) -> None:
+        """Cheap liveness check against the backing store."""
+        raise NotImplementedError("ping method not implemented")
 
     @abstractmethod
     def save_kg_changes(self, kg_changes: KGChanges, brain_id: str) -> KGChanges:

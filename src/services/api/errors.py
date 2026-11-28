@@ -15,6 +15,18 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, JsonValue
 from redis.exceptions import RedisError
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.middleware.base import BaseHTTPMiddleware
+
+try:
+    import psycopg2
+except ImportError:
+    psycopg2 = None
+
+try:
+    from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
+except ImportError:
+    ConnectionFailure = ()
+    ServerSelectionTimeoutError = ()
 
 from src.lib.cypher_safety import InvalidCypherIdentifier, RawCypherRejected
 from src.lib.embeddings.client import EmbeddingClientError, EmbeddingError
@@ -22,6 +34,60 @@ from src.lib.postgresql._provisioning import PoolTimeout
 
 logger = logging.getLogger(__name__)
 CACHE_RETRY_AFTER = "5"
+
+
+def flatten_exceptions(exc: BaseException) -> list[BaseException]:
+    if isinstance(exc, BaseExceptionGroup):
+        out: list[BaseException] = []
+        for inner in exc.exceptions:
+            out.extend(flatten_exceptions(inner))
+        return out
+    return [exc]
+
+
+def _is_database_outage(exc: BaseException) -> bool:
+    if psycopg2 is not None and isinstance(
+        exc, (psycopg2.OperationalError, psycopg2.InterfaceError)
+    ):
+        return True
+    mongo_types = tuple(
+        cls
+        for cls in (ConnectionFailure, ServerSelectionTimeoutError)
+        if isinstance(cls, type)
+    )
+    return bool(mongo_types) and isinstance(exc, mongo_types)
+
+
+class DependencyOutageMiddleware(BaseHTTPMiddleware):
+    """Map DB/cache failures, including ExceptionGroup wrappers, to HTTP 503."""
+
+    async def dispatch(self, request: Request, call_next):
+        try:
+            return await call_next(request)
+        except BaseExceptionGroup as exc:
+            for inner in flatten_exceptions(exc):
+                if isinstance(inner, PoolTimeout):
+                    return error_response(
+                        request,
+                        status_code=503,
+                        detail="Database is busy. Retry shortly.",
+                        headers={"Retry-After": "1"},
+                    )
+                if isinstance(inner, RedisError):
+                    return error_response(
+                        request,
+                        status_code=503,
+                        detail="Cache unavailable",
+                        headers={"Retry-After": CACHE_RETRY_AFTER},
+                    )
+                if _is_database_outage(inner):
+                    return error_response(
+                        request,
+                        status_code=503,
+                        detail="Database unavailable",
+                        headers={"Retry-After": "1"},
+                    )
+            raise
 
 
 def cache_unavailable() -> HTTPException:
@@ -297,6 +363,28 @@ def install_error_handlers(app: FastAPI) -> None:
             detail="Database is busy. Retry shortly.",
             headers={"Retry-After": "1"},
         )
+
+    def _database_unavailable(request: Request):
+        return error_response(
+            request,
+            status_code=503,
+            detail="Database unavailable",
+            headers={"Retry-After": "1"},
+        )
+
+    if psycopg2 is not None:
+
+        async def postgres_outage_handler(request: Request, _exc: Exception):
+            return _database_unavailable(request)
+
+        app.add_exception_handler(psycopg2.OperationalError, postgres_outage_handler)
+        app.add_exception_handler(psycopg2.InterfaceError, postgres_outage_handler)
+
+    if isinstance(ConnectionFailure, type):
+
+        @app.exception_handler(ConnectionFailure)
+        async def mongo_outage_handler(request: Request, _exc: Exception):
+            return _database_unavailable(request)
 
     @app.exception_handler(Exception)
     async def unexpected_exception_handler(request: Request, _exc: Exception):

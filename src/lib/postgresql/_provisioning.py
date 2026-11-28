@@ -45,6 +45,8 @@ logger = logging.getLogger(__name__)
 
 _MAINTENANCE_FALLBACK_DB = "postgres"
 _DEFAULT_POOL_TIMEOUT = 5.0
+_DEFAULT_CONNECT_TIMEOUT = 5
+_DEFAULT_STATEMENT_TIMEOUT_MS = 15000
 
 
 class PoolTimeout(Exception):
@@ -94,6 +96,37 @@ def pool_timeout_seconds() -> float:
     return _env_float(
         "POSTGRES_POOL_GETCONN_TIMEOUT", _DEFAULT_POOL_TIMEOUT, minimum=0.0
     )
+
+
+def connect_timeout_seconds() -> int:
+    return _env_int(
+        "POSTGRES_CONNECT_TIMEOUT", _DEFAULT_CONNECT_TIMEOUT, minimum=1
+    )
+
+
+def statement_timeout_ms() -> int:
+    return _env_int(
+        "POSTGRES_STATEMENT_TIMEOUT_MS",
+        _DEFAULT_STATEMENT_TIMEOUT_MS,
+        minimum=1000,
+    )
+
+
+def connect_kwargs(dbname: str) -> dict[str, object]:
+    config.postgresql.validate_credentials()
+    return {
+        "host": config.postgresql.host,
+        "port": config.postgresql.port,
+        "user": config.postgresql.username,
+        "password": config.postgresql.password,
+        "dbname": dbname,
+        "connect_timeout": connect_timeout_seconds(),
+        "options": f"-c statement_timeout={statement_timeout_ms()}",
+        "keepalives": 1,
+        "keepalives_idle": 30,
+        "keepalives_interval": 10,
+        "keepalives_count": 3,
+    }
 
 
 def _pool_is_closed(pool: object) -> bool:
@@ -213,18 +246,13 @@ class _PoolRegistry:
         minconn: int | None = None,
         maxconn: int | None = None,
     ) -> psycopg2.pool.ThreadedConnectionPool:
-        config.postgresql.validate_credentials()
         maxconn = _max_conn() if maxconn is None else max(1, int(maxconn))
         minconn = _min_conn() if minconn is None else max(0, int(minconn))
         minconn = min(minconn, maxconn)
         pool = psycopg2.pool.ThreadedConnectionPool(
             minconn=minconn,
             maxconn=maxconn,
-            host=config.postgresql.host,
-            port=config.postgresql.port,
-            user=config.postgresql.username,
-            password=config.postgresql.password,
-            dbname=dbname,
+            **connect_kwargs(dbname),
         )
         pool.dbname = dbname
         pool.maxconn = maxconn
@@ -429,6 +457,17 @@ def get_system_pool() -> psycopg2.pool.ThreadedConnectionPool:
     return _registry.get(_system_dbname())
 
 
+def ping_system_database() -> None:
+    conn = psycopg2.connect(**connect_kwargs(_system_dbname()))
+    try:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+            cur.fetchone()
+    finally:
+        conn.close()
+
+
 def get_brain_pool(brain_id: str) -> psycopg2.pool.ThreadedConnectionPool:
     return _registry.get(brain_db_name(brain_id))
 
@@ -507,13 +546,7 @@ def ensure_database_exists(dbname: str) -> None:
     with _create_lock:
         if dbname in _created_dbs:
             return
-        conn = psycopg2.connect(
-            host=config.postgresql.host,
-            port=config.postgresql.port,
-            user=config.postgresql.username,
-            password=config.postgresql.password,
-            dbname=_maintenance_dbname(),
-        )
+        conn = psycopg2.connect(**connect_kwargs(_maintenance_dbname()))
         try:
             conn.autocommit = True
             with conn.cursor() as cur:

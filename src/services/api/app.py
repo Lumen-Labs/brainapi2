@@ -21,7 +21,7 @@ disable_langchain_tracing()
 
 from src.constants.data import BRAIN_VERSION
 from src.services.api.console_static import SPAStaticFiles
-from src.services.api.errors import install_error_handlers
+from src.services.api.errors import DependencyOutageMiddleware, install_error_handlers
 from src.services.api.logging_privacy import install_access_log_privacy
 from src.services.api.openapi import install_openapi_contract
 
@@ -209,6 +209,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(TraceMiddleware, service_name="brainapi-api")
+app.add_middleware(DependencyOutageMiddleware)
 
 app.include_router(ingest_router)
 app.include_router(spreadsheets_router)

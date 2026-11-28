@@ -8,6 +8,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
+import os
 from datetime import datetime
 from typing import Any, List, Optional, Tuple
 from pymongo import MongoClient as PyMongoClient
@@ -28,11 +29,16 @@ class MongoClient(DataClient):
     def __init__(self):
         self._ingest_group_ready: set[str] = set()
         self._conflicts_ready: set[str] = set()
+        timeout_ms = int(os.getenv("MONGO_SERVER_SELECTION_TIMEOUT_MS", "5000"))
         if (
             hasattr(config.mongo, "connection_string")
             and config.mongo.connection_string
         ):
-            self.client = PyMongoClient(config.mongo.connection_string)
+            self.client = PyMongoClient(
+                config.mongo.connection_string,
+                serverSelectionTimeoutMS=timeout_ms,
+                connectTimeoutMS=timeout_ms,
+            )
         else:
             self.client = PyMongoClient(
                 config.mongo.host,
@@ -40,6 +46,8 @@ class MongoClient(DataClient):
                 username=config.mongo.username,
                 password=config.mongo.password,
                 authSource="admin",
+                serverSelectionTimeoutMS=timeout_ms,
+                connectTimeoutMS=timeout_ms,
             )
 
     def get_database(self, database: str = "default") -> Database:
@@ -205,9 +213,9 @@ class MongoClient(DataClient):
         collection.insert_one(structured_data.model_dump(mode="json"))
         return structured_data
 
-    def create_brain(self, name_key: str) -> Brain:
+    def create_brain(self, name_key: str, pat_scopes: list[str] | None = None) -> Brain:
         collection = self.get_collection("brains", config.mongo.system_database)
-        brain = Brain(name_key=name_key)
+        brain = Brain(name_key=name_key, pat_scopes=list(pat_scopes or []))
         brain_dict = brain.model_dump(mode="json", exclude={"id"})
         result = collection.insert_one(brain_dict)
         brain.id = str(result.inserted_id)
@@ -236,6 +244,9 @@ class MongoClient(DataClient):
             pat=result.get("pat"),
             pat_scopes=list(result.get("pat_scopes") or []),
         )
+
+    def ping(self) -> None:
+        self.client.admin.command("ping")
 
     def get_brains_list(self) -> List[Brain]:
         collection = self.get_collection("brains", config.mongo.system_database)

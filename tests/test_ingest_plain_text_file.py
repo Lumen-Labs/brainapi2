@@ -504,8 +504,16 @@ def test_set_ingestion_task_status_does_not_flip_completed_to_failed():
         set_ingestion_task_status(
             "t2", "brain", "failed", stage="failed", error="later failure"
         )
-        assert stored[("task:t2", "brain")]["status"] == "queued"
+        assert stored[("task:t2", "brain")]["status"] == "failed"
         assert stored[("task:t2", "brain")]["ocr_pages_accepted"] is True
+        set_ingestion_task_status(
+            "t3", "brain", "queued", extra={"ocr_pages_accepted": 2}
+        )
+        set_ingestion_task_status(
+            "t3", "brain", "failed", stage="failed", error="later failure"
+        )
+        assert stored[("task:t3", "brain")]["status"] == "queued"
+        assert stored[("task:t3", "brain")]["ocr_pages_accepted"] == 2
     finally:
         ingestion.cache_adapter = original
 

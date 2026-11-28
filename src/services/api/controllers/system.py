@@ -10,17 +10,24 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 
 import asyncio
 
+from src.constants.data import Brain
 from src.services.api.constants.requests import CreateBrainRequest
 from src.services.brain_lifecycle import BrainLifecycleService
 from src.services.data.main import data_adapter
 
 
-async def get_brains_list():
+def _redact_brain_pat(brain: Brain, include_pats: bool) -> Brain:
+    if include_pats:
+        return brain
+    return brain.model_copy(update={"pat": ""})
+
+
+async def get_brains_list(include_pats: bool = False):
     """
     Get the list of brains.
     """
     result = await asyncio.to_thread(data_adapter.get_brains_list)
-    return result
+    return [_redact_brain_pat(brain, include_pats) for brain in result]
 
 
 async def create_new_brain(request: CreateBrainRequest):
@@ -29,7 +36,11 @@ async def create_new_brain(request: CreateBrainRequest):
     """
     if not (request.brain_id.isalnum() and request.brain_id[0].isalpha()):
         raise ValueError("brain_id must be alphanumeric and start with a letter")
-    result = await asyncio.to_thread(data_adapter.create_brain, request.brain_id)
+    result = await asyncio.to_thread(
+        data_adapter.create_brain,
+        request.brain_id,
+        request.pat_scopes,
+    )
     return result
 
 

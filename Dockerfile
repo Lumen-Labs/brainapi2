@@ -61,9 +61,11 @@ FROM python:3.11.14-slim-bookworm
 
 ARG BUILD_DATE
 ARG BUILD_SHA=unknown
+ARG BUILD_VERSION=
 
 LABEL build_date="${BUILD_DATE}" \
-      build_sha="${BUILD_SHA}"
+      build_sha="${BUILD_SHA}" \
+      build_version="${BUILD_VERSION}"
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -75,7 +77,8 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_RETRIES=8 \
     PIP_TIMEOUT=900 \
     PIP_DEFAULT_TIMEOUT=900 \
-    BUILD_SHA=${BUILD_SHA}
+    BUILD_SHA=${BUILD_SHA} \
+    BUILD_VERSION=${BUILD_VERSION}
 
 RUN apt-get update && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends \
@@ -93,6 +96,8 @@ COPY --from=builder /app/src /app/src
 COPY --from=builder /app/plugins /app/plugins
 COPY --from=builder /app/pyproject.toml /app/
 COPY --from=console-builder /console/dist /app/console/dist
+COPY LICENSE /app/LICENSE
+COPY licenses/ /app/licenses/
 COPY entrypoint.sh ./
 
 RUN chmod +x /app/entrypoint.sh

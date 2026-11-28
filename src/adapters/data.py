@@ -157,11 +157,11 @@ class DataAdapter:
             structured_data=structured_data, brain_id=brain_id
         )
 
-    def create_brain(self, name_key: str) -> Brain:
+    def create_brain(self, name_key: str, pat_scopes: list[str] | None = None) -> Brain:
         """
         Create a new brain in the data client.
         """
-        return self.data.create_brain(name_key=name_key)
+        return self.data.create_brain(name_key=name_key, pat_scopes=pat_scopes)
 
     def get_brain(self, name_key: str) -> Brain:
         """
@@ -180,6 +180,12 @@ class DataAdapter:
         Get the list of brains from the data client.
         """
         return self.data.get_brains_list()
+
+    def ping(self) -> None:
+        ping = getattr(self.data, "ping", None)
+        if not callable(ping):
+            raise RuntimeError("Data store health check is unavailable")
+        ping()
 
     def save_kg_changes(
         self, kg_changes: KGChanges, brain_id: str = "default"

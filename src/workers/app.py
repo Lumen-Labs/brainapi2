@@ -152,6 +152,8 @@ ingestion_app.conf.update(
         "fanout_prefix": True,
         "fanout_patterns": True,
     },
+    worker_redirect_stdouts=True,
+    worker_redirect_stdouts_level="DEBUG",
 )
 install_celery_tracing(service_name="brainapi-worker")
 start_runtime_monitoring(service_name="brainapi-worker")

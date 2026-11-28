@@ -43,6 +43,8 @@ from src.core.auth.scopes import (
     DEFAULT_SCOPE,
     VERIFICATION_SCOPE,
     effective_pat_scopes,
+    env_system_pat_scopes,
+    extra_pat_scopes,
     grantable_oauth_scopes,
     has_verification_scope,
 )
@@ -101,6 +103,21 @@ class ScopeModelTests(unittest.TestCase):
             valid_scopes=[DEFAULT_SCOPE, VERIFICATION_SCOPE],
         )
         self.assertTrue(has_verification_scope(granted))
+
+    def test_extra_pat_scopes_keep_verification_only(self):
+        self.assertEqual(extra_pat_scopes(["brainapi", "verification"]), [VERIFICATION_SCOPE])
+        self.assertEqual(extra_pat_scopes([]), [])
+        with self.assertRaises(ValueError):
+            extra_pat_scopes(["admin"])
+
+    def test_env_system_pat_scopes_include_verification_when_set(self):
+        with patch.dict(os.environ, {"BRAINPAT_SCOPES": "brainapi verification"}):
+            self.assertEqual(
+                env_system_pat_scopes(),
+                [DEFAULT_SCOPE, VERIFICATION_SCOPE],
+            )
+        with patch.dict(os.environ, {"BRAINPAT_SCOPES": ""}):
+            self.assertEqual(env_system_pat_scopes(), [DEFAULT_SCOPE])
 
 
 class RawSearchMemoryFilterTests(unittest.TestCase):

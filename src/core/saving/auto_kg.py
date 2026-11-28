@@ -8,6 +8,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
+import logging
 import uuid
 from dataclasses import dataclass, field
 from functools import partial
@@ -37,6 +38,8 @@ from src.services.input.agents import (
     vector_store_adapter,
 )
 from src.utils.text_chunking import chunk_text
+
+logger = logging.getLogger(__name__)
 
 _PRIOR_UNIT_WINDOW = 4
 _OUTPUT_LIMIT_SPLIT_FLOOR = 256
@@ -210,9 +213,12 @@ def _enrich_kg_impl(
         architect_mode,
     )
     scratchpad_token_cap = int(config.ingest_architect_scratchpad_token_cap or 500)
-    print(
-        f"[DEBUG (enrich_kg_from_input)]: {config.pipeline_mode} pipeline mode selected; "
-        f"architect_mode={architect_mode}; prior_context={prior_context_mode}"
+    logger.debug(
+        "[DEBUG (enrich_kg_from_input)]: %s pipeline mode selected; "
+        "architect_mode=%s; prior_context=%s",
+        config.pipeline_mode,
+        architect_mode,
+        prior_context_mode,
     )
     architect_agent.defer_janitor = bool(config.ingest_defer_janitor)
 
@@ -302,7 +308,7 @@ def _enrich_kg_impl(
                 per_chunk_entities.append(list(response.entities))
 
         entities = _merge_entities(per_chunk_entities)
-        print("[DEBUG (initial_scout_entities)]: ", entities)
+        logger.debug("[DEBUG (initial_scout_entities)]: %s", entities)
 
         with track_stage(cost_ledger, "architect"):
             first_unit = True
@@ -320,10 +326,12 @@ def _enrich_kg_impl(
                     dense_max_chars=config.ingest_architect_dense_max_chars,
                 )
                 if len(architect_parts) > 1:
-                    print(
+                    logger.debug(
                         "[DEBUG (enrich_kg_from_input)]: dense architect rechunk "
-                        f"entities={len(unit_entities)} parts={len(architect_parts)} "
-                        f"max_chars={config.ingest_architect_dense_max_chars}"
+                        "entities=%s parts=%s max_chars=%s",
+                        len(unit_entities),
+                        len(architect_parts),
+                        config.ingest_architect_dense_max_chars,
                     )
                 for part in architect_parts:
                     part_entities = _filter_entities_for_text(unit_entities, part)
@@ -359,7 +367,7 @@ def _enrich_kg_impl(
                 preferred_extraction_entities=preferred_extraction_entities,
             )
         entities = list(scout_response.entities)
-        print("[DEBUG (initial_scout_entities)]: ", entities)
+        logger.debug("[DEBUG (initial_scout_entities)]: %s", entities)
         with track_stage(cost_ledger, "architect"):
             _run_architect_unit(input, entities, reset=True)
 

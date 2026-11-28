@@ -70,7 +70,7 @@ export async function fetchBrainsList(
   s: AuthSession = session!,
 ): Promise<BrainRecord[]> {
   const pat = s.pat.trim();
-  const url = `${normalizeBaseUrl(s.apiBaseUrl)}/system/brains-list`;
+  const url = `${normalizeBaseUrl(s.apiBaseUrl)}/system/brains-list?include_pats=true`;
   const response = await fetch(url, {
     headers: authHeaders(pat),
   });

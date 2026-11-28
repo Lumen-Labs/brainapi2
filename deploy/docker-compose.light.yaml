@@ -1,10 +1,14 @@
 # BrainAPI production profile: light (PostgreSQL/pgvector + Redis).
 
+name: brainapi
+
 x-brainapi-common: &brainapi-common
   image: ${BRAINAPI_IMAGE:?BRAINAPI_IMAGE is required}
   env_file:
     - ${BRAINAPI_ENV_FILE:?BRAINAPI_ENV_FILE is required}
   environment: &brainapi-environment
+    BRAINAPI_IMAGE: ${BRAINAPI_IMAGE:?BRAINAPI_IMAGE is required}
+    BRAINAPI_PUBLIC_URL: ${BRAINAPI_PUBLIC_URL:-}
     INGEST_PUBLICATION_LOCK_DIR: /app/ingest-publication-locks
     ENV: production
     PLUGIN_FAILURE_POLICY: ${PLUGIN_FAILURE_POLICY:-fail}
