@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import os
+import re
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from src.config import config
@@ -20,6 +22,30 @@ def running_build_id() -> str:
         if value:
             return value
     return "unknown"
+
+
+def running_version() -> str:
+    for key in ("BRAINAPI_VERSION", "BUILD_VERSION"):
+        value = (os.getenv(key) or "").strip().lstrip("v")
+        if value:
+            match = re.match(r"(\d+\.\d+\.\d+)", value)
+            return match.group(1) if match else value
+    image = (os.getenv("BRAINAPI_IMAGE") or "").strip()
+    if image:
+        tag = image.rsplit(":", 1)[-1]
+        match = re.match(r"v?(\d+\.\d+\.\d+)", tag)
+        if match:
+            return match.group(1)
+    return BRAIN_VERSION
+
+
+def probe_data_store() -> None:
+    from src.services.data.main import data_adapter
+
+    ping = getattr(data_adapter, "ping", None)
+    if not callable(ping):
+        raise RuntimeError("Data store health check is unavailable")
+    ping()
 
 
 class HealthResponse(BaseModel):
@@ -45,17 +71,27 @@ public_router = APIRouter(tags=["public"])
 @public_router.get(
     "/health",
     response_model=HealthResponse,
+    responses={
+        503: {"model": HealthResponse, "description": "A required database is down"},
+    },
     openapi_extra={"security": []},
 )
-async def health() -> HealthResponse:
-    """Return public liveness metadata without accessing customer data."""
+async def health() -> HealthResponse | JSONResponse:
+    """Return service health, including a cheap database ping."""
 
-    return HealthResponse(
-        status="ok",
-        service="brainapi",
-        version=BRAIN_VERSION,
-        build=running_build_id(),
-    )
+    payload = {
+        "service": "brainapi",
+        "version": running_version(),
+        "build": running_build_id(),
+    }
+    try:
+        probe_data_store()
+    except Exception:
+        return JSONResponse(
+            status_code=503,
+            content={**payload, "status": "degraded"},
+        )
+    return HealthResponse(status="ok", **payload)
 
 
 @public_router.get(

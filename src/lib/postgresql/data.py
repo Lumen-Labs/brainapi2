@@ -715,8 +715,8 @@ class PostgreSQLDataClient(DataClient):
             conn.commit()
         return structured_data
 
-    def create_brain(self, name_key: str) -> Brain:
-        brain = Brain(name_key=name_key)
+    def create_brain(self, name_key: str, pat_scopes: list[str] | None = None) -> Brain:
+        brain = Brain(name_key=name_key, pat_scopes=list(pat_scopes or []))
         document = brain.model_dump(mode="json")
         with self._system_connection() as conn:
             with conn.cursor() as cur:
@@ -759,6 +759,11 @@ class PostgreSQLDataClient(DataClient):
         if not row:
             return None
         return Brain.model_validate(row["document"])
+
+    def ping(self) -> None:
+        from src.lib.postgresql._provisioning import ping_system_database
+
+        ping_system_database()
 
     def get_brains_list(self) -> List[Brain]:
         with self._system_connection() as conn:

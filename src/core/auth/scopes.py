@@ -19,6 +19,26 @@ def env_system_pat_scopes() -> list[str]:
     return [part for part in raw.split() if part]
 
 
+def allowed_brain_pat_scopes() -> set[str]:
+    return {DEFAULT_SCOPE, VERIFICATION_SCOPE}
+
+
+def extra_pat_scopes(raw: Sequence[str] | None) -> list[str]:
+    extras: list[str] = []
+    allowed = allowed_brain_pat_scopes()
+    for part in raw or []:
+        scope = str(part).strip()
+        if not scope:
+            continue
+        if scope not in allowed:
+            raise ValueError(
+                f"Unknown PAT scope: {scope}. Allowed: {DEFAULT_SCOPE}, {VERIFICATION_SCOPE}."
+            )
+        if scope != DEFAULT_SCOPE and scope not in extras:
+            extras.append(scope)
+    return extras
+
+
 def effective_pat_scopes(brain) -> list[str]:
     scopes = default_token_scopes()
     extra = [

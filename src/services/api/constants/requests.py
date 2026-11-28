@@ -37,6 +37,7 @@ from src.constants.tasks.ingestion import (
     IngestionTaskTextArgs,
 )
 from src.core.saving.ingest_groups import InvalidGroupTracking, normalize_group_tracking
+from src.core.auth.scopes import extra_pat_scopes
 from src.core.search.entity_info import MatchPath
 
 
@@ -538,6 +539,12 @@ class CreateBrainRequest(BaseModel):
     """
 
     brain_id: str
+    pat_scopes: list[str] = Field(default_factory=list)
+
+    @field_validator("pat_scopes")
+    @classmethod
+    def _known_pat_scopes(cls, value: list[str]) -> list[str]:
+        return extra_pat_scopes(value)
 
 
 class AddEntityRequest(BaseModel):

@@ -2,6 +2,8 @@
 
 Run this engine in your own cloud with the shipped Compose files. Use **light** for a smaller Postgres/pgvector stack, or **heavy** for Neo4j + MongoDB + Milvus. Only nginx publishes host ports (`80` / `443`).
 
+BrainAPI is licensed under the [Business Source License 1.1](../LICENSE). Evaluation and non-production self-hosting are free. Running these production profiles for a live product or service requires a commercial license ([hello@lumen-labs.ai](mailto:hello@lumen-labs.ai)). See the [LICENSE](../LICENSE) file.
+
 This guide covers a versioned-rules test (source versions + webhook/poll source sync), a help-center audit (scheduled re-crawl), and a paid production pilot. Spreadsheet import stays off unless you set `SPREADSHEET_EXPERIMENT_BRAINS` per host.
 
 Do not put secrets in git. Copy an env template outside the repository and replace every secret there.
@@ -15,14 +17,15 @@ Do not put secrets in git. Copy an env template outside the repository and repla
 | Data / graph / vectors | PostgreSQL + pgvector + NetworkX | MongoDB + Neo4j + Milvus |
 | Suggested footprint | smaller VM | larger VM |
 
-Both profiles run `brainapi` (API + Console), `brainapi-worker`, `brainapi-mcp`, and a single `brainapi-beat`. Help-center re-crawl is triggered from a worker timer thread; source-sync poll/catch-up is scheduled by beat.
+Both profiles run `brainapi` (API + Console), `brainapi-worker`, `brainapi-mcp`, and a single `brainapi-beat`. Help-center re-crawl is triggered from a worker timer thread; source-sync poll/catch-up is scheduled by beat. Search can be enabled on either profile: BM25 requires Postgres (`DATA_DB=postgresql`); heavy/Mongo can run dense-only search with `SEARCH_USE_BM25=false`. Startup rejects BM25 on Mongo, not `SEARCH_ENABLED` itself.
 
 ## Bring-up
 
 ```bash
-install -m 600 deploy/env.light.example /etc/brainapi/light.env
-# Set BRAINAPI_ENV_FILE to that absolute path inside the env file.
-# Set BRAINAPI_IMAGE to the image you will run.
+sudo install -d -m 755 /etc/brainapi
+sudo install -m 600 -o "$USER" deploy/env.light.example /etc/brainapi/light.env
+# Set BRAINAPI_ENV_FILE=/etc/brainapi/light.env (absolute) inside that file.
+# Set BRAINAPI_IMAGE to the image you will run (template default is the current release tag).
 
 docker compose --env-file /etc/brainapi/light.env \
   -f deploy/docker-compose.light.yaml config -q
@@ -30,11 +33,24 @@ docker compose --env-file /etc/brainapi/light.env \
   -f deploy/docker-compose.light.yaml up -d --wait
 ```
 
-Heavy is the same with `deploy/env.heavy.example` and `deploy/docker-compose.heavy.yaml`.
+The light compose file sets `name: brainapi`. Heavy sets `name: brainapi-heavy`. Pass `--project-name` only when you need a different name (CI). Do not mix profiles under the same project.
 
-Required Compose interpolation names (no values here): `BRAINAPI_IMAGE`, `BRAINAPI_ENV_FILE`, `REDIS_PASSWORD`, plus profile backends (`POSTGRES_PASSWORD` on light; `NEO4J_PASSWORD`, `MONGO_PASSWORD`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MILVUS_TOKEN`, `MILVUS_ROOT_PASSWORD` on heavy).
+Heavy is the same with `deploy/env.heavy.example` and `deploy/docker-compose.heavy.yaml`. The heavy profile uses Neo4j Enterprise because each brain is a Neo4j database. Set `NEO4J_ACCEPT_LICENSE_AGREEMENT` to `yes` or `eval` only if you hold a Neo4j licence; leaving it unset refuses start.
 
-Required application names from the env templates include: `BRAINPAT_TOKEN`, `CELERY_WORKER_CONCURRENCY`, `CELERY_BACKEND`, `REDIS_HOST`, `REDIS_PORT`, `PLUGIN_FAILURE_POLICY`. Light also needs `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USERNAME`, `POSTGRES_SYSTEM_DATABASE`, `DATA_DB`, `VECTOR_DB`, `GRAPH_DB`. Heavy also needs `NEO4J_HOST`, `NEO4J_PORT`, `NEO4J_USERNAME`, `MONGO_HOST`, `MONGO_PORT`, `MONGO_USERNAME`, `MONGO_SYSTEM_DATABASE`, `MILVUS_HOST`, `MILVUS_PORT`.
+To evaluate without chat-model keys, add the CI stub (embeddings only; extraction, Chat, and file ingest still need a chat LLM):
+
+```bash
+docker compose --env-file /etc/brainapi/light.env \
+  -f deploy/docker-compose.light.yaml -f deploy/docker-compose.ci.yaml up -d --wait
+```
+
+`GET /system/brains-list` requires the system PAT. Brain keys are omitted unless you pass `?include_pats=true` (the embedded Console and MaaS adapters that need keys must send the system token and that flag).
+
+When pairing with the MaaS dashboard, set `BRAINPAT_SCOPES="brainapi verification"` (the env templates already do) so the system PAT can verify/reject facts. `POST /system/brains` accepts optional `pat_scopes` (`brainapi` and/or `verification`); the dashboard sends both when creating brains. Existing brains with empty `pat_scopes` stay `brainapi`-only. Set the same `USAGE_CONTEXT_SECRET` on the dashboard, this engine, and any proxy that signs `X-Usage-Context`. If they differ, dashboard Verify calls 403, or writes are attributed to the system principal.
+
+Required Compose interpolation names (no values here): `BRAINAPI_IMAGE`, `BRAINAPI_ENV_FILE`, `REDIS_PASSWORD`, plus profile backends (`POSTGRES_PASSWORD` on light; `NEO4J_PASSWORD`, `NEO4J_ACCEPT_LICENSE_AGREEMENT`, `MONGO_PASSWORD`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MILVUS_TOKEN`, `MILVUS_ROOT_PASSWORD` on heavy).
+
+Required application names from the env templates include: `BRAINPAT_TOKEN`, `BRAINPAT_SCOPES`, `USAGE_CONTEXT_SECRET`, `CELERY_WORKER_CONCURRENCY`, `CELERY_BACKEND`, `REDIS_HOST`, `REDIS_PORT`, `PLUGIN_FAILURE_POLICY`. Light also needs `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USERNAME`, `POSTGRES_SYSTEM_DATABASE`, `DATA_DB`, `VECTOR_DB`, `GRAPH_DB`. Heavy also needs `NEO4J_HOST`, `NEO4J_PORT`, `NEO4J_USERNAME`, `MONGO_HOST`, `MONGO_PORT`, `MONGO_USERNAME`, `MONGO_SYSTEM_DATABASE`, `MILVUS_HOST`, `MILVUS_PORT`.
 
 Model and embedding credentials stay in the operator env file. Do not commit them.
 
@@ -75,5 +91,7 @@ Leave `SPREADSHEET_EXPERIMENT_BRAINS` empty to keep spreadsheet import off. Set 
 3. `docker compose --env-file ... -f deploy/docker-compose.<profile>.yaml up -d --wait`
 4. System tables/collections are created on startup (`CREATE TABLE IF NOT EXISTS` / upsert). Existing brains keep their data.
 5. Verify `/health`, then a source-sync webhook or poll, then a crawl-spec run if you use re-crawl.
+
+nginx re-resolves the API and MCP upstreams through Docker DNS (`valid=10s`), so recreating those containers no longer leaves 502s. Restarting nginx after an image change is not required.
 
 Do not mix light and heavy under the same Compose project name. Do not mount a volume over `/app/plugins`; custom plugins belong in `PLUGINS_EXTRA_DIR`.

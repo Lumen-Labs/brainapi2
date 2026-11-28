@@ -9,19 +9,25 @@ Choose **heavy** or **light** when bringing up a new deployment. Customer self-h
 | Graph | Neo4j | NetworkX on Postgres |
 | Data | MongoDB | PostgreSQL |
 | Vectors | Milvus | PostgreSQL + pgvector |
-| LLMs | GCP Vertex (small) + Azure (large) | DeepSeek (small + large) |
+| LLMs | Same as `deploy/env.heavy.example` | Same as `deploy/env.light.example` |
 | Embeddings | Azure | OpenAI (`text-embedding-3-large`) |
 | Container limits | Full (current production) | Smaller footprint (`mem_limit` / `cpus`) |
 | Suggested VM | ~8–16 GB RAM / 4+ vCPU | ~2 GB RAM / 1 vCPU |
 
 ## Quick start
 
+BrainAPI is licensed under the [Business Source License 1.1](../LICENSE). Evaluation and non-production use of these profiles is free. Production use requires a commercial license. See [LICENSE](../LICENSE).
+
+The heavy profile uses Neo4j Enterprise (`neo4j:5.26.16-enterprise`) because each brain is a Neo4j database. Set `NEO4J_ACCEPT_LICENSE_AGREEMENT` to `yes` or `eval` only if you hold a Neo4j licence; Compose refuses to start when it is unset. Community is not a drop-in replacement for this profile.
+
 ```bash
 # 1. Copy a profile template outside the repository and replace every secret.
-install -m 600 deploy/env.light.example /etc/brainapi/light.env
+sudo install -d -m 755 /etc/brainapi
+sudo install -m 600 -o "$USER" deploy/env.light.example /etc/brainapi/light.env
 # Set BRAINAPI_ENV_FILE to the absolute file path in /etc/brainapi/light.env.
 
 # 2. Validate first, then start and wait for health.
+# Light compose `name:` is brainapi; heavy is brainapi-heavy.
 docker compose --env-file /etc/brainapi/light.env \
   -f deploy/docker-compose.light.yaml config -q
 docker compose --env-file /etc/brainapi/light.env \
@@ -60,6 +66,10 @@ nginx server file; do not expose port 80 beyond a trusted proxy without HTTPS.
   it up only when the stack is redeployed with these files.
 - `BRAINAPI_IMAGE`, `BRAINAPI_ENV_FILE`, Redis credentials, and profile backend
   credentials are required and fail during Compose interpolation when absent.
+- Self-host templates set `BRAINPAT_SCOPES="brainapi verification"` so the
+  system PAT can verify facts from the MaaS dashboard. `USAGE_CONTEXT_SECRET`
+  must be identical on the dashboard, this engine, and any proxy that signs
+  `X-Usage-Context`.
 - Mount cloud credentials with a private operator-owned Compose override; no
   host-specific credential path is present in the production profiles.
 - Do not mix profiles under the same Compose project name. Their volume layouts
@@ -83,14 +93,18 @@ so encrypt and access-control the backup directory. The generated manifest
 contains only profile/version metadata, service names, restore order, and
 checksums; it never contains secrets.
 
+The default backup project name matches compose: `brainapi` (light) and `brainapi-heavy` (heavy). Override with `--project-name` only when you started the stack with a different name (CI uses `brainapi-ci`). `/srv/brainapi/backups` must be created with sudo (`sudo install -d -m 700 /srv/brainapi/backups`) or overridden with `--backup-dir`. A failed backup deletes the partial directory so it does not leave a 0-byte dump.
+
 ```bash
 deploy/brainapi-backup backup --profile light \
-  --env-file /etc/brainapi/light.env --project-name brainapi
+  --env-file /etc/brainapi/light.env
 deploy/brainapi-backup verify --profile light \
   --env-file /etc/brainapi/light.env --archive /srv/brainapi/backups/light-UTCSTAMP
 deploy/brainapi-backup restore --profile light \
   --env-file /etc/brainapi/light.env --archive /srv/brainapi/backups/light-UTCSTAMP
 ```
+
+When the stack was started with the CI stub, pass `--compose-file deploy/docker-compose.ci.yaml` on backup and restore.
 
 Backup stops nginx, API, MCP, and workers before capture. Restore refuses a
 running stack, a profile/image mismatch, a checksum mismatch, or any non-empty
@@ -105,7 +119,8 @@ stub; it is not a production deployment file. It lets both profiles exercise
 the complete storage and gateway path without external model credentials:
 
 ```bash
-docker compose -f deploy/docker-compose.light.yaml \
+docker compose --env-file /etc/brainapi/light.env \
+  -f deploy/docker-compose.light.yaml \
   -f deploy/docker-compose.ci.yaml up -d --wait
 python scripts/production_smoke.py exercise --profile light \
   --system-token "$BRAINPAT_TOKEN" --artifact-dir release-artifacts

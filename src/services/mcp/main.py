@@ -53,6 +53,7 @@ from src.services.mcp.intent_tools import register_intent_tools
 from src.services.mcp.oauth_provider import BrainapiMcpOAuthProvider
 from src.services.mcp.prompt import HISTORY_NAVIGATION_GUIDE
 from src.services.mcp.errors import McpToolError, raise_if_tool_error_result
+from src.services.mcp.urls import configured_url, mcp_resource_url, public_base_url
 from src.services.mcp.utils import guard_brainpat
 from src.services.mcp.conflicts import (
     conflict_report_tool,
@@ -83,11 +84,15 @@ auth_scopes_var: ContextVar[tuple[str, ...] | None] = ContextVar(
 auth_principal_var: ContextVar[str | None] = ContextVar("auth_principal", default=None)
 vector_search = VectorSearchFacade(vector_store_adapter)
 
-_hosted_oauth_issuer = os.getenv("MCP_HOSTED_OAUTH_ISSUER_URL", "").strip()
-_oauth_issuer = _hosted_oauth_issuer or os.getenv("MCP_OAUTH_ISSUER_URL", "").strip()
-_oauth_resource = os.getenv("MCP_RESOURCE_SERVER_URL", "").strip()
-if _oauth_issuer and not _oauth_resource:
-    _oauth_resource = _oauth_issuer.rstrip("/") + "/mcp"
+_hosted_oauth_issuer = configured_url(os.getenv("MCP_HOSTED_OAUTH_ISSUER_URL"))
+_oauth_issuer = (
+    _hosted_oauth_issuer
+    or configured_url(os.getenv("MCP_OAUTH_ISSUER_URL"))
+    or public_base_url()
+)
+_oauth_resource = mcp_resource_url(
+    _oauth_issuer, os.getenv("MCP_RESOURCE_SERVER_URL")
+)
 
 _oauth_scopes = [
     s for s in os.getenv("MCP_OAUTH_SCOPES", DEFAULT_SCOPE).strip().split() if s

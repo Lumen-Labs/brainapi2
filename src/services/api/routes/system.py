@@ -8,7 +8,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 from src.services.api.constants.requests import CreateBrainRequest
 from src.services.api.controllers.system import (
     clear_brain as clear_brain_controller,
@@ -31,11 +31,22 @@ system_router = APIRouter(prefix="/system", tags=["system"])
 
 
 @system_router.get(path="/brains-list", response_model=list[Brain])
-async def get_brains_list():
+async def get_brains_list(
+    include_pats: bool = Query(
+        False,
+        description=(
+            "When true, include plaintext brain PATs. Requires the system token. "
+            "Default omits keys so listing brains does not leak credentials."
+        ),
+    ),
+):
+    """List registered brains. Restricted to the system PAT.
+
+    Brain keys are omitted unless `include_pats=true`. Create-brain still
+    returns the new PAT once. Self-host consoles and MaaS adapters that need
+    keys must send the system token and this query flag.
     """
-    Get the list of brains.
-    """
-    return await get_brains_list_controller()
+    return await get_brains_list_controller(include_pats=include_pats)
 
 
 @system_router.post(path="/brains", response_model=Brain)

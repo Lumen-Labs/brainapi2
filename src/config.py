@@ -12,6 +12,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 
 import logging
 import os
+import sys
 from typing import Literal
 import dotenv
 from pathlib import Path
@@ -813,4 +814,12 @@ class Config:
         return self.search_fts_regconfig
 
 
-config = Config()
+def _build_runtime_config() -> Config:
+    try:
+        return Config()
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"[brainapi] Configuration error: {exc}", file=sys.stderr)
+        raise SystemExit(1) from None
+
+
+config = _build_runtime_config()

@@ -193,7 +193,11 @@ class StructuredErrorTests(unittest.TestCase):
 class PublicApiTests(unittest.TestCase):
     def test_health_is_typed_and_public(self):
         with patch.dict(os.environ, {"BUILD_SHA": "", "GIT_SHA": ""}, clear=False):
-            response = TestClient(_public_app()).get("/health")
+            os.environ.pop("BRAINAPI_VERSION", None)
+            os.environ.pop("BUILD_VERSION", None)
+            os.environ.pop("BRAINAPI_IMAGE", None)
+            with patch("src.services.api.routes.public.probe_data_store"):
+                response = TestClient(_public_app()).get("/health")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "ok")
         self.assertEqual(response.json()["service"], "brainapi")
@@ -211,7 +215,8 @@ class PublicApiTests(unittest.TestCase):
 
     def test_health_reports_build_sha_from_env(self):
         with patch.dict(os.environ, {"BUILD_SHA": "deadbeef123"}):
-            response = TestClient(_public_app()).get("/health")
+            with patch("src.services.api.routes.public.probe_data_store"):
+                response = TestClient(_public_app()).get("/health")
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertEqual(body["status"], "ok")
@@ -219,11 +224,39 @@ class PublicApiTests(unittest.TestCase):
         self.assertEqual(body["build"], "deadbeef123")
         self.assertIn("version", body)
 
+    def test_health_version_comes_from_image_tag(self):
+        with patch.dict(
+            os.environ,
+            {
+                "BRAINAPI_IMAGE": "ghcr.io/lumen-labs/brainapi:v2.23.2-deadbeef",
+                "BUILD_SHA": "deadbeef",
+            },
+            clear=False,
+        ):
+            os.environ.pop("BRAINAPI_VERSION", None)
+            os.environ.pop("BUILD_VERSION", None)
+            with patch("src.services.api.routes.public.probe_data_store"):
+                response = TestClient(_public_app()).get("/health")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["version"], "2.23.2")
+        self.assertEqual(response.json()["build"], "deadbeef")
+
+    def test_health_is_degraded_when_database_is_down(self):
+        with patch(
+            "src.services.api.routes.public.probe_data_store",
+            side_effect=RuntimeError("db down"),
+        ):
+            response = TestClient(_public_app()).get("/health")
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["status"], "degraded")
+        self.assertEqual(response.json()["service"], "brainapi")
+
     def test_full_app_exempts_machine_routes_and_authenticates_protected_routes(self):
         from src.services.api.app import app
 
         client = TestClient(app)
-        health = client.get("/health", headers={"Origin": "https://agent.example"})
+        with patch("src.services.api.routes.public.probe_data_store"):
+            health = client.get("/health", headers={"Origin": "https://agent.example"})
         openapi = client.get("/openapi.json")
         protected = client.get("/tasks/", headers={"X-Request-ID": "auth-check"})
 

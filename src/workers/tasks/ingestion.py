@@ -117,6 +117,16 @@ TASK_STATUS_RANK = {
 TERMINAL_TASK_STATUSES = {"completed", "failed", "partial_failed"}
 
 
+def _completed_ocr_page_count(existing: dict) -> int:
+    value = existing.get("ocr_pages_accepted")
+    if isinstance(value, bool):
+        return 0
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
 def set_ingestion_task_status(
     task_id: str,
     brain_id: str,
@@ -153,7 +163,7 @@ def set_ingestion_task_status(
         return existing
     if previous in {"completed", "partial_failed"} and status == "failed":
         return existing
-    if existing.get("ocr_pages_accepted") and status == "failed":
+    if _completed_ocr_page_count(existing) > 0 and status == "failed":
         return existing
     if previous and TASK_STATUS_RANK.get(status, -1) < TASK_STATUS_RANK.get(previous, -1):
         return existing

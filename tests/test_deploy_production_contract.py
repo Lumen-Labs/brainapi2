@@ -48,6 +48,7 @@ def _compose_env(profile: str) -> dict[str, str]:
         env.update(
             {
                 "NEO4J_PASSWORD": "neo-secret",
+                "NEO4J_ACCEPT_LICENSE_AGREEMENT": "yes",
                 "MONGO_PASSWORD": "mongo-secret",
                 "MINIO_ACCESS_KEY": "minio-access",
                 "MINIO_SECRET_KEY": "minio-secret",
@@ -84,6 +85,26 @@ def test_compose_profiles_render_with_escaped_healthchecks(profile):
 
 
 @pytest.mark.skipif(shutil.which("docker") is None, reason="Docker unavailable")
+def test_heavy_compose_rejects_missing_neo4j_licence():
+    env = _compose_env("heavy")
+    env.pop("NEO4J_ACCEPT_LICENSE_AGREEMENT")
+    result = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "-f",
+            str(DEPLOY / "docker-compose.heavy.yaml"),
+            "config",
+            "-q",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode != 0
+    assert "NEO4J_ACCEPT_LICENSE_AGREEMENT is required" in result.stderr
+
+
 def test_compose_rejects_missing_required_secret():
     env = _compose_env("light")
     env.pop("REDIS_PASSWORD")
@@ -105,6 +126,77 @@ def test_nginx_routes_console_api_and_mcp():
     assert "location /" in config
     assert "brainapi_api" in config
     assert "brainapi_mcp" in config
+    assert "resolver 127.0.0.11 valid=10s" in config
+    assert "proxy_pass http://$brainapi_api" in config
+    assert "proxy_pass http://$brainapi_mcp" in config
+    assert "upstream " not in config
+
+
+def test_compose_project_names_match_backup_defaults():
+    from deploy.backup_restore import DEFAULT_PROJECT_NAMES, default_project_name
+
+    light = yaml.safe_load((DEPLOY / "docker-compose.light.yaml").read_text())
+    heavy = yaml.safe_load((DEPLOY / "docker-compose.heavy.yaml").read_text())
+    assert light["name"] == DEFAULT_PROJECT_NAMES["light"] == "brainapi"
+    assert heavy["name"] == DEFAULT_PROJECT_NAMES["heavy"] == "brainapi-heavy"
+    assert default_project_name("light") == "brainapi"
+    assert default_project_name("heavy") == "brainapi-heavy"
+    assert default_project_name("light", "brainapi-ci") == "brainapi-ci"
+
+
+def test_write_stream_deletes_partial_dump(tmp_path):
+    from deploy.backup_restore import _write_stream
+
+    class FailingStack:
+        dry_run = False
+
+        def run(self, args, stdout=None, **kwargs):
+            if stdout is not None:
+                stdout.write(b"partial")
+            raise subprocess.CalledProcessError(1, args)
+
+    destination = tmp_path / "postgres.dump"
+    with pytest.raises(subprocess.CalledProcessError):
+        _write_stream(FailingStack(), ["exec", "pg_dump"], destination)
+    assert not destination.exists()
+
+
+def test_write_stream_rejects_empty_dump(tmp_path):
+    from deploy.backup_restore import _write_stream
+
+    class EmptyStack:
+        dry_run = False
+
+        def run(self, args, stdout=None, **kwargs):
+            return subprocess.CompletedProcess(args, 0)
+
+    destination = tmp_path / "postgres.dump"
+    with pytest.raises(RuntimeError, match="empty file"):
+        _write_stream(EmptyStack(), ["exec", "pg_dump"], destination)
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize("profile", ["light", "heavy"])
+def test_env_templates_grant_verification_and_shared_usage_secret(profile):
+    env = (DEPLOY / f"env.{profile}.example").read_text(encoding="utf-8")
+    assert 'BRAINPAT_SCOPES="brainapi verification"' in env
+    assert "USAGE_CONTEXT_SECRET" in env
+    assert "dashboard, this engine, and any proxy" in env
+    guide = (ROOT / "docs" / "self-host.md").read_text(encoding="utf-8")
+    assert "USAGE_CONTEXT_SECRET" in guide
+    assert "dashboard, this engine, and any proxy" in guide
+
+
+def test_heavy_requires_neo4j_licence_opt_in():
+    source = (DEPLOY / "docker-compose.heavy.yaml").read_text(encoding="utf-8")
+    assert "NEO4J_ACCEPT_LICENSE_AGREEMENT: \"yes\"" not in source
+    assert "${NEO4J_ACCEPT_LICENSE_AGREEMENT:?NEO4J_ACCEPT_LICENSE_AGREEMENT is required}" in source
+    env = (DEPLOY / "env.heavy.example").read_text(encoding="utf-8")
+    assert 'NEO4J_ACCEPT_LICENSE_AGREEMENT=""' in env
+    workflow = (ROOT / ".github" / "workflows" / "heavy-validation.yaml").read_text(
+        encoding="utf-8"
+    )
+    assert "NEO4J_ACCEPT_LICENSE_AGREEMENT: yes" in workflow
 
 
 def test_backup_manifest_verification_detects_tampering(tmp_path):
@@ -332,6 +424,7 @@ def test_compose_loads_image_plugins_and_runs_beat(profile):
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert "COPY plugins/ ./plugins/" in dockerfile
     assert "COPY --from=builder /app/plugins /app/plugins" in dockerfile
+    assert "COPY LICENSE /app/LICENSE" in dockerfile
     assert 'VOLUME ["/app/custom-plugins"]' in dockerfile
     assert 'VOLUME ["/app/plugins"]' not in dockerfile
     entrypoint = (ROOT / "entrypoint.sh").read_text(encoding="utf-8")
@@ -342,6 +435,7 @@ def test_compose_loads_image_plugins_and_runs_beat(profile):
         "BRAINAPI_IMAGE",
         "BRAINAPI_ENV_FILE",
         "REDIS_PASSWORD",
+        "NEO4J_ACCEPT_LICENSE_AGREEMENT",
         "PLUGINS_DIR",
         "PLUGINS_EXTRA_DIR",
         "SOURCE_SYNC_WEBHOOK_MAX_AGE_SECONDS",
@@ -350,6 +444,8 @@ def test_compose_loads_image_plugins_and_runs_beat(profile):
         "HELP_CENTER_RETIRE_MAX_RATIO",
         "HELP_CENTER_RECHECK_MAX_PAGES",
         "SPREADSHEET_EXPERIMENT_BRAINS",
+        "BRAINPAT_SCOPES",
+        "USAGE_CONTEXT_SECRET",
     ):
         assert name in guide
     assert "sk-" not in guide

@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import shlex
+import shutil
 import stat
 import subprocess
 import sys
@@ -79,6 +80,16 @@ RESTORE_ORDER = {
         "stack",
     ),
 }
+DEFAULT_PROJECT_NAMES = {
+    "light": "brainapi",
+    "heavy": "brainapi-heavy",
+}
+
+
+def default_project_name(profile: str, override: str | None = None) -> str:
+    if override:
+        return override
+    return DEFAULT_PROJECT_NAMES[profile]
 
 
 def _load_env(path: Path) -> dict[str, str]:
@@ -183,8 +194,14 @@ def _write_stream(stack: Stack, args: list[str], destination: Path) -> None:
         stack.run(args)
         destination.touch()
         return
-    with destination.open("wb") as output:
-        stack.run(args, stdout=output)
+    try:
+        with destination.open("wb") as output:
+            stack.run(args, stdout=output)
+        if destination.stat().st_size == 0:
+            raise RuntimeError(f"Backup produced an empty file: {destination.name}")
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
 
 
 def _dump_postgres_brain_databases(stack: Stack, destination: Path) -> None:
@@ -395,23 +412,29 @@ def _archive_volume(stack: Stack, key: str, destination: Path) -> None:
         stack.docker(["run", "--rm", "-v", f"{stack.volume_name(key)}:/source:ro", ARCHIVER_IMAGE, "tar", "-C", "/source", "-czf", "-", "."])
         destination.touch()
         return
-    with destination.open("wb") as output:
-        stack.docker(
-            [
-                "run",
-                "--rm",
-                "-v",
-                f"{stack.volume_name(key)}:/source:ro",
-                ARCHIVER_IMAGE,
-                "tar",
-                "-C",
-                "/source",
-                "-czf",
-                "-",
-                ".",
-            ],
-            stdout=output,
-        )
+    try:
+        with destination.open("wb") as output:
+            stack.docker(
+                [
+                    "run",
+                    "--rm",
+                    "-v",
+                    f"{stack.volume_name(key)}:/source:ro",
+                    ARCHIVER_IMAGE,
+                    "tar",
+                    "-C",
+                    "/source",
+                    "-czf",
+                    "-",
+                    ".",
+                ],
+                stdout=output,
+            )
+        if destination.stat().st_size == 0:
+            raise RuntimeError(f"Backup produced an empty file: {destination.name}")
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
 
 
 def _restore_volume(stack: Stack, key: str, archive: Path) -> None:
@@ -549,6 +572,9 @@ def backup(stack: Stack, backup_root: Path) -> Path:
         )
         verify_backup(destination, stack.profile)
         return destination
+    except Exception:
+        shutil.rmtree(destination, ignore_errors=True)
+        raise
     finally:
         if running:
             stack.run(["start", *running], check=False)
@@ -638,7 +664,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("command", choices=("backup", "verify", "restore"))
     parser.add_argument("--profile", choices=("light", "heavy"), required=True)
     parser.add_argument("--env-file", type=Path, required=True)
-    parser.add_argument("--project-name", default="brainapi")
+    parser.add_argument(
+        "--project-name",
+        default=None,
+        help=(
+            "Compose project name. Defaults to brainapi (light) or "
+            "brainapi-heavy (heavy), matching the compose `name:` field."
+        ),
+    )
     parser.add_argument("--backup-dir", type=Path, default=Path(os.getenv("BACKUP_DIR", "/srv/brainapi/backups")))
     parser.add_argument("--archive", type=Path, help="Backup directory for verify/restore")
     parser.add_argument(
@@ -664,7 +697,7 @@ def main() -> int:
         stack = Stack(
             args.profile,
             args.env_file,
-            args.project_name,
+            default_project_name(args.profile, args.project_name),
             args.dry_run,
             args.compose_file,
         )

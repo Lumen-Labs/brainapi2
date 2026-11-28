@@ -142,7 +142,7 @@ jobs:
           docker compose -f deploy/docker-compose.light.yaml config -q
           if env -u REDIS_PASSWORD docker compose -f deploy/docker-compose.light.yaml config -q; then exit 1; fi
       - name: Build exact test image
-        run: docker build --platform linux/amd64 --load -t "$BRAINAPI_IMAGE" .
+        run: docker build --platform linux/amd64 --load --build-arg BUILD_SHA="${GITHUB_SHA}" --build-arg BUILD_VERSION="${BRAINAPI_IMAGE##*:}" -t "$BRAINAPI_IMAGE" .
       - name: Export exact candidate image
         run: |
           mkdir -p "$RELEASE_ARTIFACT_DIR"
